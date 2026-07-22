@@ -4719,6 +4719,8 @@ pub fn create_user_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Task
@@ -4757,6 +4759,8 @@ pub fn create_user_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
     };
@@ -4810,6 +4814,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Task => {
@@ -4852,6 +4858,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Review => ChatMessage {
@@ -4880,6 +4888,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Merge => ChatMessage {
@@ -4908,6 +4918,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::BranchUpdate => ChatMessage {
@@ -4936,6 +4948,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Standalone => ChatMessage {
@@ -4964,6 +4978,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
     };

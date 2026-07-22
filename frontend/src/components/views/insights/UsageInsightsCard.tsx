@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { BarChart2, Boxes, Coins, Cpu, DatabaseZap } from "lucide-react";
+import { Activity, BarChart2, Boxes, Coins, Cpu, DatabaseZap } from "lucide-react";
 import type { ScopeUsageStats } from "@/api/metrics";
 import { DetailCard } from "@/components/tasks/detail-views/shared/DetailCard";
 
@@ -54,6 +54,7 @@ export function UsageInsightsCard({ stats }: UsageInsightsCardProps) {
   const topHarness = stats.byHarness[0]?.key ?? "—";
   const topModel = stats.byModel[0]?.key ?? "—";
   const topProvider = stats.byUpstreamProvider[0]?.key ?? "—";
+  const quality = stats.usageCoverage;
 
   return (
     <DetailCard>
@@ -70,7 +71,16 @@ export function UsageInsightsCard({ stats }: UsageInsightsCardProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 min-[800px]:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 min-[800px]:grid-cols-5 gap-3">
+          <MiniStat
+            icon={<Activity className="w-3.5 h-3.5" />}
+            label="Processed"
+            value={
+              stats.effectiveUsageTotals.processedTokens == null
+                ? "—"
+                : formatInt(stats.effectiveUsageTotals.processedTokens)
+            }
+          />
           <MiniStat
             icon={<Cpu className="w-3.5 h-3.5" />}
             label="Input"
@@ -111,6 +121,21 @@ export function UsageInsightsCard({ stats }: UsageInsightsCardProps) {
             <div className="text-text-secondary">
               Conversations: {stats.conversationCount}
             </div>
+            {quality.legacyEstimatedSampleCount > 0 && (
+              <div className="text-text-secondary">
+                {quality.legacyEstimatedSampleCount} legacy-estimated sample{quality.legacyEstimatedSampleCount === 1 ? "" : "s"}
+              </div>
+            )}
+            {quality.fallbackEstimatedSampleCount > 0 && (
+              <div className="text-text-secondary">
+                {quality.fallbackEstimatedSampleCount} provider-fallback sample{quality.fallbackEstimatedSampleCount === 1 ? "" : "s"}
+              </div>
+            )}
+            {quality.uncountedSampleCount > 0 && (
+              <div className="text-text-secondary">
+                {quality.uncountedSampleCount} uncounted sample{quality.uncountedSampleCount === 1 ? "" : "s"}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-1.5">

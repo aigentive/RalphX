@@ -927,6 +927,8 @@ pub struct TeamCostUpdatePayload {
     pub teammate_name: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
     pub estimated_usd: f64,
     pub context_type: String,
     pub context_id: String,

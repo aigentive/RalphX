@@ -2218,6 +2218,7 @@ pub struct AgentMessageResponse {
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
+    pub usage_provenance: Option<String>,
     pub created_at: String,
 }
 
@@ -2436,20 +2437,7 @@ fn delegated_agent_state_label(status: &str) -> &'static str {
 }
 
 fn delegated_total_tokens_from_run(run: &crate::domain::entities::AgentRun) -> Option<u64> {
-    let total = run.input_tokens.unwrap_or(0)
-        + run.output_tokens.unwrap_or(0)
-        + run.cache_creation_tokens.unwrap_or(0)
-        + run.cache_read_tokens.unwrap_or(0);
-    if total == 0
-        && run.input_tokens.is_none()
-        && run.output_tokens.is_none()
-        && run.cache_creation_tokens.is_none()
-        && run.cache_read_tokens.is_none()
-    {
-        None
-    } else {
-        Some(total)
-    }
+    run.processed_tokens()
 }
 
 async fn load_delegated_tool_runtime_snapshot(
@@ -2465,59 +2453,77 @@ async fn load_delegated_tool_runtime_snapshot(
         .ok()
         .flatten()?;
 
-    let conversation_id = delegated_conversation_id.map(str::to_string);
-    let latest_run = if let Some(run_id) = delegated_agent_run_id {
+    let conversation = if let Some(conversation_id) = delegated_conversation_id {
         state
+            .chat_conversation_repo
+            .get_by_id(&ChatConversationId::from_string(conversation_id))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        state
+            .chat_conversation_repo
+            .get_active_for_context(ChatContextType::Delegation, delegated_session_id)
+            .await
+            .ok()
+            .flatten()
+    }?;
+    if conversation.context_type != ChatContextType::Delegation
+        || conversation.context_id != delegated_session_id
+    {
+        return None;
+    }
+    let conversation_id = conversation.id.as_str();
+    let latest_run = if let Some(run_id) = delegated_agent_run_id {
+        let run = state
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(run_id))
             .await
             .ok()
-            .flatten()
-    } else if let Some(conversation_id) = delegated_conversation_id {
+            .flatten()?;
+        if run.conversation_id != conversation.id {
+            return None;
+        }
+        Some(run)
+    } else {
         state
             .agent_run_repo
-            .get_latest_for_conversation(&ChatConversationId::from_string(conversation_id))
+            .get_latest_for_conversation(&conversation.id)
             .await
             .ok()
             .flatten()
-    } else {
-        None
     };
 
-    let recent_messages = if let Some(conversation_id) = delegated_conversation_id {
-        state
-            .chat_message_repo
-            .get_by_conversation(&ChatConversationId::from_string(conversation_id))
-            .await
-            .ok()
-            .map(|messages| {
-                messages
-                    .into_iter()
-                    .filter(|message| {
-                        matches!(
-                            message.role.to_string().as_str(),
-                            "assistant" | "orchestrator"
-                        )
-                    })
-                    .rev()
-                    .find_map(|message| {
-                        let content = message.content.trim();
-                        if content.is_empty() {
-                            None
-                        } else {
-                            Some(provider_chat_message_recent_payload(
-                                content,
-                                &message.created_at.to_rfc3339(),
-                            ))
-                        }
-                    })
-                    .into_iter()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let recent_messages = state
+        .chat_message_repo
+        .get_by_conversation(&conversation.id)
+        .await
+        .ok()
+        .map(|messages| {
+            messages
+                .into_iter()
+                .filter(|message| {
+                    matches!(
+                        message.role.to_string().as_str(),
+                        "assistant" | "orchestrator"
+                    )
+                })
+                .rev()
+                .find_map(|message| {
+                    let content = message.content.trim();
+                    if content.is_empty() {
+                        None
+                    } else {
+                        Some(provider_chat_message_recent_payload(
+                            content,
+                            &message.created_at.to_rfc3339(),
+                        ))
+                    }
+                })
+                .into_iter()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     let latest_run_json = latest_run.as_ref().map(|run| {
         serde_json::json!({
@@ -2547,7 +2553,7 @@ async fn load_delegated_tool_runtime_snapshot(
 
     Some(DelegatedToolRuntimeSnapshot {
         session_id: session.id.as_str().to_string(),
-        conversation_id,
+        conversation_id: Some(conversation_id),
         agent_run_id: latest_run.as_ref().map(|run| run.id.as_str()),
         agent_name: session.agent_name,
         title: session.title,
@@ -9172,6 +9178,7 @@ pub async fn get_agent_conversation(
             cache_creation_tokens: message.cache_creation_tokens,
             cache_read_tokens: message.cache_read_tokens,
             estimated_usd: message.estimated_usd,
+            usage_provenance: message.usage_provenance.map(|value| value.to_string()),
             created_at: message.created_at.to_rfc3339(),
         });
     }
@@ -9303,6 +9310,7 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
             cache_creation_tokens: message.cache_creation_tokens,
             cache_read_tokens: message.cache_read_tokens,
             estimated_usd: message.estimated_usd,
+            usage_provenance: message.usage_provenance.map(|value| value.to_string()),
             created_at: message.created_at.to_rfc3339(),
         });
     }

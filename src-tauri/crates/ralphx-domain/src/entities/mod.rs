@@ -57,6 +57,9 @@ pub mod task_step;
 pub mod team;
 pub mod ticket_canonical_branch;
 pub mod types;
+pub mod usage;
+#[cfg(test)]
+mod usage_tests;
 pub mod validation_run;
 pub mod workflow;
 
@@ -101,7 +104,6 @@ pub use agent_conversation_workspace::{
 };
 pub use agent_run::{
     AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
-    AgentRunUsage,
     InterruptedConversation,
 };
 pub use agent_task::{
@@ -216,6 +218,9 @@ pub use review_issue::{
     SeverityBreakdown, SeverityCount,
 };
 pub use status::{InternalStatus, ParseInternalStatusError};
+pub use usage::{
+    processed_tokens, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+};
 pub use task::{Task, TaskCategory};
 pub use task_context::{
     create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,

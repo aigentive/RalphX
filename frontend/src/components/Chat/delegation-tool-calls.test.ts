@@ -258,6 +258,28 @@ describe("delegation-tool-calls", () => {
     expect(mergedMetadata.totalTokens).toBe(165);
   });
 
+  it("uses the backend processed total for delegated Codex runs", () => {
+    const metadata = extractDelegationMetadata(
+      { job_id: "job-codex-usage" },
+      makeDelegationResult({
+        job_id: "job-codex-usage",
+        status: "completed",
+        total_tokens: 9_142_684,
+        delegated_status: {
+          latest_run: {
+            harness: "codex",
+            input_tokens: 9_116_803,
+            output_tokens: 25_881,
+            cache_read_tokens: 8_837_504,
+            processed_tokens: 9_142_684,
+          },
+        },
+      }),
+    );
+
+    expect(metadata.totalTokens).toBe(9_142_684);
+  });
+
   it("folds namespaced delegate_wait into the original namespaced delegate_start tool call", () => {
     const startToolCall = makeToolCall("ralphx::delegate_start", {
       id: "toolu-delegate-start",
