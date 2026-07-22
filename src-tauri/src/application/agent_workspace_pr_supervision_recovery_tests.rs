@@ -34,7 +34,7 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
 };
 use crate::domain::services::github_service::{
-    PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
+    PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
 };
 use crate::domain::services::GithubServiceTrait;
 use crate::infrastructure::memory::{
@@ -475,6 +475,79 @@ async fn recovers_blocked_pr_supervision_when_remote_head_matches_local_workspac
         .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].step, "pr_supervision_recovered");
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn matching_remote_head_with_failing_health_stays_blocked_and_never_reports_recovered() {
+    let (_temp_dir, project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-unresolved-health").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    let sync_state = open_sync_state(&workspace.branch_name, &head_sha);
+    github.will_return_sync_state(sync_state.clone());
+    github.state().fetch_pr_health_result = Some(Ok(PrHealth {
+        sync_state,
+        review_decision: None,
+        checks: vec![PrHealthCheck {
+            name: "Rust Tests".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: None,
+        }],
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }));
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&workspace_repo)
+                as Arc<dyn AgentConversationWorkspaceRepository>,
+            project_repo,
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new())
+                as Arc<dyn PlanBranchRepository>,
+            github,
+            pr_poller_registry: Some(Arc::clone(&registry)),
+            transition_service: None,
+            chat_service: Some(Arc::new(MockChatService::new())),
+            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            app_handle: None,
+            pr_fix_review_publish_resumer: None,
+        },
+        conversation_id,
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("inspect unresolved PR health");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("pr_issue_unresolved")
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .all(|event| event.step != "pr_supervision_recovered"));
     assert!(registry.is_agent_workspace_polling(&conversation_id));
     registry.stop_agent_workspace_polling(&conversation_id);
 }

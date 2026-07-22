@@ -34,6 +34,7 @@ mod chat_service_streaming;
 mod chat_service_types;
 mod continuation_runtime;
 mod conversation_launch_security;
+mod launch_reservation;
 pub mod freshness_routing;
 mod streaming_state_cache;
 pub(crate) mod tool_result_preview;
@@ -100,7 +101,8 @@ use crate::domain::repositories::{
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerExcerptReference,
     ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue,
-    QueueKey, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    AttachProcessResult, QueueKey, QueuedMessage, RunningAgentInfo, RunningAgentKey,
+    RunningAgentRegistry, TryRegisterError,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::claude::agent_names::{
@@ -124,7 +126,6 @@ use tokio_util::sync::CancellationToken;
 /// Both the write site (chat_service_handlers) and read site (chat_service_replay)
 /// must use this constant to stay in sync.
 pub const AGENT_ERROR_PREFIX: &str = "[Agent error:";
-const REGISTRY_PID_ZERO_GRACE_SECONDS: i64 = 30;
 const WORKSPACE_REVIEW_STOPPED_ERROR: &str = "Workspace reviewer stopped by user";
 
 // Re-exports from extracted modules
@@ -228,12 +229,6 @@ enum RegistryCleanupCaller {
     ReadOnly,
 }
 
-impl RegistryCleanupCaller {
-    fn permits_pid_zero_cleanup(self) -> bool {
-        matches!(self, Self::SendGate)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntimeStatus {
@@ -291,13 +286,11 @@ pub(crate) fn running_state_from_run_status_and_idle(
 
 fn registry_entry_blocks_send_but_is_stale(
     info: &RunningAgentInfo,
-    now: chrono::DateTime<chrono::Utc>,
-    cleanup_caller: RegistryCleanupCaller,
+    _now: chrono::DateTime<chrono::Utc>,
+    _cleanup_caller: RegistryCleanupCaller,
 ) -> bool {
     if info.pid == 0 {
-        let age = now.signed_duration_since(info.started_at);
-        return cleanup_caller.permits_pid_zero_cleanup()
-            && age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS);
+        return false;
     }
 
     !is_process_alive(info.pid)
@@ -325,11 +318,16 @@ fn registry_entry_blocks_send_because_run_inactive(
             true
         }
         None => {
-            let age = now.signed_duration_since(info.started_at);
-            if info.pid == 0 && !cleanup_caller.permits_pid_zero_cleanup() {
+            if info.pid == 0 {
                 return false;
             }
-            age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS)
+            let age = now.signed_duration_since(info.started_at);
+            let grace = i64::try_from(
+                crate::infrastructure::agents::claude::stream_timeouts()
+                    .completion_grace_secs,
+            )
+            .unwrap_or(i64::MAX);
+            age >= chrono::Duration::seconds(grace)
         }
     }
 }
@@ -2612,7 +2610,7 @@ impl<R: Runtime> AppChatService<R> {
 
         match self
             .running_agent_registry
-            .cleanup_stale_entry(registry_key)
+            .cleanup_stale_entry(registry_key, &existing.agent_run_id)
             .await
         {
             Ok(Some(info)) => {
@@ -5550,7 +5548,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             )
             .await;
 
-        if let Err(existing) = registration_result.as_ref() {
+        if let Err(TryRegisterError::Occupied(existing)) = registration_result.as_ref() {
             let cleaned_stale_entry = self
                 .cleanup_stale_registry_block(
                     &registry_key,
@@ -5586,38 +5584,47 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             }
         }
 
-        if let Err(existing) = registration_result {
-            tracing::warn!(
-                %context_type,
-                context_id,
-                runtime_context_id = %runtime_context_id,
-                gate = "GATE_2_BLOCKED",
-                existing_pid = existing.pid,
-                existing_run_id = %existing.agent_run_id,
-                "[GATE_TRACE] Gate 2 blocked — agent already running, queuing message"
-            );
-            if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                return Err(ChatServiceError::SpawnFailed(
-                    "immediate start required, but another agent run is active".to_string(),
-                ));
+        if let Err(error) = registration_result {
+            match error {
+                TryRegisterError::Occupied(existing) => {
+                    tracing::warn!(
+                        %context_type,
+                        context_id,
+                        runtime_context_id = %runtime_context_id,
+                        gate = "GATE_2_BLOCKED",
+                        existing_pid = existing.pid,
+                        existing_run_id = %existing.agent_run_id,
+                        "[GATE_TRACE] Gate 2 blocked — agent already running, queuing message"
+                    );
+                    if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
+                        return Err(ChatServiceError::SpawnFailed(
+                            "immediate start required, but another agent run is active".to_string(),
+                        ));
+                    }
+                    let queued = self
+                        .enqueue_pending_send(
+                            context_type,
+                            &runtime_context_id,
+                            message,
+                            &options,
+                            Some(existing.conversation_id.clone()),
+                        )
+                        .await?;
+                    return Ok(SendResult {
+                        conversation_id: existing.conversation_id.clone(),
+                        agent_run_id: existing.agent_run_id.clone(),
+                        is_new_conversation: false,
+                        was_queued: true,
+                        queued_message_id: Some(queued.id),
+                        queued_as_pending: false,
+                    });
+                }
+                TryRegisterError::Storage(error) => {
+                    return Err(ChatServiceError::RepositoryError(format!(
+                        "failed to reserve agent launch slot: {error}"
+                    )));
+                }
             }
-            let queued = self
-                .enqueue_pending_send(
-                    context_type,
-                    &runtime_context_id,
-                    message,
-                    &options,
-                    Some(existing.conversation_id.clone()),
-                )
-                .await?;
-            return Ok(SendResult {
-                conversation_id: existing.conversation_id.clone(),
-                agent_run_id: existing.agent_run_id.clone(),
-                is_new_conversation: false,
-                was_queued: true,
-                queued_message_id: Some(queued.id),
-                queued_as_pending: false,
-            });
         }
         log_send_message_spawn_prep_phase(
             context_type,
@@ -5641,6 +5648,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let mut agent_run_persisted = false;
         let mut branch_update_run_bound = false;
         let mut pre_spawn_assistant_attribution: Option<ChatMessageAttribution> = None;
+        let launch_reservation_guard = launch_reservation::LaunchReservationGuard::new(
+            Arc::clone(&self.running_agent_registry),
+            registry_key.clone(),
+            agent_run_id.clone(),
+            std::time::Duration::from_secs(
+                crate::infrastructure::agents::claude::stream_timeouts()
+                    .launch_reservation_lease_secs,
+            ),
+        );
 
         // Cleanup macro: unregisters slot + decrements running count on failure.
         // Uses textual expansion so `.await` works inside the async fn body.
@@ -6690,7 +6706,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 source_message_id.as_deref(),
             )
             .await?;
-        let (selected_cli_path, child, interactive_process_registry, interactive_process_token) =
+        let (selected_cli_path, mut child, interactive_process_registry, interactive_process_token) =
             match self
                 .spawn_process_for_harness(
                     &conversation,
@@ -6765,25 +6781,41 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
         // 7b. Update process details in registry now that spawn succeeded
         let cancellation_token = CancellationToken::new();
-        if let Some(pid) = child.id() {
-            if let Err(e) = self
-                .running_agent_registry
-                .update_agent_process(
-                    &registry_key,
-                    pid,
-                    &conversation_id.as_str(),
-                    &agent_run_id,
-                    Some(registry_worktree.clone()),
-                    Some(cancellation_token.clone()),
-                    Some(effective_model_id.clone()),
-                )
-                .await
-            {
-                tracing::error!(
-                    pid,
-                    error = %e,
-                    "chat_service.send_message: failed to update agent process in registry — slot claimed but PID not persisted"
-                );
+        let Some(pid) = child.id() else {
+            launch_reservation_guard.stop();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            cleanup_and_err!(ChatServiceError::SpawnFailed(
+                "spawned agent process has no process id".to_string(),
+            ));
+        };
+        launch_reservation_guard.stop();
+        match self
+            .running_agent_registry
+            .attach_process(
+                &registry_key,
+                &agent_run_id,
+                pid,
+                Some(registry_worktree.clone()),
+                Some(cancellation_token.clone()),
+                Some(effective_model_id.clone()),
+            )
+            .await
+        {
+            Ok(AttachProcessResult::Attached) => {}
+            Ok(AttachProcessResult::ClaimLost) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                cleanup_and_err!(ChatServiceError::SpawnFailed(
+                    "agent launch reservation was lost before process attachment".to_string(),
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                cleanup_and_err!(ChatServiceError::RepositoryError(format!(
+                    "failed to attach agent process to launch reservation: {error}"
+                )));
             }
         }
 

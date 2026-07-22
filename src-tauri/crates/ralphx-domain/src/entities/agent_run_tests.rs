@@ -137,6 +137,19 @@ fn malformed_or_partial_action_metadata_is_not_authoritative() {
 }
 
 #[test]
+fn pr_autofix_action_metadata_roundtrips() {
+    let parsed = AgentRunAction::from_metadata_json(Some(
+        r#"{"ralphx_action_kind":"pr_autofix","ralphx_action_context_id":"42","ralphx_action_target_id":"github_pr_autofix:42:abc"}"#,
+    ))
+    .unwrap();
+
+    assert_eq!(parsed.kind, AgentRunActionKind::PrAutofix);
+    assert_eq!(parsed.context_id, "42");
+    assert_eq!(parsed.target_id, "github_pr_autofix:42:abc");
+    assert_eq!(AgentRunActionKind::PrAutofix.to_string(), "pr_autofix");
+}
+
+#[test]
 fn test_new_continuation_run() {
     let conversation_id = ChatConversationId::new();
     let chain_id = "chain-123".to_string();

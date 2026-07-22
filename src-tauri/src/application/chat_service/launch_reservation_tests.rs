@@ -1,0 +1,29 @@
+use super::*;
+use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentRegistry};
+
+#[tokio::test]
+async fn guard_renews_only_the_owned_launch_reservation() {
+    let registry = Arc::new(MemoryRunningAgentRegistry::new());
+    let key = RunningAgentKey::new("project", "slow-launch");
+    registry
+        .try_register(key.clone(), "conversation".into(), "run-owned".into())
+        .await
+        .unwrap();
+    let before = registry.get(&key).await.unwrap().last_active_at.unwrap();
+
+    let guard = LaunchReservationGuard::new(
+        registry.clone(),
+        key.clone(),
+        "run-owned".into(),
+        Duration::from_millis(30),
+    );
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    guard.stop();
+
+    let after = registry.get(&key).await.unwrap().last_active_at.unwrap();
+    assert!(after > before);
+    assert!(!registry
+        .renew_reservation(&key, "run-stale", chrono::Utc::now())
+        .await
+        .unwrap());
+}

@@ -33,7 +33,7 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus}
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrReviewAction,
+    AgentRunActionKind, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
@@ -73,6 +73,23 @@ async fn seeded_latest_pr_fixer_run_repo(
     run.complete();
     repo.create(run).await.expect("latest run should persist");
     repo
+}
+
+async fn seed_pr_autofix_attempt(
+    repo: &dyn AgentRunRepository,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    fingerprint: &str,
+    status: AgentRunStatus,
+) {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.action_kind = Some(AgentRunActionKind::PrAutofix);
+    run.action_context_id = Some(pr_number.to_string());
+    run.action_target_id = Some(fingerprint.to_string());
+    run.status = status;
+    repo.create(run)
+        .await
+        .expect("autofix attempt should persist");
 }
 
 fn run_git(repo: &std::path::Path, args: &[&str]) {
@@ -1309,7 +1326,7 @@ async fn agent_workspace_pr_conflict_repair_does_not_override_the_repair_role_ru
         &conflicting_pr_health("failed-handoff-head"),
         &conversation_id,
         Arc::clone(&workspace_repo),
-        Some(agent_run_repo),
+        Some(Arc::clone(&agent_run_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1430,8 +1447,10 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
     });
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
-    let chat = Arc::new(MockChatService::new());
     let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
         github.clone() as Arc<dyn GithubServiceTrait>,
@@ -1439,7 +1458,7 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        Some(agent_run_repo),
+        Some(Arc::clone(&agent_run_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1467,6 +1486,18 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
     assert_eq!(options[0].service_tier_override.as_deref(), Some("fast"));
     assert!(options[0].force_new_provider_session);
     assert!(options[0].preserve_conversation_provider_session_ref);
+    let attempts = agent_run_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("runs should list");
+    assert!(attempts.iter().any(|run| {
+        run.action_kind == Some(AgentRunActionKind::PrAutofix)
+            && run.action_context_id.as_deref() == Some("101")
+            && run
+                .action_target_id
+                .as_deref()
+                .is_some_and(|value| value.starts_with("github_pr_autofix:101:routehead"))
+    }));
 
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -1532,6 +1563,7 @@ async fn agent_workspace_pr_autofix_disabled_during_health_inspection_skips_repa
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
         Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -1539,7 +1571,7 @@ async fn agent_workspace_pr_autofix_disabled_during_health_inspection_skips_repa
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1592,13 +1624,14 @@ async fn agent_workspace_pr_autofix_final_authorization_error_fails_closed() {
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
 
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
     let error = super::route_agent_workspace_pr_autofix_if_needed(
         github as Arc<dyn GithubServiceTrait>,
         worktree.path(),
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1621,7 +1654,7 @@ async fn agent_workspace_pr_autofix_final_authorization_error_fails_closed() {
 }
 
 #[tokio::test]
-async fn agent_workspace_pr_autofix_send_failure_writes_no_routed_state() {
+async fn agent_workspace_pr_autofix_send_failure_records_blocked_recovery_state() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = supervised_workspace(
         "autofix-send-failure-conversation",
@@ -1648,32 +1681,38 @@ async fn agent_workspace_pr_autofix_send_failure_writes_no_routed_state() {
     let chat = Arc::new(MockChatService::new());
     chat.set_available(false).await;
 
-    let error = super::route_agent_workspace_pr_autofix_if_needed(
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
         github as Arc<dyn GithubServiceTrait>,
         worktree.path(),
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
-    .expect_err("failed fixer send should propagate");
+    .expect("failed fixer send should be durably classified");
 
-    assert!(matches!(error, AppError::Infrastructure(_)));
+    assert!(!routed);
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
-    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
-    assert_ne!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("dispatch failed"));
     assert!(workspace_repo
         .list_publication_events(&conversation_id)
         .await
         .expect("events should list")
         .iter()
-        .all(|event| event.step != "pr_autofix"));
+        .any(|event| event.step == "pr_autofix" && event.status == "failed"));
 }
 
 #[tokio::test]
@@ -1696,6 +1735,7 @@ async fn agent_workspace_pr_autofix_disabled_still_syncs_healthy_auto_merge() {
         .expect("workspace should persist");
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(open_pr_health("healthy-auto-merge-head")));
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
     let chat = Arc::new(MockChatService::new());
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
@@ -1704,7 +1744,7 @@ async fn agent_workspace_pr_autofix_disabled_still_syncs_healthy_auto_merge() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3040,6 +3080,7 @@ async fn supervised_agent_workspace_pr_autofix_skips_duplicate_fingerprint() {
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
         github as Arc<dyn GithubServiceTrait>,
@@ -3047,7 +3088,7 @@ async fn supervised_agent_workspace_pr_autofix_skips_duplicate_fingerprint() {
         101,
         &conversation_id,
         workspace_repo,
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3074,14 +3115,24 @@ async fn supervised_agent_workspace_pr_autofix_skips_when_fixer_run_active() {
         .await
         .expect("workspace should persist");
 
-    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
-    agent_run_repo
-        .create(AgentRun::new(conversation_id.clone()))
-        .await
-        .expect("active run should persist");
-
     let mut health = open_pr_health("new-issue-head");
-    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Blocked);
+    health.checks.push(PrHealthCheck {
+        name: "CI".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let issue = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("blocked PR should classify");
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    seed_pr_autofix_attempt(
+        agent_run_repo.as_ref(),
+        &conversation_id,
+        101,
+        &issue.classification,
+        AgentRunStatus::Running,
+    )
+    .await;
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
@@ -3225,6 +3276,7 @@ async fn supervised_agent_workspace_pr_autofix_disables_auto_merge_before_fixer(
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
         Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -3232,7 +3284,7 @@ async fn supervised_agent_workspace_pr_autofix_disables_auto_merge_before_fixer(
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3291,6 +3343,7 @@ async fn supervised_agent_workspace_pr_autofix_waits_when_auto_merge_disable_fai
         "permission denied".to_string(),
     )));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
 
     let routed = super::route_agent_workspace_pr_autofix_if_needed(
         Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -3298,7 +3351,7 @@ async fn supervised_agent_workspace_pr_autofix_waits_when_auto_merge_disable_fai
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await

@@ -41,15 +41,6 @@ pub(super) async fn prune_stale_execution_registry_entries(
             continue;
         }
 
-        // Age guard: pid=0 entries younger than 30s are in the try_register →
-        // update_agent_process window. The pruner must not race against the spawn.
-        if info.pid == 0 {
-            let age = chrono::Utc::now() - info.started_at;
-            if age < chrono::Duration::seconds(30) {
-                continue;
-            }
-        }
-
         // Compute pid liveness once; both the IPR check and staleness evaluation use it.
         let pid_alive = crate::domain::services::is_process_alive(info.pid);
 

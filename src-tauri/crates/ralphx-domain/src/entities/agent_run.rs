@@ -85,6 +85,7 @@ pub enum AgentRunStatus {
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunActionKind {
     VerifyPlan,
+    PrAutofix,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +122,7 @@ impl fmt::Display for AgentRunActionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::VerifyPlan => write!(f, "verify_plan"),
+            Self::PrAutofix => write!(f, "pr_autofix"),
         }
     }
 }
@@ -131,6 +133,7 @@ impl std::str::FromStr for AgentRunActionKind {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "verify_plan" => Ok(Self::VerifyPlan),
+            "pr_autofix" => Ok(Self::PrAutofix),
             _ => Err(format!("Invalid agent run action kind: {value}")),
         }
     }

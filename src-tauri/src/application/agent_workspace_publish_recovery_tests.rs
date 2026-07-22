@@ -15,10 +15,10 @@ use crate::application::agent_workspace_review::{
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRun, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
-    ProjectId,
+    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunActionKind,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId,
+    IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::infrastructure::memory::{
@@ -114,6 +114,22 @@ async fn seed_terminal_run(
         .expect("mark run failed");
 }
 
+async fn seed_failed_pr_autofix_run(
+    agent_run_repo: &dyn AgentRunRepository,
+    conversation_id: ChatConversationId,
+    fingerprint: &str,
+) {
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::PrAutofix);
+    run.action_context_id = Some("684".to_string());
+    run.action_target_id = Some(fingerprint.to_string());
+    let run = agent_run_repo.create(run).await.expect("seed autofix run");
+    agent_run_repo
+        .fail(&run.id, "autofix interrupted")
+        .await
+        .expect("mark autofix failed");
+}
+
 #[tokio::test]
 async fn startup_recovery_wrappers_finish_on_empty_repositories() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -161,6 +177,57 @@ async fn state_recovery_recovers_terminal_needs_agent_workspace_and_reloads_it()
         event.step == "stale_repair_recovered"
             && event.classification.as_deref() == Some("stale_needs_agent")
     }));
+}
+
+#[tokio::test]
+async fn recovery_correlates_the_exact_pr_autofix_attempt_not_a_newer_unrelated_run() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let conversation_id = conversation_id(11);
+    let workspace = needs_agent_workspace(conversation_id);
+    let fingerprint = "github_pr_autofix:684:head:failing-check";
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "pr_autofix",
+            "needs_agent",
+            "PR autofix started.",
+            Some(fingerprint.to_string()),
+        ))
+        .await
+        .expect("seed autofix event");
+    seed_failed_pr_autofix_run(agent_run_repo.as_ref(), conversation_id, fingerprint).await;
+    let unrelated = agent_run_repo
+        .create(AgentRun::new(conversation_id))
+        .await
+        .expect("seed unrelated run");
+    agent_run_repo
+        .complete(&unrelated.id)
+        .await
+        .expect("complete unrelated run");
+
+    let (updated, recovered) =
+        recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            workspace,
+            None,
+        )
+        .await
+        .expect("recover exact autofix attempt");
+
+    assert!(recovered);
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("single retry is eligible"));
 }
 
 #[tokio::test]

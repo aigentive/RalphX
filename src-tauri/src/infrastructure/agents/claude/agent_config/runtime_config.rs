@@ -231,6 +231,8 @@ pub struct StreamTimeoutsConfig {
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
     pub completion_grace_secs: u64,
+    #[serde(default = "default_launch_reservation_lease_secs")]
+    pub launch_reservation_lease_secs: u64,
     #[serde(default = "default_execution_attempt_start_tolerance_secs")]
     pub execution_attempt_start_tolerance_secs: u64,
     #[serde(default = "default_desktop_notification_coalesce_window_secs")]
@@ -246,6 +248,10 @@ fn default_max_wall_clock_secs() -> u64 {
 }
 
 fn default_completion_grace_secs() -> u64 {
+    30
+}
+
+fn default_launch_reservation_lease_secs() -> u64 {
     30
 }
 
@@ -278,6 +284,7 @@ impl Default for StreamTimeoutsConfig {
             team_parse_stall_secs: 3600,
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
+            launch_reservation_lease_secs: 30,
             execution_attempt_start_tolerance_secs: 1,
             desktop_notification_coalesce_window_secs:
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
@@ -781,6 +788,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.completion_grace_secs,
         "RALPHX_STREAM_COMPLETION_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.stream.launch_reservation_lease_secs,
+        "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS"
     );
     env_u64!(
         cfg.stream.execution_attempt_start_tolerance_secs,

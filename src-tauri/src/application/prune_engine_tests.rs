@@ -15,10 +15,7 @@ use crate::domain::services::RunningAgentKey;
 // ─────────────────────────────────────────────
 
 /// Build a PruneEngine wired to the given AppState's repos, with an optional IPR.
-fn build_engine(
-    app_state: &AppState,
-    ipr: Option<Arc<InteractiveProcessRegistry>>,
-) -> PruneEngine {
+fn build_engine(app_state: &AppState, ipr: Option<Arc<InteractiveProcessRegistry>>) -> PruneEngine {
     PruneEngine::new(
         Arc::clone(&app_state.running_agent_registry),
         Arc::clone(&app_state.agent_run_repo),
@@ -179,11 +176,60 @@ async fn evaluate_and_prune_in_flight_entry_skipped() {
 }
 
 #[tokio::test]
+async fn evaluate_and_prune_keeps_fresh_owned_reservation_without_run_row() {
+    let app_state = AppState::new_test();
+    let engine = build_engine(&app_state, None);
+    let key = RunningAgentKey::new("project", "slow-launch");
+    app_state
+        .running_agent_registry
+        .try_register(key.clone(), "conversation".into(), "run-launch".into())
+        .await
+        .unwrap();
+
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
+    assert!(!engine.evaluate_and_prune(&key, &info, false).await);
+    assert!(app_state.running_agent_registry.is_running(&key).await);
+}
+
+#[tokio::test]
+async fn evaluate_and_prune_removes_expired_owned_reservation() {
+    let app_state = AppState::new_test();
+    let engine = build_engine(&app_state, None);
+    let key = RunningAgentKey::new("project", "abandoned-launch");
+    app_state
+        .running_agent_registry
+        .try_register(key.clone(), "conversation".into(), "run-launch".into())
+        .await
+        .unwrap();
+    let lease = i64::try_from(
+        crate::infrastructure::agents::claude::stream_timeouts().launch_reservation_lease_secs,
+    )
+    .unwrap();
+    assert!(app_state
+        .running_agent_registry
+        .renew_reservation(
+            &key,
+            "run-launch",
+            chrono::Utc::now() - chrono::Duration::seconds(lease + 1),
+        )
+        .await
+        .unwrap());
+
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
+    assert!(engine.evaluate_and_prune(&key, &info, false).await);
+    assert!(!app_state.running_agent_registry.is_running(&key).await);
+}
+
+#[tokio::test]
 async fn evaluate_and_prune_healthy_entry_not_pruned() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -217,7 +263,11 @@ async fn evaluate_and_prune_dead_pid_prunes_and_cancels_run() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -256,7 +306,11 @@ async fn evaluate_and_prune_non_running_run_status_prunes() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -314,7 +368,11 @@ async fn evaluate_and_prune_task_status_mismatch_prunes() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task is in terminal state (Merged), not Executing.
     let mut task = Task::new(project.id.clone(), "T".to_string());
@@ -341,7 +399,11 @@ async fn evaluate_and_prune_recent_merge_status_mismatch_waits_for_settlement() 
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Merged;
@@ -350,9 +412,9 @@ async fn evaluate_and_prune_recent_merge_status_mismatch_waits_for_settlement() 
     let run_id = create_running_agent_run(&app_state).await;
     let key = RunningAgentKey::new("merge", task.id.as_str());
     register_stale_entry(&app_state, &key, &run_id, None).await;
-    app_state
+    let _ = app_state
         .running_agent_registry
-        .update_heartbeat(&key, chrono::Utc::now())
+        .update_heartbeat(&key, &run_id.as_str(), chrono::Utc::now())
         .await;
 
     let engine = build_engine(&app_state, None);
@@ -372,7 +434,11 @@ async fn evaluate_and_prune_stale_merge_status_mismatch_prunes_after_settlement_
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Merged;
@@ -385,10 +451,11 @@ async fn evaluate_and_prune_stale_merge_status_mismatch_prunes_after_settlement_
         crate::infrastructure::agents::claude::stream_timeouts().completion_grace_secs,
     )
     .unwrap_or(i64::MAX - 1);
-    app_state
+    let _ = app_state
         .running_agent_registry
         .update_heartbeat(
             &key,
+            &run_id.as_str(),
             chrono::Utc::now() - chrono::Duration::seconds(grace_secs + 1),
         )
         .await;
@@ -429,7 +496,11 @@ async fn evaluate_and_prune_already_completed_run_not_re_cancelled() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -513,7 +584,11 @@ async fn slot_counter_corrected_after_prune_via_reconciler() {
     );
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Merged; // terminal — triggers task_status_mismatch
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -552,7 +627,11 @@ async fn evaluate_and_prune_merge_context_removes_worktree_dir() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Merging;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -634,7 +713,11 @@ async fn evaluate_and_prune_review_context_healthy_not_pruned() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Reviewing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -668,7 +751,11 @@ async fn evaluate_and_prune_merge_context_healthy_no_worktree_cleanup() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "T".to_string());
     task.internal_status = InternalStatus::Merging;
     app_state.task_repo.create(task.clone()).await.unwrap();

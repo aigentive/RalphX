@@ -16,11 +16,14 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_pr_autofix_attempt::{
+    load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
 };
-use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
@@ -31,7 +34,7 @@ use crate::application::{AppState, NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus, ChatContextType,
     ChatConversationId, IdeationSessionId, ProjectId,
 };
@@ -1975,18 +1978,18 @@ async fn prepare_agent_workspace_pr_repair_auto_merge_state(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentWorkspacePrAutofixIssueKind {
+pub(crate) enum AgentWorkspacePrAutofixIssueKind {
     Review,
     Checks,
     Mergeability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AgentWorkspacePrAutofixIssue {
-    kind: AgentWorkspacePrAutofixIssueKind,
-    summary: String,
-    details: Vec<String>,
-    classification: String,
+pub(crate) struct AgentWorkspacePrAutofixIssue {
+    pub(crate) kind: AgentWorkspacePrAutofixIssueKind,
+    pub(crate) summary: String,
+    pub(crate) details: Vec<String>,
+    pub(crate) classification: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2225,17 +2228,6 @@ async fn route_agent_workspace_pr_autofix_for_target(
         return Ok(false);
     }
 
-    if agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await? {
-        tracing::info!(
-            conversation_id = conversation_id.as_str(),
-            pr_number = target.pr_number,
-            publication_push_status = workspace.publication_push_status.as_deref(),
-            pr_supervision_status = workspace.pr_supervision_status.as_deref(),
-            "Agent workspace PR poller: skipping autofix route because repair is already active"
-        );
-        return Ok(false);
-    }
-
     let health = github
         .fetch_pr_health(working_dir, target.pr_number)
         .await?;
@@ -2309,12 +2301,39 @@ async fn route_agent_workspace_pr_autofix_for_target(
         return Ok(false);
     };
 
-    let already_routed = workspace_repo
+    let publication_events = workspace_repo
         .list_publication_events(conversation_id)
-        .await?
-        .into_iter()
+        .await?;
+    let legacy_event_exists = publication_events
+        .iter()
         .any(|event| event.classification.as_deref() == Some(issue.classification.as_str()));
-    if already_routed {
+    let Some(agent_run_repo) = agent_run_repo.as_ref() else {
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            pr_number = target.pr_number,
+            "Agent workspace PR autofix requires an AgentRun repository"
+        );
+        return Ok(false);
+    };
+    let attempt_decision = load_pr_autofix_attempt_decision(
+        agent_run_repo.as_ref(),
+        conversation_id,
+        target.pr_number,
+        &issue.classification,
+        legacy_event_exists,
+    )
+    .await?;
+    if !attempt_decision.allows_start() {
+        if let Some(summary) = attempt_decision.manual_summary() {
+            workspace_repo
+                .update_pr_auto_merge_state(
+                    conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(summary),
+                )
+                .await?;
+        }
         return Ok(false);
     }
 
@@ -2344,12 +2363,19 @@ async fn route_agent_workspace_pr_autofix_for_target(
     else {
         return Ok(false);
     };
-    let send_options = agent_workspace_pr_fixer_send_options(
+    let preallocated_run_id = AgentRunId::new();
+    let mut send_options = agent_workspace_pr_fixer_send_options(
         &workspace_for_options,
         working_dir,
-        agent_run_repo.as_ref(),
+        Some(agent_run_repo),
     )
     .await?;
+    send_options.preallocated_agent_run_id = Some(preallocated_run_id);
+    send_options.queue_policy = SendQueuePolicy::RequireImmediateStart;
+    send_options.metadata = Some(pr_autofix_action_metadata(
+        target.pr_number,
+        &issue.classification,
+    ));
     let Some(workspace) =
         authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
             .await?
@@ -2363,7 +2389,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         &workspace,
         &issue,
     );
-    chat_service
+    let send_result = match chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
@@ -2371,7 +2397,35 @@ async fn route_agent_workspace_pr_autofix_for_target(
             send_options,
         )
         .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
+    {
+        Ok(result) if !result.was_queued && result.agent_run_id == preallocated_run_id.as_str() => {
+            result
+        }
+        Ok(_) => {
+            record_agent_workspace_pr_autofix_dispatch_failure(
+                workspace_repo.as_ref(),
+                conversation_id,
+                &workspace,
+                &issue,
+                "PR autofix did not start immediately with its reserved run identity.",
+            )
+            .await?;
+            return Ok(false);
+        }
+        Err(error) => {
+            let summary = format!("PR autofix dispatch failed: {error}");
+            record_agent_workspace_pr_autofix_dispatch_failure(
+                workspace_repo.as_ref(),
+                conversation_id,
+                &workspace,
+                &issue,
+                &summary,
+            )
+            .await?;
+            return Ok(false);
+        }
+    };
+    debug_assert_eq!(send_result.agent_run_id, preallocated_run_id.as_str());
 
     let pr_status = if issue.kind == AgentWorkspacePrAutofixIssueKind::Review {
         Some("changes_requested")
@@ -2408,6 +2462,41 @@ async fn route_agent_workspace_pr_autofix_for_target(
         .await?;
 
     Ok(true)
+}
+
+async fn record_agent_workspace_pr_autofix_dispatch_failure(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    issue: &AgentWorkspacePrAutofixIssue,
+    summary: &str,
+) -> crate::AppResult<()> {
+    workspace_repo
+        .update_publication(
+            conversation_id,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.as_deref(),
+            workspace.publication_pr_status.as_deref(),
+            Some("failed"),
+        )
+        .await?;
+    workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("blocked"),
+            Some(summary),
+        )
+        .await?;
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix",
+            "failed",
+            summary,
+            Some(issue.classification.clone()),
+        ))
+        .await
 }
 
 async fn agent_workspace_pr_autofix_repair_in_flight(
@@ -2808,7 +2897,7 @@ pub async fn sync_agent_workspace_auto_merge_preference_for_workspace(
     .await
 }
 
-fn classify_agent_workspace_pr_autofix_issue(
+pub(crate) fn classify_agent_workspace_pr_autofix_issue(
     pr_number: i64,
     health: &PrHealth,
 ) -> Option<AgentWorkspacePrAutofixIssue> {
