@@ -2058,7 +2058,7 @@ struct AgentWorkspacePrAutofixIssue {
     kind: AgentWorkspacePrAutofixIssueKind,
     summary: String,
     details: Vec<String>,
-    classification: String,
+    pub(crate) classification: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
