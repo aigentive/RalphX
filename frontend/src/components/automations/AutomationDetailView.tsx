@@ -1,9 +1,7 @@
-import { memo, type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
-  ChevronDown,
-  ChevronUp,
   Copy,
   ExternalLink,
   GitPullRequest,
@@ -31,8 +29,6 @@ import {
   AUTOMATION_CANCEL_CONFIRMATION_DESCRIPTION,
   CANCELLED_RUN_RESTART_DESCRIPTION,
   describeAutomationDeleteConsequences,
-  describeAutomationRunPrState,
-  describeRunFailure,
   getAutomationRunView,
   getAutomationJudgeRecovery,
   isAutomationDeletable,
@@ -45,15 +41,12 @@ import {
   AUTOMATION_STATUS_LABELS,
   findInProgressAutomationGoalItem,
   parseAutomationGoalItems,
-  type AutomationGoalItem,
 } from "@/components/automations/automationGoalItems";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
-import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
-import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
-import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import { AutomationDetailsTabs } from "@/components/automations/AutomationDetailsTabs";
+import { RunTimelineItem } from "@/components/automations/AutomationRunTimelineItem";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -70,7 +63,8 @@ import {
   invalidateAutomationQueries,
   useAutomationDetail,
 } from "@/hooks/useAutomations";
-import { cn } from "@/lib/utils";
+import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
+import { ExpandableText, Pill } from "./automationDetailShared";
 
 interface AutomationDetailViewProps {
   automationId: string;
@@ -81,51 +75,6 @@ interface AutomationDetailViewProps {
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
 
-type JsonRecord = Record<string, unknown>;
-
-const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
-  setup_agent: "Setup agent",
-  judge: "Judge",
-  skip_judge_template: "Skip-judge template",
-};
-
-function parseRecord(value: string | null): JsonRecord | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as JsonRecord
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function stringField(record: JsonRecord | null, key: string): string | null {
-  const value = record?.[key];
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function numberField(record: JsonRecord | null, key: string): number | null {
-  const value = record?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function formatDate(value: string | null): string {
-  if (!value) {
-    return "Not recorded";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
@@ -163,34 +112,6 @@ function isSignalTerminalUnjudged(run: AutomationRun | null): run is AutomationR
   );
 }
 
-interface RunTimelineHighlight {
-  backgroundColor: string;
-  borderColor: string;
-  markerColor: string;
-}
-
-function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
-  if (describeRunFailure(run) || run.status === "cancelled") {
-    return {
-      backgroundColor: "var(--bg-hover)",
-      borderColor: "var(--border-default)",
-      markerColor: "var(--text-muted)",
-    };
-  }
-  if (isOpenAutomationRun(run)) {
-    return {
-      backgroundColor: "var(--accent-muted)",
-      borderColor: "var(--accent-border)",
-      markerColor: "var(--accent-primary)",
-    };
-  }
-  return {
-    backgroundColor: "var(--status-success-muted)",
-    borderColor: "var(--status-success-border)",
-    markerColor: "var(--status-success)",
-  };
-}
-
 function isAutomationTerminal(status: Automation["status"]): boolean {
   return status === "completed" || status === "stopped";
 }
@@ -203,38 +124,6 @@ function approvalErrorMessage(error: unknown): string {
     return error;
   }
   return "Failed to approve automation";
-}
-
-function statusClass(status: string): string {
-  if (["active", "running", "published", "merged", "completed", "done"].includes(status)) {
-    return "text-[var(--status-success)]";
-  }
-  if (["paused", "failed", "agent_failed", "pr_closed"].includes(status)) {
-    return "text-[var(--status-warning)]";
-  }
-  if (["stopped", "cancelled"].includes(status)) {
-    return "text-[var(--status-error)]";
-  }
-  return "text-[var(--text-secondary)]";
-}
-
-function Pill({ label, status }: { label: string; status: string }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-xs font-semibold",
-        statusClass(status),
-      )}
-      style={{
-        backgroundColor: "var(--bg-hover)",
-        borderColor: "var(--border-default)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-    >
-      {label}
-    </span>
-  );
 }
 
 function TooltipIconButton({
@@ -324,6 +213,28 @@ function Section({
   );
 }
 
+function ConfigGroup({
+  title,
+  items,
+  testId,
+}: {
+  title: string;
+  items: Array<[string, ReactNode]>;
+  testId: string;
+}) {
+  return (
+    <div data-testid={testId}>
+      <div
+        className="mb-2 text-xs font-semibold uppercase tracking-normal"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {title}
+      </div>
+      <KeyValueList items={items} />
+    </div>
+  );
+}
+
 function KeyValueList({ items }: { items: Array<[string, ReactNode]> }) {
   return (
     <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -391,57 +302,6 @@ function PipelineProgress({ pipeline }: { pipeline: AutomationPipelineProgress }
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function previewLines(text: string, maxLines: number): string {
-  return text.split(/\r?\n/).slice(0, maxLines).join("\n");
-}
-
-function ExpandableText({
-  text,
-  maxLines = 10,
-  emptyLabel = "Not recorded",
-}: {
-  text: string | null;
-  maxLines?: number;
-  emptyLabel?: string;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const value = text?.trim() || "";
-  if (!value) {
-    return <p className="text-sm" style={{ color: "var(--text-muted)" }}>{emptyLabel}</p>;
-  }
-  const lines = value.split(/\r?\n/);
-  const expandable = lines.length > maxLines || value.length > 900;
-  const renderedText = expanded || !expandable
-    ? value
-    : `${previewLines(value, maxLines)}\n...`;
-
-  return (
-    <div className="space-y-2">
-      <pre
-        className="whitespace-pre-wrap break-words rounded-md p-3 text-xs leading-5"
-        style={{
-          backgroundColor: "var(--bg-hover)",
-          color: "var(--text-secondary)",
-        }}
-      >
-        {renderedText}
-      </pre>
-      {expandable && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="gap-2"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          {expanded ? "Collapse" : "Expand"}
-        </Button>
-      )}
     </div>
   );
 }
@@ -549,313 +409,6 @@ function GoalItems({ value }: { value: string | null }) {
     </div>
   );
 }
-
-function DiffStats({ value }: { value: string | null }) {
-  const stats = parseRecord(value);
-  const files = numberField(stats, "filesChanged") ?? numberField(stats, "files_changed");
-  const additions = numberField(stats, "additions");
-  const deletions = numberField(stats, "deletions");
-
-  if (files === null && additions === null && deletions === null) {
-    return <span>Diff not recorded</span>;
-  }
-
-  return (
-    <span>
-      {files ?? 0} files, +{additions ?? 0} / -{deletions ?? 0}
-    </span>
-  );
-}
-
-function JudgeVerdictCard({ run }: { run: AutomationRun }) {
-  const [expanded, setExpanded] = useState(false);
-  const verdict = parseRecord(run.judgeVerdictJson);
-  if (!verdict) {
-    return null;
-  }
-
-  const decision = stringField(verdict, "decision") ?? "unknown";
-  const reason = stringField(verdict, "reason");
-  const confidence = numberField(verdict, "confidence");
-  const nextRunPrompt = stringField(verdict, "nextRunPrompt");
-
-  return (
-    <div
-      className="mt-3 rounded-md p-3"
-      style={{
-        backgroundColor: "var(--bg-hover)",
-        borderColor: "var(--border-default)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-      data-testid={`automation-run-${run.id}-judge`}
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <Pill label={`Judge: ${decision}`} status={decision} />
-        {confidence !== null && (
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            Confidence {Math.round(confidence * 100)}%
-          </span>
-        )}
-      </div>
-      {reason && (
-        <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-          {reason}
-        </p>
-      )}
-      {nextRunPrompt && (
-        <div className="mt-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="gap-2"
-            onClick={() => setExpanded((value) => !value)}
-          >
-            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            {expanded ? "Hide next prompt" : "Show next prompt"}
-          </Button>
-          {expanded && (
-            <div className="mt-2">
-              <ExpandableText text={nextRunPrompt} maxLines={8} />
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const RunTimelineItem = memo(function RunTimelineItem({
-  run,
-  automation,
-  projectId,
-  defaultExpanded,
-  activeGoalItem,
-  onOpenRunConversation,
-  onOpenAutomationRun,
-  setupConversationId,
-}: {
-  run: AutomationRun;
-  automation: Automation;
-  projectId: string | null;
-  defaultExpanded: boolean;
-  activeGoalItem: AutomationGoalItem | null;
-  onOpenRunConversation?: (projectId: string, conversationId: string) => void;
-  onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
-  setupConversationId: string | null;
-}) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const canOpenConversation = Boolean(
-    projectId &&
-      run.conversationId &&
-      (onOpenAutomationRun || onOpenRunConversation),
-  );
-  const failureReason = describeRunFailure(run);
-  const highlight = runTimelineHighlight(run);
-  const openConversation = useCallback(() => {
-    if (projectId && run.conversationId) {
-      if (onOpenAutomationRun) {
-        onOpenAutomationRun({
-          projectId,
-          automationId: run.automationId,
-          runId: run.id,
-          conversationId: run.conversationId,
-          setupConversationId,
-          runStatus: run.status,
-          judgeState: run.judgeState,
-          planPhase: run.planPhase,
-          planArtifactId: run.planArtifactId,
-          prNumber: run.prNumber,
-          prUrl: run.prUrl,
-        });
-        return;
-      }
-      onOpenRunConversation?.(projectId, run.conversationId);
-    }
-  }, [
-    onOpenAutomationRun,
-    onOpenRunConversation,
-    projectId,
-    run.automationId,
-    run.conversationId,
-    run.id,
-    run.judgeState,
-    run.planArtifactId,
-    run.planPhase,
-    run.prNumber,
-    run.prUrl,
-    run.status,
-    setupConversationId,
-  ]);
-
-  return (
-    <div className="relative pl-6" data-testid={`automation-run-${run.id}`}>
-      <div
-        className="absolute left-0 top-1 h-3 w-3 rounded-full"
-        style={{
-          backgroundColor: highlight.markerColor,
-          borderColor: "var(--app-content-bg)",
-          borderStyle: "solid",
-          borderWidth: "2px",
-        }}
-        data-testid={`automation-run-${run.id}-marker`}
-      />
-      <div
-        className="rounded-md p-4"
-        style={{
-          backgroundColor: highlight.backgroundColor,
-          borderColor: highlight.borderColor,
-          borderStyle: "solid",
-          borderWidth: "1px",
-        }}
-        data-testid={`automation-run-${run.id}-card`}
-      >
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
-          className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
-        >
-          <AutomationRunStatusHeader
-            automation={automation}
-            run={run}
-            density="card"
-            activeGoalItem={activeGoalItem}
-            showPr={false}
-            phaseTestId={`automation-run-${run.id}-phase`}
-            testId={`automation-run-${run.id}-header`}
-          />
-          <span className="flex shrink-0 items-center gap-2">
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              {formatDate(run.updatedAt)}
-            </span>
-            {expanded ? (
-              <ChevronUp className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
-            ) : (
-              <ChevronDown className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
-            )}
-          </span>
-        </button>
-
-        {run.prUrl ? (
-          <div className="mt-2">
-            <AutomationRunPrLink
-              run={run}
-              testId={`automation-run-${run.id}-pr-link`}
-            />
-          </div>
-        ) : null}
-
-        {expanded && (
-          <div data-testid={`automation-run-${run.id}-body`}>
-        {failureReason && (
-          <div
-            className="mt-3 rounded-md px-3 py-2 text-sm font-medium"
-            style={{
-              backgroundColor: "var(--bg-hover)",
-              color: "var(--status-error)",
-            }}
-            data-testid={`automation-run-${run.id}-failure`}
-          >
-            {failureReason}
-          </div>
-        )}
-
-        <div className="mt-3 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Prompt author
-            </div>
-            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-              {PROMPT_AUTHOR_LABELS[run.promptAuthor]}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Base
-            </div>
-            <div className="mt-1 truncate" style={{ color: "var(--text-secondary)" }}>
-              {run.baseRefUsed || run.baseRefKind}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Conversation
-            </div>
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto p-0 text-sm"
-              disabled={!canOpenConversation}
-              onClick={openConversation}
-            >
-              {run.conversationId ? "Open conversation" : "Not started"}
-            </Button>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              PR
-            </div>
-            <div
-              className="mt-1"
-              style={{ color: "var(--text-secondary)" }}
-              data-testid={`automation-run-${run.id}-pr-state`}
-            >
-              {run.prNumber || run.prUrl
-                ? describeAutomationRunPrState(run)
-                : "Not published"}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Diff
-            </div>
-            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-              <DiffStats value={run.diffStatsJson} />
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Finished
-            </div>
-            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-              {formatDate(run.finishedAt)}
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 space-y-4">
-          <div>
-            <div className="mb-2 text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Run prompt
-            </div>
-            <ExpandableText text={run.runPrompt} />
-          </div>
-          <div>
-            <div className="mb-2 text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Agent summary
-            </div>
-            <ExpandableText text={run.agentSummary} maxLines={6} />
-          </div>
-        </div>
-        <JudgeVerdictCard run={run} />
-        {run.conversationId && (
-          <div className="mt-4">
-            <AutomationRunTaskLedger
-              conversationId={run.conversationId}
-              projectId={projectId}
-              runStatus={run.status}
-            />
-          </div>
-        )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-});
 
 function DetailLoading({ onBack }: { onBack: () => void }) {
   return (
@@ -1346,41 +899,66 @@ export function AutomationDetailView({
               inputs={<SourcePrInput automation={automation} />}
               config={(
                 <>
-                  <KeyValueList
-                    items={[
-                      ["Mode / model", formatMode(automation)],
-                      [
-                        "Setup conversation",
-                        automation.setupConversationId ? (
-                          <Button
-                            type="button"
-                            variant="link"
-                            className="h-auto gap-1 p-0 text-sm"
-                            disabled={!projectId || !onOpenRunConversation}
-                            onClick={handleEdit}
-                            data-testid="automation-setup-conversation-link"
-                          >
-                            Open setup conversation
-                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                          </Button>
-                        ) : (
-                          "Not recorded"
-                        ),
-                      ],
-                      ["Base", formatBase(automation)],
-                      ["Branch", <BranchConfigValue automation={automation} />],
-                      ["Chain mode", automation.chainMode],
-                      ["Completion signal", automation.completionSignal],
-                      ["Max runs", `${runs.length} / ${automation.maxRuns}`],
-                      ["Max failures", automation.maxConsecutiveFailures],
-                      ["Input tokens", formatNumber(usage.inputTokens)],
-                      ["Output tokens", formatNumber(usage.outputTokens)],
-                      ["Cache tokens", formatNumber(usage.cacheCreationTokens + usage.cacheReadTokens)],
-                      ["Estimated cost", formatEstimatedUsd(usage.estimatedUsd)],
-                      ["Created", formatDate(automation.createdAt)],
-                      ["Updated", formatDate(automation.updatedAt)],
-                    ]}
-                  />
+                  <div className="space-y-4">
+                    <ConfigGroup
+                      title="Execution"
+                      testId="automation-config-group-execution"
+                      items={[
+                        ["Mode / model", formatMode(automation)] as [string, ReactNode],
+                        [
+                          "Setup conversation",
+                          automation.setupConversationId ? (
+                            <Button
+                              type="button"
+                              variant="link"
+                              className="h-auto gap-1 p-0 text-sm"
+                              disabled={!projectId || !onOpenRunConversation}
+                              onClick={handleEdit}
+                              data-testid="automation-setup-conversation-link"
+                            >
+                              Open setup conversation
+                              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                            </Button>
+                          ) : (
+                            "Not recorded"
+                          ),
+                        ] as [string, ReactNode],
+                        ["Base", formatBase(automation)] as [string, ReactNode],
+                        ...(automation.baseRef.trim()
+                          ? [["Branch", <BranchConfigValue automation={automation} />] as [string, ReactNode]]
+                          : []),
+                        ["Chain mode", automation.chainMode] as [string, ReactNode],
+                        ["Completion signal", automation.completionSignal] as [string, ReactNode],
+                      ]}
+                    />
+                    <ConfigGroup
+                      title="Limits"
+                      testId="automation-config-group-limits"
+                      items={[
+                        ["Max runs", `${runs.length} / ${automation.maxRuns}`],
+                        ["Max failures", automation.maxConsecutiveFailures],
+                      ]}
+                    />
+                    <ConfigGroup
+                      title="Usage"
+                      testId="automation-config-group-usage"
+                      items={[
+                        ["Input tokens", formatNumber(usage.inputTokens)] as [string, ReactNode],
+                        ["Output tokens", formatNumber(usage.outputTokens)] as [string, ReactNode],
+                        ["Cache tokens", formatNumber(usage.cacheCreationTokens + usage.cacheReadTokens)] as [string, ReactNode],
+                        ...(usage.estimatedUsd !== null
+                          ? [["Estimated cost", formatEstimatedUsd(usage.estimatedUsd)] as [string, ReactNode]]
+                          : []),
+                      ]}
+                    />
+                    <p
+                      className="text-xs"
+                      style={{ color: "var(--text-muted)" }}
+                      data-testid="automation-config-timestamps"
+                    >
+                      Created {formatDate(automation.createdAt)} · Updated {formatDate(automation.updatedAt)}
+                    </p>
+                  </div>
                   {automation.pausedReasonCode && (
                     <div className="mt-4 rounded-md p-3 text-sm" style={{
                       backgroundColor: "var(--bg-hover)",

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { splitPersonaBody } from "@/lib/personaContent";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { Project } from "@/types/project";
@@ -193,6 +194,7 @@ describe("PersonasManagementSection", () => {
       selectedConversationId: null,
       startConversationDraft: null,
     });
+    useChatStore.setState({ activeConversationIds: {} });
   });
 
   it("filters archived personas from the list and renders the v1 limits copy", async () => {
@@ -294,6 +296,9 @@ describe("PersonasManagementSection", () => {
     mockPersonaCommands([activePersona]);
     useProjectStore.getState().setProjects([ralphxProject, atlasProject]);
     useProjectStore.getState().selectProject("project-atlas");
+    useChatStore
+      .getState()
+      .setActiveConversation("project:project-atlas", "previous-conversation");
     useUiStore.getState().openModal("settings", { section: "personas" });
     const sessionState = useAgentSessionStore.getState();
     const uiState = useUiStore.getState();
@@ -338,6 +343,9 @@ describe("PersonasManagementSection", () => {
       projectLocked: true,
       mode: "persona_builder",
     });
+    expect(
+      useChatStore.getState().activeConversationIds["project:project-atlas"],
+    ).toBeNull();
     expect(calls).toEqual(["draft", "close", "focus", "clear", "view"]);
     useAgentSessionStore.setState(originalSessionActions);
     useUiStore.setState(originalUiActions);
