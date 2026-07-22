@@ -765,7 +765,7 @@ describe("AgentsView start conversation", () => {
       expect(screen.getByRole("button", { name: "Choose persona" })).toBeInTheDocument(),
     );
     await userEvent.click(screen.getByRole("button", { name: "Choose persona" }));
-    await userEvent.click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }));
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "Review the current changes" },
     });
