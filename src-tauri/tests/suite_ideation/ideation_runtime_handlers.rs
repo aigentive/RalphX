@@ -373,7 +373,7 @@ async fn test_get_child_session_status_heartbeat_at_exact_threshold_is_likely_wa
     state
         .app_state
         .running_agent_registry
-        .update_heartbeat(&key, "test-run-boundary", at_boundary)
+        .update_heartbeat(&key, "test-run-3", at_boundary)
         .await
         .expect("matching agent run must accept heartbeat");
 
