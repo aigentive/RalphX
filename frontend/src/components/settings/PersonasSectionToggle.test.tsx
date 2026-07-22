@@ -30,6 +30,8 @@ vi.mock("@/hooks/usePersonas", () => ({
   useApprovePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useArchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePersonaDraft: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUnarchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePersonaUsage: () => ({ data: [], isLoading: false, isError: false }),
 }));
 
 function renderSection(flags: FeatureFlags) {

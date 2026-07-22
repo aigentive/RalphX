@@ -301,6 +301,19 @@ vi.mock("@/hooks/usePersonas", () => ({
   useArchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePersonaDraft: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSwitchConversationPersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePersonaOverlayPreview: () => ({
+    isPending: true,
+    isError: false,
+    data: undefined,
+    error: null,
+  }),
+  usePersonaUsage: () => ({ data: [], isLoading: false, isError: false }),
+  useUnarchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useReseedPersonaDraft: () => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+    error: null,
+  }),
 }));
 
 vi.mock("@/hooks/usePersonaDraftEvents", () => ({
@@ -522,7 +535,7 @@ describe("agent persona start retries", () => {
     );
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Choose persona" }));
-    await userEvent.setup().click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    await userEvent.setup().click(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }));
     await userEvent.setup().click(screen.getByRole("button", { name: "Start Agent" }));
 
     expect(await screen.findByTestId("persona-unavailable-notice")).toHaveTextContent(
