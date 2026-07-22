@@ -30,7 +30,15 @@ const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
 interface RunTimelineHighlight { backgroundColor: string; borderColor: string; markerColor: string }
 
 function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
-  // Status belongs to the pill and marker; every timeline card stays neutral.
+  // Merged runs are the success end-state: a green marker + soft success tint.
+  // Every other status stays neutral, with the pill and marker carrying state.
+  if (run.status === "merged") {
+    return {
+      backgroundColor: "var(--status-success-muted, rgba(63, 191, 127, 0.08))",
+      borderColor: "var(--status-success-border, rgba(63, 191, 127, 0.3))",
+      markerColor: "var(--status-success, #3fbf7f)",
+    };
+  }
   const isActive =
     isOpenAutomationRun(run) && run.status !== "cancelled" && !describeRunFailure(run);
   return {
