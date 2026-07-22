@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from "react";
+import { memo, type ReactNode, useCallback, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
 import type { Automation, AutomationRun } from "@/api/automations";
@@ -13,15 +13,10 @@ import { AutomationRunStatusHeader } from "@/components/automations/AutomationRu
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
-import {
-  ExpandableText,
-  formatDate,
-  numberField,
-  parseRecord,
-  Pill,
-  stringField,
-} from "./automationDetailShared";
+import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
+import { ExpandableText, Pill } from "./automationDetailShared";
 
 const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
   setup_agent: "Setup agent",
@@ -236,6 +231,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   setupConversationId: string | null;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const [promptOpen, setPromptOpen] = useState(false);
   const canOpenConversation = Boolean(
     projectId &&
       run.conversationId &&
@@ -243,6 +239,11 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   );
   const failureReason = describeRunFailure(run);
   const highlight = runTimelineHighlight(run);
+  // Boolean annotation defeats the `run is AutomationRun` type-guard aliasing,
+  // which would otherwise narrow `run` to `never` in the negated branch.
+  const runIsOpen: boolean = isOpenAutomationRun(run);
+  const summaryTeaser =
+    !expanded && !runIsOpen ? summaryTeaserLine(run.agentSummary) : null;
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       if (onOpenAutomationRun) {
@@ -338,11 +339,13 @@ export const RunTimelineItem = memo(function RunTimelineItem({
           </div>
         ) : null}
 
-        {expanded && (
-          <div data-testid={`automation-run-${run.id}-body`}>
+        {/* Tier 1: the failure reason stays visible even while collapsed. */}
         {failureReason && (
           <div
-            className="mt-3 rounded-md px-3 py-2 text-sm font-medium"
+            className={cn(
+              "mt-3 rounded-md px-3 py-2 text-sm font-medium",
+              !expanded && "truncate",
+            )}
             style={{
               backgroundColor: "var(--bg-hover)",
               color: "var(--status-error)",
@@ -353,93 +356,69 @@ export const RunTimelineItem = memo(function RunTimelineItem({
           </div>
         )}
 
-        <div className="mt-3 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Prompt author
-            </div>
-            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-              {PROMPT_AUTHOR_LABELS[run.promptAuthor]}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Base
-            </div>
-            <div className="mt-1 truncate" style={{ color: "var(--text-secondary)" }}>
-              {run.baseRefUsed || run.baseRefKind}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Conversation
-            </div>
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto p-0 text-sm"
-              disabled={!canOpenConversation}
-              onClick={openConversation}
-            >
-              {run.conversationId ? "Open conversation" : "Not started"}
-            </Button>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              PR
-            </div>
-            <div
-              className="mt-1"
-              style={{ color: "var(--text-secondary)" }}
-              data-testid={`automation-run-${run.id}-pr-state`}
-            >
-              {run.prNumber || run.prUrl
-                ? describeAutomationRunPrState(run)
-                : "Not published"}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Diff
-            </div>
-            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-              <DiffStats value={run.diffStatsJson} />
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Finished
-            </div>
-            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-              {formatDate(run.finishedAt)}
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 space-y-4">
-          <div>
-            <div className="mb-2 text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Run prompt
-            </div>
-            <ExpandableText text={run.runPrompt} />
-          </div>
-          <div>
-            <div className="mb-2 text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-              Agent summary
-            </div>
-            <ExpandableText text={run.agentSummary} maxLines={6} />
-          </div>
-        </div>
-        <JudgeVerdictCard run={run} />
-        {run.conversationId && (
-          <div className="mt-4">
-            <AutomationRunTaskLedger
-              conversationId={run.conversationId}
-              projectId={projectId}
-              runStatus={run.status}
-            />
-          </div>
+        {/* Tier 1: one-line outcome teaser so a collapsed run answers "what
+            happened?"; suppressed while the run is open (the status header
+            already narrates live progress). */}
+        {summaryTeaser && (
+          <p
+            className="mt-2 truncate text-sm"
+            style={{ color: "var(--text-muted)" }}
+            data-testid={`automation-run-${run.id}-summary-teaser`}
+          >
+            {summaryTeaser}
+          </p>
         )}
+
+        {expanded && (
+          <div data-testid={`automation-run-${run.id}-body`}>
+            {/* Tier 2: decision first, then the human-readable outcome, then
+                populated-only facts. */}
+            <JudgeVerdictCard run={run} />
+            {run.agentSummary?.trim() && (
+              <div className="mt-3" data-testid={`automation-run-${run.id}-summary`}>
+                <div className="mb-2 text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
+                  Agent summary
+                </div>
+                <ExpandableText text={run.agentSummary} maxLines={6} />
+              </div>
+            )}
+            <RunFactsRow
+              run={run}
+              canOpenConversation={canOpenConversation}
+              onOpenConversation={openConversation}
+            />
+            {run.conversationId && (
+              <div className="mt-4">
+                <AutomationRunTaskLedger
+                  conversationId={run.conversationId}
+                  projectId={projectId}
+                  runStatus={run.status}
+                />
+              </div>
+            )}
+            {/* Tier 3: reproducibility/debug data stays fully closed until
+                asked for — zero prompt lines render while the toggle is shut. */}
+            {run.runPrompt?.trim() && (
+              <div className="mt-3">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="gap-2"
+                  aria-expanded={promptOpen}
+                  onClick={() => setPromptOpen((value) => !value)}
+                  data-testid={`automation-run-${run.id}-prompt-toggle`}
+                >
+                  {promptOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  Run prompt
+                </Button>
+                {promptOpen && (
+                  <div className="mt-2">
+                    <ExpandableText text={run.runPrompt} />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

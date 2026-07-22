@@ -1733,7 +1733,7 @@ describe("AutomationDetailView", () => {
             id: "run-old-failed",
             runIndex: 1,
             status: "agent_failed",
-            judgeState: "failed",
+            judgeState: "done",
             errorCode: "publish_failed",
             errorDetail: "Publish step exited with code 1",
             agentSummary: "Attempted the migration but publish failed.",

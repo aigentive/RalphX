@@ -63,14 +63,8 @@ import {
   invalidateAutomationQueries,
   useAutomationDetail,
 } from "@/hooks/useAutomations";
-import {
-  ExpandableText,
-  formatDate,
-  numberField,
-  parseRecord,
-  Pill,
-  stringField,
-} from "./automationDetailShared";
+import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
+import { ExpandableText, Pill } from "./automationDetailShared";
 
 interface AutomationDetailViewProps {
   automationId: string;
@@ -216,6 +210,28 @@ function Section({
       </h2>
       <div className="mt-3">{children}</div>
     </section>
+  );
+}
+
+function ConfigGroup({
+  title,
+  items,
+  testId,
+}: {
+  title: string;
+  items: Array<[string, ReactNode]>;
+  testId: string;
+}) {
+  return (
+    <div data-testid={testId}>
+      <div
+        className="mb-2 text-xs font-semibold uppercase tracking-normal"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {title}
+      </div>
+      <KeyValueList items={items} />
+    </div>
   );
 }
 
@@ -883,41 +899,66 @@ export function AutomationDetailView({
               inputs={<SourcePrInput automation={automation} />}
               config={(
                 <>
-                  <KeyValueList
-                    items={[
-                      ["Mode / model", formatMode(automation)],
-                      [
-                        "Setup conversation",
-                        automation.setupConversationId ? (
-                          <Button
-                            type="button"
-                            variant="link"
-                            className="h-auto gap-1 p-0 text-sm"
-                            disabled={!projectId || !onOpenRunConversation}
-                            onClick={handleEdit}
-                            data-testid="automation-setup-conversation-link"
-                          >
-                            Open setup conversation
-                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                          </Button>
-                        ) : (
-                          "Not recorded"
-                        ),
-                      ],
-                      ["Base", formatBase(automation)],
-                      ["Branch", <BranchConfigValue automation={automation} />],
-                      ["Chain mode", automation.chainMode],
-                      ["Completion signal", automation.completionSignal],
-                      ["Max runs", `${runs.length} / ${automation.maxRuns}`],
-                      ["Max failures", automation.maxConsecutiveFailures],
-                      ["Input tokens", formatNumber(usage.inputTokens)],
-                      ["Output tokens", formatNumber(usage.outputTokens)],
-                      ["Cache tokens", formatNumber(usage.cacheCreationTokens + usage.cacheReadTokens)],
-                      ["Estimated cost", formatEstimatedUsd(usage.estimatedUsd)],
-                      ["Created", formatDate(automation.createdAt)],
-                      ["Updated", formatDate(automation.updatedAt)],
-                    ]}
-                  />
+                  <div className="space-y-4">
+                    <ConfigGroup
+                      title="Execution"
+                      testId="automation-config-group-execution"
+                      items={[
+                        ["Mode / model", formatMode(automation)] as [string, ReactNode],
+                        [
+                          "Setup conversation",
+                          automation.setupConversationId ? (
+                            <Button
+                              type="button"
+                              variant="link"
+                              className="h-auto gap-1 p-0 text-sm"
+                              disabled={!projectId || !onOpenRunConversation}
+                              onClick={handleEdit}
+                              data-testid="automation-setup-conversation-link"
+                            >
+                              Open setup conversation
+                              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                            </Button>
+                          ) : (
+                            "Not recorded"
+                          ),
+                        ] as [string, ReactNode],
+                        ["Base", formatBase(automation)] as [string, ReactNode],
+                        ...(automation.baseRef.trim()
+                          ? [["Branch", <BranchConfigValue automation={automation} />] as [string, ReactNode]]
+                          : []),
+                        ["Chain mode", automation.chainMode] as [string, ReactNode],
+                        ["Completion signal", automation.completionSignal] as [string, ReactNode],
+                      ]}
+                    />
+                    <ConfigGroup
+                      title="Limits"
+                      testId="automation-config-group-limits"
+                      items={[
+                        ["Max runs", `${runs.length} / ${automation.maxRuns}`],
+                        ["Max failures", automation.maxConsecutiveFailures],
+                      ]}
+                    />
+                    <ConfigGroup
+                      title="Usage"
+                      testId="automation-config-group-usage"
+                      items={[
+                        ["Input tokens", formatNumber(usage.inputTokens)] as [string, ReactNode],
+                        ["Output tokens", formatNumber(usage.outputTokens)] as [string, ReactNode],
+                        ["Cache tokens", formatNumber(usage.cacheCreationTokens + usage.cacheReadTokens)] as [string, ReactNode],
+                        ...(usage.estimatedUsd !== null
+                          ? [["Estimated cost", formatEstimatedUsd(usage.estimatedUsd)] as [string, ReactNode]]
+                          : []),
+                      ]}
+                    />
+                    <p
+                      className="text-xs"
+                      style={{ color: "var(--text-muted)" }}
+                      data-testid="automation-config-timestamps"
+                    >
+                      Created {formatDate(automation.createdAt)} · Updated {formatDate(automation.updatedAt)}
+                    </p>
+                  </div>
                   {automation.pausedReasonCode && (
                     <div className="mt-4 rounded-md p-3 text-sm" style={{
                       backgroundColor: "var(--bg-hover)",
