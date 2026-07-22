@@ -707,7 +707,7 @@ describe("AgentsChatHeader", () => {
         "Usage totals are pending until the provider reports the current turn.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Pending")).toHaveLength(4);
+    expect(screen.getAllByText("Pending")).toHaveLength(5);
 
     await user.keyboard("{Escape}");
     await waitFor(() => {
