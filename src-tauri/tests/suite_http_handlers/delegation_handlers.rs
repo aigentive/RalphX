@@ -109,7 +109,7 @@ if [ -n "$RALPHX_TEST_CODEX_CWD_PATH" ]; then
 fi
 printf '%s\n' '{"type":"thread.started","thread_id":"delegation-thread-1"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"MOCK_COMPLETION"}}'
-printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7},"last_token_usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}}'
 exit 0
 fi
 
