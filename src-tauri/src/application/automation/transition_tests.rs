@@ -113,6 +113,7 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
         base_ref_kind: "project_default".to_string(),
         base_ref_used: String::new(),
         base_from_run_id: None,
+        goal_item_id: None,
         branch_name: None,
         pr_number: None,
         pr_url: None,

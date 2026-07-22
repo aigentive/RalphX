@@ -484,6 +484,19 @@ pub fn apply_updated_item_statuses(
         .map_err(|error| AppError::Validation(format!("failed to serialize goal items: {error}")))
 }
 
+/// Resolves the goal item a newly created run will advance: the first goal
+/// item that is neither `done` nor `skipped` (the same item forward-fill marks
+/// `in_progress` once the run starts). Fails soft — invalid or absent
+/// `goal_items_json` yields `None` so run creation never blocks on display
+/// metadata (mirrors `goal_item_stats`).
+pub(crate) fn current_goal_item_id(goal_items_json: Option<&str>) -> Option<String> {
+    let goal_items_json = goal_items_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let value = serde_json::from_str::<Value>(goal_items_json).ok()?;
+    find_current_goal_item(&value).map(|current| current.id)
+}
+
 pub(crate) fn mark_current_goal_item_in_progress(
     goal_items_json: Option<&str>,
 ) -> AppResult<Option<String>> {

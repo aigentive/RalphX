@@ -235,6 +235,7 @@ async fn automation_bridge_finalize_authority_requires_current_verified_run_and_
             base_ref_kind: "project_default".to_string(),
             base_ref_used: "main".to_string(),
             base_from_run_id: None,
+            goal_item_id: None,
             branch_name: Some("ralphx/automation-bridge".to_string()),
             pr_number: None,
             pr_url: None,

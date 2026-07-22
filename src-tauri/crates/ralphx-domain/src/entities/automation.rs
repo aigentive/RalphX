@@ -363,6 +363,10 @@ pub struct AutomationRun {
     pub base_ref_kind: String,
     pub base_ref_used: String,
     pub base_from_run_id: Option<AutomationRunId>,
+    /// Goal item this run was created to advance. Stamped once at run creation
+    /// by the scheduler; never rewritten by judge or recovery paths. `None` for
+    /// phase-less automations and pre-migration history.
+    pub goal_item_id: Option<String>,
     pub branch_name: Option<String>,
     pub pr_number: Option<i64>,
     pub pr_url: Option<String>,

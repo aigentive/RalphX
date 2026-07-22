@@ -12,10 +12,10 @@ use crate::application::automation::decomposition_verifier::{
     AutomationDecompositionInput, AutomationGoalReplanState, AutomationGoalReplanStatus,
 };
 use crate::application::automation::judge::{
-    apply_updated_item_statuses, automation_judge_loop_suspected, goal_items_proposal_json,
-    parse_automation_judge_verdict, revert_in_progress_goal_items_to_pending,
-    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
-    AutomationJudgeVerdict,
+    apply_updated_item_statuses, automation_judge_loop_suspected, current_goal_item_id,
+    goal_items_proposal_json, parse_automation_judge_verdict,
+    revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
+    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
 };
 use crate::application::automation::plan_gate::{
     is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,
@@ -953,6 +953,7 @@ impl AutomationService {
                     AutomationPromptAuthor::SkipJudgeTemplate,
                     base_ref_kind,
                     base_ref_used,
+                    current_goal_item_id(automation.goal_items_json.as_deref()),
                 );
                 match self
                     .run_repo
@@ -1487,6 +1488,7 @@ impl AutomationService {
             base_ref_kind: input.base_ref_kind,
             base_ref_used: input.base_ref_used,
             base_from_run_id: input.base_from_run_id,
+            goal_item_id: current_goal_item_id(automation.goal_items_json.as_deref()),
             branch_name: None,
             pr_number: None,
             pr_url: None,
@@ -1901,6 +1903,9 @@ impl AutomationService {
                     .await?;
                 }
 
+                // Stamp from the post-verdict goal items: the judge just marked
+                // finished items done, so the current item is the one this
+                // successor run will advance.
                 let successor = pending_successor_run(
                     automation.id.clone(),
                     &latest,
@@ -1909,6 +1914,7 @@ impl AutomationService {
                     AutomationPromptAuthor::Judge,
                     base_ref_kind,
                     base_ref_used,
+                    current_goal_item_id(applied_goal_items.as_deref()),
                 );
                 match self
                     .create_judge_successor_run(&automation, &latest, successor)
@@ -2362,6 +2368,7 @@ fn pending_successor_run(
     prompt_author: AutomationPromptAuthor,
     base_ref_kind: String,
     base_ref_used: String,
+    goal_item_id: Option<String>,
 ) -> AutomationRun {
     let now = Utc::now();
     AutomationRun {
@@ -2385,6 +2392,7 @@ fn pending_successor_run(
         base_ref_kind,
         base_ref_used,
         base_from_run_id: Some(previous_run.id.clone()),
+        goal_item_id,
         branch_name: None,
         pr_number: None,
         pr_url: None,

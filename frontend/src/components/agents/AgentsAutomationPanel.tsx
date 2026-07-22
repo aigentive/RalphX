@@ -240,6 +240,8 @@ function runStatusToneClass(tone: AutomationRunStatusTone): string {
       return "text-[var(--status-warning)]";
     case "error":
       return "text-[var(--status-error)]";
+    case "accent":
+      return "text-[var(--accent-primary)]";
     case "neutral":
       return "text-[var(--text-secondary)]";
   }
