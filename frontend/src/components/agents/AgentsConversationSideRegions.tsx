@@ -13,6 +13,7 @@ import type { AgentConversation } from "./agentConversations";
 import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
@@ -42,6 +43,7 @@ interface AgentsConversationSideRegionsProps {
   > | null;
   panelDockElement: HTMLDivElement | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
+  publishSubTabRequest: AgentPublishSubTabRequest | null;
   publishingConversationId: string | null;
   selectedConversationId: string | null;
   setArtifactPaneVisibility: (conversationId: string, isOpen: boolean) => void;
@@ -99,6 +101,7 @@ export function AgentsConversationSideRegions({
   automationRunFocusTarget,
   panelDockElement,
   publishFocusRequest,
+  publishSubTabRequest,
   publishingConversationId,
   selectedConversationId,
   setArtifactPaneVisibility,
@@ -153,6 +156,7 @@ export function AgentsConversationSideRegions({
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={publishingConversationId === selectedConversationId}
           publishFocusRequest={publishFocusRequest}
+          publishSubTabRequest={publishSubTabRequest}
           taskFocusRequest={taskArtifactFocusRequest}
           onConversationModeSwitched={onConversationModeSwitched}
           onFocusIdeationSessionForConversation={

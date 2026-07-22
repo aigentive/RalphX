@@ -100,6 +100,7 @@ interface AgentReviewPanelProps {
   isApproveAnywayActionPending?: boolean;
   isWorkspaceRuntimeGenerating?: boolean;
   isPublishingWorkspace?: boolean;
+  embedded?: boolean;
   onOpenPublish?: () => void;
   onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
@@ -356,6 +357,7 @@ export function AgentReviewPanel({
   isApproveAnywayActionPending = false,
   isWorkspaceRuntimeGenerating = false,
   isPublishingWorkspace = false,
+  embedded = false,
   onOpenPublish,
   onViewTranscript,
   onStartReview,
@@ -687,7 +689,7 @@ export function AgentReviewPanel({
 
   if (!displayContext && reviewArtifact && !isReviewPrWorkspace) {
     return (
-      <div className="min-h-full px-4 pb-4 pt-4">
+      <div className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}>
         <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
           <LazyPlanDisplay
             plan={reviewArtifact}
@@ -703,7 +705,11 @@ export function AgentReviewPanel({
   }
 
   return (
-    <div className="min-h-full px-4 pb-4 pt-4">
+    <div
+      className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}
+      data-embedded={embedded ? "true" : undefined}
+      data-testid="agents-review-panel"
+    >
       <div
         className="mb-4 rounded-md p-4"
         style={{

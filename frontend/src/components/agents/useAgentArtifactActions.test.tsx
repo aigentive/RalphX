@@ -6,11 +6,13 @@ import { useAgentArtifactActions } from "./useAgentArtifactActions";
 describe("useAgentArtifactActions", () => {
   it("selects the Plan tab without treating it as a pane close toggle", () => {
     const openArtifactTab = vi.fn();
+    const onPublishSubTabRequest = vi.fn();
     const scheduleArtifactPanePreload = vi.fn();
 
     const { result } = renderHook(() =>
       useAgentArtifactActions({
         openArtifactTab,
+        onPublishSubTabRequest,
         scheduleArtifactPanePreload,
         selectedConversationId: "conversation-1",
       }),
@@ -25,11 +27,13 @@ describe("useAgentArtifactActions", () => {
 
   it("does nothing when no conversation is selected", () => {
     const openArtifactTab = vi.fn();
+    const onPublishSubTabRequest = vi.fn();
     const scheduleArtifactPanePreload = vi.fn();
 
     const { result } = renderHook(() =>
       useAgentArtifactActions({
         openArtifactTab,
+        onPublishSubTabRequest,
         scheduleArtifactPanePreload,
         selectedConversationId: null,
       }),
@@ -40,5 +44,30 @@ describe("useAgentArtifactActions", () => {
     });
 
     expect(openArtifactTab).not.toHaveBeenCalled();
+    expect(onPublishSubTabRequest).not.toHaveBeenCalled();
+  });
+
+  it("opens Commit & Publish with an explicit internal destination", () => {
+    const openArtifactTab = vi.fn();
+    const onPublishSubTabRequest = vi.fn();
+
+    const { result } = renderHook(() =>
+      useAgentArtifactActions({
+        onPublishSubTabRequest,
+        openArtifactTab,
+        scheduleArtifactPanePreload: vi.fn(),
+        selectedConversationId: "conversation-1",
+      }),
+    );
+
+    act(() => {
+      result.current.handleOpenPublishPane("review");
+    });
+
+    expect(onPublishSubTabRequest).toHaveBeenCalledWith(
+      "conversation-1",
+      "review",
+    );
+    expect(openArtifactTab).toHaveBeenCalledWith("conversation-1", "publish");
   });
 });

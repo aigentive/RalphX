@@ -81,6 +81,10 @@ import {
 } from "./agentConversations";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type {
+  AgentPublishSubTab,
+  AgentPublishSubTabRequest,
+} from "./agentPublishSubTab";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   getAgentChatFocusSwitchOptions,
@@ -209,6 +213,18 @@ export function useAgentsViewController({
   );
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
+  const [publishSubTabRequest, setPublishSubTabRequest] =
+    useState<AgentPublishSubTabRequest | null>(null);
+  const requestPublishSubTab = useCallback(
+    (conversationId: string, tab: AgentPublishSubTab) => {
+      setPublishSubTabRequest((current) => ({
+        conversationId,
+        requestId: (current?.requestId ?? 0) + 1,
+        tab,
+      }));
+    },
+    [],
+  );
   const [taskArtifactFocusRequest, setTaskArtifactFocusRequest] =
     useState<AgentTaskArtifactFocusRequest | null>(null);
   const [selectedTaskArtifactId, setSelectedTaskArtifactId] =
@@ -1174,7 +1190,8 @@ export function useAgentsViewController({
             conversationId === workspaceReviewConversationId &&
             conversationId === selectedConversationId
           ) {
-            openArtifactTab(conversationId, "review");
+            requestPublishSubTab(conversationId, "review");
+            openArtifactTab(conversationId, "publish");
           }
         },
       );
@@ -1194,6 +1211,7 @@ export function useAgentsViewController({
     eventBus,
     openArtifactTab,
     queryClient,
+    requestPublishSubTab,
     selectedConversationId,
     workspaceReviewConversationId,
   ]);
@@ -1353,6 +1371,7 @@ export function useAgentsViewController({
     handlePreloadArtifacts,
     handleSelectArtifact,
   } = useAgentArtifactActions({
+    onPublishSubTabRequest: requestPublishSubTab,
     openArtifactTab,
     scheduleArtifactPanePreload,
     selectedConversationId,
@@ -1434,12 +1453,14 @@ export function useAgentsViewController({
         mode,
         requestId: (current?.requestId ?? 0) + 1,
       }));
+      requestPublishSubTab(selectedConversationId, "changes");
       openArtifactTab(selectedConversationId, "publish");
     },
     [
       handleReturnToWorkspaceChat,
       isWorkspaceReviewRunning,
       openArtifactTab,
+      requestPublishSubTab,
       selectedConversationId,
     ],
   );
@@ -1458,9 +1479,18 @@ export function useAgentsViewController({
       if (tab !== "review" && !isWorkspaceReviewRunning) {
         handleReturnToWorkspaceChat();
       }
+      if (tab === "publish") {
+        handleOpenPublishPane();
+        return;
+      }
       handleSelectArtifact(tab);
     },
-    [handleReturnToWorkspaceChat, handleSelectArtifact, isWorkspaceReviewRunning],
+    [
+      handleOpenPublishPane,
+      handleReturnToWorkspaceChat,
+      handleSelectArtifact,
+      isWorkspaceReviewRunning,
+    ],
   );
 
   const handleAgentUserMessageAutoTitle = useAgentUserMessageAutoTitle({
@@ -1653,6 +1683,7 @@ export function useAgentsViewController({
       automationRunFocusTarget,
       panelDockElement: terminalPanelDockElement,
       publishFocusRequest,
+      publishSubTabRequest,
       publishingConversationId,
       selectedConversationId,
       setArtifactPaneVisibility,

@@ -328,7 +328,7 @@ describe("AgentsView artifact pane", () => {
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
   });
 
-  it("opens the Review tab when a workspace Review artifact is created", async () => {
+  it("keeps Commit & Publish selected when a Workspace Review artifact is created", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
     resetAgentSessionState({
@@ -362,7 +362,7 @@ describe("AgentsView artifact pane", () => {
     await waitFor(() =>
       expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
         "data-active-tab",
-        "review",
+        "publish",
       ),
     );
   });

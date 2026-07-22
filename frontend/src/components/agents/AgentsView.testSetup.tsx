@@ -1116,6 +1116,9 @@ vi.mock("./AgentsArtifactPane", async () => {
           reviewContext={
             realPublishPanelState.reviewContext as AgentWorkspaceReviewContext | null
           }
+          activeSubTab="changes"
+          onSubTabChange={() => {}}
+          reviewContent={null}
         />
       </div>
     ) : (
