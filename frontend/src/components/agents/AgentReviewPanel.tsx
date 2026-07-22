@@ -506,6 +506,7 @@ export function AgentReviewPanel({
     if (!action) return null;
     const isActionDisabled = actionDisabledReason !== null;
     const shouldPromotePublish =
+      !embedded &&
       action.label === "Run again" &&
       Boolean(onOpenPublish) &&
       Boolean(displayContext?.reviewArtifactIsCurrent) &&
@@ -639,15 +640,22 @@ export function AgentReviewPanel({
         </div>
       );
     }
+    const isEmbeddedRerun =
+      embedded && action.kind === "review" && action.label === "Run again";
     const button = (
       <Button
         type="button"
+        variant={isEmbeddedRerun ? "outline" : "default"}
         size="sm"
         onClick={() =>
           action.kind === "fix" ? onFixIssues() : onStartReview(action.force)
         }
         disabled={isActionDisabled}
-        className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+        className={
+          isEmbeddedRerun
+            ? "h-8 gap-1.5"
+            : "h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+        }
       >
         <ActionIcon className={`h-4 w-4 ${actionIconClassName}`} />
         {action.label}
@@ -672,6 +680,7 @@ export function AgentReviewPanel({
     canApproveAnyway,
     confirm,
     displayContext,
+    embedded,
     isApproveAnywayActionPending,
     isFixerActive,
     isReviewActionPending,

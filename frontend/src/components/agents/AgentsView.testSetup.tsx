@@ -1120,7 +1120,7 @@ vi.mock("./AgentsArtifactPane", async () => {
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
         data-publish-sub-tab={
           publishSubTabRequest?.conversationId === conversation?.id
-            ? publishSubTabRequest.tab
+            ? (publishSubTabRequest?.tab ?? "changes")
             : "changes"
         }
         data-automation-id={conversation?.automationId ?? ""}
@@ -1137,9 +1137,10 @@ vi.mock("./AgentsArtifactPane", async () => {
           }
           activeSubTab={
             publishSubTabRequest?.conversationId === conversation?.id
-              ? publishSubTabRequest.tab
+              ? (publishSubTabRequest?.tab ?? "changes")
               : "changes"
           }
+          showReviewTab
           onSubTabChange={() => {}}
           reviewContent={null}
         />
@@ -1153,7 +1154,7 @@ vi.mock("./AgentsArtifactPane", async () => {
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
         data-publish-sub-tab={
           publishSubTabRequest?.conversationId === conversation?.id
-            ? publishSubTabRequest.tab
+            ? (publishSubTabRequest?.tab ?? "changes")
             : "changes"
         }
         data-automation-id={conversation?.automationId ?? ""}

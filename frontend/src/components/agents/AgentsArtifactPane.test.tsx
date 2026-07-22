@@ -1439,6 +1439,7 @@ function renderPublishPanelForWorkspaceRerender(
             isPublishingWorkspace={false}
             reviewContext={reviewContext}
             activeSubTab="changes"
+            showReviewTab
             onSubTabChange={() => {}}
             reviewContent={null}
           />
@@ -3260,6 +3261,7 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByTestId("agents-publish-tab-review"),
     ).not.toBeInTheDocument();
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
     expect(
       screen.queryByTestId("agents-artifact-tab-pr"),
     ).not.toBeInTheDocument();
@@ -3283,6 +3285,7 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByTestId("agents-publish-tab-review"),
     ).not.toBeInTheDocument();
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
   });
 
   it("renders PR and publish tabs for PR-backed plan workspaces", () => {
@@ -3325,6 +3328,51 @@ describe("AgentsArtifactPane", () => {
       screen.queryByTestId("agents-artifact-tab-review"),
     ).not.toBeInTheDocument();
     expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
+  });
+
+  it("returns to Changes when the current workspace becomes ineligible for Review", async () => {
+    const queryClient = createTestQueryClient();
+    const pane = (mode: "edit" | "plan") => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={conversation()}
+              workspace={workspace({ mode })}
+              activeTab="publish"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={vi.fn()}
+              isPublishingWorkspace={false}
+              onClose={() => {}}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+    const result = render(pane("edit"));
+
+    fireEvent.mouseDown(await screen.findByTestId("agents-publish-tab-review"), {
+      button: 0,
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-tab-review")).toHaveAttribute(
+        "data-state",
+        "active",
+      ),
+    );
+
+    result.rerender(pane("plan"));
+
+    expect(
+      screen.queryByTestId("agents-publish-tab-review"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-tab-changes")).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(screen.getByTestId("agents-publish-content-changes")).toBeVisible();
   });
 
   it("shows the PR artifact tab for DB-backed workspace pull requests", async () => {
@@ -3558,6 +3606,7 @@ describe("AgentsArtifactPane", () => {
       );
       await context.promise;
     });
+    await screen.findByText("Review not run");
 
     expect(screen.getByTestId("agents-publish-tab-changes")).toHaveAttribute(
       "data-state",
@@ -3980,6 +4029,11 @@ describe("AgentsArtifactPane", () => {
     expect(
       await screen.findByText(
         "could not disable GitHub auto-merge before workspace Review",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agents-publish-tab-review")).getByText(
+        "Failed",
       ),
     ).toBeInTheDocument();
   });
@@ -4480,11 +4534,6 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByTestId("agents-artifact-tab-review"),
     ).not.toBeInTheDocument();
-    expect(
-      within(screen.getByTestId("agents-publish-tab-review")).getByText(
-        "Failed",
-      ),
-    ).toBeInTheDocument();
     expect(screen.queryByText("Reviewing")).not.toBeInTheDocument();
   });
 
@@ -4597,11 +4646,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(await screen.findByText("Review passed")).toBeInTheDocument();
-    fireEvent.pointerDown(screen.getByTestId("agents-review-actions-menu"), {
-      button: 0,
-      ctrlKey: false,
-    });
-    fireEvent.click(screen.getByTestId("agents-review-rerun"));
+    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
 
     await waitFor(() =>
       expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
@@ -4669,7 +4714,11 @@ describe("AgentsArtifactPane", () => {
       });
       await act(async () => {});
 
-      expect(screen.getByText("Reviewing")).toBeInTheDocument();
+      expect(
+        within(screen.getByTestId("agents-publish-content-review")).getByText(
+          "Reviewing",
+        ),
+      ).toBeInTheDocument();
       expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(1);
 
       await act(async () => {

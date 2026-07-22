@@ -384,7 +384,7 @@ describe("AgentsView artifact pane", () => {
       selectedConversationId: "conversation-1",
       artifactByConversationId: {
         "conversation-1": {
-          isOpen: false,
+          isOpen: true,
           activeTab: "publish",
           taskMode: "graph",
         },
@@ -393,11 +393,15 @@ describe("AgentsView artifact pane", () => {
 
     renderAgentsView();
 
+    await screen.findByTestId("agents-artifact-pane");
+    fireEvent.click(screen.getByLabelText("Close panel"));
     await waitFor(() =>
-      expect(getWorkspaceReviewContextMock).toHaveBeenCalled(),
+      expect(
+        screen.queryByTestId("agents-artifact-pane"),
+      ).not.toBeInTheDocument(),
     );
     expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
-    expect(screen.getByTestId("agents-publish-workspace")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-publish-workspace")).toBeInTheDocument();
   });
 
   it("does not query or open Workspace Review for a PLAN workspace", async () => {

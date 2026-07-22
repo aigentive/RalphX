@@ -254,6 +254,7 @@ export function AgentPublishPanel({
   reviewContext,
   onOpenReview,
   activeSubTab,
+  showReviewTab,
   onSubTabChange,
   reviewContent,
   reviewTabStatusColor,
@@ -269,6 +270,7 @@ export function AgentPublishPanel({
   reviewContext?: AgentWorkspaceReviewContext | null;
   onOpenReview?: () => void;
   activeSubTab: AgentPublishSubTab;
+  showReviewTab: boolean;
   onSubTabChange: (tab: AgentPublishSubTab) => void;
   reviewContent: ReactNode;
   reviewTabStatusColor?: string | null;
@@ -774,19 +776,22 @@ export function AgentPublishPanel({
   const workspaceReviewRequired =
     reviewSettingsQuery.data?.require_workspace_review ?? true;
   const reviewGateStatus = reviewContext?.monitor.reviewGateStatus ?? null;
+  const reviewIsRunning = Boolean(
+    isReviewTabRunning || reviewGateStatus === "reviewing",
+  );
   const autoMergeGuardSummary =
     workspaceReviewAutoMergeGuardSummary(reviewContext);
   const reviewBlocksPublish =
     workspaceReviewRequired &&
-    (reviewGateStatus === "required" ||
-      reviewGateStatus === "reviewing" ||
+    (reviewIsRunning ||
+      reviewGateStatus === "required" ||
       reviewGateStatus === "blocking" ||
       reviewGateStatus === "failed");
   const reviewGateSummary = (() => {
     if (!workspaceReviewRequired) {
       return null;
     }
-    if (reviewGateStatus === "reviewing") {
+    if (reviewIsRunning) {
       return "Workspace Review is running. Open the Review tab to inspect it before publishing.";
     }
     if (reviewGateStatus === "blocking") {
@@ -837,7 +842,7 @@ export function AgentPublishPanel({
   const publishButtonLabel = (() => {
     if (terminalPublicationLabel) return terminalPublicationLabel;
     if (isManagedByTaskPipeline) return "Managed by Tasks";
-    if (reviewBlocksPublish && reviewGateStatus === "reviewing") return "Reviewing";
+    if (reviewBlocksPublish && reviewIsRunning) return "Reviewing";
     if (reviewBlocksPublish && reviewGateStatus === "required") return "Review required";
     if (reviewBlocksPublish && reviewGateStatus === "blocking") return "Review blocking";
     if (reviewBlocksPublish && reviewGateStatus === "failed") return "Review failed";
@@ -1304,12 +1309,12 @@ export function AgentPublishPanel({
                   onClick={onOpenReview}
                   disabled={!onOpenReview}
                   data-testid={
-                    reviewGateStatus === "reviewing"
+                    reviewIsRunning
                       ? "agents-publish-reviewing"
                       : "agents-publish-review-required"
                   }
                 >
-                  {reviewGateStatus === "reviewing" ? (
+                  {reviewIsRunning ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <AlertTriangle className="h-3.5 w-3.5" />
@@ -1400,37 +1405,43 @@ export function AgentPublishPanel({
                 </span>
               )}
             </TabsTrigger>
-            <TabsTrigger
-              value="review"
-              className="relative h-full gap-2 rounded-none border-0 bg-transparent px-1 text-xs font-medium text-[var(--text-muted)] shadow-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--accent-primary)] after:transition-transform focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-0 data-[state=active]:bg-transparent data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none data-[state=active]:after:scale-x-100"
-              data-testid="agents-publish-tab-review"
-            >
-              <ShieldCheck
-                className={isReviewTabRunning ? "h-3.5 w-3.5 animate-pulse" : "h-3.5 w-3.5"}
-                style={
-                  reviewTabStatusColor
-                    ? { color: reviewTabStatusColor }
-                    : undefined
-                }
-                aria-hidden="true"
-              />
-              <span>Review</span>
-              {reviewTabStatusLabel && (
-                <span
-                  className="rounded-full border px-1.5 py-0.5 text-[0.625rem] font-semibold"
-                  style={{
-                    backgroundColor: "var(--bg-elevated)",
-                    borderColor:
-                      reviewTabStatusColor ?? "var(--border-subtle)",
-                    borderStyle: "solid",
-                    borderWidth: 1,
-                    color: reviewTabStatusColor ?? "var(--text-secondary)",
-                  }}
-                >
-                  {reviewTabStatusLabel}
-                </span>
-              )}
-            </TabsTrigger>
+            {showReviewTab && (
+              <TabsTrigger
+                value="review"
+                className="relative h-full gap-2 rounded-none border-0 bg-transparent px-1 text-xs font-medium text-[var(--text-muted)] shadow-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--accent-primary)] after:transition-transform focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-0 data-[state=active]:bg-transparent data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none data-[state=active]:after:scale-x-100"
+                data-testid="agents-publish-tab-review"
+              >
+                <ShieldCheck
+                  className={
+                    isReviewTabRunning
+                      ? "h-3.5 w-3.5 animate-pulse"
+                      : "h-3.5 w-3.5"
+                  }
+                  style={
+                    reviewTabStatusColor
+                      ? { color: reviewTabStatusColor }
+                      : undefined
+                  }
+                  aria-hidden="true"
+                />
+                <span>Review</span>
+                {reviewTabStatusLabel && (
+                  <span
+                    className="rounded-full border px-1.5 py-0.5 text-[0.625rem] font-semibold"
+                    style={{
+                      backgroundColor: "var(--bg-elevated)",
+                      borderColor:
+                        reviewTabStatusColor ?? "var(--border-subtle)",
+                      borderStyle: "solid",
+                      borderWidth: 1,
+                      color: reviewTabStatusColor ?? "var(--text-secondary)",
+                    }}
+                  >
+                    {reviewTabStatusLabel}
+                  </span>
+                )}
+              </TabsTrigger>
+            )}
           </TabsList>
           {shouldShowPrSupervisionControls && (
             <div
@@ -1720,7 +1731,7 @@ export function AgentPublishPanel({
         />
           </TabsContent>
         )}
-        {mountedSubTabsForConversation.review && (
+        {showReviewTab && mountedSubTabsForConversation.review && (
           <TabsContent
             value="review"
             forceMount

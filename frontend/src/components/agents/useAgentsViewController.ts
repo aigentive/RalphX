@@ -733,8 +733,9 @@ export function useAgentsViewController({
     hasCurrentPassedWorkspaceReview(workspaceReviewContext);
   const workspaceReviewArtifactId =
     workspaceReviewContext?.monitor.reviewArtifactId ?? null;
-  const reviewArtifactId =
-    workspaceReviewArtifactId ?? prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const prReviewArtifactId = prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const reviewArtifactId = workspaceReviewArtifactId ?? prReviewArtifactId;
+  const shouldShowPrReviewTab = Boolean(prReviewContext || prReviewArtifactId);
   const shouldShowWorkspaceReviewTab = Boolean(
     workspaceReviewContext?.shouldShowTab || workspaceReviewArtifactId,
   );
@@ -745,10 +746,10 @@ export function useAgentsViewController({
       !availableArtifactTabs.includes("issues")
         ? (["issues", ...availableArtifactTabs] as IdeationArtifactTab[])
         : availableArtifactTabs;
-    if (
-      (!reviewArtifactId && !shouldShowWorkspaceReviewTab) ||
-      tabs.includes("review")
-    ) {
+    if (!shouldShowPrReviewTab) {
+      return tabs.filter((tab) => tab !== "review");
+    }
+    if (tabs.includes("review")) {
       return tabs;
     }
     return [...tabs, "review"];
@@ -756,8 +757,7 @@ export function useAgentsViewController({
     activeConversation?.contextType,
     availableArtifactTabs,
     hasActiveConversationIssues,
-    reviewArtifactId,
-    shouldShowWorkspaceReviewTab,
+    shouldShowPrReviewTab,
   ]);
   const hasAutomationArtifact =
     activeConversation?.agentMode === "automation" &&

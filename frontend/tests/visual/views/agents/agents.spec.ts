@@ -1552,8 +1552,10 @@ test.describe("Agents View", () => {
     await selectAgentConversation(page, editConversationId);
     const publishPage = new AgentsPublishPage(page);
 
+    await publishPage.installPagedDiffRoute();
     await publishPage.openFromHeader();
     await publishPage.selectChanges();
+    await publishPage.expectDiffRowsLoaded();
     await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
     await publishPage.expectPrimaryActionContained("agents-publish-confirm");
     await expectPublishVisualAtWidths(
@@ -1593,6 +1595,14 @@ test.describe("Agents View", () => {
               : "Workspace Review",
           }),
         ).toBeVisible();
+      }
+      if (reviewState === "passed") {
+        await expect(
+          publishPage.reviewContent.getByRole("button", { name: "Run again" }),
+        ).toBeVisible();
+        await expect(
+          publishPage.reviewContent.getByTestId("agents-review-open-publish"),
+        ).toHaveCount(0);
       }
       await expectPublishVisualAtWidths(
         page,
