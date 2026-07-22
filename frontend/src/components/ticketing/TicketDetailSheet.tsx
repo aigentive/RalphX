@@ -230,7 +230,8 @@ export function TicketDetailSheet({
     () => sortCommentsByCreatedAt(visibleComments),
     [visibleComments],
   );
-  const newCommentCount = countNewComments(sortedComments, seenUntil ?? null);
+  const seenUntilValue = seenUntil ?? null;
+  const newCommentCount = countNewComments(sortedComments, seenUntilValue);
 
   useEffect(() => {
     setLocalComments([]);
@@ -657,7 +658,7 @@ export function TicketDetailSheet({
                   ticket={ticket}
                   comments={visibleComments}
                   isDetailLoading={isDetailLoading}
-                  seenUntil={seenUntil}
+                  seenUntil={seenUntilValue}
                   commentsSectionRef={commentsSectionRef}
                 />
 

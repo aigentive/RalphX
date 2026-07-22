@@ -262,6 +262,8 @@ function DetailSkeleton({ lines = 3 }: { lines?: number }) {
   );
 }
 
+const EMPTY_TICKET_COMMENTS: TicketComment[] = [];
+
 interface TicketDetailReadOnlyContentProps {
   ticket: TicketDetail | TicketSummary;
   comments?: TicketComment[];
@@ -285,8 +287,12 @@ export function TicketDetailReadOnlyContent({
     "descriptionMarkdown" in ticket
       ? (ticket.descriptionMarkdown ?? ticket.descriptionText ?? null)
       : null;
-  const visibleComments =
-    comments ?? ("comments" in ticket ? ticket.comments : []);
+  const visibleComments = useMemo(
+    () =>
+      comments ??
+      ("comments" in ticket ? ticket.comments : EMPTY_TICKET_COMMENTS),
+    [comments, ticket],
+  );
   const sortedComments = useMemo(
     () => sortCommentsByCreatedAt(visibleComments),
     [visibleComments],
