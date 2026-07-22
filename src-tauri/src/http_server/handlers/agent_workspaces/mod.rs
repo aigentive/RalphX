@@ -51,13 +51,17 @@ use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    complete_agent_workspace_repair_claim, current_agent_workspace_repair_claim_for_completion,
-    settle_agent_workspace_failure_without_repair,
+    abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
+    complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
+    continue_agent_workspace_pr_fix_after_review_handoff,
+    current_agent_workspace_repair_claim_for_completion,
+    settle_agent_workspace_failure_without_repair, AgentWorkspaceRepairClaim,
 };
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
-    verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
+    verify_agent_workspace_repair_completion, verify_agent_workspace_settled_current_head,
+    AgentWorkspaceRepairCompletionCheck, AgentWorkspaceSettledHeadCheck,
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
 use crate::application::{AppState, ChatService, GitService};
@@ -256,6 +260,7 @@ pub struct ReadAgentWorkspacePrCommentResponse {
 pub struct CompleteAgentWorkspacePrFixRequest {
     pub summary: String,
     pub blocker: Option<String>,
+    pub fix_commit_sha: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1317,7 +1322,9 @@ pub async fn get_agent_workspace_pr_fix_context(
 
 fn workspace_review_action_error(error: AppError) -> JsonError {
     let status = match &error {
-        AppError::Validation(_) | AppError::Conflict(_) => StatusCode::CONFLICT,
+        AppError::Validation(_)
+        | AppError::Conflict(_)
+        | AppError::WorkspaceReviewUnfinishedGitOperation => StatusCode::CONFLICT,
         AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -2092,6 +2099,57 @@ pub async fn complete_agent_workspace_pr_fix(
             )
         })?;
 
+    if let Some(blocker) = req
+        .blocker
+        .as_deref()
+        .map(str::trim)
+        .filter(|blocker| !blocker.is_empty())
+    {
+        let claim = current_agent_workspace_repair_claim_for_completion(
+            Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+            Arc::clone(&state.app_state.agent_run_repo),
+            &workspace,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::CONFLICT,
+                "Agent workspace PR fix attempt is no longer current",
+                None,
+            )
+        })?;
+        block_agent_workspace_pr_fix_claim(
+            Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+            &claim,
+            blocker,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::CONFLICT,
+                "Agent workspace PR fix attempt was replaced before blocker settlement",
+                None,
+            )
+        })?;
+        let workspace =
+            load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+        return Ok(Json(CompleteAgentWorkspacePrFixResponse {
+            success: true,
+            status: "blocked".to_string(),
+            message: blocker.to_string(),
+            workspace: Some(workspace),
+            publish_status: Some("skipped".to_string()),
+            publish_error: None,
+            commit_sha: None,
+            pushed: None,
+            created_pr: None,
+            pr_number: Some(target.pr_number),
+            pr_url: target.pr_url.clone(),
+        }));
+    }
+
     if let Some(github) = state.app_state.github_service.as_ref() {
         match github
             .check_pr_status(&target.working_dir, target.pr_number)
@@ -2147,101 +2205,121 @@ pub async fn complete_agent_workspace_pr_fix(
                     error = %error,
                     "complete_agent_workspace_pr_fix: failed to recheck PR status before publish"
                 );
+                return Err(json_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("Failed to verify current pull request status: {error}"),
+                    None,
+                ));
             }
         }
     }
 
-    if let Some(blocker) = req
-        .blocker
+    let claim = current_agent_workspace_repair_claim_for_completion(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        Arc::clone(&state.app_state.agent_run_repo),
+        &workspace,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    .ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "Agent workspace PR fix attempt is no longer current",
+            None,
+        )
+    })?;
+
+    let fix_commit_sha = req
+        .fix_commit_sha
         .as_deref()
         .map(str::trim)
-        .filter(|blocker| !blocker.is_empty())
-    {
-        state
-            .app_state
-            .agent_conversation_workspace_repo
-            .update_pr_auto_merge_state(
-                &conversation_id,
-                workspace.pr_auto_merge_current,
-                Some("blocked"),
-                Some(blocker),
+        .filter(|sha| !sha.is_empty())
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "fix_commit_sha is required when blocker is not provided",
+                None,
             )
-            .await
-            .map_err(|error| {
-                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-            })?;
-        state
-            .app_state
-            .agent_conversation_workspace_repo
-            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                conversation_id.clone(),
-                "pr_autofix_blocked",
-                "blocked",
-                blocker,
-                Some("pr_autofix_blocker".to_string()),
-            ))
-            .await
-            .map_err(|error| {
-                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-            })?;
-        let workspace =
-            load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
-        return Ok(Json(CompleteAgentWorkspacePrFixResponse {
-            success: true,
-            status: "blocked".to_string(),
-            message: blocker.to_string(),
-            workspace: Some(workspace),
-            publish_status: Some("skipped".to_string()),
-            publish_error: None,
-            commit_sha: None,
-            pushed: None,
-            created_pr: None,
-            pr_number: Some(target.pr_number),
-            pr_url: target.pr_url.clone(),
-        }));
+        })?;
+    if !is_valid_git_sha(fix_commit_sha) {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "fix_commit_sha must be a full 40-character SHA (use `git rev-parse HEAD`)",
+            None,
+        ));
+    }
+    let workspace_head_sha = GitService::get_branch_sha(&target.working_dir, &target.branch_name)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let has_uncommitted_changes = GitService::has_uncommitted_changes(&target.working_dir)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let unfinished_operation = GitService::unfinished_operation_state(&target.working_dir)
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let has_conflict_files = !GitService::get_conflict_files(&target.working_dir)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .is_empty();
+    let has_conflict_markers = GitService::has_conflict_markers(&target.working_dir)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+        reported_head_sha: fix_commit_sha,
+        workspace_head_sha: &workspace_head_sha,
+        has_uncommitted_changes,
+        is_merge_in_progress: unfinished_operation.merge_in_progress,
+        is_rebase_in_progress: unfinished_operation.rebase_in_progress,
+        has_conflict_files,
+        has_conflict_markers,
+    })
+    .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
+
+    let review_settings = state
+        .app_state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace_review_required = review_settings.require_workspace_review;
+    let post_completion_claim = complete_agent_workspace_pr_fix_claim(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        &claim,
+        summary,
+        workspace_review_required,
+        workspace.auto_publish_enabled,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    .ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "Agent workspace PR fix attempt was replaced before completion",
+            None,
+        )
+    })?;
+    let settled_workspace =
+        load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+
+    if workspace_review_required {
+        if let Some(response) = settle_pr_fix_workspace_review_handoff(
+            &state,
+            &conversation_id,
+            &settled_workspace,
+            &post_completion_claim,
+        )
+        .await?
+        {
+            return Ok(response);
+        }
     }
 
     if !workspace.auto_publish_enabled {
-        return complete_pr_fix_for_paused_auto_publish(
+        return completed_pr_fix_paused_response(
             state.app_state.as_ref(),
             &conversation_id,
-            &workspace,
-            summary,
         )
         .await;
     }
-
-    state
-        .app_state
-        .agent_conversation_workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            "pr_autofix_completed",
-            "succeeded",
-            summary,
-            Some("pr_autofix_completed".to_string()),
-        ))
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-
-    if let Some(response) =
-        start_workspace_review_for_pr_fix_if_required(&state, &conversation_id, &workspace, summary)
-            .await?
-    {
-        return Ok(response);
-    }
-
-    state
-        .app_state
-        .agent_conversation_workspace_repo
-        .update_pr_auto_merge_state(
-            &conversation_id,
-            workspace.pr_auto_merge_current,
-            Some("publishing"),
-            Some("PR fix completed; publishing updates."),
-        )
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
 
     if target.is_ideation_plan() {
         return complete_ideation_plan_pr_fix_publish(
@@ -2702,6 +2780,7 @@ async fn finish_ideation_plan_pr_fix_publish_failed(
     }))
 }
 
+#[cfg(test)]
 async fn start_workspace_review_for_pr_fix_if_required(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -2746,6 +2825,172 @@ async fn start_workspace_review_for_pr_fix_if_required(
         .await
         .map(Some),
     }
+}
+
+async fn settle_pr_fix_workspace_review_handoff(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    handoff_claim: &AgentWorkspaceRepairClaim,
+) -> Result<Option<Json<CompleteAgentWorkspacePrFixResponse>>, JsonError> {
+    let action = match workspace_review_action_after_fix_if_required(state, workspace).await {
+        Ok(action) => action,
+        Err(error) => {
+            let blocker = "PR fix was verified, but Workspace Review could not start. Settle or abort any Git operation, then retry Review.";
+            abort_agent_workspace_pr_fix_review_handoff(
+                Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                handoff_claim,
+                blocker,
+            )
+            .await
+            .map_err(|repo_error| {
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    repo_error.to_string(),
+                    None,
+                )
+            })?
+            .ok_or_else(|| {
+                json_error(
+                    StatusCode::CONFLICT,
+                    "Workspace Review handoff was replaced while start failure was settling",
+                    None,
+                )
+            })?;
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                "Workspace Review start failed after verified PR fix; handoff was aborted"
+            );
+            let response = pr_fix_workspace_review_blocked_response(
+                state.app_state.as_ref(),
+                conversation_id,
+                blocker,
+                "workspace_review_failed",
+            )
+            .await?;
+            let _ = error;
+            return Ok(Some(response));
+        }
+    };
+
+    match action {
+        WorkspaceReviewAfterFixAction::Continue => {
+            continue_agent_workspace_pr_fix_after_review_handoff(
+                Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                handoff_claim,
+                "Workspace Review found no reviewable changes; PR fix publishing may continue.",
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+            .ok_or_else(|| {
+                json_error(
+                    StatusCode::CONFLICT,
+                    "Workspace Review handoff was replaced before publish continuation",
+                    None,
+                )
+            })?;
+            Ok(None)
+        }
+        WorkspaceReviewAfterFixAction::Waiting { started } => {
+            let status = if started {
+                "workspace_review_started"
+            } else {
+                "workspace_reviewing"
+            };
+            let message = if started {
+                "PR fix completed; Workspace Review started before publishing resumes."
+            } else {
+                "PR fix completed; Workspace Review is already running before publishing resumes."
+            };
+            pr_fix_workspace_review_waiting_response(
+                state.app_state.as_ref(),
+                conversation_id,
+                message,
+                status,
+            )
+            .await
+            .map(Some)
+        }
+        WorkspaceReviewAfterFixAction::Blocked {
+            blocker,
+            classification,
+        } => {
+            abort_agent_workspace_pr_fix_review_handoff(
+                Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                handoff_claim,
+                &blocker,
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+            .ok_or_else(|| {
+                json_error(
+                    StatusCode::CONFLICT,
+                    "Workspace Review handoff was replaced before blocker settlement",
+                    None,
+                )
+            })?;
+            pr_fix_workspace_review_blocked_response(
+                state.app_state.as_ref(),
+                conversation_id,
+                &blocker,
+                classification,
+            )
+            .await
+            .map(Some)
+        }
+    }
+}
+
+async fn pr_fix_workspace_review_waiting_response(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    message: &str,
+    classification: &str,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let pr_number = workspace.publication_pr_number;
+    let pr_url = workspace.publication_pr_url.clone();
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: classification.to_string(),
+        message: message.to_string(),
+        workspace: Some(workspace),
+        publish_status: Some("waiting_for_workspace_review".to_string()),
+        publish_error: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number,
+        pr_url,
+    }))
+}
+
+async fn pr_fix_workspace_review_blocked_response(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    message: &str,
+    classification: &str,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let pr_number = workspace.publication_pr_number;
+    let pr_url = workspace.publication_pr_url.clone();
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: classification.to_string(),
+        message: message.to_string(),
+        workspace: Some(workspace),
+        publish_status: Some("blocked_by_workspace_review".to_string()),
+        publish_error: Some(message.to_string()),
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number,
+        pr_url,
+    }))
 }
 
 enum WorkspaceReviewAfterFixAction {
@@ -2876,6 +3121,7 @@ where
     }
 }
 
+#[cfg(test)]
 async fn finish_pr_fix_waiting_for_workspace_review(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3157,6 +3403,7 @@ async fn finish_repair_blocked_by_workspace_review(
     .await
 }
 
+#[cfg(test)]
 async fn finish_pr_fix_blocked_by_workspace_review(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3426,42 +3673,19 @@ async fn complete_pr_fix_for_terminal_pr(
     }))
 }
 
-async fn complete_pr_fix_for_paused_auto_publish(
+async fn completed_pr_fix_paused_response(
     state: &AppState,
     conversation_id: &ChatConversationId,
-    workspace: &AgentConversationWorkspace,
-    summary: &str,
 ) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
     let message = "PR fix completed, but Auto Publish is paused. Manual Commit & Publish is required to update the pull request.";
-    state
-        .agent_conversation_workspace_repo
-        .update_pr_auto_merge_state(
-            conversation_id,
-            workspace.pr_auto_merge_current,
-            Some("paused"),
-            Some(message),
-        )
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    state
-        .agent_conversation_workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            "pr_autofix_publish_skipped",
-            "skipped",
-            format!("{message} Fix summary: {summary}"),
-            Some("auto_publish_paused".to_string()),
-        ))
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let workspace_response = load_agent_workspace_response(state, conversation_id).await?;
-    let pr_number = workspace_response.publication_pr_number;
-    let pr_url = workspace_response.publication_pr_url.clone();
+    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let pr_number = workspace.publication_pr_number;
+    let pr_url = workspace.publication_pr_url.clone();
     Ok(Json(CompleteAgentWorkspacePrFixResponse {
         success: true,
         status: "publish_paused".to_string(),
         message: message.to_string(),
-        workspace: Some(workspace_response),
+        workspace: Some(workspace),
         publish_status: Some("skipped".to_string()),
         publish_error: None,
         commit_sha: None,
@@ -4504,6 +4728,12 @@ pub async fn complete_agent_workspace_repair(
         has_uncommitted_changes,
         is_merge_in_progress: GitService::is_merge_in_progress(&publish_target.worktree_path),
         is_rebase_in_progress: GitService::is_rebase_in_progress(&publish_target.worktree_path),
+        has_conflict_files: !GitService::get_conflict_files(&publish_target.worktree_path)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+            .is_empty(),
         has_conflict_markers,
     })
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;

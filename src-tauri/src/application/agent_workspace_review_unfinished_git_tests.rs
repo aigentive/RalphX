@@ -127,9 +127,13 @@ impl LinkedWorktreeFixture {
 }
 
 fn assert_unfinished_operation(error: AppError) {
+    assert!(matches!(
+        error,
+        AppError::WorkspaceReviewUnfinishedGitOperation
+    ));
     assert_eq!(
         error.to_string(),
-        AppError::Conflict(WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR.to_string()).to_string()
+        WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR
     );
 }
 

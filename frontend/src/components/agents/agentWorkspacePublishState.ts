@@ -84,6 +84,34 @@ export function getAgentWorkspacePrConflictSummary(
   return null;
 }
 
+export type AgentWorkspaceReviewActionBlocker = {
+  kind: "repair" | "conflict";
+  message: string;
+};
+
+export function getAgentWorkspaceReviewActionBlocker(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspaceReviewActionBlocker | null {
+  if (!workspace || getAgentWorkspaceTerminalPublicationStatus(workspace)) {
+    return null;
+  }
+  const pushStatus = normalizePublicationStatus(workspace.publicationPushStatus);
+  const supervisionStatus = normalizePublicationStatus(workspace.prSupervisionStatus);
+  if (pushStatus === "needs_agent" || supervisionStatus === "fixing") {
+    return {
+      kind: "repair",
+      message: "Finish or abort the current repair, then retry Review.",
+    };
+  }
+  if (getAgentWorkspacePrConflictSummary(workspace)) {
+    return {
+      kind: "conflict",
+      message: "Resolve conflicts before retrying Review.",
+    };
+  }
+  return null;
+}
+
 export function isAgentWorkspaceAutoMergeRequestPending({
   autoMergeCurrent,
   autoMergeDesired,

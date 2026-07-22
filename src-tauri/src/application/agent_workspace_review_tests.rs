@@ -2042,6 +2042,61 @@ async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
         Some("review process crashed")
     );
 
+    let mut late_failed_run = AgentRun::new(ChatConversationId::new());
+    let late_failed_run_id = late_failed_run.id.as_str().to_string();
+    late_failed_run.fail("provider response generation failed after Review was saved");
+    state
+        .agent_run_repo
+        .create(late_failed_run)
+        .await
+        .expect("late failed run should persist");
+    let mut typed_ready_monitor = blocked.clone();
+    apply_review_artifact_to_monitor(
+        &mut typed_ready_monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some(late_failed_run_id.clone()),
+        ArtifactId::from_string("artifact-before-provider-failure"),
+        3,
+        Utc::now(),
+        None,
+    );
+    typed_ready_monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    typed_ready_monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    typed_ready_monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(typed_ready_monitor)
+        .await
+        .expect("typed Review completion should persist");
+
+    spawn_workspace_review_waiter(
+        Arc::clone(&state),
+        workspace.clone(),
+        target.clone(),
+        late_failed_run_id.clone(),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let preserved = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("monitor should exist");
+    assert_eq!(preserved.status, AgentWorkspaceReviewMonitorStatus::Ready);
+    assert_eq!(
+        preserved.review_outcome,
+        AgentWorkspaceReviewOutcome::Passed
+    );
+    assert_eq!(
+        preserved.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
+    assert_eq!(preserved.review_artifact_version, Some(3));
+    assert_eq!(preserved.last_error, None);
+
     let mut completed_run = AgentRun::new(ChatConversationId::new());
     let completed_run_id = completed_run.id.as_str().to_string();
     completed_run.complete();
@@ -2050,7 +2105,7 @@ async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
         .create(completed_run)
         .await
         .expect("completed run should persist");
-    let mut ready_monitor = blocked;
+    let mut ready_monitor = preserved;
     apply_review_artifact_to_monitor(
         &mut ready_monitor,
         target.scope,

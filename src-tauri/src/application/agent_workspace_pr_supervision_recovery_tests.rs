@@ -320,6 +320,13 @@ fn schedule_skip_reason_covers_recoverable_and_terminal_workspace_shapes() {
         None
     );
 
+    workspace.publication_push_status = Some("refreshed".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&workspace),
+        None
+    );
+
     workspace.publication_push_status = Some("pushed".to_string());
     assert_eq!(
         pr_supervision_recovery_schedule_skip_reason(&workspace),
@@ -1560,14 +1567,15 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
     workspace.publication_pr_number = Some(681);
     workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/681".to_string());
     workspace.publication_pr_status = Some("open".to_string());
-    workspace.publication_push_status = Some("failed".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
     workspace.auto_publish_enabled = true;
     workspace.pr_autofix_enabled = true;
     workspace.pr_auto_merge_desired = true;
     workspace.pr_auto_merge_current = Some(true);
-    workspace.pr_supervision_status = Some("blocked".to_string());
-    workspace.pr_supervision_summary =
-        Some("Recovered stale PR autofix state; no active fixer run is running.".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR fix verified; Workspace Review must finish before publishing resumes.".to_string(),
+    );
 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
@@ -1602,6 +1610,13 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
 
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut terminal_repair_run = AgentRun::new(conversation_id.clone());
+    terminal_repair_run.complete();
+    agent_run_repo
+        .create(terminal_repair_run)
+        .await
+        .expect("terminal repair run should persist");
     let publish_resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
         &workspace_repo,
     )));
@@ -1617,7 +1632,7 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
             pr_poller_registry: None,
             transition_service: None,
             chat_service: None,
-            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_run_repo,
             app_handle: None,
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -1667,14 +1682,15 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
     workspace.publication_pr_number = Some(681);
     workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/681".to_string());
     workspace.publication_pr_status = Some("open".to_string());
-    workspace.publication_push_status = Some("failed".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
     workspace.auto_publish_enabled = true;
     workspace.pr_autofix_enabled = true;
     workspace.pr_auto_merge_desired = true;
     workspace.pr_auto_merge_current = Some(true);
-    workspace.pr_supervision_status = Some("blocked".to_string());
-    workspace.pr_supervision_summary =
-        Some("Recovered stale PR autofix state; no active fixer run is running.".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR fix verified; Workspace Review must finish before publishing resumes.".to_string(),
+    );
 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
@@ -1708,6 +1724,13 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
         .expect("seed stale passed review monitor");
 
     let github = Arc::new(MockGithubService::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut terminal_repair_run = AgentRun::new(conversation_id.clone());
+    terminal_repair_run.complete();
+    agent_run_repo
+        .create(terminal_repair_run)
+        .await
+        .expect("terminal repair run should persist");
     let publish_resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
         &workspace_repo,
     )));
@@ -1722,7 +1745,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
             pr_poller_registry: None,
             transition_service: None,
             chat_service: None,
-            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_run_repo,
             app_handle: None,
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -1736,7 +1759,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("worktree_dirty")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
     );
     assert_eq!(
         publish_resumer.calls(),
@@ -1752,8 +1775,18 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
         !events
             .iter()
             .any(|event| event.step == "pr_autofix_workspace_review_passed"),
-        "stale review handoff must remain unclosed until a current review passes"
+        "stale review handoff must not authorize publication"
     );
+    assert!(events
+        .iter()
+        .any(|event| event.step == "pr_autofix_workspace_review_aborted"));
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(workspace.pr_supervision_status.as_deref(), Some("blocked"));
 }
 
 #[tokio::test]

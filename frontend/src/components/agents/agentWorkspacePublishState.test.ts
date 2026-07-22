@@ -9,12 +9,55 @@ import {
   canInspectAgentWorkspacePublishDiffs,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspacePrConflictSummary,
+  getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
   isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+
+describe("getAgentWorkspaceReviewActionBlocker", () => {
+  it("blocks Review actions while an authoritative repair is active", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          publicationPushStatus: "needs_agent",
+          prSupervisionStatus: "fixing",
+        }),
+      ),
+    ).toEqual({
+      kind: "repair",
+      message: "Finish or abort the current repair, then retry Review.",
+    });
+  });
+
+  it("blocks Review actions for a recovered unresolved conflict", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          publicationPushStatus: "failed",
+          prSupervisionStatus: "blocked",
+          prSupervisionSummary: "Merge conflict remains in src/main.rs",
+        }),
+      ),
+    ).toEqual({
+      kind: "conflict",
+      message: "Resolve conflicts before retrying Review.",
+    });
+  });
+
+  it("allows Review after repair and conflicts are settled", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          publicationPushStatus: "refreshed",
+          prSupervisionStatus: "monitoring",
+        }),
+      ),
+    ).toBeNull();
+  });
+});
 
 function workspace(
   overrides: Partial<AgentConversationWorkspace> = {},

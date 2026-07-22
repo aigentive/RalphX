@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use crate::application::agent_workspace_publish_repair_state::{
-    claim_agent_workspace_repair, complete_agent_workspace_repair_claim,
-    current_agent_workspace_repair_claim_for_completion, reconcile_active_agent_workspace_repair,
-    repair_event_authorizes_active_run, settle_agent_workspace_repair_failure,
-    terminal_run_authorizes_repair_recovery, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
+    claim_agent_workspace_repair, complete_agent_workspace_pr_fix_claim,
+    complete_agent_workspace_repair_claim, current_agent_workspace_repair_claim_for_completion,
+    reconcile_active_agent_workspace_repair, repair_event_authorizes_active_run,
+    settle_agent_workspace_repair_failure, terminal_run_authorizes_repair_recovery,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -333,5 +335,147 @@ async fn completion_requires_dispatch_evidence_for_the_current_claim() {
         .unwrap()
         .expect("current dispatch authorizes completion"),
         claim
+    );
+}
+
+#[tokio::test]
+async fn pr_fix_completion_and_review_handoff_are_exact_once_for_current_claim() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let conversation_id = ChatConversationId::from_string("pr-fix-completion-current");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    let claim =
+        crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairClaim {
+            conversation_id: conversation_id.clone(),
+            guard: crate::domain::repositories::AgentWorkspaceRepairStateGuard::from_workspace(
+                &workspace,
+            ),
+        };
+
+    let review_claim = complete_agent_workspace_pr_fix_claim(
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &claim,
+        "Resolved conflicts",
+        true,
+        true,
+    )
+    .await
+    .unwrap()
+    .expect("current claim accepted");
+    assert!(complete_agent_workspace_pr_fix_claim(
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &claim,
+        "Duplicate completion",
+        true,
+        true,
+    )
+    .await
+    .unwrap()
+    .is_none());
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "pr_autofix_completed")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "pr_autofix_workspace_review")
+            .count(),
+        1
+    );
+
+    abort_agent_workspace_pr_fix_review_handoff(
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &review_claim,
+        "Review could not start",
+    )
+    .await
+    .unwrap()
+    .expect("handoff abort accepted");
+    assert!(abort_agent_workspace_pr_fix_review_handoff(
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &review_claim,
+        "Duplicate abort",
+    )
+    .await
+    .unwrap()
+    .is_none());
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(workspace.pr_supervision_status.as_deref(), Some("blocked"));
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.step == "pr_autofix_workspace_review_aborted")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn pr_fix_blocker_requires_current_claim_but_not_a_commit_sha() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let conversation_id = ChatConversationId::from_string("pr-fix-blocker-current");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    let claim =
+        crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairClaim {
+            conversation_id: conversation_id.clone(),
+            guard: crate::domain::repositories::AgentWorkspaceRepairStateGuard::from_workspace(
+                &workspace,
+            ),
+        };
+
+    block_agent_workspace_pr_fix_claim(
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &claim,
+        "Maintainer decision required",
+    )
+    .await
+    .unwrap()
+    .expect("current blocker accepted");
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .pr_supervision_status
+            .as_deref(),
+        Some("blocked")
+    );
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.step == "pr_autofix_blocked")
+            .count(),
+        1
     );
 }
