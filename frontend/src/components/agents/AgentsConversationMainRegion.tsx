@@ -59,6 +59,8 @@ interface AgentsConversationMainRegionProps {
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
+  publishShortcutWorkspace?: ActiveConversationPanelProps["publishShortcutWorkspace"];
+  suppressPublishShortcut?: ActiveConversationPanelProps["suppressPublishShortcut"];
   promotePublishShortcut?: ActiveConversationPanelProps["promotePublishShortcut"];
   publishAttemptsByConversationId: ActiveConversationPanelProps["publishAttemptsByConversationId"];
   selectedConversationId: string | null;
@@ -121,6 +123,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onSelectChatFocus,
   projects,
   publishShortcutLabel,
+  publishShortcutWorkspace = null,
+  suppressPublishShortcut = false,
   promotePublishShortcut = false,
   publishAttemptsByConversationId,
   selectedConversationId,
@@ -179,6 +183,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onSelectChatFocus={onSelectChatFocus}
         onStartPersonaBuilder={onStartPersonaBuilder}
         publishShortcutLabel={publishShortcutLabel}
+        publishShortcutWorkspace={publishShortcutWorkspace}
+        suppressPublishShortcut={suppressPublishShortcut}
         promotePublishShortcut={promotePublishShortcut}
         publishAttemptsByConversationId={publishAttemptsByConversationId}
         selectedConversationId={selectedConversationId}

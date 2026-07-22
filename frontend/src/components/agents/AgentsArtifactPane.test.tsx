@@ -3220,6 +3220,69 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("never renders one focused run's publish workspace under another run's focus", async () => {
+    getConversationWorkspaceMock.mockImplementation(async (conversationId: string) =>
+      conversationId === "conversation-run-a"
+        ? workspace({
+            conversationId,
+            mode: "edit",
+            branchName: "run-a-branch",
+          })
+        : conversationId === "conversation-run-b"
+          ? workspace({
+              conversationId,
+              mode: "edit",
+              branchName: "run-b-branch",
+            })
+          : null,
+    );
+    const queryClient = createTestQueryClient();
+    const paneForRun = (runId: string, runConversationId: string) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={{
+                ...conversation(),
+                id: "conversation-setup",
+                agentMode: "automation",
+                automationId: "automation-1",
+                automationRunId: null,
+              }}
+              workspace={workspace({
+                conversationId: "conversation-setup",
+                mode: "automation",
+                branchName: "setup-branch",
+              })}
+              activeTab="publish"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={vi.fn()}
+              isPublishingWorkspace={false}
+              onClose={() => {}}
+              automationRunFocusTarget={{
+                type: "automation_run",
+                automationId: "automation-1",
+                runId,
+                conversationId: runConversationId,
+              }}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+
+    const view = render(paneForRun("run-a", "conversation-run-a"));
+    expect(await screen.findByText(/run-a-branch/)).toBeInTheDocument();
+    expect(screen.queryByText(/setup-branch/)).not.toBeInTheDocument();
+
+    view.rerender(paneForRun("run-b", "conversation-run-b"));
+    expect(await screen.findByText(/run-b-branch/)).toBeInTheDocument();
+    expect(screen.queryByText(/run-a-branch/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/setup-branch/)).not.toBeInTheDocument();
+  });
+
   it("does not render cached focused workspace metadata after its refresh fails", async () => {
     const queryClient = createTestQueryClient();
     queryClient.setQueryData(
@@ -5155,6 +5218,11 @@ describe("AgentsArtifactPane", () => {
     expect(useChatStore.getState().agentActivityLabels[storeKey]).toBe(
       "running",
     );
+
+    // Reset the shared store so the generating status does not leak into
+    // later tests that render publish surfaces for the same conversation.
+    useChatStore.getState().setAgentStatus(storeKey, "idle");
+    useChatStore.getState().setAgentActivityLabel(storeKey, null);
   });
 
   it("keeps the Review update action enabled while a related runtime is waiting for input", async () => {

@@ -74,6 +74,7 @@ import {
 } from "@/components/pr/PullRequestDetailShell";
 import { summarizeChecks } from "@/components/pr/pullRequestChecksSummary";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
+import { useAgentWorkspacePublishLiveRefresh } from "./useAgentWorkspacePublishLiveRefresh";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import {
   AgentsPublishActionBar,
@@ -346,6 +347,7 @@ export function AgentPublishPanel({
     conversationTitle,
   });
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
+  useAgentWorkspacePublishLiveRefresh(conversationId);
   const isRepairPending =
     workspace?.publicationPushStatus === "needs_agent" &&
     !getAgentWorkspaceTerminalPublicationStatus(workspace);
