@@ -157,6 +157,7 @@ import type {
   AgentPublishSubTab,
   AgentPublishSubTabRequest,
 } from "./agentPublishSubTab";
+import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
@@ -599,6 +600,7 @@ interface AgentsArtifactPaneProps {
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
+  publishAttempt?: AgentWorkspacePublishAttempt | null;
   publishFocusRequest?: AgentPublishFocusRequest | null;
   publishSubTabRequest?: AgentPublishSubTabRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
@@ -649,6 +651,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
+  publishAttempt = null,
   publishFocusRequest = null,
   publishSubTabRequest = null,
   taskFocusRequest = null,
@@ -2267,6 +2270,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 hasImplementationAttempt={hasImplementationAttempt}
                 onPublishWorkspace={onPublishWorkspace}
                 isPublishingWorkspace={isPublishingWorkspace}
+                publishAttempt={publishAttempt}
                 publishFocusRequest={publishFocusRequest}
                 publishSubTab={publishSubTab}
                 showPublishReviewTab={nestsWorkspaceReview}
@@ -2360,6 +2364,7 @@ type ArtifactContentProps = {
   hasImplementationAttempt: boolean;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
+  publishAttempt?: AgentWorkspacePublishAttempt | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
   publishSubTab: AgentPublishSubTab;
   showPublishReviewTab: boolean;
@@ -2444,6 +2449,7 @@ function ArtifactContent({
   hasImplementationAttempt,
   onPublishWorkspace,
   isPublishingWorkspace,
+  publishAttempt,
   publishFocusRequest,
   publishSubTab,
   showPublishReviewTab,
@@ -2533,7 +2539,7 @@ function ArtifactContent({
         conversationTitle={conversationTitle}
         projectBaseBranch={projectBaseBranch}
         onPublishWorkspace={onPublishWorkspace}
-        isPublishingWorkspace={isPublishingWorkspace}
+        publishAttempt={publishAttempt ?? null}
         publishFocusRequest={publishFocusRequest}
         reviewContext={reviewContext}
         onOpenReview={onOpenReview}

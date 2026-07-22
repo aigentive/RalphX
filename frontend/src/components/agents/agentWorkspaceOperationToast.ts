@@ -9,7 +9,6 @@ export type AgentWorkspaceOperationToastKind =
 
 export interface AgentWorkspaceOperationToast {
   dismiss: () => void;
-  dispose: () => void;
   error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
   info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
   success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
@@ -37,30 +36,11 @@ type ActiveAgentWorkspaceOperationToastOptions =
   AgentWorkspaceOperationToastOptions & {
     startedAtMs: number;
   };
-type ActiveAgentWorkspaceOperationToastController = {
-  dismiss: () => void;
-  settle: () => void;
-};
-
-const activeOperationToastControllers = new Map<
-  string,
-  ActiveAgentWorkspaceOperationToastController
->();
-
 export function agentWorkspaceOperationToastId(
   conversationId: string,
   kind: AgentWorkspaceOperationToastKind,
 ): string {
   return `agent-workspace-operation:${conversationId}:${kind}`;
-}
-
-export function markAgentWorkspaceOperationToastSettled(id: string): boolean {
-  const controller = activeOperationToastControllers.get(id);
-  if (!controller) {
-    return false;
-  }
-  controller.settle();
-  return true;
 }
 
 export function publishPipelineToastLabel(status: string | null): string {
@@ -138,9 +118,13 @@ function resultDescription(
   options: ActiveAgentWorkspaceOperationToastOptions,
   resultOptions?: AgentWorkspaceOperationToastResultOptions,
 ): string | undefined {
+  const detail =
+    resultOptions && Object.prototype.hasOwnProperty.call(resultOptions, "detail")
+      ? resultOptions.detail
+      : options.detail;
   return agentWorkspaceOperationToastDescription(
     options.conversationTitle,
-    resultOptions?.detail ?? options.detail,
+    detail,
   );
 }
 
@@ -176,19 +160,11 @@ export function startAgentWorkspaceOperationToast(
     }
   };
 
-  const unregisterActiveToast = (id: string | null) => {
-    if (id && activeOperationToastControllers.get(id) === controller) {
-      activeOperationToastControllers.delete(id);
-    }
-  };
-
   const registerActiveToast = (id: string) => {
     if (activeToastId && activeToastId !== id) {
-      unregisterActiveToast(activeToastId);
       toast.dismiss(activeToastId);
     }
     activeToastId = id;
-    activeOperationToastControllers.set(id, controller);
   };
 
   const settle = () => {
@@ -197,7 +173,6 @@ export function startAgentWorkspaceOperationToast(
     }
     settled = true;
     clearTimer();
-    unregisterActiveToast(activeToastId);
   };
 
   const dismiss = () => {
@@ -206,15 +181,9 @@ export function startAgentWorkspaceOperationToast(
     }
     dismissed = true;
     clearTimer();
-    unregisterActiveToast(activeToastId);
     if (activeToastId) {
       toast.dismiss(activeToastId);
     }
-  };
-
-  const controller: ActiveAgentWorkspaceOperationToastController = {
-    dismiss,
-    settle,
   };
 
   const render = () => {
@@ -235,7 +204,6 @@ export function startAgentWorkspaceOperationToast(
         }
         dismissed = true;
         clearTimer();
-        unregisterActiveToast(activeToastId);
       },
     });
   };
@@ -245,11 +213,10 @@ export function startAgentWorkspaceOperationToast(
 
   return {
     dismiss,
-    dispose: () => {
-      clearTimer();
-      unregisterActiveToast(activeToastId);
-    },
     error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
+      if (settled) {
+        return;
+      }
       settle();
       toast.error(message, {
         ...resultToastOptions(
@@ -262,6 +229,9 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
+      if (settled) {
+        return;
+      }
       settle();
       toast.info(message, {
         ...resultToastOptions(
@@ -273,6 +243,9 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
+      if (settled) {
+        return;
+      }
       settle();
       toast.success(
         message,
