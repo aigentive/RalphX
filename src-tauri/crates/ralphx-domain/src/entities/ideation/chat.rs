@@ -488,7 +488,9 @@ impl ChatMessage {
         let cache_read_tokens: Option<u64> = row.get("cache_read_tokens").ok().flatten();
         let estimated_usd: Option<f64> = row.get("estimated_usd").ok().flatten();
         let usage_provenance = parse_usage_provenance(
-            row.get::<_, Option<String>>("usage_provenance").ok().flatten(),
+            row.get::<_, Option<String>>("usage_provenance")
+                .ok()
+                .flatten(),
         )?;
         let raw_usage_snapshot = ProviderUsageSnapshot {
             input_tokens: row.get("raw_usage_input_tokens").ok().flatten(),

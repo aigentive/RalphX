@@ -10,9 +10,7 @@ use rusqlite::{params_from_iter, Connection};
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 
-fn parse_usage_provenance(
-    value: Option<String>,
-) -> rusqlite::Result<Option<UsageProvenance>> {
+fn parse_usage_provenance(value: Option<String>) -> rusqlite::Result<Option<UsageProvenance>> {
     value
         .map(|value| {
             value.parse::<UsageProvenance>().map_err(|error| {
@@ -928,9 +926,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens: row.get("cache_creation_tokens")?,
                             cache_read_tokens: row.get("cache_read_tokens")?,
                             estimated_usd: row.get("estimated_usd")?,
-                            usage_provenance: parse_usage_provenance(
-                                row.get("usage_provenance")?,
-                            )?,
+                            usage_provenance: parse_usage_provenance(row.get("usage_provenance")?)?,
                             raw_usage_snapshot: {
                                 let snapshot = ProviderUsageSnapshot {
                                     input_tokens: row.get("raw_usage_input_tokens")?,

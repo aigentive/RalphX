@@ -183,7 +183,10 @@ async fn teammate_turn_complete_persists_authoritative_claude_usage_on_message_l
         .unwrap();
     let message = persisted.first().expect("teammate assistant message");
     assert_eq!(message.provider_harness, Some(AgentHarnessKind::Claude));
-    assert_eq!(message.provider_session_id.as_deref(), Some("teammate-session"));
+    assert_eq!(
+        message.provider_session_id.as_deref(),
+        Some("teammate-session")
+    );
     assert_eq!(message.input_tokens, Some(13));
     assert_eq!(message.output_tokens, Some(1_434));
     assert_eq!(message.cache_creation_tokens, Some(127_826));

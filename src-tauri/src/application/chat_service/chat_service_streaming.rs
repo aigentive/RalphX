@@ -3537,6 +3537,7 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut runtime_errors = Vec::<String>::new();
     let mut local_tool_errors = Vec::<String>::new();
     let mut session_id: Option<String> = None;
+    let mut run_session_attribution_ready = agent_run_repo.is_none() || agent_run_id.is_none();
     let mut usage = AgentRunUsage::default();
     let mut lines_seen = 0usize;
     let mut lines_parsed = 0usize;
@@ -3638,7 +3639,7 @@ async fn process_codex_stream_background<R: Runtime>(
                     provider_session_ref_for_harness(AgentHarnessKind::Codex, thread_id.clone());
                 if let (Some(repo), Some(run_id)) = (agent_run_repo.as_ref(), agent_run_id.as_ref())
                 {
-                    let _ = repo
+                    run_session_attribution_ready = match repo
                         .update_attribution(
                             &AgentRunId::from_string(run_id.clone()),
                             &crate::domain::entities::AgentRunAttribution {
@@ -3647,7 +3648,18 @@ async fn process_codex_stream_background<R: Runtime>(
                                 ..Default::default()
                             },
                         )
-                        .await;
+                        .await
+                    {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::warn!(
+                                run_id,
+                                error = %error,
+                                "Failed to persist Codex session attribution; cumulative usage capture will be suppressed"
+                            );
+                            false
+                        }
+                    };
                 }
                 if let (Some(repo), Some(message_id)) =
                     (chat_message_repo.as_ref(), assistant_message_id.as_ref())
@@ -3896,15 +3908,21 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(event_usage) = extract_codex_usage(&event) {
-                let capture = normalize_codex_stream_usage_for_persistence(
-                    agent_run_usage_from_codex_usage(event_usage.usage),
-                    event_usage.source,
-                    &agent_run_repo,
-                    conversation_id,
-                    agent_run_id.as_deref(),
-                    session_id.as_deref(),
-                )
-                .await;
+                let capture = if event_usage.source == CodexUsageSource::CumulativeTotal
+                    && !run_session_attribution_ready
+                {
+                    None
+                } else {
+                    normalize_codex_stream_usage_for_persistence(
+                        agent_run_usage_from_codex_usage(event_usage.usage),
+                        event_usage.source,
+                        &agent_run_repo,
+                        conversation_id,
+                        agent_run_id.as_deref(),
+                        session_id.as_deref(),
+                    )
+                    .await
+                };
                 if let Some(capture) = capture {
                     usage = capture.normalized.clone();
                     let persisted = persist_usage_capture_run_first(

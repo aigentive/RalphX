@@ -187,7 +187,10 @@ fn empty_terminal_result_usage_preserves_provisional_assistant_usage() {
     assert_eq!(capture.normalized.input_tokens, Some(41));
     assert_eq!(capture.normalized.output_tokens, Some(7));
     assert_eq!(capture.normalized.cache_read_tokens, Some(30));
-    assert_eq!(capture.provenance, UsageProvenance::ProviderSnapshotFallback);
+    assert_eq!(
+        capture.provenance,
+        UsageProvenance::ProviderSnapshotFallback
+    );
 }
 
 #[test]

@@ -375,7 +375,9 @@ async fn test_update_attribution_updates_message_attribution_fields() {
     repo.update_attribution(
         &message.id,
         &ChatMessageAttribution {
-            attribution_source: Some("historical_backfill_claude_project_jsonl_anthropic".to_string()),
+            attribution_source: Some(
+                "historical_backfill_claude_project_jsonl_anthropic".to_string(),
+            ),
             provider_harness: Some(AgentHarnessKind::Claude),
             provider_session_id: Some("claude-session-999".to_string()),
             upstream_provider: Some("anthropic".to_string()),

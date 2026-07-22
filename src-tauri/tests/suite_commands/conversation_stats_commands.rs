@@ -89,18 +89,14 @@ fn test_conversation_source_selection_ignores_uncountable_coverage() {
     first_unknown.conversation_id = Some(conversation.id);
     first_unknown.input_tokens = Some(1_000);
     first_unknown.output_tokens = Some(100);
-    let mut second_unknown =
-        ChatMessage::orchestrator_in_session(session_id, "unknown-2");
+    let mut second_unknown = ChatMessage::orchestrator_in_session(session_id, "unknown-2");
     second_unknown.conversation_id = Some(conversation.id);
     second_unknown.input_tokens = Some(2_000);
     second_unknown.output_tokens = Some(200);
     let run = tagged_run(&conversation, AgentHarnessKind::Codex, 300);
 
-    let response = build_conversation_stats_response(
-        &conversation,
-        &[first_unknown, second_unknown],
-        &[run],
-    );
+    let response =
+        build_conversation_stats_response(&conversation, &[first_unknown, second_unknown], &[run]);
 
     assert_eq!(response.usage_coverage.effective_totals_source, "runs");
     assert_eq!(response.effective_usage_totals.input_tokens, 300);
