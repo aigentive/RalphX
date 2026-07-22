@@ -175,6 +175,7 @@ pub(crate) async fn complete_merge_internal_with_outcome(
     .await
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn complete_merge_internal_with_pr_sync_and_notifier(
     task: &mut Task,

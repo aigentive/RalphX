@@ -719,6 +719,14 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
             .cloned())
     }
 
+    async fn delete_run_if_deletable(
+        &self,
+        _automation_id: &AutomationId,
+        _run_id: &AutomationRunId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
+    }
+
     async fn list_for_automation(
         &self,
         automation_id: &AutomationId,

@@ -1096,4 +1096,31 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         runs.retain(|run| run.automation_id != *automation_id);
         Ok(before - runs.len())
     }
+
+    async fn delete_run_if_deletable(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<usize> {
+        let mut runs = self.runs.write().unwrap();
+        let latest_run_index = runs
+            .iter()
+            .filter(|run| run.automation_id == *automation_id)
+            .map(|run| run.run_index)
+            .max();
+        let Some(position) = runs.iter().position(|run| {
+            run.id == *run_id
+                && run.automation_id == *automation_id
+                && matches!(
+                    run.status,
+                    AutomationRunStatus::AgentFailed | AutomationRunStatus::Cancelled
+                )
+                && run.judge_state != AutomationJudgeState::InProgress
+                && Some(run.run_index) == latest_run_index
+        }) else {
+            return Ok(0);
+        };
+        runs.remove(position);
+        Ok(1)
+    }
 }

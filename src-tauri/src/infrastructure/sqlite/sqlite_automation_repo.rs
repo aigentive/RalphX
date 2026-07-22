@@ -1492,6 +1492,39 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             })
             .await
     }
+
+    async fn delete_run_if_deletable(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<usize> {
+        let automation_id = automation_id.as_str().to_string();
+        let run_id = run_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM automation_runs
+                     WHERE id = ?1
+                       AND automation_id = ?2
+                       AND status IN (?3, ?4)
+                       AND (judge_state IS NULL OR judge_state <> ?5)
+                       AND run_index = (
+                           SELECT MAX(run_index)
+                           FROM automation_runs
+                           WHERE automation_id = ?2
+                       )",
+                    params![
+                        run_id,
+                        automation_id,
+                        AutomationRunStatus::AgentFailed.as_str(),
+                        AutomationRunStatus::Cancelled.as_str(),
+                        AutomationJudgeState::InProgress.as_str(),
+                    ],
+                )
+                .map_err(AppError::from)
+            })
+            .await
+    }
 }
 
 fn parse_datetime(value: Option<String>) -> Option<DateTime<Utc>> {

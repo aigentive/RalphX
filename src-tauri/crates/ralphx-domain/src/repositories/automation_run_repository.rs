@@ -221,5 +221,18 @@ pub trait AutomationRunRepository: Send + Sync {
         successor: AutomationRun,
     ) -> AppResult<Option<AutomationRun>>;
 
+    /// Delete a run only when it is the automation's latest deletable run.
+    ///
+    /// Returns `1` when the row was deleted and `0` when it was missing, stale, or ineligible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an infrastructure error when the repository cannot evaluate or delete the row.
+    async fn delete_run_if_deletable(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<usize>;
+
     async fn delete_for_automation(&self, automation_id: &AutomationId) -> AppResult<usize>;
 }
