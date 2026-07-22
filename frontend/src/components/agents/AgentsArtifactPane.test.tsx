@@ -76,6 +76,7 @@ const defaultReviewSettings = {
 
 const {
   getWorkspaceChangesMock,
+  getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
@@ -146,6 +147,7 @@ const {
   tasksEnabledRef,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
@@ -315,6 +317,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceChangeSummary: (...args: unknown[]) =>
+      getWorkspaceChangeSummaryMock(...args),
     getAgentConversationWorkspaceReview: (...args: unknown[]) =>
       getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
@@ -1475,6 +1479,11 @@ describe("AgentsArtifactPane", () => {
         deletions: 1,
       },
     ]);
+    getWorkspaceChangeSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+    });
     getWorkspaceReviewMock.mockResolvedValue({
       changes: [
         {
@@ -2992,6 +3001,67 @@ describe("AgentsArtifactPane", () => {
       ),
     );
     expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
+  });
+
+  it("loads Commit & Publish activity from the focused run instead of the setup conversation", async () => {
+    getConversationWorkspaceMock.mockImplementation(async (conversationId: string) =>
+      conversationId === "conversation-run-7"
+        ? workspace({
+            conversationId,
+            mode: "edit",
+          })
+        : null,
+    );
+    getAgentConversationRuntimeStatusesMock.mockImplementation(
+      async (conversationIds: string[]) => ({
+        [conversationIds[0] ?? "missing"]: {
+          conversationId: conversationIds[0] ?? "missing",
+          isRunning: true,
+          agentStatus: "generating",
+          primarySource: "workspace",
+          summaryLabel: "Agent running",
+          items: [],
+        },
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({
+        conversationId: "conversation-setup",
+        mode: "automation",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "conversation-setup",
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+      {
+        automationRunFocusTarget: {
+          type: "automation_run",
+          automationId: "automation-1",
+          runId: "run-7",
+          conversationId: "conversation-run-7",
+        },
+      },
+    );
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-run-7"),
+    );
+    expect(getWorkspaceChangeSummaryMock).toHaveBeenCalledWith(
+      "conversation-run-7",
+    );
+    expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+      "conversation-run-7",
+    ]);
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalledWith(
+      "conversation-setup",
+    );
   });
 
   it("fails closed when a focused automation run has no workspace", async () => {

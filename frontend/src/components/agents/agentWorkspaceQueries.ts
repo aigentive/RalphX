@@ -18,6 +18,7 @@ import {
 
 export const AGENT_WORKSPACE_STALE_MS = 5_000;
 export const AGENT_WORKSPACE_FRESHNESS_STALE_MS = 60_000;
+export const ACTIVE_AGENT_WORKSPACE_REFRESH_MS = 2_500;
 
 export type WorkspaceReviewRefreshMode = "status" | "full_target";
 

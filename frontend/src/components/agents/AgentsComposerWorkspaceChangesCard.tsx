@@ -38,6 +38,7 @@ import {
 } from "./agentWorkspacePublishState";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
+  ACTIVE_AGENT_WORKSPACE_REFRESH_MS,
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
@@ -45,7 +46,6 @@ import { useAgentConversationRuntimeIndex } from "./useAgentConversationRuntimeI
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
 
-const ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS = 2_500;
 const ACTIVE_AGENT_TASK_REFRESH_MS = 2_500;
 const EMPTY_AGENT_TASKS: AgentTaskSummary[] = [];
 const EMPTY_AGENT_TASK_LISTS: AgentTaskListSummary[] = [];
@@ -710,7 +710,7 @@ function AgentsComposerWorkspaceChangesCardContent({
     staleTime: AGENT_WORKSPACE_STALE_MS,
     refetchInterval:
       canInspectLiveChanges && canHydrateReview && isAgentGenerating
-        ? ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS
+        ? ACTIVE_AGENT_WORKSPACE_REFRESH_MS
         : false,
   });
   const tasksQuery = useQuery({

@@ -29,7 +29,10 @@ import { useTeamStore } from "@/stores/teamStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
 import { findStoreKeyForContextId } from "@/lib/agent-event-utils";
-import { agentWorkspaceKeys } from "@/components/agents/agentWorkspaceQueries";
+import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "@/components/agents/agentWorkspaceQueries";
 import {
   chatKeys,
   invalidateConversationDataQueries,
@@ -331,24 +334,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     }
 
     function invalidateAgentWorkspacePublishQueries(conversationId: string) {
-      queryClient.invalidateQueries({
-        queryKey: ["agents", "conversation-workspace", conversationId],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["agents", "conversation-workspace-freshness", conversationId],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["agents", "workspace-review", conversationId],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["agents", "workspace-diff", conversationId],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["agents", "workspace-commits", conversationId],
-      });
+      void invalidateWorkspaceQueries(queryClient, conversationId);
     }
 
     function workspaceChangedConversationId(payload: unknown): string | null {
