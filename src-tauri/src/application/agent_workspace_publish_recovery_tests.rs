@@ -585,14 +585,13 @@ mod extracted_inline_tests {
         let mut workspace = needs_agent_workspace(conversation_id);
         workspace.publication_push_status = Some("failed".to_string());
 
-        let recovered =
-            recover_stale_publish_repair_for_workspace(
-                Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
-                agent_run_repo,
-                workspace,
-            )
-            .await
-            .expect("check repair state");
+        let recovered = recover_stale_publish_repair_for_workspace(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            agent_run_repo,
+            workspace,
+        )
+        .await
+        .expect("check repair state");
 
         assert!(!recovered);
     }

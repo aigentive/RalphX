@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunId,
+    ChatConversationId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairStateGuard,
@@ -15,6 +15,7 @@ use crate::error::AppResult;
 pub(crate) const REPAIR_REQUESTED_STEP: &str = "repair_requested";
 pub(crate) const REPAIR_DEFERRED_STEP: &str = "repair_deferred";
 pub(crate) const REPAIR_SENT_STEP: &str = "repair_sent";
+pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
 const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,9 +28,7 @@ pub(crate) fn repair_run_event_classification(run_id: &AgentRunId) -> String {
     format!("{REPAIR_RUN_CLASSIFICATION_PREFIX}{}", run_id.as_str())
 }
 
-fn repair_event_run_id(
-    event: &AgentConversationWorkspacePublicationEvent,
-) -> Option<&str> {
+fn repair_event_run_id(event: &AgentConversationWorkspacePublicationEvent) -> Option<&str> {
     event
         .classification
         .as_deref()?
@@ -231,13 +230,12 @@ pub(crate) fn terminal_run_authorizes_repair_recovery(
     }
 
     match event.step.as_str() {
-        REPAIR_SENT_STEP => {
-            repair_sent_event_authorizes_run(event, terminal_run, claim_started_at)
-        }
+        REPAIR_SENT_STEP => repair_sent_event_authorizes_run(event, terminal_run, claim_started_at),
         REPAIR_REQUESTED_STEP => terminal_run.started_at >= event.created_at,
         REPAIR_DEFERRED_STEP => {
-            terminal_run.started_at >= event.created_at
-                || terminal_run
+            Utc::now().signed_duration_since(event.created_at)
+                >= Duration::seconds(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS as i64)
+                && terminal_run
                     .completed_at
                     .is_some_and(|completed_at| event.created_at <= completed_at)
         }

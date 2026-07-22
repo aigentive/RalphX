@@ -35,9 +35,9 @@ use crate::application::{AppState, NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentRunId, AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus,
-    ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus, ChatContextType,
+    ChatConversationId, IdeationSessionId, ProjectId,
 };
 use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
@@ -1574,7 +1574,7 @@ async fn mark_agent_workspace_pr_terminal(
             workspace.publication_push_status.as_deref(),
         )
         .await?;
-    if let Err(error) = workspace_repo
+    workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
             format!("pr_{status}"),
@@ -1770,7 +1770,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
     else {
         return Ok(false);
     };
-    workspace_repo
+    if let Err(error) = workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
             "pr_conflict_repair",
@@ -1781,12 +1781,8 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
         .await
     {
         let summary = format!("Failed to record PR conflict repair request: {error}");
-        settle_pr_conflict_repair_dispatch_failure(
-            Arc::clone(&workspace_repo),
-            &claim,
-            &summary,
-        )
-        .await?;
+        settle_pr_conflict_repair_dispatch_failure(Arc::clone(&workspace_repo), &claim, &summary)
+            .await?;
         return Err(error);
     }
     if let Err(error) = workspace_repo
@@ -1800,12 +1796,8 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
         .await
     {
         let summary = format!("Failed to record workspace repair request: {error}");
-        settle_pr_conflict_repair_dispatch_failure(
-            Arc::clone(&workspace_repo),
-            &claim,
-            &summary,
-        )
-        .await?;
+        settle_pr_conflict_repair_dispatch_failure(Arc::clone(&workspace_repo), &claim, &summary)
+            .await?;
         return Err(error);
     }
 
@@ -1824,12 +1816,8 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
         .await
     {
         let summary = format!("Failed to reserve workspace repair dispatch: {error}");
-        settle_pr_conflict_repair_dispatch_failure(
-            Arc::clone(&workspace_repo),
-            &claim,
-            &summary,
-        )
-        .await?;
+        settle_pr_conflict_repair_dispatch_failure(Arc::clone(&workspace_repo), &claim, &summary)
+            .await?;
         return Err(error);
     }
     match chat_service

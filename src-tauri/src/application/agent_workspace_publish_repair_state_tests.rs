@@ -4,6 +4,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     claim_agent_workspace_repair, complete_agent_workspace_repair_claim,
     current_agent_workspace_repair_claim_for_completion, reconcile_active_agent_workspace_repair,
     repair_event_authorizes_active_run, settle_agent_workspace_repair_failure,
+    terminal_run_authorizes_repair_recovery, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -30,6 +31,44 @@ fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWor
     workspace.publication_push_status = Some("needs_agent".to_string());
     workspace.pr_supervision_status = Some("blocked".to_string());
     workspace
+}
+
+#[test]
+fn fresh_deferred_repair_is_not_failed_by_the_run_it_is_waiting_on() {
+    let conversation_id = ChatConversationId::from_string("repair-deferred-lineage");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_updated_at = Some(
+        chrono::Utc::now()
+            - chrono::Duration::seconds(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS as i64 + 2),
+    );
+
+    let mut terminal_run = AgentRun::new(conversation_id.clone());
+    terminal_run.started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+    terminal_run.completed_at = Some(chrono::Utc::now());
+    let mut deferred_event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id,
+        "repair_deferred",
+        "started",
+        "Waiting for the active workspace agent turn to finish before sending repair",
+        Some("agent_fixable".to_string()),
+    );
+    deferred_event.created_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+
+    assert!(!terminal_run_authorizes_repair_recovery(
+        &workspace,
+        &[deferred_event.clone()],
+        &terminal_run,
+    ));
+
+    deferred_event.created_at = chrono::Utc::now()
+        - chrono::Duration::seconds(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS as i64 + 1);
+    terminal_run.completed_at = Some(chrono::Utc::now());
+    assert!(terminal_run_authorizes_repair_recovery(
+        &workspace,
+        &[deferred_event],
+        &terminal_run,
+    ));
 }
 
 #[tokio::test]

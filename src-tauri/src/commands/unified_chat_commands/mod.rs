@@ -79,7 +79,7 @@ use crate::application::agent_workspace_publish_recovery::recover_stale_publish_
 use crate::application::agent_workspace_publish_repair_state::{
     claim_agent_workspace_repair, repair_run_event_classification,
     settle_agent_workspace_failure_without_repair, settle_agent_workspace_repair_failure,
-    AgentWorkspaceRepairClaim,
+    AgentWorkspaceRepairClaim, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
@@ -8366,7 +8366,9 @@ async fn spawn_deferred_agent_workspace_repair_message(
             {
                 break;
             }
-            if wait_started.elapsed() >= Duration::from_secs(300) {
+            if wait_started.elapsed()
+                >= Duration::from_secs(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS)
+            {
                 let summary =
                     "Timed out waiting for active workspace agent turn before sending repair";
                 settle_agent_workspace_repair_dispatch_failure(state.inner(), &claim, summary)

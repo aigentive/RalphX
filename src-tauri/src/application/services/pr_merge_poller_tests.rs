@@ -20,11 +20,11 @@ use super::{AgentWorkspacePrPollerStart, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion;
 use crate::application::agent_workspace_terminal_cleanup::{
     cleanup_terminal_agent_workspace_after_pr, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
 };
-use crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion;
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::interactive_notification_producer::pr_review_notification_key;
