@@ -91,7 +91,7 @@ async fn terminal_workspace_diff_pages_use_preserved_pr_head_without_restoring_b
 
     let conversation_id = ChatConversationId::from_string("conversation-terminal-diff");
     let mut workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         project.id.clone(),
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -202,7 +202,7 @@ async fn terminal_transition_does_not_reuse_cached_active_branch_context() {
     let expected_worktree = resolve_agent_conversation_workspace_path(&project, &conversation_id)
         .expect("canonical worktree path should resolve");
     let mut workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         project.id.clone(),
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,

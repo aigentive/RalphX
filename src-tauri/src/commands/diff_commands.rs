@@ -3237,7 +3237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_context_loader_returns_hit_without_repository_lookup() {
+    async fn cached_context_loader_returns_hit_for_current_workspace_version() {
         let conversation_id = test_conversation_id();
         let state = AppState::new_test();
         let context = AgentWorkspaceContext {
@@ -3249,6 +3249,7 @@ mod tests {
             repair_state: None,
         };
         invalidate_agent_workspace_diff_caches(&conversation_id);
+        ensure_agent_workspace_diff_cache_matches(&conversation_id, String::new());
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
@@ -3257,7 +3258,7 @@ mod tests {
 
         let (cached, status) = get_agent_workspace_context_cached(&state, &conversation_id)
             .await
-            .expect("cached context should be returned before repository lookup");
+            .expect("current-version cached context should be returned");
 
         assert_eq!(status.as_str(), "hit");
         assert_eq!(cached.working_path, context.working_path);
@@ -3267,17 +3268,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_review_loader_returns_hit_without_repository_lookup() {
+    async fn cached_review_loader_returns_hit_for_current_workspace_version() {
         let conversation_id = test_conversation_id();
         let state = AppState::new_test();
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         invalidate_agent_workspace_diff_caches(&conversation_id);
+        ensure_agent_workspace_diff_cache_matches(&conversation_id, String::new());
         store_agent_workspace_review(&conversation_id, &snapshot);
 
         let (cached, status) =
             get_agent_conversation_workspace_review_cached(&state, &conversation_id)
                 .await
-                .expect("cached review should be returned before repository lookup");
+                .expect("current-version cached review should be returned");
 
         assert_eq!(status.as_str(), "hit");
         assert_eq!(cached.response.commits.len(), 1);
@@ -3746,6 +3748,9 @@ mod tests {
     async fn file_diff_page_command_rejects_staged_refs_for_read_only_context() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
+        ensure_agent_workspace_diff_cache_current(&state, &conversation_id)
+            .await
+            .expect("workspace cache version should load");
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
@@ -4549,6 +4554,9 @@ new file mode 100644
     async fn change_summary_command_returns_empty_for_branch_backed_context() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
+        ensure_agent_workspace_diff_cache_current(&state, &conversation_id)
+            .await
+            .expect("workspace cache version should load");
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
