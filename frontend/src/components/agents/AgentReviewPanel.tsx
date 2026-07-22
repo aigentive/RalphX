@@ -100,6 +100,7 @@ interface AgentReviewPanelProps {
   isApproveAnywayActionPending?: boolean;
   isWorkspaceRuntimeGenerating?: boolean;
   isPublishingWorkspace?: boolean;
+  embedded?: boolean;
   onOpenPublish?: () => void;
   onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
@@ -356,6 +357,7 @@ export function AgentReviewPanel({
   isApproveAnywayActionPending = false,
   isWorkspaceRuntimeGenerating = false,
   isPublishingWorkspace = false,
+  embedded = false,
   onOpenPublish,
   onViewTranscript,
   onStartReview,
@@ -504,6 +506,7 @@ export function AgentReviewPanel({
     if (!action) return null;
     const isActionDisabled = actionDisabledReason !== null;
     const shouldPromotePublish =
+      !embedded &&
       action.label === "Run again" &&
       Boolean(onOpenPublish) &&
       Boolean(displayContext?.reviewArtifactIsCurrent) &&
@@ -637,15 +640,22 @@ export function AgentReviewPanel({
         </div>
       );
     }
+    const isEmbeddedRerun =
+      embedded && action.kind === "review" && action.label === "Run again";
     const button = (
       <Button
         type="button"
+        variant={isEmbeddedRerun ? "outline" : "default"}
         size="sm"
         onClick={() =>
           action.kind === "fix" ? onFixIssues() : onStartReview(action.force)
         }
         disabled={isActionDisabled}
-        className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+        className={
+          isEmbeddedRerun
+            ? "h-8 gap-1.5"
+            : "h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+        }
       >
         <ActionIcon className={`h-4 w-4 ${actionIconClassName}`} />
         {action.label}
@@ -670,6 +680,7 @@ export function AgentReviewPanel({
     canApproveAnyway,
     confirm,
     displayContext,
+    embedded,
     isApproveAnywayActionPending,
     isFixerActive,
     isReviewActionPending,
@@ -687,7 +698,7 @@ export function AgentReviewPanel({
 
   if (!displayContext && reviewArtifact && !isReviewPrWorkspace) {
     return (
-      <div className="min-h-full px-4 pb-4 pt-4">
+      <div className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}>
         <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
           <LazyPlanDisplay
             plan={reviewArtifact}
@@ -703,7 +714,11 @@ export function AgentReviewPanel({
   }
 
   return (
-    <div className="min-h-full px-4 pb-4 pt-4">
+    <div
+      className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}
+      data-embedded={embedded ? "true" : undefined}
+      data-testid="agents-review-panel"
+    >
       <div
         className="mb-4 rounded-md p-4"
         style={{
