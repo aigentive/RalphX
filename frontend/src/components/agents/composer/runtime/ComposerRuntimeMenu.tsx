@@ -9,6 +9,7 @@ import {
   ComposerRuntimeCapabilityLevel,
   ComposerRuntimeEffortLevel,
   ComposerRuntimeModelLevel,
+  ComposerRuntimePersonaLevel,
   ComposerRuntimeProviderLevel,
   ComposerRuntimeSpeedLevel,
 } from "./ComposerRuntimeMenuLevels";
@@ -21,7 +22,9 @@ import type {
   ComposerRuntimeCapabilityField,
   ComposerRuntimeEffortField,
   ComposerRuntimeModelField,
+  ComposerRuntimePersonaField,
   ComposerRuntimeProviderField,
+  ComposerRuntimeSpeedField,
 } from "./runtimeSelectorTypes";
 
 interface ComposerRuntimeMenuProps {
@@ -29,6 +32,8 @@ interface ComposerRuntimeMenuProps {
   model: ComposerRuntimeModelField;
   effort: ComposerRuntimeEffortField;
   capability?: ComposerRuntimeCapabilityField;
+  persona?: ComposerRuntimePersonaField;
+  speed?: ComposerRuntimeSpeedField;
   runtimeDefault?: {
     source?: string | null;
     isResetting?: boolean;
@@ -51,6 +56,8 @@ export function ComposerRuntimeMenu({
   model,
   effort,
   capability,
+  persona,
+  speed,
   runtimeDefault,
   viewingProvider,
   onViewingProviderChange,
@@ -66,6 +73,7 @@ export function ComposerRuntimeMenu({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const effortTriggerRef = useRef<HTMLButtonElement>(null);
   const capabilityTriggerRef = useRef<HTMLButtonElement>(null);
+  const personaTriggerRef = useRef<HTMLButtonElement>(null);
   const speedTriggerRef = useRef<HTMLButtonElement>(null);
   const viewingOption = provider.options.find(
     (option) => option.id === viewingProvider,
@@ -82,7 +90,12 @@ export function ComposerRuntimeMenu({
     ? (capability.options.find((option) => option.id === capability.value)
         ?.label ?? capability.value)
     : "";
-  const speedLabel = model.fastMode?.value ? "Fast" : "Standard";
+  const personaLabel = persona
+    ? (persona.options.find((option) => option.id === persona.value)?.label ?? persona.value)
+    : "";
+  const speedLabel = speed
+    ? (speed.options.find((option) => option.id === speed.value)?.label ?? speed.value)
+    : "";
 
   const returnToOverview = (trigger: RefObject<HTMLButtonElement | null>) => {
     onLevelChange("overview");
@@ -134,18 +147,26 @@ export function ComposerRuntimeMenu({
   ) : null;
   const speedLevel = (
     <ComposerRuntimeSpeedLevel
-      model={model}
+      speed={speed!}
       narrow={narrow}
       onBack={() => returnToOverview(speedTriggerRef)}
     />
   );
+  const personaLevel = persona ? (
+    <ComposerRuntimePersonaLevel
+      persona={persona}
+      narrow={narrow}
+      onBack={() => returnToOverview(personaTriggerRef)}
+    />
+  ) : null;
 
   if (narrow && level !== "overview") {
     if (level === "provider") return providerLevel;
     if (level === "models") return modelLevel;
     if (level === "effort") return effortLevel;
     if (level === "capability" && capabilityLevel) return capabilityLevel;
-    if (level === "speed") return speedLevel;
+    if (level === "persona" && personaLevel) return personaLevel;
+    if (level === "speed" && speed) return speedLevel;
   }
 
   return (
@@ -240,7 +261,25 @@ export function ComposerRuntimeMenu({
               {capabilityLevel}
             </ComposerRuntimeMenuRow>
           )}
-          {!viewingProviderDisabled && model.fastMode?.visible && (
+          {!viewingProviderDisabled && persona && personaLevel && (
+            <ComposerRuntimeMenuRow
+              narrow={narrow}
+              active={level === "persona"}
+              level="persona"
+              label="Persona"
+              value={personaLabel}
+              testId="agent-composer-runtime-persona-menu-trigger"
+              side={side}
+              triggerRef={personaTriggerRef}
+              contentRef={nestedContentRef}
+              focusSelector={`[data-testid="${persona.testId ?? "agent-composer-runtime-persona"}-${persona.value}"]`}
+              onLevelChange={onLevelChange}
+              disabled={persona.disabled ?? false}
+            >
+              {personaLevel}
+            </ComposerRuntimeMenuRow>
+          )}
+          {!viewingProviderDisabled && speed && (
             <ComposerRuntimeMenuRow
               narrow={narrow}
               active={level === "speed"}
@@ -251,7 +290,7 @@ export function ComposerRuntimeMenu({
               side={side}
               triggerRef={speedTriggerRef}
               contentRef={nestedContentRef}
-              focusSelector={`[data-testid="agent-composer-runtime-speed-${model.fastMode.value ? "fast" : "standard"}"]`}
+              focusSelector={`[data-testid="agent-composer-runtime-speed-${speed.value}"]`}
               onLevelChange={onLevelChange}
             >
               {speedLevel}

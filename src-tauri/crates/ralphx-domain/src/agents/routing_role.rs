@@ -374,6 +374,25 @@ pub struct ManualRoleDefault {
     pub sandbox_mode: Option<String>,
 }
 
+/// Complete caller-selectable runtime fields for one backend-derived routing role.
+///
+/// Approval and sandbox are intentionally absent: launch code always preserves
+/// those fields from the effective role default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManualRoleRuntimeOverride {
+    pub harness: AgentHarnessKind,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<LogicalEffort>,
+    pub service_tier: ManualServiceTier,
+    #[serde(default)]
+    pub coordination_mode: Option<CoordinationMode>,
+    #[serde(default)]
+    pub persona_id: Option<PersonaId>,
+}
+
 impl ManualRoleDefault {
     pub fn from_legacy(settings: &super::AgentLaneSettings) -> Self {
         Self {

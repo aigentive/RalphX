@@ -719,6 +719,7 @@ pub async fn spawn_project_analyzer(
             Some(project_id),
             Some(working_directory.as_path()),
             RoutingRole::UtilityProjectAnalyzer,
+            None,
             agent_names::AGENT_PROJECT_ANALYZER,
             "project analyzer",
             None,
