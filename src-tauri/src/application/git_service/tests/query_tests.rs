@@ -435,7 +435,9 @@ async fn get_branch_authored_commits_excludes_commits_imported_by_base_update_me
         "imported base commit leaked into branch-authored evidence: {subjects:?}"
     );
     assert!(subjects.iter().any(|subject| *subject == "feature work"));
-    assert!(subjects.iter().any(|subject| *subject == "more feature work"));
+    assert!(subjects
+        .iter()
+        .any(|subject| *subject == "more feature work"));
 }
 
 #[tokio::test]

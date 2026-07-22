@@ -503,7 +503,12 @@ async fn pr_reconciliation_fails_closed_for_ambiguous_validated_tasks() {
         ClickUpPrAssociationInput {
             conversation_id: "conversation-ambiguous".to_string(),
             project_id: "project-1".to_string(),
-            evidence: evidence("feature/DEV-42", "No title ticket", None, &["OPS-7 follow-up"]),
+            evidence: evidence(
+                "feature/DEV-42",
+                "No title ticket",
+                None,
+                &["OPS-7 follow-up"],
+            ),
             pr_number: 52,
             pr_url: None,
             pr_status: "open".to_string(),
