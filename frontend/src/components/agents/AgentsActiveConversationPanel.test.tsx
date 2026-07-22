@@ -1627,15 +1627,28 @@ describe("AgentsActiveConversationPanel", () => {
     expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("true");
   });
 
-  it("labels parked automation setup run chips as awaiting plan approval", () => {
+  it("routes setup automation runs through the Runtime tray with plan focus seeding", async () => {
+    const onFocusAutomationRun = vi.fn();
+    const onSelectArtifact = vi.fn();
     useAutomationDetailMock.mockReturnValue({
       data: {
-        automation: { status: "active" },
+        automation: {
+          id: "automation-1",
+          name: "Nightly release",
+          status: "active",
+          planApprovalMode: "manual",
+        },
         runs: [
           {
             id: "run-1",
+            automationId: "automation-1",
             runIndex: 1,
             status: "awaiting_plan_approval",
+            judgeState: "none",
+            planPhase: true,
+            planArtifactId: "plan-artifact-1",
+            prNumber: null,
+            prUrl: null,
             conversationId: "conversation-run-1",
           },
         ],
@@ -1645,6 +1658,8 @@ describe("AgentsActiveConversationPanel", () => {
     });
 
     renderPanel({
+      onFocusAutomationRun,
+      onSelectArtifact,
       activeConversation: {
         ...projectConversation(),
         agentMode: "automation",
@@ -1653,9 +1668,30 @@ describe("AgentsActiveConversationPanel", () => {
       },
     });
 
-    const widget = screen.getByTestId("agents-automation-runs-widget");
-    expect(within(widget).getByText("Awaiting plan approval")).toBeInTheDocument();
-    expect(within(widget).queryByText("Running")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-runs-widget"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("agents-composer-runtimes-toggle"));
+    const runs = await screen.findByTestId("agents-composer-runtimes-group-runs");
+    expect(within(runs).getByText("Awaiting plan approval")).toBeInTheDocument();
+
+    fireEvent.click(
+      within(runs).getByTestId("agents-composer-automation-run-run-1"),
+    );
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
+    expect(onFocusAutomationRun).toHaveBeenCalledWith(
+      "automation-1",
+      "run-1",
+      "conversation-run-1",
+      {
+        runStatus: "awaiting_plan_approval",
+        judgeState: "none",
+        workspaceMode: "plan",
+        hasPlanArtifact: true,
+        hasPullRequest: false,
+      },
+    );
   });
 
   it.each(["running", "provisioning"] as const)(
