@@ -416,7 +416,7 @@ export function AgentsPublishInlineDiffs({
     isStagedMode,
     isUnstagedMode,
     refKind,
-    repairChangeSignature,
+    worktreeChangeSignature,
     setMode,
     stagedCount,
     supportsWorktreeModes,
@@ -435,9 +435,9 @@ export function AgentsPublishInlineDiffs({
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
       : refKind;
-  const repairDiffQuerySignature = repairMode
-    ? (repairChangeSignature ?? "repair:none")
-    : undefined;
+  const diffQuerySignature = repairMode
+    ? (worktreeChangeSignature ?? "repair:none")
+    : worktreeChangeSignature;
   const diffPageRefKind = useMemo(
     () =>
       resolveDiffPageRefKind({
@@ -449,9 +449,7 @@ export function AgentsPublishInlineDiffs({
     [isStagedMode, isUnstagedMode, refKind, repairMode],
   );
   const diffPageReloadKey =
-    repairMode && (isStagedMode || isUnstagedMode)
-      ? repairDiffQuerySignature
-      : undefined;
+    isStagedMode || isUnstagedMode ? diffQuerySignature : undefined;
   const currentFilePathIdentity = useMemo(
     () => currentFiles.map((file) => file.path).join("\u0000"),
     [currentFiles],
@@ -461,14 +459,14 @@ export function AgentsPublishInlineDiffs({
       [
         conversationId,
         diffRefKindKey(refKind),
-        repairDiffQuerySignature ?? "stable",
+        diffQuerySignature ?? "stable",
         currentFilePathIdentity,
       ].join("\u0001"),
     [
       conversationId,
       currentFilePathIdentity,
       refKind,
-      repairDiffQuerySignature,
+      diffQuerySignature,
     ],
   );
   const [hydrationState, setHydrationState] = useState<HydrationPathState>(
@@ -915,7 +913,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         repairMode ? "repair-staged" : "staged",
-        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        ...(diffQuerySignature !== undefined ? [diffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -938,7 +936,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         repairMode ? "repair-unstaged" : "unstaged",
-        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        ...(diffQuerySignature !== undefined ? [diffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -961,7 +959,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         "repair-conflicted",
-        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        ...(diffQuerySignature !== undefined ? [diffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
