@@ -103,6 +103,7 @@ import {
 } from "./agentWorkspaceOperationToast";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
+import { useAgentPublishWorkspaceActivity } from "./useAgentPublishWorkspaceActivity";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -306,16 +307,21 @@ export function AgentPublishPanel({
   const inlineDiffsCandidate = canInspectAgentWorkspacePublishDiffs(workspace, {
     includeTerminalPublished: true,
   });
-  const reviewQuery = useQuery({
-    queryKey: agentWorkspaceKeys.review(conversationId),
-    queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
-    enabled:
+  const publishWorkspaceActivity = useAgentPublishWorkspaceActivity({
+    conversationId,
+    reviewEnabled:
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
       (reviewOpen || inlineDiffsCandidate),
-    staleTime: 2_000,
+    liveRefreshEnabled:
+      canHydratePublishFacts &&
+      !!conversationId &&
+      !isRepairPending &&
+      inlineDiffsCandidate &&
+      !terminalPublicationStatus,
   });
+  const { reviewQuery } = publishWorkspaceActivity;
   const publicationEventsQuery = useQuery({
     queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
     queryFn: () =>
@@ -1555,6 +1561,9 @@ export function AgentPublishPanel({
               isLoading={Boolean(conversationId) && (!canHydratePublishFacts || reviewQuery.isLoading)}
               annotations={prAnnotations}
               hunkAnnotations={workspaceReviewHunkAnnotations}
+              liveSummary={
+                publishWorkspaceActivity.changeSummaryQuery.data ?? null
+              }
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
