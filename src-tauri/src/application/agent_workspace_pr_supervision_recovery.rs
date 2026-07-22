@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter};
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_pr_autofix_attempt::load_pr_autofix_attempt_decision;
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_and_reload_with_review_target;
 use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::agent_workspace_review_publish_handoff::{
@@ -21,6 +22,7 @@ use crate::application::agent_workspace_terminal_cleanup::{
 };
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
+use crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue;
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
@@ -333,6 +335,43 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         pr_sync_state_recovery_skip_reason(&target.branch_name, &sync_state, &local_head_sha)
     {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
+    }
+
+    let health = deps
+        .github
+        .fetch_pr_health(&target.worktree_path, target.pr_number)
+        .await?;
+    if let Some(issue) = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health) {
+        let events = deps
+            .workspace_repo
+            .list_publication_events(&conversation_id)
+            .await?;
+        let legacy_event_exists = events
+            .iter()
+            .any(|event| event.classification.as_deref() == Some(issue.classification.as_str()));
+        let decision = load_pr_autofix_attempt_decision(
+            deps.agent_run_repo.as_ref(),
+            &conversation_id,
+            target.pr_number,
+            &issue.classification,
+            legacy_event_exists,
+        )
+        .await?;
+        let summary = decision.manual_summary().unwrap_or(
+            "The same PR issue remains unresolved; RalphX is keeping supervision blocked while polling for an authorized autofix attempt.",
+        );
+        deps.workspace_repo
+            .update_pr_auto_merge_state(
+                &conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("blocked"),
+                Some(summary),
+            )
+            .await?;
+        start_recovered_pr_polling(&deps, &conversation_id, &project, &target);
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "pr_issue_unresolved",
+        ));
     }
 
     let pr_status = publication_status_for_sync_state(&sync_state);

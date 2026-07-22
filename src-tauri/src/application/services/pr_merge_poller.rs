@@ -16,6 +16,9 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_pr_autofix_attempt::{
+    load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
+};
 use crate::application::agent_workspace_publish_repair_state::{
     claim_agent_workspace_repair, repair_run_event_classification,
     settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,

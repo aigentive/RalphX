@@ -159,18 +159,6 @@ impl PruneEngine {
         info: &RunningAgentInfo,
         pid_alive: bool,
     ) -> bool {
-        // Skip in-flight registrations: try_register writes pid=0/empty agent_run_id as a
-        // placeholder; update_agent_process fills real values ~40ms later. Pruning here
-        // would incorrectly discard a valid in-progress registration.
-        if info.agent_run_id.is_empty() {
-            tracing::debug!(
-                context_type = key.context_type,
-                context_id = key.context_id,
-                "Skipping in-flight registry entry (no agent_run_id yet)"
-            );
-            return false;
-        }
-
         let run = match self
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(&info.agent_run_id))
@@ -188,6 +176,53 @@ impl PruneEngine {
                 return false;
             }
         };
+
+        if info.pid == 0 {
+            let lease_secs =
+                i64::try_from(stream_timeouts().launch_reservation_lease_secs).unwrap_or(i64::MAX);
+            let renewed_at = info.last_active_at.unwrap_or(info.started_at);
+            let lease_fresh = chrono::Utc::now().signed_duration_since(renewed_at)
+                <= chrono::Duration::seconds(lease_secs);
+            let owned_run_terminal = matches!(
+                run.as_ref(),
+                Some(agent_run) if agent_run.status != AgentRunStatus::Running
+            );
+
+            if lease_fresh && !owned_run_terminal {
+                tracing::debug!(
+                    context_type = key.context_type,
+                    context_id = key.context_id,
+                    run_id = info.agent_run_id,
+                    "Keeping fresh launch reservation"
+                );
+                return false;
+            }
+
+            let removed = self
+                .running_agent_registry
+                .unregister(key, &info.agent_run_id)
+                .await;
+            if removed.is_none() {
+                return false;
+            }
+            if let Some(agent_run) = run {
+                if agent_run.status == AgentRunStatus::Running {
+                    let _ = self
+                        .agent_run_repo
+                        .cancel(&AgentRunId::from_string(&info.agent_run_id))
+                        .await;
+                }
+            }
+            warn!(
+                context_type = key.context_type,
+                context_id = key.context_id,
+                run_id = info.agent_run_id,
+                lease_fresh,
+                owned_run_terminal,
+                "Pruned expired or terminal launch reservation"
+            );
+            return true;
+        }
 
         let mut reasons: Vec<&'static str> = Vec::new();
 
@@ -251,13 +286,19 @@ impl PruneEngine {
         }
 
         // Execute prune: stop (if pid alive) or unregister, then cancel the agent_run.
-        if pid_alive {
-            let _ = self.running_agent_registry.stop(key).await;
+        let removed = if pid_alive {
+            self.running_agent_registry
+                .stop_if_owned(key, &info.agent_run_id)
+                .await
+                .ok()
+                .flatten()
         } else {
-            let _ = self
-                .running_agent_registry
+            self.running_agent_registry
                 .unregister(key, &info.agent_run_id)
-                .await;
+                .await
+        };
+        if removed.is_none() {
+            return false;
         }
 
         if let Some(agent_run) = run {

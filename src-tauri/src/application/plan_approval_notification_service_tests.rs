@@ -445,6 +445,42 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
 }
 
 #[tokio::test]
+async fn conversation_release_skips_edit_workspace_before_verification_settlement() {
+    let state = AppState::new_test();
+    let (session, conversation) = planning_session_with_workspace(&state).await;
+    seed_deferred_marker(&state, &session, "plan-current").await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    let mut verifier = AgentRun::new(conversation.id);
+    verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    verifier.action_context_id = Some(session.id.as_str().to_string());
+    verifier.action_target_id = Some("plan-current".to_string());
+    state.agent_run_repo.create(verifier).await.unwrap();
+
+    assert_eq!(
+        release_deferred_plan_approval_for_conversation(&state, &conversation.id)
+            .await
+            .unwrap(),
+        PlanApprovalNotificationDisposition::Skipped
+    );
+    assert!(
+        has_deferred_plan_approval(&state, &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
     let state = AppState::new_test();
     let (session, conversation) = planning_session_with_workspace(&state).await;
