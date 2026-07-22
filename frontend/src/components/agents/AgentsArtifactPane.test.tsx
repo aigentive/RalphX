@@ -3481,7 +3481,7 @@ describe("AgentsArtifactPane", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not render a Review tab status dot for non-running review states", async () => {
+  it("labels the internal Review tab when review is required", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
@@ -3500,12 +3500,10 @@ describe("AgentsArtifactPane", () => {
 
     const reviewTab = await screen.findByTestId("agents-publish-tab-review");
 
-    expect(
-      reviewTab.querySelector('span[aria-hidden="true"].rounded-full'),
-    ).toBeNull();
+    expect(await within(reviewTab).findByText("Required")).toBeInTheDocument();
   });
 
-  it("renders a Review tab status dot only while review is running", async () => {
+  it("labels and animates the internal Review tab while review is running", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
@@ -3525,9 +3523,8 @@ describe("AgentsArtifactPane", () => {
 
     const reviewTab = await screen.findByTestId("agents-publish-tab-review");
 
-    expect(
-      reviewTab.querySelector('span[aria-hidden="true"].rounded-full'),
-    ).toBeInTheDocument();
+    expect(await within(reviewTab).findByText("Running")).toBeInTheDocument();
+    expect(reviewTab.querySelector("svg")).toHaveClass("animate-pulse");
   });
 
   it("colors the Review tab as passed only after the review gate passes", async () => {
@@ -3552,12 +3549,10 @@ describe("AgentsArtifactPane", () => {
     );
 
     const reviewTab = await screen.findByTestId("agents-publish-tab-review");
+    await within(reviewTab).findByText("Passed");
     const reviewIcon = reviewTab.querySelector("svg");
 
     expect(reviewIcon).toHaveStyle({ color: "var(--status-success)" });
-    expect(
-      reviewTab.querySelector('span[aria-hidden="true"].rounded-full'),
-    ).toBeNull();
   });
 
   it("colors an approved-anyway blocking Review tab as a warning", async () => {
@@ -3588,6 +3583,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     const reviewTab = await screen.findByTestId("agents-publish-tab-review");
+    await within(reviewTab).findByText("Approved");
     const reviewIcon = reviewTab.querySelector("svg");
 
     expect(reviewIcon).toHaveStyle({ color: "var(--status-warning)" });
@@ -3785,8 +3781,9 @@ describe("AgentsArtifactPane", () => {
       queryClient,
     );
 
-    expect(await screen.findByText("Review blocking")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Fix Issues" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Fix Issues" }),
+    );
 
     await waitFor(() =>
       expect(startWorkspaceReviewFixerMock).toHaveBeenCalledWith(
@@ -3853,8 +3850,9 @@ describe("AgentsArtifactPane", () => {
       queryClient,
     );
 
-    expect(await screen.findByText("Review blocking")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Review actions" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Review actions" }),
+    );
     await user.click(screen.getByTestId("agents-review-approve-anyway"));
     await user.click(screen.getByRole("button", { name: "Approve anyway" }));
 
@@ -3939,13 +3937,13 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    expect(await screen.findByText("Review blocking")).toBeInTheDocument();
+    const updateReviewButton = await screen.findByRole("button", {
+      name: "Update review",
+    });
     expect(
       screen.queryByRole("button", { name: "Fix Issues" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Update review" }),
-    ).toBeInTheDocument();
+    expect(updateReviewButton).toBeInTheDocument();
   });
 
   it("runs a forced update for an outdated Review artifact", async () => {
@@ -4154,7 +4152,7 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    const content = await screen.findByTestId("agents-artifact-content-review");
+    const content = await screen.findByTestId("agents-publish-content-review");
 
     expect(await within(content).findByText("Reviewing")).toBeInTheDocument();
     expect(
@@ -4280,7 +4278,9 @@ describe("AgentsArtifactPane", () => {
       },
     );
 
-    fireEvent.click(await screen.findByTestId("agents-review-open-publish"));
+    const publishAction = await screen.findByTestId("agents-review-open-publish");
+    tabChange.mockClear();
+    fireEvent.click(publishAction);
 
     expect(openPublish).toHaveBeenCalledTimes(1);
     expect(tabChange).not.toHaveBeenCalledWith("publish");
