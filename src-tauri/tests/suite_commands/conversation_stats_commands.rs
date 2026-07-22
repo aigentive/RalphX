@@ -104,6 +104,61 @@ fn test_conversation_source_selection_ignores_uncountable_coverage() {
 }
 
 #[test]
+fn test_conversation_source_selection_counts_legacy_logical_samples_before_normalization() {
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let now = Utc::now();
+    let messages = [100, 200, 300]
+        .into_iter()
+        .enumerate()
+        .map(|(index, input_tokens)| {
+            let mut message = tagged_message(
+                &conversation,
+                &session_id,
+                AgentHarnessKind::Codex,
+                input_tokens,
+            );
+            message.usage_provenance = None;
+            message.provider_session_id = Some("legacy-session".to_string());
+            message.created_at = now + Duration::seconds(index as i64);
+            message
+        })
+        .collect::<Vec<_>>();
+    let run = tagged_run(&conversation, AgentHarnessKind::Codex, 999);
+
+    let response = build_conversation_stats_response(&conversation, &messages, &[run]);
+
+    assert_eq!(response.usage_coverage.effective_totals_source, "messages");
+    assert_eq!(response.effective_usage_totals.input_tokens, 600);
+    assert_eq!(
+        response.usage_coverage.effective_message_conversation_count,
+        1
+    );
+}
+
+#[test]
+fn test_all_uncounted_ledgers_do_not_claim_an_effective_source() {
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let mut message = ChatMessage::orchestrator_in_session(session_id, "unknown message");
+    message.conversation_id = Some(conversation.id);
+    message.input_tokens = Some(100);
+    let mut run = AgentRun::new(conversation.id);
+    run.input_tokens = Some(200);
+
+    let response = build_conversation_stats_response(&conversation, &[message], &[run]);
+
+    assert_eq!(response.usage_coverage.effective_totals_source, "none");
+    assert_eq!(response.usage_coverage.effective_run_conversation_count, 0);
+    assert_eq!(
+        response.usage_coverage.effective_message_conversation_count,
+        0
+    );
+    assert_eq!(response.usage_coverage.uncounted_sample_count, 1);
+    assert_eq!(response.effective_usage_totals.processed_tokens, None);
+}
+
+#[test]
 fn test_scope_selection_can_mix_ledgers_without_bucket_drift() {
     let first_session = IdeationSessionId::new();
     let second_session = IdeationSessionId::new();
@@ -195,6 +250,40 @@ fn test_baseline_and_fallback_quality_do_not_count_raw_baseline() {
     assert_eq!(response.effective_usage_totals.input_tokens, 400);
     assert_eq!(response.effective_usage_totals.processed_tokens, None);
     assert_eq!(response.usage_coverage.fallback_estimated_sample_count, 1);
+    assert_eq!(response.usage_coverage.uncounted_sample_count, 1);
+    assert_eq!(response.by_harness[0].count, 2);
+    assert_eq!(response.by_harness[0].usage.input_tokens, 400);
+    assert_eq!(response.by_harness[0].usage.processed_tokens, None);
+}
+
+#[test]
+fn test_legacy_codex_overflow_fails_closed() {
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let now = Utc::now();
+    let messages = [u64::MAX, 1]
+        .into_iter()
+        .enumerate()
+        .map(|(index, input_tokens)| {
+            let mut message = tagged_message(
+                &conversation,
+                &session_id,
+                AgentHarnessKind::Codex,
+                input_tokens,
+            );
+            message.output_tokens = None;
+            message.usage_provenance = None;
+            message.provider_session_id = Some("legacy-overflow".to_string());
+            message.created_at = now + Duration::seconds(index as i64);
+            message
+        })
+        .collect::<Vec<_>>();
+
+    let response = build_conversation_stats_response(&conversation, &messages, &[]);
+
+    assert_eq!(response.usage_coverage.effective_totals_source, "messages");
+    assert_eq!(response.effective_usage_totals.input_tokens, 0);
+    assert_eq!(response.effective_usage_totals.processed_tokens, None);
     assert_eq!(response.usage_coverage.uncounted_sample_count, 1);
 }
 

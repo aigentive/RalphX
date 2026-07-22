@@ -104,11 +104,13 @@ impl StreamProcessor {
 
         match msg {
             StreamMessage::MessageDelta { usage, .. } => {
-                if let Some(usage) = usage.as_ref() {
-                    update_turn_usage_from_value(&mut self.current_turn_usage, usage);
-                    if !self.current_turn_usage.is_empty() {
-                        self.current_turn_usage_provenance =
-                            Some(UsageProvenance::ProviderSnapshotFallback);
+                if parent_tool_use_id.is_none() {
+                    if let Some(usage) = usage.as_ref() {
+                        update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                        if !self.current_turn_usage.is_empty() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
                     }
                 }
             }
@@ -290,11 +292,13 @@ impl StreamProcessor {
                 message,
                 session_id,
             } => {
-                if let Some(usage) = message.usage.as_ref() {
-                    update_turn_usage_from_value(&mut self.current_turn_usage, usage);
-                    if !self.current_turn_usage.is_empty() {
-                        self.current_turn_usage_provenance =
-                            Some(UsageProvenance::ProviderSnapshotFallback);
+                if parent_tool_use_id.is_none() {
+                    if let Some(usage) = message.usage.as_ref() {
+                        update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                        if !self.current_turn_usage.is_empty() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
                     }
                 }
                 // Handle --verbose mode assistant messages (full content in one message)
@@ -679,7 +683,7 @@ fn update_max_usage_field(target: &mut Option<u64>, next: Option<u64>) {
 
 fn add_optional_u64(lhs: Option<u64>, rhs: Option<u64>) -> Option<u64> {
     match (lhs, rhs) {
-        (Some(left), Some(right)) => Some(left + right),
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
         (Some(left), None) => Some(left),
         (None, Some(right)) => Some(right),
         (None, None) => None,

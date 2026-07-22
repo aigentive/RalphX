@@ -16,10 +16,11 @@ use super::{
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
     get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
     invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
-    mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
-    normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
-    normalize_explicit_publish_base_selection, normalized_effort_for_supported,
-    parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
+    load_delegated_tool_runtime_snapshot, mark_agent_workspace_failure_with_routing_and_action,
+    merge_delegated_snapshot_into_result, normalize_agent_runtime_selection,
+    normalize_agent_workspace_source_pull_request, normalize_explicit_publish_base_selection,
+    normalized_effort_for_supported, parse_wrapped_mcp_result_object,
+    persist_workspace_base_resolution_if_retargeted,
     precompute_agent_conversation_workspace_pr_description_for_app_state,
     preview_tool_payloads_for_message, project_plan_branch_publication_into_workspace_response,
     publication_event_status_for_push_status, publication_event_summary_for_push_status,
@@ -8333,6 +8334,45 @@ async fn delegate_timeline_hydration_uses_stored_run_id_after_a_newer_retry() {
 
     assert_eq!(result["delegated_agent_run_id"], stored_run_id.as_str());
     assert_eq!(result["status"], "failed");
+}
+
+#[tokio::test]
+async fn delegate_timeline_hydration_rejects_a_run_from_another_conversation() {
+    let state = AppState::new_test();
+    let (_, _, session_id, stored_run_id) =
+        seed_delegated_timeline_tool(&state, AgentRunStatus::Completed).await;
+    let stored_run = state
+        .agent_run_repo
+        .get_by_id(&stored_run_id)
+        .await
+        .expect("load stored run")
+        .expect("stored run should exist");
+    let delegated_conversation = state
+        .chat_conversation_repo
+        .get_by_id(&stored_run.conversation_id)
+        .await
+        .expect("load delegated conversation")
+        .expect("delegated conversation should exist");
+    let foreign_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .expect("create foreign conversation");
+    let foreign_run = state
+        .agent_run_repo
+        .create(AgentRun::new(foreign_conversation.id))
+        .await
+        .expect("create foreign run");
+
+    let snapshot = load_delegated_tool_runtime_snapshot(
+        &state,
+        session_id.as_str(),
+        Some(&delegated_conversation.id.as_str()),
+        Some(&foreign_run.id.as_str()),
+    )
+    .await;
+
+    assert!(snapshot.is_none());
 }
 
 #[tokio::test]

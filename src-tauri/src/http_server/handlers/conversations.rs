@@ -93,9 +93,17 @@ async fn load_delegated_task_snapshot(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?
     };
+    let Some(delegated_conversation) = delegated_conversation else {
+        return Ok(None);
+    };
+    if delegated_conversation.context_type != ChatContextType::Delegation
+        || delegated_conversation.context_id != delegated_session_id
+    {
+        return Ok(None);
+    }
 
     let latest_run = if let Some(agent_run_id) = task.delegated_agent_run_id.as_deref() {
-        state
+        let run = state
             .app_state
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(agent_run_id))
@@ -103,19 +111,24 @@ async fn load_delegated_task_snapshot(
             .map_err(|error| {
                 tracing::error!(delegated_session_id, agent_run_id, %error, "Failed to enrich delegated run state");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?
-    } else if let Some(conversation) = delegated_conversation.as_ref() {
+            })?;
+        let Some(run) = run else {
+            return Ok(None);
+        };
+        if run.conversation_id != delegated_conversation.id {
+            return Ok(None);
+        }
+        Some(run)
+    } else {
         state
             .app_state
             .agent_run_repo
-            .get_latest_for_conversation(&conversation.id)
+            .get_latest_for_conversation(&delegated_conversation.id)
             .await
             .map_err(|error| {
-                tracing::error!(delegated_session_id, conversation_id = %conversation.id, %error, "Failed to resolve latest delegated run state");
+                tracing::error!(delegated_session_id, conversation_id = %delegated_conversation.id, %error, "Failed to resolve latest delegated run state");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
-    } else {
-        None
     };
 
     let status = latest_run
@@ -125,9 +138,7 @@ async fn load_delegated_task_snapshot(
 
     Ok(Some(DelegatedTaskSnapshot {
         status,
-        delegated_conversation_id: delegated_conversation
-            .as_ref()
-            .map(|conversation| conversation.id.as_str()),
+        delegated_conversation_id: Some(delegated_conversation.id.as_str()),
         delegated_agent_run_id: latest_run.as_ref().map(|run| run.id.as_str()),
         provider_harness: latest_run
             .as_ref()

@@ -52,7 +52,7 @@ describe("buildFallbackConversationStats", () => {
     expect(buildFallbackConversationStats(null, [])).toBeNull();
   });
 
-  it("deduplicates normalized timeline blocks before summing provider usage", () => {
+  it("deduplicates only matching composite timeline identities", () => {
     const stats = buildFallbackConversationStats(conversation(), [
       providerMessage({
         id: "block:message-1:0",
@@ -61,29 +61,38 @@ describe("buildFallbackConversationStats", () => {
         providerHarness: "codex",
       }),
       providerMessage({
-        id: "block:message-1:1",
+        id: "block:message-1:0:usage",
         parentMessageId: "message-1",
-        timelineSequence: 2,
+        timelineSequence: 1,
+        providerHarness: "codex",
         inputTokens: 25,
         outputTokens: 5,
         estimatedUsd: 0.01,
       }),
+      providerMessage({
+        id: "block:message-1:1",
+        parentMessageId: "message-1",
+        timelineSequence: 2,
+        providerHarness: "codex",
+        inputTokens: 10,
+        outputTokens: 2,
+      }),
     ]);
 
-    expect(stats?.usageCoverage.providerMessageCount).toBe(1);
-    expect(stats?.usageCoverage.providerMessagesWithUsage).toBe(1);
+    expect(stats?.usageCoverage.providerMessageCount).toBe(2);
+    expect(stats?.usageCoverage.providerMessagesWithUsage).toBe(2);
     expect(stats?.messageUsageTotals).toEqual({
-      inputTokens: 25,
-      outputTokens: 5,
+      inputTokens: 35,
+      outputTokens: 7,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
-      processedTokens: 30,
+      processedTokens: 42,
       estimatedUsd: 0.01,
     });
     expect(stats?.byHarness).toMatchObject([
       {
         key: "codex",
-        count: 1,
+        count: 2,
       },
     ]);
   });
@@ -115,7 +124,7 @@ describe("buildFallbackConversationStats", () => {
     expect(stats?.effectiveUsageTotals.cacheReadTokens).toBe(270);
   });
 
-  it("does not count cumulative baselines and reports fallback quality", () => {
+  it("counts cumulative baselines as uncounted captures in totals and buckets", () => {
     const stats = buildFallbackConversationStats(conversation(), [
       providerMessage({
         id: "baseline",
@@ -131,7 +140,31 @@ describe("buildFallbackConversationStats", () => {
     ]);
 
     expect(stats?.effectiveUsageTotals.processedTokens).toBeNull();
+    expect(stats?.usageCoverage.providerMessagesWithUsage).toBe(2);
     expect(stats?.usageCoverage.fallbackEstimatedSampleCount).toBe(1);
     expect(stats?.usageCoverage.uncountedSampleCount).toBe(1);
+    expect(stats?.byHarness).toMatchObject([
+      {
+        key: "codex",
+        count: 2,
+        usage: { processedTokens: null },
+      },
+    ]);
+  });
+
+  it("does not guess processed totals from the conversation harness", () => {
+    const stats = buildFallbackConversationStats(conversation(), [
+      providerMessage({
+        providerHarness: null,
+        inputTokens: 100,
+        outputTokens: 20,
+        usageProvenance: "provider_turn_delta",
+      }),
+    ]);
+
+    expect(stats?.effectiveUsageTotals.processedTokens).toBeNull();
+    expect(stats?.usageCoverage.uncountedSampleCount).toBe(1);
+    expect(stats?.usageCoverage.effectiveMessageConversationCount).toBe(0);
+    expect(stats?.usageCoverage.effectiveTotalsSource).toBe("none");
   });
 });

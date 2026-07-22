@@ -3300,21 +3300,28 @@ pub async fn process_stream_background<R: Runtime>(
         ChatTimelineItemStatus::Finalized,
     )
     .await;
-    if turns_finalized == 0 && !outcome.usage.is_empty() {
+    if !outcome.usage.is_empty() {
         let capture = UsageCapture::normalized(
             outcome.usage.clone(),
             outcome
                 .usage_provenance
                 .unwrap_or(UsageProvenance::ProviderSnapshotFallback),
         );
+        let no_message_mirror = None;
+        let capture_message_id = if turns_finalized == 0 {
+            &assistant_message_id
+        } else {
+            &no_message_mirror
+        };
         if persist_usage_capture_run_first(
             &agent_run_repo,
             &agent_run_id,
             &chat_message_repo,
-            &assistant_message_id,
+            capture_message_id,
             &capture,
         )
         .await
+            && (turns_finalized == 0 || outcome.usage != last_emitted_usage)
         {
             emit_usage_updated_event(
                 &app_handle,

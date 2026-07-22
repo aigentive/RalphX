@@ -9,11 +9,9 @@ function isProviderMessage(message: ChatMessageResponse): boolean {
   return isProviderRole(message.role);
 }
 
-function hasUsage(message: ChatMessageResponse): boolean {
-  if (message.usageProvenance === "cumulative_baseline_only") {
-    return false;
-  }
+function hasUsageCapture(message: ChatMessageResponse): boolean {
   return (
+    message.usageProvenance != null ||
     message.inputTokens != null ||
     message.outputTokens != null ||
     message.cacheCreationTokens != null ||
@@ -24,7 +22,6 @@ function hasUsage(message: ChatMessageResponse): boolean {
 
 function processedTokensForMessage(
   message: ChatMessageResponse,
-  fallbackHarness: string | null,
 ): number | null {
   if (message.usageProvenance === "cumulative_baseline_only") {
     return null;
@@ -38,7 +35,7 @@ function processedTokensForMessage(
     return null;
   }
 
-  const harness = message.providerHarness ?? fallbackHarness;
+  const harness = message.providerHarness;
   const base = (message.inputTokens ?? 0) + (message.outputTokens ?? 0);
   const processed = harness === "codex"
     ? base
@@ -62,7 +59,7 @@ function hasAttribution(message: ChatMessageResponse): boolean {
 
 function providerMessageIdentity(message: ChatMessageResponse): string {
   if (message.timelineSequence != null && message.parentMessageId) {
-    return message.parentMessageId;
+    return `${message.parentMessageId}:${message.timelineSequence}`;
   }
   return message.id;
 }
@@ -81,9 +78,9 @@ function collapseProviderMessageBlocks(
     }
 
     const existingScore =
-      (hasUsage(existing) ? 2 : 0) + (hasAttribution(existing) ? 1 : 0);
+      (hasUsageCapture(existing) ? 2 : 0) + (hasAttribution(existing) ? 1 : 0);
     const candidateScore =
-      (hasUsage(message) ? 2 : 0) + (hasAttribution(message) ? 1 : 0);
+      (hasUsageCapture(message) ? 2 : 0) + (hasAttribution(message) ? 1 : 0);
     if (candidateScore > existingScore) {
       byMessage.set(key, message);
     }
@@ -94,14 +91,13 @@ function collapseProviderMessageBlocks(
 
 function buildUsageTotals(
   messages: ChatMessageResponse[],
-  fallbackHarness: string | null,
   hasUncountedSample = false,
 ) {
   let processedTokens = 0;
   let processedAvailable = messages.length > 0 && !hasUncountedSample;
   const totals = messages.reduce(
     (current, message) => {
-      const sampleProcessed = processedTokensForMessage(message, fallbackHarness);
+      const sampleProcessed = processedTokensForMessage(message);
       if (sampleProcessed == null || !Number.isSafeInteger(processedTokens + sampleProcessed)) {
         processedAvailable = false;
       } else {
@@ -136,7 +132,6 @@ function buildUsageTotals(
 function buildUsageBuckets(
   messages: ChatMessageResponse[],
   keyFn: (message: ChatMessageResponse) => string | null,
-  fallbackHarness: string | null,
 ) {
   const buckets = new Map<
     string,
@@ -158,7 +153,7 @@ function buildUsageBuckets(
     .map(([key, value]) => ({
       key,
       count: value.messages.length,
-      usage: buildUsageTotals(value.messages, fallbackHarness),
+      usage: buildUsageTotals(value.messages),
     }))
     .sort(
       (a, b) =>
@@ -179,23 +174,21 @@ export function buildFallbackConversationStats(
   const providerMessages = collapseProviderMessageBlocks(
     (messages ?? []).filter(isProviderMessage),
   );
-  const providerMessagesWithUsage = providerMessages.filter(hasUsage);
+  const providerMessagesWithUsage = providerMessages.filter(hasUsageCapture);
   const providerMessagesWithAttribution = providerMessages.filter(hasAttribution);
-  const fallbackHarness = conversation.providerHarness ?? null;
   const legacyEstimatedSampleCount = providerMessagesWithUsage.filter(
     (message) => message.usageProvenance == null,
   ).length;
   const fallbackEstimatedSampleCount = providerMessagesWithUsage.filter(
     (message) => message.usageProvenance === "provider_snapshot_fallback",
   ).length;
-  const uncountedSampleCount = providerMessages.filter(
-    (message) =>
-      message.usageProvenance === "cumulative_baseline_only" ||
-      (hasUsage(message) && processedTokensForMessage(message, fallbackHarness) == null),
+  const uncountedSampleCount = providerMessagesWithUsage.filter(
+    (message) => processedTokensForMessage(message) == null,
   ).length;
+  const usableUsageSampleCount =
+    providerMessagesWithUsage.length - uncountedSampleCount;
   const effectiveUsageTotals = buildUsageTotals(
     providerMessagesWithUsage,
-    fallbackHarness,
     uncountedSampleCount > 0,
   );
 
@@ -223,12 +216,12 @@ export function buildFallbackConversationStats(
       runsWithUsage: 0,
       effectiveRunConversationCount: 0,
       effectiveMessageConversationCount:
-        providerMessagesWithUsage.length > 0 ? 1 : 0,
+        usableUsageSampleCount > 0 ? 1 : 0,
       legacyEstimatedSampleCount,
       fallbackEstimatedSampleCount,
       uncountedSampleCount,
       effectiveTotalsSource:
-        providerMessagesWithUsage.length > 0 ? "messages" : "none",
+        usableUsageSampleCount > 0 ? "messages" : "none",
     },
     attributionCoverage: {
       providerMessageCount: providerMessages.length,
@@ -239,23 +232,19 @@ export function buildFallbackConversationStats(
     byHarness: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) => message.providerHarness ?? conversation.providerHarness ?? null,
-      fallbackHarness,
     ),
     byUpstreamProvider: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) =>
         message.upstreamProvider ?? conversation.upstreamProvider ?? null,
-      fallbackHarness,
     ),
     byModel: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) => message.effectiveModelId ?? null,
-      fallbackHarness,
     ),
     byEffort: buildUsageBuckets(
       providerMessagesWithUsage,
       (message) => message.effectiveEffort ?? message.logicalEffort ?? null,
-      fallbackHarness,
     ),
   };
 }

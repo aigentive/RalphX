@@ -1002,6 +1002,92 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
 }
 
 #[tokio::test]
+async fn claude_multi_turn_stream_persists_combined_usage_to_canonical_run() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed first assistant message");
+
+    let run_repo_impl = Arc::new(MemoryAgentRunRepository::new());
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.harness = Some(AgentHarnessKind::Claude);
+    let run = run_repo_impl.create(run).await.expect("seed canonical run");
+    let run_id = run.id.as_str();
+    let run_repo: Arc<dyn AgentRunRepository> = run_repo_impl.clone();
+
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"turn one"}]},"session_id":"session-1"}"#,
+        r#"{"type":"result","session_id":"session-1","is_error":false,"result":"turn one","usage":{"input_tokens":100,"output_tokens":25}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"turn two"}]},"session_id":"session-1"}"#,
+        r#"{"type":"result","session_id":"session-1","is_error":false,"result":"turn two","usage":{"input_tokens":50,"output_tokens":10}}"#,
+    ])
+    .await;
+
+    process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None,
+        None,
+        None,
+        Some(state.chat_message_repo.clone()),
+        Some(state.chat_timeline_repo.clone()),
+        Some(pre_assistant_id),
+        None,
+        CancellationToken::new(),
+        None,
+        false,
+        StreamingStateCache::new(),
+        None,
+        Some(run_repo),
+        Some(run_id.clone()),
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("multi-turn stream should complete");
+
+    let persisted_run = run_repo_impl
+        .get_by_id(&AgentRunId::from_string(run_id))
+        .await
+        .expect("load canonical run")
+        .expect("canonical run should exist");
+    assert_eq!(persisted_run.input_tokens, Some(150));
+    assert_eq!(persisted_run.output_tokens, Some(35));
+
+    let mut per_turn_inputs = state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load per-turn messages")
+        .into_iter()
+        .filter_map(|message| message.input_tokens)
+        .collect::<Vec<_>>();
+    per_turn_inputs.sort_unstable();
+    assert_eq!(per_turn_inputs, vec![50, 100]);
+}
+
+#[tokio::test]
 async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();

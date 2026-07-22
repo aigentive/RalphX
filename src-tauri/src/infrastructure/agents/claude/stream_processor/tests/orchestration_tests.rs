@@ -221,6 +221,41 @@ fn nested_terminal_result_usage_does_not_replace_lead_usage() {
 }
 
 #[test]
+fn nested_assistant_and_delta_usage_do_not_seed_lead_fallback() {
+    let mut processor = StreamProcessor::new();
+    processor.process_parsed_line(ParsedLine {
+        message: StreamMessage::Assistant {
+            message: AssistantMessage {
+                content: vec![],
+                stop_reason: Some("end_turn".to_string()),
+                usage: Some(serde_json::json!({
+                    "input_tokens": 999,
+                    "output_tokens": 888
+                })),
+            },
+            session_id: Some("child-session".to_string()),
+        },
+        parent_tool_use_id: Some("tool-child".to_string()),
+        is_synthetic: false,
+        tool_use_result: None,
+    });
+    processor.process_parsed_line(ParsedLine {
+        message: StreamMessage::MessageDelta {
+            delta: None,
+            usage: Some(serde_json::json!({
+                "input_tokens": 1_111,
+                "output_tokens": 999
+            })),
+        },
+        parent_tool_use_id: Some("tool-child".to_string()),
+        is_synthetic: false,
+        tool_use_result: None,
+    });
+
+    assert_eq!(processor.current_turn_capture(), None);
+}
+
+#[test]
 fn test_processor_usage_accumulates_across_turns() {
     let mut processor = StreamProcessor::new();
 
@@ -271,6 +306,22 @@ fn test_processor_usage_accumulates_across_turns() {
     assert_eq!(result.usage.output_tokens, Some(35));
     assert_eq!(result.usage.cache_read_tokens, Some(30));
     assert_eq!(result.usage.estimated_usd, Some(0.003));
+}
+
+#[test]
+fn test_processor_usage_accumulation_does_not_wrap_or_panic() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::MessageDelta {
+        delta: None,
+        usage: Some(serde_json::json!({ "input_tokens": u64::MAX })),
+    });
+    processor.reset_for_next_turn();
+    processor.process_message(StreamMessage::MessageDelta {
+        delta: None,
+        usage: Some(serde_json::json!({ "input_tokens": 1 })),
+    });
+
+    assert_eq!(processor.finish().usage.input_tokens, Some(u64::MAX));
 }
 
 #[test]

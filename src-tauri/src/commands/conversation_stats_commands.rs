@@ -235,14 +235,14 @@ fn build_usage_aggregates(
         if message_usage.usable_sample_count() > run_usage.usable_sample_count() {
             effective_message_conversation_count += 1;
             effective_usage.extend(message_usage);
-        } else if !run_usage.samples.is_empty() {
+        } else if run_usage.usable_sample_count() > 0 {
             effective_run_conversation_count += 1;
             effective_usage.extend(run_usage);
-        } else if run_usage.uncounted_sample_count > 0 {
+        } else if !run_usage.samples.is_empty() {
             // Preserve quality evidence for baseline-only rows without claiming a
             // usable source. The run ledger still wins an all-uncounted tie.
             effective_usage.extend(run_usage);
-        } else if message_usage.uncounted_sample_count > 0 {
+        } else if !message_usage.samples.is_empty() {
             effective_usage.extend(message_usage);
         }
     }
@@ -567,6 +567,7 @@ struct UsageSample {
 #[derive(Debug, Clone, Default)]
 struct ResolvedUsage {
     samples: Vec<UsageSample>,
+    usable_sample_count: usize,
     legacy_estimated_sample_count: u64,
     fallback_estimated_sample_count: u64,
     uncounted_sample_count: u64,
@@ -574,16 +575,12 @@ struct ResolvedUsage {
 
 impl ResolvedUsage {
     fn usable_sample_count(&self) -> usize {
-        self.samples
-            .iter()
-            .filter(|sample| {
-                processed_tokens(sample.harness, &sample.usage, sample.provenance).is_some()
-            })
-            .count()
+        self.usable_sample_count
     }
 
     fn extend(&mut self, other: Self) {
         self.samples.extend(other.samples);
+        self.usable_sample_count += other.usable_sample_count;
         self.legacy_estimated_sample_count += other.legacy_estimated_sample_count;
         self.fallback_estimated_sample_count += other.fallback_estimated_sample_count;
         self.uncounted_sample_count += other.uncounted_sample_count;
@@ -763,9 +760,12 @@ fn resolve_usage_samples(samples: Vec<UsageSample>) -> ResolvedUsage {
     let mut codex_groups: HashMap<UsageSeriesKey, Vec<UsageSample>> = HashMap::new();
 
     for sample in samples {
+        if processed_tokens(sample.harness, &sample.usage, sample.provenance).is_some() {
+            resolved.usable_sample_count += 1;
+        }
         match sample.provenance {
             Some(UsageProvenance::CumulativeBaselineOnly) => {
-                resolved.uncounted_sample_count += 1;
+                resolved.samples.push(sample);
             }
             Some(UsageProvenance::ProviderSnapshotFallback) => {
                 resolved.fallback_estimated_sample_count += 1;
@@ -850,43 +850,47 @@ fn normalize_codex_stats_usage_series(samples: &[UsageSample]) -> AgentRunUsage 
             .collect::<Vec<_>>(),
     );
 
-    AgentRunUsage {
-        input_tokens: normalize_token_series(
-            &samples
-                .iter()
-                .map(|sample| sample.usage.input_tokens)
-                .collect::<Vec<_>>(),
-            cumulative,
-        ),
-        output_tokens: normalize_token_series(
-            &samples
-                .iter()
-                .map(|sample| sample.usage.output_tokens)
-                .collect::<Vec<_>>(),
-            cumulative,
-        ),
-        cache_creation_tokens: normalize_token_series(
-            &samples
-                .iter()
-                .map(|sample| sample.usage.cache_creation_tokens)
-                .collect::<Vec<_>>(),
-            cumulative,
-        ),
-        cache_read_tokens: normalize_token_series(
-            &samples
-                .iter()
-                .map(|sample| sample.usage.cache_read_tokens)
-                .collect::<Vec<_>>(),
-            cumulative,
-        ),
-        estimated_usd: normalize_cost_series(
-            &samples
-                .iter()
-                .map(|sample| sample.usage.estimated_usd)
-                .collect::<Vec<_>>(),
-            cumulative,
-        ),
-    }
+    let normalized = (|| {
+        Ok::<AgentRunUsage, ()>(AgentRunUsage {
+            input_tokens: normalize_token_series(
+                &samples
+                    .iter()
+                    .map(|sample| sample.usage.input_tokens)
+                    .collect::<Vec<_>>(),
+                cumulative,
+            )?,
+            output_tokens: normalize_token_series(
+                &samples
+                    .iter()
+                    .map(|sample| sample.usage.output_tokens)
+                    .collect::<Vec<_>>(),
+                cumulative,
+            )?,
+            cache_creation_tokens: normalize_token_series(
+                &samples
+                    .iter()
+                    .map(|sample| sample.usage.cache_creation_tokens)
+                    .collect::<Vec<_>>(),
+                cumulative,
+            )?,
+            cache_read_tokens: normalize_token_series(
+                &samples
+                    .iter()
+                    .map(|sample| sample.usage.cache_read_tokens)
+                    .collect::<Vec<_>>(),
+                cumulative,
+            )?,
+            estimated_usd: normalize_cost_series(
+                &samples
+                    .iter()
+                    .map(|sample| sample.usage.estimated_usd)
+                    .collect::<Vec<_>>(),
+                cumulative,
+            ),
+        })
+    })();
+
+    normalized.unwrap_or_default()
 }
 
 fn looks_like_cumulative_token_series(values: &[Option<u64>]) -> bool {
@@ -901,20 +905,26 @@ fn looks_like_cumulative_token_series(values: &[Option<u64>]) -> bool {
     let Some(last) = values.last().copied() else {
         return false;
     };
-    let raw_sum = values.iter().copied().sum::<u64>();
+    let Some(raw_sum) = values.iter().copied().try_fold(0_u64, u64::checked_add) else {
+        return false;
+    };
     let large_enough = last >= 1_000_000 || raw_sum >= 10_000_000;
     large_enough && raw_sum >= last.saturating_mul(2)
 }
 
-fn normalize_token_series(values: &[Option<u64>], cumulative: bool) -> Option<u64> {
+fn normalize_token_series(values: &[Option<u64>], cumulative: bool) -> Result<Option<u64>, ()> {
     let values: Vec<u64> = values.iter().copied().flatten().collect();
     if values.is_empty() {
-        return None;
+        return Ok(None);
     }
     if cumulative && values.windows(2).all(|window| window[1] >= window[0]) {
-        return values.last().copied();
+        return Ok(values.last().copied());
     }
-    Some(values.iter().copied().sum())
+    values
+        .into_iter()
+        .try_fold(0_u64, u64::checked_add)
+        .map(Some)
+        .ok_or(())
 }
 
 fn normalize_cost_series(values: &[Option<f64>], cumulative: bool) -> Option<f64> {
