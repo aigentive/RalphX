@@ -343,8 +343,15 @@ export function AgentPublishPanel({
   });
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
-  const inlineDiffDefaultMode =
-    terminalPublicationStatus === "merged" ? "cumulative" : undefined;
+  const inlineDiffDefaultMode = terminalPublicationStatus
+    ? "cumulative"
+    : undefined;
+  const cumulativeModeLabel =
+    terminalPublicationStatus === "merged"
+      ? "Published changes"
+      : terminalPublicationStatus === "closed"
+        ? "Pull request changes"
+        : undefined;
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
   const isPipelinePrAutomationWorkspace =
     workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
@@ -1539,6 +1546,7 @@ export function AgentPublishPanel({
             }}
           >
             <AgentsPublishInlineDiffs
+              key={`${conversationId ?? "missing"}:${terminalPublicationStatus ?? "active"}`}
               conversationId={conversationId ?? ""}
               review={reviewQuery.data ?? null}
               commits={commits}
@@ -1548,8 +1556,15 @@ export function AgentPublishPanel({
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
-              {...(inlineDiffDefaultMode !== undefined && { defaultMode: inlineDiffDefaultMode })}
-              {...(isPublishCurrent && { workspaceChangeLabel: "Published changes" })}
+              {...(inlineDiffDefaultMode !== undefined && {
+                defaultMode: inlineDiffDefaultMode,
+              })}
+              {...(cumulativeModeLabel !== undefined && {
+                cumulativeModeLabel,
+              })}
+              {...(isPublishCurrent && {
+                workspaceChangeLabel: "Published changes",
+              })}
             />
           </section>
         ) : null}
