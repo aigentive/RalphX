@@ -532,15 +532,17 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
         let cleanup_plan_branch_repo = Arc::clone(&plan_branch_repo);
         let project_repo = Arc::clone(&project_repo);
+        let task_outcome_repo = Arc::clone(&task_outcome_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
             git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
-                crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+                crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup_with_outcomes(
                     agent_conversation_workspace_repo,
                     cleanup_plan_branch_repo,
                     project_repo,
+                    Some(task_outcome_repo),
                     github_service,
                     blocked_git_project_ids,
                     running_agent_registry,
@@ -556,13 +558,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let plan_branch_repo = Arc::clone(&plan_branch_repo);
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
         let project_repo = Arc::clone(&project_repo);
+        let task_outcome_repo = Arc::clone(&task_outcome_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            crate::application::pr_startup_recovery::run_periodic_terminal_pr_local_cleanup(
+            crate::application::pr_startup_recovery::run_periodic_terminal_pr_local_cleanup_with_outcomes(
                 plan_branch_repo,
                 agent_conversation_workspace_repo,
                 project_repo,
+                Some(task_outcome_repo),
                 github_service,
                 running_agent_registry,
             )

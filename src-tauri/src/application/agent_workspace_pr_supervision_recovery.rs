@@ -17,7 +17,8 @@ use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, PrFixReviewPublishResumeOutcome,
 };
 use crate::application::agent_workspace_terminal_cleanup::{
-    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+    terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
+    TerminalPrObservation,
 };
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
@@ -260,11 +261,17 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     ))
                     .await?;
                 emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-                let terminalized = terminalize_agent_workspace_after_pr(
+                let terminalized = terminalize_agent_workspace_after_pr_with_observation(
                     Arc::clone(&deps.workspace_repo),
                     Arc::clone(&deps.agent_run_repo),
                     Some(Arc::clone(&deps.plan_branch_repo)),
                     deps.chat_service.as_ref().map(Arc::clone),
+                    Some(Arc::clone(&deps.task_outcome_repo)),
+                    Some(TerminalPrObservation::new(
+                        target.pr_number,
+                        pr_status,
+                        terminal_pr_recovery_summary(pr_status),
+                    )),
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::from_pr_status(pr_status),
@@ -322,11 +329,17 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             ))
             .await?;
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-        let terminalized = terminalize_agent_workspace_after_pr(
+        let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
             Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),
+            Some(Arc::clone(&deps.task_outcome_repo)),
+            Some(TerminalPrObservation::new(
+                target.pr_number,
+                pr_status,
+                terminal_pr_recovery_summary(pr_status),
+            )),
             &conversation_id,
             &project,
             TerminalAgentWorkspaceCause::from_pr_status(pr_status),

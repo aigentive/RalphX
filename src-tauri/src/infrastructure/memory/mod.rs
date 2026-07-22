@@ -46,6 +46,8 @@ pub mod memory_ideation_model_settings_repo;
 pub mod memory_ideation_session_repo;
 pub mod memory_ideation_settings_repo;
 pub mod memory_learned_skill_repos;
+#[cfg(test)]
+mod memory_learned_skill_repos_tests;
 pub mod memory_linear_integration_settings_repo;
 pub mod memory_memory_archive_job_repo;
 pub mod memory_memory_entry_repo;

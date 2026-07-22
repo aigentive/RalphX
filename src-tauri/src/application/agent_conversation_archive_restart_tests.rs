@@ -7,7 +7,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversation,
     IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project,
 };
+use crate::domain::repositories::TaskOutcomeListOptions;
 use crate::domain::services::github_service::GithubServiceTrait;
+use crate::domain::services::AGENT_WORKSPACE_PR_OUTCOME_SOURCE;
 use crate::error::AppError;
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -203,6 +205,23 @@ async fn restart_reconciles_distinct_plan_and_workspace_pr_numbers() {
     assert_eq!(github.state().check_pr_status_calls, 2);
     assert_eq!(github.state().close_pr_calls, 2);
     assert_eq!(github.state().last_close_pr_number, Some(42));
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("restart terminal outcomes should be readable");
+    let mut keys = outcomes
+        .into_iter()
+        .map(|outcome| outcome.source_ref_id)
+        .collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(keys, vec!["41:terminal", "42:terminal"]);
 }
 
 #[tokio::test]
