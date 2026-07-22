@@ -47,6 +47,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     runUsageTotals: {
@@ -54,6 +55,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     effectiveUsageTotals: {
@@ -61,6 +63,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     usageCoverage: {
@@ -68,6 +71,11 @@ function conversationStats(
       providerMessagesWithUsage: 0,
       runCount: 0,
       runsWithUsage: 0,
+      effectiveRunConversationCount: 0,
+      effectiveMessageConversationCount: 0,
+      legacyEstimatedSampleCount: 0,
+      fallbackEstimatedSampleCount: 0,
+      uncountedSampleCount: 0,
       effectiveTotalsSource: "none",
     },
     attributionCoverage: {
@@ -699,7 +707,7 @@ describe("AgentsChatHeader", () => {
         "Usage totals are pending until the provider reports the current turn.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Pending")).toHaveLength(4);
+    expect(screen.getAllByText("Pending")).toHaveLength(5);
 
     await user.keyboard("{Escape}");
     await waitFor(() => {

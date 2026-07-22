@@ -1706,30 +1706,6 @@ describe("useChatEvents", () => {
     });
   });
 
-  describe("agent:usage_updated", () => {
-    it("invalidates conversation stats without refetching the transcript during a live turn", () => {
-      const props = makeProps();
-      renderAndClear(props);
-
-      act(() => {
-        fireEvent("agent:usage_updated", {
-          conversation_id: CONV_ID,
-          context_id: CTX_ID,
-        });
-      });
-
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["chat", "conversation-stats", CONV_ID],
-      });
-      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
-        queryKey: ["chat", "conversations", CONV_ID],
-      });
-      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
-        queryKey: ["chat", "conversations", CONV_ID, "history"],
-      });
-    });
-  });
-
   // --------------------------------------------------------------------------
   // 6. Error clears streaming tool calls
   // --------------------------------------------------------------------------

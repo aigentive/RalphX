@@ -10,7 +10,7 @@ pub use types::{
     ParsedLine, StreamEvent, StreamMessage, StreamResult, ToolCall, ToolCallStats, UserContent,
 };
 
-use crate::domain::entities::AgentRunUsage;
+use crate::domain::entities::{AgentRunUsage, UsageCapture, UsageProvenance};
 
 // Re-export types and parser helpers only used by tests (via `use super::*`)
 #[cfg(test)]
@@ -40,8 +40,10 @@ pub struct StreamProcessor {
     pub result_subtype: Option<String>,
     /// Usage accumulated across already-finalized turns in this run.
     finalized_usage: AgentRunUsage,
+    finalized_usage_provenance: Option<UsageProvenance>,
     /// Usage currently accumulating for the in-flight turn.
     current_turn_usage: AgentRunUsage,
+    current_turn_usage_provenance: Option<UsageProvenance>,
 
     // Internal state for partial tool calls
     current_tool_name: String,
@@ -98,8 +100,14 @@ impl StreamProcessor {
 
         match msg {
             StreamMessage::MessageDelta { usage, .. } => {
-                if let Some(usage) = usage.as_ref() {
-                    update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                if parent_tool_use_id.is_none() {
+                    if let Some(usage) = usage.as_ref() {
+                        update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                        if !self.current_turn_usage.is_empty() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
+                    }
                 }
             }
             StreamMessage::ContentBlockStart { content_block, .. } => {
@@ -219,17 +227,31 @@ impl StreamProcessor {
                 errors,
                 subtype,
                 cost_usd,
+                usage,
                 ..
             } => {
-                if cost_usd > 0.0 {
-                    self.current_turn_usage.estimated_usd =
-                        Some(self.current_turn_usage.estimated_usd.unwrap_or(0.0) + cost_usd);
-                }
                 // Only capture session_id from top-level (lead's own) result events.
                 // Teammate result events carry a non-None parent_tool_use_id; capturing
                 // their session_id would overwrite the lead's session and cause --resume
                 // to open the teammate's context instead of the orchestrator's.
                 if parent_tool_use_id.is_none() {
+                    let estimated_usd = (cost_usd > 0.0).then_some(cost_usd);
+                    if let Some(usage) = usage {
+                        let terminal_usage = usage.into_agent_run_usage(estimated_usd);
+                        if !terminal_usage.is_empty() {
+                            self.current_turn_usage = terminal_usage;
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderTurnDelta);
+                        } else if let Some(cost_usd) = estimated_usd {
+                            self.current_turn_usage.estimated_usd = Some(cost_usd);
+                        }
+                    } else if let Some(cost_usd) = estimated_usd {
+                        self.current_turn_usage.estimated_usd = Some(cost_usd);
+                        if self.current_turn_usage_provenance.is_none() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
+                    }
                     if let Some(ref id) = session_id {
                         self.session_id = session_id.clone();
                         events.push(StreamEvent::SessionId(id.clone()));
@@ -258,8 +280,14 @@ impl StreamProcessor {
                 message,
                 session_id,
             } => {
-                if let Some(usage) = message.usage.as_ref() {
-                    update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                if parent_tool_use_id.is_none() {
+                    if let Some(usage) = message.usage.as_ref() {
+                        update_turn_usage_from_value(&mut self.current_turn_usage, usage);
+                        if !self.current_turn_usage.is_empty() {
+                            self.current_turn_usage_provenance =
+                                Some(UsageProvenance::ProviderSnapshotFallback);
+                        }
+                    }
                 }
                 // Handle --verbose mode assistant messages (full content in one message)
                 for content in message.content {
@@ -532,11 +560,27 @@ impl StreamProcessor {
         self.result_errors.clear();
         self.result_subtype = None;
         accumulate_usage(&mut self.finalized_usage, &self.current_turn_usage);
+        self.finalized_usage_provenance = combine_usage_provenance(
+            self.finalized_usage_provenance,
+            self.current_turn_usage_provenance,
+        );
         self.current_turn_usage = AgentRunUsage::default();
+        self.current_turn_usage_provenance = None;
     }
 
     pub fn current_turn_usage(&self) -> AgentRunUsage {
         self.current_turn_usage.clone()
+    }
+
+    pub fn current_turn_capture(&self) -> Option<UsageCapture> {
+        if self.current_turn_usage.is_empty() {
+            return None;
+        }
+        Some(UsageCapture::normalized(
+            self.current_turn_usage.clone(),
+            self.current_turn_usage_provenance
+                .unwrap_or(UsageProvenance::ProviderSnapshotFallback),
+        ))
     }
 
     /// Get the final result after stream is complete
@@ -554,10 +598,28 @@ impl StreamProcessor {
             content_blocks: self.content_blocks,
             session_id: self.session_id,
             usage: combined_usage(&self.finalized_usage, &self.current_turn_usage),
+            usage_provenance: combine_usage_provenance(
+                self.finalized_usage_provenance,
+                self.current_turn_usage_provenance,
+            ),
             is_error: self.result_is_error,
             errors: self.result_errors,
             error_subtype: self.result_subtype,
         }
+    }
+}
+
+fn combine_usage_provenance(
+    finalized: Option<UsageProvenance>,
+    current: Option<UsageProvenance>,
+) -> Option<UsageProvenance> {
+    match (finalized, current) {
+        (None, next) | (next, None) => next,
+        (Some(UsageProvenance::ProviderSnapshotFallback), _)
+        | (_, Some(UsageProvenance::ProviderSnapshotFallback)) => {
+            Some(UsageProvenance::ProviderSnapshotFallback)
+        }
+        _ => Some(UsageProvenance::ProviderTurnDelta),
     }
 }
 
@@ -597,7 +659,7 @@ fn update_max_usage_field(target: &mut Option<u64>, next: Option<u64>) {
 
 fn add_optional_u64(lhs: Option<u64>, rhs: Option<u64>) -> Option<u64> {
     match (lhs, rhs) {
-        (Some(left), Some(right)) => Some(left + right),
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
         (Some(left), None) => Some(left),
         (None, Some(right)) => Some(right),
         (None, None) => None,

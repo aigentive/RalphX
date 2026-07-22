@@ -68,6 +68,21 @@ fn test_parse_result() {
 }
 
 #[test]
+fn claude_result_usage_deserializes_terminal_cache_aliases() {
+    let line = r#"{"type":"result","session_id":"usage-result","result":"Done","is_error":false,"usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_input_tokens":127826,"cache_read_input_tokens":1099251}}"#;
+    let parsed = StreamProcessor::parse_line(line).expect("result should parse");
+
+    let StreamMessage::Result { usage, .. } = parsed.message else {
+        panic!("expected result message");
+    };
+    let usage = usage.expect("terminal result usage");
+    assert_eq!(usage.input_tokens, Some(13));
+    assert_eq!(usage.output_tokens, Some(1_434));
+    assert_eq!(usage.cache_creation_tokens, Some(127_826));
+    assert_eq!(usage.cache_read_tokens, Some(1_099_251));
+}
+
+#[test]
 fn test_parse_assistant_message() {
     let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}],"stop_reason":"end_turn","usage":{"input_tokens":123,"output_tokens":45,"cache_read_input_tokens":67}},"session_id":"sess-123"}"#;
     let parsed = StreamProcessor::parse_line(line);

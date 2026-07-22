@@ -5,20 +5,7 @@ fn delegated_event_seq() -> u64 {
 }
 
 fn delegated_total_tokens(latest_run: &DelegatedRunSummary) -> Option<u64> {
-    let total = latest_run.input_tokens.unwrap_or(0)
-        + latest_run.output_tokens.unwrap_or(0)
-        + latest_run.cache_creation_tokens.unwrap_or(0)
-        + latest_run.cache_read_tokens.unwrap_or(0);
-    if total == 0
-        && latest_run.input_tokens.is_none()
-        && latest_run.output_tokens.is_none()
-        && latest_run.cache_creation_tokens.is_none()
-        && latest_run.cache_read_tokens.is_none()
-    {
-        None
-    } else {
-        Some(total)
-    }
+    latest_run.processed_tokens
 }
 
 fn delegated_duration_ms(latest_run: &DelegatedRunSummary) -> Option<u64> {
@@ -267,6 +254,7 @@ pub fn build_delegated_task_completed_payload(
 }
 
 fn delegated_run_summary(run: AgentRun) -> DelegatedRunSummary {
+    let processed_tokens = run.processed_tokens();
     DelegatedRunSummary {
         agent_run_id: run.id.as_str(),
         status: run.status.to_string(),
@@ -287,6 +275,7 @@ fn delegated_run_summary(run: AgentRun) -> DelegatedRunSummary {
         output_tokens: run.output_tokens,
         cache_creation_tokens: run.cache_creation_tokens,
         cache_read_tokens: run.cache_read_tokens,
+        processed_tokens,
         estimated_usd: run.estimated_usd,
     }
 }

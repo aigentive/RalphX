@@ -9,7 +9,7 @@ use crate::agents::AgentHarnessKind;
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
-    ChatConversationId, InterruptedConversation,
+    ChatConversationId, InterruptedConversation, UsageCapture,
 };
 use crate::error::AppResult;
 
@@ -119,6 +119,25 @@ pub trait AgentRunRepository: Send + Sync {
 
     /// Persist usage/cost metadata for a run without changing its lifecycle status.
     async fn update_usage(&self, id: &AgentRunId, usage: &AgentRunUsage) -> AppResult<()>;
+
+    /// Atomically replace the complete normalized/raw capture for a run.
+    /// Implementations must return an error when the run does not exist.
+    ///
+    /// The compatibility default keeps existing test doubles source-compatible;
+    /// durable and memory repositories override it with full replacement semantics.
+    async fn replace_usage_capture(
+        &self,
+        id: &AgentRunId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        if self.get_by_id(id).await?.is_none() {
+            return Err(crate::error::AppError::NotFound(format!(
+                "Agent run not found: {}",
+                id.as_str()
+            )));
+        }
+        self.update_usage(id, &capture.normalized).await
+    }
 
     /// Persist provider/harness/model attribution for a run without changing lifecycle status.
     async fn update_attribution(

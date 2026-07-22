@@ -93,12 +93,19 @@ export interface ChatMessageResponse {
   cacheCreationTokens?: number | null;
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
+  usageProvenance?: UsageProvenance | null;
   timelineStatus?: string | null;
   timelineKind?: string | null;
   timelineSequence?: number | null;
   runId?: string | null;
   createdAt: string;
 }
+
+export type UsageProvenance =
+  | "provider_turn_delta"
+  | "derived_cumulative_delta"
+  | "provider_snapshot_fallback"
+  | "cumulative_baseline_only";
 
 export interface AgentToolCallDetailResponse {
   toolCall: ToolCall;
@@ -819,6 +826,7 @@ export interface UsageTotalsResponse {
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
+  processedTokens: number | null;
   estimatedUsd: number | null;
 }
 
@@ -833,6 +841,11 @@ export interface ConversationUsageCoverageResponse {
   providerMessagesWithUsage: number;
   runCount: number;
   runsWithUsage: number;
+  effectiveRunConversationCount: number;
+  effectiveMessageConversationCount: number;
+  legacyEstimatedSampleCount: number;
+  fallbackEstimatedSampleCount: number;
+  uncountedSampleCount: number;
   effectiveTotalsSource: string;
 }
 
@@ -887,6 +900,7 @@ const SnakeUsageTotalsResponseSchema = z.object({
   output_tokens: z.number(),
   cache_creation_tokens: z.number(),
   cache_read_tokens: z.number(),
+  processed_tokens: z.number().nullable(),
   estimated_usd: z.number().nullable(),
 });
 
@@ -895,6 +909,7 @@ const CamelUsageTotalsResponseSchema = z.object({
   outputTokens: z.number(),
   cacheCreationTokens: z.number(),
   cacheReadTokens: z.number(),
+  processedTokens: z.number().nullable(),
   estimatedUsd: z.number().nullable(),
 });
 
@@ -914,6 +929,11 @@ const SnakeConversationUsageCoverageResponseSchema = z.object({
   provider_messages_with_usage: z.number(),
   run_count: z.number(),
   runs_with_usage: z.number(),
+  effective_run_conversation_count: z.number(),
+  effective_message_conversation_count: z.number(),
+  legacy_estimated_sample_count: z.number(),
+  fallback_estimated_sample_count: z.number(),
+  uncounted_sample_count: z.number(),
   effective_totals_source: z.string(),
 });
 
@@ -922,6 +942,11 @@ const CamelConversationUsageCoverageResponseSchema = z.object({
   providerMessagesWithUsage: z.number(),
   runCount: z.number(),
   runsWithUsage: z.number(),
+  effectiveRunConversationCount: z.number(),
+  effectiveMessageConversationCount: z.number(),
+  legacyEstimatedSampleCount: z.number(),
+  fallbackEstimatedSampleCount: z.number(),
+  uncountedSampleCount: z.number(),
   effectiveTotalsSource: z.string(),
 });
 
@@ -1001,6 +1026,7 @@ function transformUsageTotals(
       outputTokens: raw.outputTokens,
       cacheCreationTokens: raw.cacheCreationTokens,
       cacheReadTokens: raw.cacheReadTokens,
+      processedTokens: raw.processedTokens,
       estimatedUsd: raw.estimatedUsd,
     };
   }
@@ -1010,6 +1036,7 @@ function transformUsageTotals(
     outputTokens: raw.output_tokens,
     cacheCreationTokens: raw.cache_creation_tokens,
     cacheReadTokens: raw.cache_read_tokens,
+    processedTokens: raw.processed_tokens,
     estimatedUsd: raw.estimated_usd,
   };
 }
@@ -1033,6 +1060,11 @@ function transformUsageCoverage(
       providerMessagesWithUsage: raw.providerMessagesWithUsage,
       runCount: raw.runCount,
       runsWithUsage: raw.runsWithUsage,
+      effectiveRunConversationCount: raw.effectiveRunConversationCount,
+      effectiveMessageConversationCount: raw.effectiveMessageConversationCount,
+      legacyEstimatedSampleCount: raw.legacyEstimatedSampleCount,
+      fallbackEstimatedSampleCount: raw.fallbackEstimatedSampleCount,
+      uncountedSampleCount: raw.uncountedSampleCount,
       effectiveTotalsSource: raw.effectiveTotalsSource,
     };
   }
@@ -1042,6 +1074,11 @@ function transformUsageCoverage(
     providerMessagesWithUsage: raw.provider_messages_with_usage,
     runCount: raw.run_count,
     runsWithUsage: raw.runs_with_usage,
+    effectiveRunConversationCount: raw.effective_run_conversation_count,
+    effectiveMessageConversationCount: raw.effective_message_conversation_count,
+    legacyEstimatedSampleCount: raw.legacy_estimated_sample_count,
+    fallbackEstimatedSampleCount: raw.fallback_estimated_sample_count,
+    uncountedSampleCount: raw.uncounted_sample_count,
     effectiveTotalsSource: raw.effective_totals_source,
   };
 }
@@ -1153,6 +1190,12 @@ const AgentMessageSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
+  usage_provenance: z.enum([
+    "provider_turn_delta",
+    "derived_cumulative_delta",
+    "provider_snapshot_fallback",
+    "cumulative_baseline_only",
+  ]).nullable().optional(),
   created_at: z.string(),
 });
 
@@ -1202,6 +1245,12 @@ const AgentTimelineItemSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
+  usage_provenance: z.enum([
+    "provider_turn_delta",
+    "derived_cumulative_delta",
+    "provider_snapshot_fallback",
+    "cumulative_baseline_only",
+  ]).nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
   finalized_at: z.string().nullable().optional(),
@@ -1248,6 +1297,7 @@ function transformAgentMessage(
     cacheCreationTokens: raw.cache_creation_tokens ?? null,
     cacheReadTokens: raw.cache_read_tokens ?? null,
     estimatedUsd: raw.estimated_usd ?? null,
+    usageProvenance: raw.usage_provenance ?? null,
     content: raw.content,
     metadata: raw.metadata ?? null,
     parentMessageId: null,
@@ -1303,6 +1353,7 @@ function transformTimelineItem(
     cacheCreationTokens: raw.cache_creation_tokens ?? null,
     cacheReadTokens: raw.cache_read_tokens ?? null,
     estimatedUsd: raw.estimated_usd ?? null,
+    usageProvenance: raw.usage_provenance ?? null,
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,

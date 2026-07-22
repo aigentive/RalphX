@@ -3,7 +3,35 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::entities::AgentRunUsage;
+use crate::domain::entities::{AgentRunUsage, UsageProvenance};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeResultUsage {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default, alias = "cache_creation_input_tokens")]
+    pub cache_creation_tokens: Option<u64>,
+    #[serde(
+        default,
+        alias = "cache_read_input_tokens",
+        alias = "cached_input_tokens"
+    )]
+    pub cache_read_tokens: Option<u64>,
+}
+
+impl ClaudeResultUsage {
+    pub fn into_agent_run_usage(self, estimated_usd: Option<f64>) -> AgentRunUsage {
+        AgentRunUsage {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_creation_tokens: self.cache_creation_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            estimated_usd,
+        }
+    }
+}
 
 // ============================================================================
 // Stream Message Types (from Claude CLI stream-json output)
@@ -53,6 +81,8 @@ pub enum StreamMessage {
         subtype: Option<String>,
         #[serde(default)]
         cost_usd: f64,
+        #[serde(default)]
+        usage: Option<ClaudeResultUsage>,
     },
     /// System event (e.g., init messages, hook events)
     #[serde(rename = "system")]
@@ -310,6 +340,7 @@ pub struct StreamResult {
     pub content_blocks: Vec<ContentBlockItem>,
     pub session_id: Option<String>,
     pub usage: AgentRunUsage,
+    pub usage_provenance: Option<UsageProvenance>,
     pub is_error: bool,
     pub errors: Vec<String>,
     pub error_subtype: Option<String>,

@@ -35,6 +35,7 @@ import { useGlobalAgentLifecycle } from "@/hooks/useGlobalAgentLifecycle";
 import { useAgentWorkflowEvents } from "@/hooks/useAgentWorkflowEvents";
 import { useNotificationEvents } from "@/hooks/useNotificationEvents";
 import { useNotificationToasts } from "@/hooks/useNotificationToasts";
+import { useUsageStatsEvents } from "@/hooks/useUsageStatsEvents";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
 
 /**
@@ -95,6 +96,7 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useGitAuthStartupNotification(); // Warn before Git/GitHub-dependent startup work fails
   useGlobalAgentLifecycle(); // Global agent lifecycle → agentStatus for all sessions
   useAgentWorkflowEvents(); // Refresh durable scripted workflow progress after backend mutations
+  useUsageStatsEvents(); // Refresh usage totals for foreground and background conversations
 
   return <>{children}</>;
 }

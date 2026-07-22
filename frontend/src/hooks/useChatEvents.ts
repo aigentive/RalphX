@@ -1556,22 +1556,6 @@ export function useChatEvents({
       })
     );
 
-    // ── agent:usage_updated ─────────────────────────────────────────
-    // Usage snapshots are persisted during the live turn; refetch stats immediately.
-    unsubscribes.push(
-      bus.subscribe<{
-        conversation_id: string;
-        context_id?: string;
-        context_type?: string;
-      }>("agent:usage_updated", (payload) => {
-        if (!isRelevant(payload)) return;
-
-        queryClient.invalidateQueries({
-          queryKey: conversationStatsKey(payload.conversation_id),
-        });
-      })
-    );
-
     // ── agent:error ──────────────────────────────────────────────────
     // Clear ALL streaming state on error.
     // Query invalidation is owned by useAgentEvents to avoid duplicate refetches.

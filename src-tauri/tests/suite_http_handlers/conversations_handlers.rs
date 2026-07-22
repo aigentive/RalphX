@@ -482,10 +482,10 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     delegated_run.effective_model_id = Some("gpt-5.4-2026-04-01".to_string());
     delegated_run.approval_policy = Some("never".to_string());
     delegated_run.sandbox_mode = Some("danger-full-access".to_string());
-    delegated_run.input_tokens = Some(11);
-    delegated_run.output_tokens = Some(29);
-    delegated_run.cache_creation_tokens = Some(7);
-    delegated_run.cache_read_tokens = Some(13);
+    delegated_run.input_tokens = Some(9_116_803);
+    delegated_run.output_tokens = Some(25_881);
+    delegated_run.cache_creation_tokens = Some(0);
+    delegated_run.cache_read_tokens = Some(8_837_504);
     delegated_run.estimated_usd = Some(0.42);
     delegated_run.completed_at = Some(Utc::now());
     let delegated_run_id = delegated_run.id.as_str();
@@ -534,10 +534,85 @@ async fn test_get_active_state_reconciles_stale_delegated_running_task() {
     );
     assert_eq!(task.approval_policy.as_deref(), Some("never"));
     assert_eq!(task.sandbox_mode.as_deref(), Some("danger-full-access"));
-    assert_eq!(task.input_tokens, Some(11));
-    assert_eq!(task.output_tokens, Some(29));
-    assert_eq!(task.cache_creation_tokens, Some(7));
-    assert_eq!(task.cache_read_tokens, Some(13));
-    assert_eq!(task.total_tokens, Some(60));
+    assert_eq!(task.input_tokens, Some(9_116_803));
+    assert_eq!(task.output_tokens, Some(25_881));
+    assert_eq!(task.cache_creation_tokens, Some(0));
+    assert_eq!(task.cache_read_tokens, Some(8_837_504));
+    assert_eq!(task.total_tokens, Some(9_142_684));
     assert_eq!(task.estimated_usd, Some(0.42));
+}
+
+#[tokio::test]
+async fn test_get_active_state_does_not_hydrate_a_run_from_another_conversation() {
+    let state = setup_test_state().await;
+    let parent_conversation = ChatConversation::new_task_execution(TaskId::new());
+    let parent_conversation_id = parent_conversation.id.as_str().to_string();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(parent_conversation)
+        .await
+        .unwrap();
+
+    let delegated_session = DelegatedSession::new(
+        ProjectId::new(),
+        ChatContextType::TaskExecution.to_string(),
+        "parent-context-id",
+        "verification-critic",
+        AgentHarnessKind::Codex,
+    );
+    state
+        .app_state
+        .delegated_session_repo
+        .create(delegated_session.clone())
+        .await
+        .unwrap();
+    let delegated_conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+    let delegated_conversation_id = delegated_conversation.id.as_str();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .unwrap();
+
+    let foreign_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .unwrap();
+    let mut foreign_run = AgentRun::new(foreign_conversation.id);
+    foreign_run.harness = Some(AgentHarnessKind::Codex);
+    foreign_run.input_tokens = Some(9_116_803);
+    foreign_run.output_tokens = Some(25_881);
+    let foreign_run = state
+        .app_state
+        .agent_run_repo
+        .create(foreign_run)
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .streaming_state_cache
+        .add_task(
+            &parent_conversation_id,
+            CachedStreamingTask {
+                delegated_session_id: Some(delegated_session.id.as_str().to_string()),
+                delegated_conversation_id: Some(delegated_conversation_id),
+                delegated_agent_run_id: Some(foreign_run.id.as_str()),
+                ..cached_streaming_task("toolu_foreign_delegate_run")
+            },
+        )
+        .await;
+
+    let response = get_conversation_active_state(State(state), Path(parent_conversation_id))
+        .await
+        .unwrap();
+    let task = &response.0.streaming_tasks[0];
+
+    assert_eq!(task.status, "running");
+    assert_eq!(task.total_tokens, None);
+    assert_eq!(task.provider_harness, None);
 }
