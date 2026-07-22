@@ -308,12 +308,19 @@ async fn start_guarded_review_after_beginning_merge(
         )
         .await
     });
-    for _ in 0..100 {
-        if github.state().disable_pr_auto_merge_calls == 1 {
-            break;
+    let pause_started = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if github.state().disable_pr_auto_merge_calls == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    })
+    .await;
+    assert!(
+        pause_started.is_ok(),
+        "workspace review did not pause auto-merge before the bounded synchronization deadline"
+    );
     assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
     git_fails(&fixture.worktree, &["merge", "main"]);
     start
