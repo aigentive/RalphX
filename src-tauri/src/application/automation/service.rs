@@ -14,9 +14,8 @@ use crate::application::automation::decomposition_verifier::{
 use crate::application::automation::judge::{
     apply_updated_item_statuses, automation_judge_loop_suspected, current_goal_item_id,
     goal_items_proposal_json, parse_automation_judge_verdict,
-    revert_in_progress_goal_items_to_pending,
-    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
-    AutomationJudgeVerdict,
+    revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
+    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
 };
 use crate::application::automation::plan_gate::{
     is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,

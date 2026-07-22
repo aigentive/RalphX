@@ -948,6 +948,7 @@ const automationRunFixture = (
   baseRefKind: "project_default",
   baseRefUsed: "main",
   baseFromRunId: "run-0",
+  goalItemId: null,
   branchName: "ralphx/release/agent-1",
   prNumber: 593,
   prUrl: "https://github.com/aigentive/ralphx.app/pull/593",

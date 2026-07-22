@@ -135,6 +135,7 @@ export const AutomationRunSchema = z.object({
   base_ref_kind: AutomationBaseRefKindSchema,
   base_ref_used: z.string(),
   base_from_run_id: z.string().nullable(),
+  goal_item_id: z.string().nullable(),
   branch_name: z.string().nullable(),
   pr_number: z.number().int().nullable(),
   pr_url: z.string().nullable(),

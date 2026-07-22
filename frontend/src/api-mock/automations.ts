@@ -88,6 +88,7 @@ function mockRun(overrides: Partial<AutomationRun> = {}): AutomationRun {
     baseRefKind: "project_default",
     baseRefUsed: "",
     baseFromRunId: null,
+    goalItemId: null,
     branchName: null,
     prNumber: null,
     prUrl: null,
