@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use crate::application::agent_workspace_pr_autofix_attempt::{
+    load_pr_autofix_attempt_decision, PrAutofixAttemptDecision,
+};
 use crate::application::agent_workspace_publish_repair_state::{
     reconcile_active_agent_workspace_repair, settle_terminal_agent_workspace_repair,
     terminal_run_authorizes_repair_recovery,
@@ -22,6 +25,8 @@ pub(super) const STALE_REPAIR_RECOVERED_STEP: &str = "stale_repair_recovered";
 pub(super) const STALE_NEEDS_AGENT_CLASSIFICATION: &str = "stale_needs_agent";
 pub(super) const STALE_REPAIR_BLOCKED_SUMMARY: &str =
     "Recovered stale workspace repair state; no active repair run is running.";
+const STALE_PR_AUTOFIX_SUMMARY: &str =
+    "Recovered stale PR autofix state; no active fixer run is running.";
 pub(super) const STALE_TRANSIENT_RECOVERED_STEP: &str = "stale_transient_recovered";
 pub(super) const STALE_TRANSIENT_CLASSIFICATION: &str = "stale_transient_status";
 pub const STALE_TRANSIENT_STATUS_STALE_SECS: u64 = 300;
@@ -225,23 +230,9 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
             .await;
     }
 
-    let Some(latest_run) = agent_run_repo
-        .get_latest_for_conversation(&workspace.conversation_id)
-        .await?
-    else {
-        return Ok(false);
-    };
-
-    if !latest_run.status.is_terminal() {
-        return Ok(false);
-    }
-
     let publication_events = workspace_repo
         .list_publication_events(&workspace.conversation_id)
         .await?;
-    if !terminal_run_authorizes_repair_recovery(&workspace, &publication_events, &latest_run) {
-        return Ok(false);
-    }
     let review_monitor = workspace_repo
         .get_workspace_review_monitor(&workspace.conversation_id)
         .await?;
@@ -252,19 +243,62 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
     ) {
         tracing::info!(
             conversation_id = workspace.conversation_id.as_str(),
-            agent_run_id = %latest_run.id,
-            agent_run_status = %latest_run.status,
             "Skipped stale publish repair recovery while PR fix waits on current Workspace Review"
         );
         return Ok(false);
     }
 
-    if !settle_terminal_agent_workspace_repair(
-        Arc::clone(&workspace_repo),
-        &workspace,
-        STALE_REPAIR_BLOCKED_SUMMARY,
-    )
-    .await?
+    let exact_autofix = workspace.publication_pr_number.and_then(|pr_number| {
+        publication_events
+            .iter()
+            .filter(|event| event.step == "pr_autofix")
+            .filter(|event| {
+                event
+                    .classification
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("github_pr_autofix:"))
+            })
+            .max_by_key(|event| event.created_at)
+            .and_then(|event| event.classification.as_deref())
+            .map(|fingerprint| (pr_number, fingerprint.to_string()))
+    });
+    let (summary, latest_run) = if let Some((pr_number, fingerprint)) = exact_autofix {
+        let decision = load_pr_autofix_attempt_decision(
+            agent_run_repo.as_ref(),
+            &workspace.conversation_id,
+            pr_number,
+            &fingerprint,
+            true,
+        )
+        .await?;
+        if decision == PrAutofixAttemptDecision::Active {
+            return Ok(false);
+        }
+        let summary = decision.manual_summary().unwrap_or(
+            "The exact PR autofix attempt failed; supervision remains blocked while the single retry is eligible.",
+        );
+        (summary.to_string(), None)
+    } else {
+        let Some(latest_run) = agent_run_repo
+            .get_latest_for_conversation(&workspace.conversation_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if !latest_run.status.is_terminal() {
+            return Ok(false);
+        }
+        (STALE_PR_AUTOFIX_SUMMARY.to_string(), Some(latest_run))
+    };
+
+    if let Some(latest_run) = latest_run.as_ref() {
+        if !terminal_run_authorizes_repair_recovery(&workspace, &publication_events, latest_run) {
+            return Ok(false);
+        }
+    }
+
+    if !settle_terminal_agent_workspace_repair(Arc::clone(&workspace_repo), &workspace, &summary)
+        .await?
     {
         return Ok(false);
     }
@@ -278,12 +312,14 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
         ))
         .await?;
 
-    tracing::info!(
-        conversation_id = latest_run.conversation_id.as_str(),
-        agent_run_id = %latest_run.id,
-        agent_run_status = %latest_run.status,
-        "Recovered stale agent workspace publish repair state"
-    );
+    if let Some(latest_run) = latest_run {
+        tracing::info!(
+            conversation_id = latest_run.conversation_id.as_str(),
+            agent_run_id = %latest_run.id,
+            agent_run_status = %latest_run.status,
+            "Recovered stale agent workspace publish repair state"
+        );
+    }
 
     Ok(true)
 }
