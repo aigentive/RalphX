@@ -1426,25 +1426,6 @@ describe("useAgentEvents", () => {
       });
     });
 
-    it("skips event and does not invalidate queries when teammate_name is set", () => {
-      const { queryClient, wrapper } = createWrapperWithClient();
-      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-      renderHook(() => useAgentEvents("conv-1"), { wrapper });
-
-      act(() => {
-        emitEvent("agent:turn_completed", {
-          context_type: "task_execution",
-          context_id: "task-123",
-          conversation_id: "conv-1",
-          status: "turn_complete",
-          teammate_name: "researcher",
-        });
-      });
-
-      // No queries invalidated — teammate event was skipped
-      expect(invalidateSpy).not.toHaveBeenCalled();
-    });
 
     it("merges Claude provider metadata into cached conversation state", () => {
       const { queryClient, wrapper } = createWrapperWithClient();

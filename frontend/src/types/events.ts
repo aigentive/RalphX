@@ -503,90 +503,6 @@ export const MergePhaseListEventSchema = z.object({
 export type MergePhaseListEvent = z.infer<typeof MergePhaseListEventSchema>;
 
 // ============================================================================
-// Team Event Payload Types
-// ============================================================================
-
-export interface TeamCreatedPayload {
-  team_name: string; context_id: string; context_type: string;
-}
-
-export interface TeamTeammateSpawnedPayload {
-  team_name: string; teammate_name: string; color: string;
-  model: string; role: string; context_type: string; context_id: string;
-  conversation_id?: string | null;
-}
-
-export interface TeamTeammateIdlePayload {
-  team_name: string; teammate_name: string; context_type: string; context_id: string;
-}
-
-export interface TeamTeammateShutdownPayload {
-  team_name: string; teammate_name: string; context_type: string; context_id: string;
-}
-
-export interface TeamMessagePayload {
-  team_name: string; message_id: string; sender: string;
-  recipient?: string; content: string; message_type: string;
-  timestamp: string; context_type: string; context_id: string;
-}
-
-export interface TeamDisbandedPayload {
-  team_name: string; context_type: string; context_id: string;
-}
-
-export interface TeamCostUpdatePayload {
-  team_name: string; teammate_name: string; input_tokens: number;
-  output_tokens: number; cache_creation_tokens: number; cache_read_tokens: number;
-  estimated_usd: number;
-  context_type: string; context_id: string;
-}
-
-export interface TeamArtifactCreatedPayload {
-  artifact_id: string;
-  session_id: string;
-  artifact_type: string;
-  title: string;
-}
-
-export interface TeamPlanRequestedPayload {
-  plan_id: string;
-  process: string;
-  teammates: Array<{
-    role: string;
-    model: string;
-    tools: string[];
-    mcp_tools: string[];
-    prompt_summary: string;
-    preset?: string | null;
-  }>;
-  validated: boolean;
-  context_type: string;
-  context_id: string;
-}
-
-export interface TeamPlanResolvedPayload {
-  plan_id: string;
-  context_type: string;
-  context_id: string;
-  resolution: "approved" | "rejected" | "expired" | "superseded";
-}
-
-export interface TeamPlanAutoApprovedPayload {
-  plan_id: string;
-  context_type: string;
-  context_id: string;
-  process: string;
-  team_name: string;
-  teammates_spawned: Array<{
-    name: string;
-    role: string;
-    model: string;
-    color: string;
-  }>;
-  message: string;
-}
-
-// ============================================================================
 // Agent Run Lifecycle Payloads
 // ============================================================================
 
@@ -602,7 +518,6 @@ export interface AgentRunStartedPayload {
   context_type: string;
   context_id: string;
   conversation_id: string;
-  teammate_name?: string | null;
   effective_model_id?: string;
   effective_model_label?: string;
   provider_harness?: string | null;
@@ -630,7 +545,6 @@ export interface AgentRunCompletedPayload {
   provider_session_id?: string | null;
   service_tier?: string | null;
   run_chain_id?: string | null;
-  teammate_name?: string | null;
 }
 
 export function extractConversationProviderMetadataFromRunPayload(

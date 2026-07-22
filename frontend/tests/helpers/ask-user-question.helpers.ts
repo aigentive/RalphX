@@ -23,8 +23,6 @@ export async function selectIdeationSession(page: Page, sessionId = "session-moc
       planArtifactId: null,
       seedTaskId: null,
       parentSessionId: null,
-      teamMode: null,
-      teamConfig: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       archivedAt: null,

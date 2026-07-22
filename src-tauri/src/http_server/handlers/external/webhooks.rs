@@ -398,7 +398,7 @@ fn linear_webhook_http_error(error: LinearWebhookError) -> HttpError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::{AppState, TeamService, TeamStateTracker};
+    use crate::application::AppState;
     use crate::commands::ExecutionState;
     use crate::domain::entities::{InternalStatus, TaskId};
     use crate::http_server::handlers::external_auth::EXTERNAL_KEY_ID_HEADER;
@@ -406,13 +406,9 @@ mod tests {
 
     fn test_http_state() -> HttpServerState {
         let app_state = Arc::new(AppState::new_test());
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }

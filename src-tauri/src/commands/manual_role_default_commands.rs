@@ -242,7 +242,7 @@ pub async fn reset_agent_conversation_role_default<R: Runtime + 'static>(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle<R>,
 ) -> Result<ComposerRoleDefaultResponse, String> {
-    let service = create_chat_service(state.inner(), app, execution_state.inner(), None);
+    let service = create_chat_service(state.inner(), app, execution_state.inner());
     reset_agent_conversation_role_default_for_state(input, state.inner(), Some(&service)).await
 }
 

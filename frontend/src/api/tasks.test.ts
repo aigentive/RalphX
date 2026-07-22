@@ -110,7 +110,7 @@ describe("tasksApi", () => {
     });
   });
 
-  it("restarts a task with the selected agent variant", async () => {
+  it("restarts a task with a note", async () => {
     mockInvoke.mockResolvedValueOnce({
       type: "Success",
       task: { id: "task-1" },
@@ -120,7 +120,7 @@ describe("tasksApi", () => {
     });
 
     await expect(
-      tasksApi.restart("task-1", false, "try again", "team"),
+      tasksApi.restart("task-1", false, "try again"),
     ).resolves.toEqual({
       type: "Success",
       task: { id: "task-1" },
@@ -133,7 +133,6 @@ describe("tasksApi", () => {
       taskId: "task-1",
       force: false,
       note: "try again",
-      agentVariant: "team",
     });
   });
 });

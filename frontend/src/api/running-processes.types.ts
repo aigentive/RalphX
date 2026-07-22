@@ -20,20 +20,6 @@ export interface StepProgressSummary {
 }
 
 /**
- * Teammate info within a team process group
- */
-export interface TeammateSummary {
-  name: string;
-  status: string;
-  step?: string;
-  model?: string;
-  color?: string;
-  stepsCompleted?: number;
-  stepsTotal?: number;
-  wave?: number;
-}
-
-/**
  * Running process - frontend representation (camelCase)
  */
 export interface RunningProcess {
@@ -45,10 +31,6 @@ export interface RunningProcess {
   triggerOrigin: string | null;
   taskBranch: string | null;
   agentWorkspace?: ExecutionTaskAgentWorkspace | null;
-  teamName?: string;
-  teammates?: TeammateSummary[];
-  currentWave?: number;
-  totalWaves?: number;
 }
 
 /**
@@ -58,7 +40,6 @@ export interface RunningIdeationSession {
   sessionId: string;
   title: string;
   elapsedSeconds: number | null;
-  teamMode: string | null;
   isGenerating: boolean;
 }
 

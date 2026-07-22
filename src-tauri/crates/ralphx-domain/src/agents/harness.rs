@@ -65,7 +65,6 @@ pub enum HarnessStreamMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessTeamCapabilities {
     pub rx_native_team: bool,
-    pub legacy_native_team_tools: bool,
     pub interactive_delivery: bool,
     pub resume_delivery: bool,
     pub stream_projection: bool,
@@ -85,7 +84,6 @@ pub fn standard_harness_behavior(harness: AgentHarnessKind) -> HarnessBehavior {
         AgentHarnessKind::Claude => HarnessBehavior {
             team: HarnessTeamCapabilities {
                 rx_native_team: true,
-                legacy_native_team_tools: true,
                 interactive_delivery: true,
                 resume_delivery: true,
                 stream_projection: true,
@@ -98,7 +96,6 @@ pub fn standard_harness_behavior(harness: AgentHarnessKind) -> HarnessBehavior {
         AgentHarnessKind::Codex => HarnessBehavior {
             team: HarnessTeamCapabilities {
                 rx_native_team: true,
-                legacy_native_team_tools: false,
                 interactive_delivery: false,
                 resume_delivery: true,
                 stream_projection: true,

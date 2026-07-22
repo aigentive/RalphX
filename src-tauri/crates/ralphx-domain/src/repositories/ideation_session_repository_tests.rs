@@ -482,8 +482,6 @@ fn create_test_session(project_id: &ProjectId) -> IdeationSession {
         updated_at: Utc::now(),
         archived_at: None,
         converted_at: None,
-        team_mode: None,
-        team_config_json: None,
         title_source: None,
         verification_status: Default::default(),
         verification_in_progress: false,

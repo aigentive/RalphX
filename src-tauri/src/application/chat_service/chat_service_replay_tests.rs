@@ -98,7 +98,6 @@ fn test_build_rehydration_prompt_with_ideation_metadata() {
         plan_artifact_id: Some("artifact-abc-123".to_string()),
         proposal_count: 5,
         parent_session_id: Some("parent-xyz".to_string()),
-        team_mode: Some("solo".to_string()),
         session_title: Some("Feature Plan".to_string()),
         verification_status: "unverified".to_string(),
         verification_in_progress: false,
@@ -119,7 +118,6 @@ fn test_build_rehydration_prompt_with_ideation_metadata() {
     assert!(prompt.contains("<plan_artifact_id>artifact-abc-123</plan_artifact_id>"));
     assert!(prompt.contains("<proposal_count>5</proposal_count>"));
     assert!(prompt.contains("<parent_session_id>parent-xyz</parent_session_id>"));
-    assert!(prompt.contains("<team_mode>solo</team_mode>"));
     assert!(prompt.contains("<session_title>Feature Plan</session_title>"));
     assert!(prompt.contains("</ideation_state>"));
 
@@ -142,7 +140,6 @@ fn test_build_rehydration_prompt_with_minimal_ideation_metadata() {
         plan_artifact_id: None,
         proposal_count: 0,
         parent_session_id: None,
-        team_mode: None,
         session_title: None,
         verification_status: "unverified".to_string(),
         verification_in_progress: false,
@@ -180,7 +177,6 @@ fn test_ideation_state_xml_placed_after_instructions() {
         plan_artifact_id: None,
         proposal_count: 1,
         parent_session_id: None,
-        team_mode: None,
         session_title: None,
         verification_status: "unverified".to_string(),
         verification_in_progress: false,

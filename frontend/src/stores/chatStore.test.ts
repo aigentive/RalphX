@@ -49,7 +49,6 @@ describe("chatStore", () => {
       agentStatus: {},
       agentActivityLabels: {},
       isSending: {},
-      isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
       lastToolCallCompletionTimestamp: {},

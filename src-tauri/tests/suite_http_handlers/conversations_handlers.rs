@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
 use ralphx_lib::application::chat_service::{CachedStreamingTask, CachedToolCall};
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::AgentHarnessKind;
 use ralphx_lib::domain::entities::{
@@ -22,7 +22,6 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
         model: None,
         status: "running".to_string(),
         agent_id: None,
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,
@@ -52,14 +51,10 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

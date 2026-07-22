@@ -10,7 +10,6 @@ use super::{expire_permission_and_emit, request_permission, resolve_permission};
 use crate::application::app_state::AppState;
 use crate::application::interactive_notification_producer::permission_notification_key;
 use crate::application::permission_state::{PendingPermissionInfo, PERMISSION_RESOLVED_EVENT};
-use crate::application::{TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::Notification;
 use crate::domain::entities::{
@@ -39,13 +38,9 @@ fn make_info(request_id: &str) -> PendingPermissionInfo {
 fn make_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = Arc::new(TeamStateTracker::new());
-    let team_service = Arc::new(TeamService::new_without_events(tracker));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: TeamStateTracker::new(),
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -56,14 +51,10 @@ fn make_test_state_with_event_sink() -> (HttpServerState, RecordingEventSink) {
     app_state.events = Arc::new(event_sink.clone());
     let app_state = Arc::new(app_state);
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = Arc::new(TeamStateTracker::new());
-    let team_service = Arc::new(TeamService::new_without_events(tracker));
     (
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: TeamStateTracker::new(),
-            team_service,
             delegation_service: Default::default(),
         },
         event_sink,

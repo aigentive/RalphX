@@ -44,7 +44,6 @@ describe("useChatAttachments", () => {
       agentStatus: {},
       agentActivityLabels: {},
       isSending: {},
-      isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
       lastToolCallCompletionTimestamp: {},

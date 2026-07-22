@@ -162,18 +162,15 @@ Updated: 2026-04-07
 - Prompt captures live separately in `~/.reefagent/sandbox/logs/prompts/codex-stream-effective-*.txt`
 - Raw event payloads do not directly carry sandbox mode / approval policy; those are visible in config/patch/spawn code instead
 
-## RalphX findings not yet fully merged into the spec
+## Historical RalphX discovery findings
 
 ### Current embed points
 
-- `ralphx.yaml` only has a first-class `claude:` runtime block today
-- live runtime wiring instantiates Claude clients/services, not Codex, even though `ClientType` in `src-tauri/crates/ralphx-domain/src/agents/types.rs` already contains `Codex`
-- major Claude-specific spawn/bootstrap files:
+- The original audit found Claude-specific bootstrap seams in:
   - `src-tauri/src/infrastructure/agents/claude/mod.rs`
   - `src-tauri/src/infrastructure/agents/claude/claude_code_client.rs`
   - `src-tauri/src/application/chat_service/chat_service_context.rs`
-  - `src-tauri/src/http_server/handlers/teams/spawn.rs`
-  - `src-tauri/src/http_server/handlers/teams/spawn_execution.rs`
+  - `src-tauri/src/http_server/handlers/coordination/**`
   - `src-tauri/src/application/memory_orchestration.rs`
   - `src-tauri/src/lib.rs`
 

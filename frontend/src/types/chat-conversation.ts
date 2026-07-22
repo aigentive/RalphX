@@ -76,7 +76,6 @@ export type AgentConversationMode = z.infer<typeof AgentConversationModeSchema>;
 
 export const COORDINATION_MODE_VALUES = [
   "solo",
-  "legacy_claude_team",
   "rx_native_team",
   "rx_native_workflow",
   "codex_native_ultra",

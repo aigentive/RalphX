@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { callTicketAttachmentTool, isTicketAttachmentToolName, safeTicketAttachmentResult, } from "../ticket-attachment-tools.js";
 import { getAllTools, getFilteredTools, getToolsByAgent, setAgentType, } from "../tools.js";
-import { CODER, GENERAL_WORKER, MERGER, ORCHESTRATOR_IDEATION, REVIEWER, WORKER, WORKER_TEAM_LEAD, } from "../agentNames.js";
+import { CODER, GENERAL_WORKER, MERGER, ORCHESTRATOR_IDEATION, REVIEWER, WORKER, } from "../agentNames.js";
 const TOOL_NAMES = ["list_ticket_attachments", "fetch_ticket_attachment"];
 describe("ticket attachment MCP tools", () => {
     beforeEach(() => {
@@ -56,7 +56,7 @@ describe("ticket attachment MCP tools", () => {
             "content_pointer",
         ]);
     });
-    it.each([WORKER, CODER, WORKER_TEAM_LEAD])("exposes attachment tools to %s through canonical grants", (agent) => {
+    it.each([WORKER, CODER])("exposes attachment tools to %s through canonical grants", (agent) => {
         setAgentType(agent);
         const toolNames = getFilteredTools().map((tool) => tool.name);
         const configuredTools = getToolsByAgent()[agent];

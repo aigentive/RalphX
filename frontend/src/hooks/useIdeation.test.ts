@@ -299,8 +299,6 @@ describe("useCreateIdeationSession", () => {
       "Test Session",
       undefined,
       undefined,
-      undefined,
-      undefined,
     );
   });
 
@@ -318,8 +316,6 @@ describe("useCreateIdeationSession", () => {
 
     expect(ideationApi.sessions.create).toHaveBeenCalledWith(
       "project-1",
-      undefined,
-      undefined,
       undefined,
       undefined,
       undefined,

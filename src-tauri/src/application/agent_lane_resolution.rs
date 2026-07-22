@@ -692,10 +692,7 @@ fn manual_service_tier_from_resolved(service_tier: Option<&str>) -> ManualServic
 fn ideation_lane_for_agent(agent_name: &str) -> Option<AgentLane> {
     let normalized = canonical_short_agent_name(agent_name);
     match normalized {
-        "ralphx-ideation"
-        | "ralphx-ideation-team-lead"
-        | "ideation-team-member"
-        | "ralphx-ideation-readonly" => Some(AgentLane::IdeationPrimary),
+        "ralphx-ideation" | "ralphx-ideation-readonly" => Some(AgentLane::IdeationPrimary),
         _ => None,
     }
 }

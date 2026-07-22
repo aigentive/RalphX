@@ -184,7 +184,6 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   ideationPage: false,
   automationsPage: true,
   battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
   agentConversationAutopilot: false,
@@ -887,7 +886,7 @@ export const useUiStore = create<UiState & UiActions>()(
         restoredView = normalizeMainView(restoredView);
         const restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
         // Guard against stale localStorage values ("settings" was removed from ViewType)
-        if ((restoredView as string) === "settings" || restoredView === "team") {
+        if (["settings", "team"].includes(restoredView as string)) {
           restoredView = DEFAULT_PROJECT_VIEW;
         }
         if (restoredView === "task_detail") {

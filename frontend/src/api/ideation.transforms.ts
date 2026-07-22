@@ -50,13 +50,6 @@ export function transformSession(raw: z.infer<typeof IdeationSessionResponseSche
     inheritedPlanArtifactId: raw.inherited_plan_artifact_id ?? null,
     seedTaskId: raw.seed_task_id ?? null,
     parentSessionId: raw.parent_session_id,
-    teamMode: raw.team_mode ?? null,
-    teamConfig: raw.team_config ? {
-      maxTeammates: raw.team_config.max_teammates,
-      modelCeiling: raw.team_config.model_ceiling,
-      ...(raw.team_config.budget_limit != null && { budgetLimit: raw.team_config.budget_limit }),
-      compositionMode: (raw.team_config.composition_mode ?? "dynamic") as "dynamic" | "constrained",
-    } : null,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
     archivedAt: raw.archived_at,

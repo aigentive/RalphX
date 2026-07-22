@@ -803,8 +803,6 @@ fn make_ideation_session(session_id: &str, project_id: &ProjectId) -> IdeationSe
         updated_at: chrono::Utc::now(),
         archived_at: None,
         converted_at: None,
-        team_mode: None,
-        team_config_json: None,
         title_source: None,
         verification_status: Default::default(),
         verification_in_progress: false,

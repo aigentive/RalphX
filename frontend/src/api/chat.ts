@@ -77,7 +77,7 @@ export interface ChatMessageResponse {
   contentBlocks: ContentBlockItem[] | null;
   /** Optimistic frontend-only attachments for messages not yet hydrated from backend. */
   attachments?: MessageAttachment[];
-  /** Sender name for team mode messages (teammate name or "lead") */
+  /** Optional upstream sender attribution. */
   sender: string | null;
   attributionSource?: string | null;
   providerHarness?: string | null;
@@ -495,7 +495,6 @@ export interface ActiveStreamingTaskResponse {
   model?: string;
   status: string;
   agent_id?: string;
-  teammate_name?: string;
   delegated_job_id?: string;
   delegated_session_id?: string;
   delegated_conversation_id?: string;
@@ -4469,7 +4468,6 @@ export async function sendAgentMessage(
   contextId: string,
   content: string,
   attachmentIds?: string[],
-  target?: string,
   options?: SendAgentMessageOptions,
 ): Promise<SendAgentMessageResult> {
   const raw = await typedInvoke(
@@ -4481,7 +4479,6 @@ export async function sendAgentMessage(
         content,
         ...(attachmentIds !== undefined &&
           attachmentIds.length > 0 && { attachmentIds }),
-        ...(target !== undefined && { target }),
         ...(options?.conversationId
           ? { conversationId: options.conversationId }
           : {}),

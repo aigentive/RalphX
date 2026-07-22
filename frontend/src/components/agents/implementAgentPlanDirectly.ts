@@ -66,7 +66,6 @@ export async function implementAgentPlanDirectly({
     projectId,
     PLAN_IMPLEMENT_DIRECTLY_REQUEST,
     undefined,
-    undefined,
     {
       conversationId,
       ...sendOptions,

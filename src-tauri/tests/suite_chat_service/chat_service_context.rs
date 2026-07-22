@@ -216,7 +216,6 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
             None,
             Some(project_id.as_str()),
             &roots,
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -325,7 +324,6 @@ async fn persona_builder_attachment_uses_real_app_data_when_project_path_contain
             Some(project_id.as_str()),
             std::slice::from_ref(&project_directory),
             Some(&app_data_dir),
-            false,
             attachment_repo,
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -628,7 +626,6 @@ async fn non_persona_modes_preserve_unenforced_mcp_spawn_shape() {
                 None,
                 Some(project_id.as_str()),
                 &[],
-                false,
                 Arc::new(MemoryChatAttachmentRepository::new()),
                 Arc::new(MemoryArtifactRepository::new()),
                 None,
@@ -696,7 +693,6 @@ async fn queued_flush_uses_persona_builder_read_roots() {
             Some(project_id.as_str()),
             &roots,
             Some(conversation_id.as_str().to_string()),
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -865,7 +861,6 @@ async fn assert_suppressed_persona_has_no_final_command_block(
             None,
             Some(conversation.context_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -906,7 +901,6 @@ async fn fresh_spawn_prompt_includes_bound_persona_block() {
             None,
             Some(conversation.context_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -949,7 +943,6 @@ async fn codex_fresh_persona_builder_spawn_uses_conversation_identity_and_cli_en
         None,
         Some(project_id.as_str()),
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         None,
@@ -1043,7 +1036,6 @@ async fn legacy_refine_builder_without_ingest_spawns_deny_all_with_draft_tools()
         None,
         Some(project_id.as_str()),
         &roots,
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1118,7 +1110,6 @@ async fn resume_command_prompt_includes_bound_persona_block() {
             Some(conversation.context_id.as_str()),
             &[],
             Some(conversation.id.to_string()),
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -1162,7 +1153,6 @@ async fn recovery_command_prompt_includes_bound_persona_block() {
             None,
             Some(conversation.context_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -1387,7 +1377,6 @@ async fn codex_fresh_command_forwards_a_resolved_persona_block() {
             None,
             Some(conversation.context_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -1438,7 +1427,6 @@ async fn persona_codex_command_reports_reasoned_skip_when_agent_prompt_is_missin
             None,
             Some(conversation.context_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -1501,7 +1489,6 @@ async fn codex_launch_plans_preserve_personas_for_fresh_and_recovery_modes() {
                 None,
                 Some(conversation.context_id.as_str()),
                 &[],
-                false,
                 Arc::new(MemoryChatAttachmentRepository::new()),
                 Arc::new(MemoryArtifactRepository::new()),
                 Arc::new(MockIdeationRepo::empty()),
@@ -2655,90 +2642,6 @@ async fn test_get_entity_status_for_resume_project_context() {
     assert_eq!(status, None);
 }
 
-#[tokio::test]
-async fn test_build_command_with_team_mode_true() {
-    // Test that build_command accepts team_mode=true parameter
-    // (function will return error in test env due to missing CLI, but that's expected)
-    let cli_path = std::path::PathBuf::from("/usr/bin/claude");
-    let plugin_dir = std::path::PathBuf::from("/tmp/plugin");
-    let working_dir = std::path::PathBuf::from("/tmp");
-
-    let session_id = IdeationSessionId::from_string("test-session-id");
-    let conversation = ChatConversation::new_ideation(session_id);
-
-    let chat_attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
-
-    // Should not panic with team_mode=true
-    // The function will error in test env, but we're just testing the signature works
-    let artifact_repo = Arc::new(MemoryArtifactRepository::new());
-    let _result = build_command(
-        &cli_path,
-        &plugin_dir,
-        &conversation,
-        "test message",
-        None,
-        &working_dir,
-        None,
-        None,
-        &[],
-        true, // team_mode=true
-        chat_attachment_repo,
-        artifact_repo,
-        None,
-        None,
-        None,
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test passes if no panic occurred (Err result is expected in test env)
-}
-
-#[tokio::test]
-async fn test_build_command_with_team_mode_false() {
-    // Test that build_command accepts team_mode=false parameter
-    let cli_path = std::path::PathBuf::from("/usr/bin/claude");
-    let plugin_dir = std::path::PathBuf::from("/tmp/plugin");
-    let working_dir = std::path::PathBuf::from("/tmp");
-
-    let session_id = IdeationSessionId::from_string("test-session-id");
-    let conversation = ChatConversation::new_ideation(session_id);
-
-    let chat_attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
-
-    // Should not panic with team_mode=false
-    let artifact_repo = Arc::new(MemoryArtifactRepository::new());
-    let _result = build_command(
-        &cli_path,
-        &plugin_dir,
-        &conversation,
-        "test message",
-        None,
-        &working_dir,
-        None,
-        None,
-        &[],
-        false, // team_mode=false
-        chat_attachment_repo,
-        artifact_repo,
-        None,
-        None,
-        None,
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test passes if no panic occurred
-}
-
 // Tests for build_resume_initial_prompt
 
 #[test]
@@ -2843,91 +2746,6 @@ fn provider_resume_mode_for_claude_requires_local_transcript() {
 }
 
 #[tokio::test]
-async fn test_build_resume_command_with_team_mode() {
-    // Test that build_resume_command accepts team_mode parameter
-    let cli_path = std::path::PathBuf::from("/usr/bin/claude");
-    let plugin_dir = std::path::PathBuf::from("/tmp/plugin");
-    let working_dir = std::path::PathBuf::from("/tmp");
-
-    let chat_attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
-    let artifact_repo = Arc::new(MemoryArtifactRepository::new());
-    let ideation_repo = Arc::new(MockIdeationRepo::empty());
-    let task_repo = Arc::new(MockTaskRepo);
-
-    // Test with team_mode=true
-    let _result = build_resume_command(
-        &cli_path,
-        &plugin_dir,
-        ChatContextType::Ideation,
-        "test-session-id",
-        CoordinationMode::Solo,
-        "ideation-conversation-team-enabled",
-        None,
-        "test message",
-        None,
-        None,
-        None,
-        &working_dir,
-        "session-123",
-        None,
-        &[],
-        None,
-        true, // team_mode=true
-        chat_attachment_repo.clone(),
-        artifact_repo.clone(),
-        None,
-        None,
-        None,
-        ideation_repo.clone(),
-        empty_delegated_session_repo(),
-        task_repo.clone(),
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test with team_mode=false
-    let _result = build_resume_command(
-        &cli_path,
-        &plugin_dir,
-        ChatContextType::Ideation,
-        "test-session-id",
-        CoordinationMode::Solo,
-        "ideation-conversation-team-disabled",
-        None,
-        "test message",
-        None,
-        None,
-        None,
-        &working_dir,
-        "session-123",
-        None,
-        &[],
-        None,
-        false, // team_mode=false
-        chat_attachment_repo,
-        artifact_repo,
-        None,
-        None,
-        None,
-        ideation_repo,
-        empty_delegated_session_repo(),
-        task_repo,
-        &[],
-        0,
-        None, // effort_override
-        None, // model_override
-        None, // attachment_context_override
-    )
-    .await;
-
-    // Test passes if no panics occurred
-}
-
-#[tokio::test]
 async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
     let (conversation, persona) = bound_project_persona().await;
     let (home, _cli_temp, cli_path, plugin_dir, working_dir) = codex_command_fixture();
@@ -2951,7 +2769,6 @@ async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
             Some(conversation.context_id.as_str()),
             &[],
             Some(conversation.id.to_string()),
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -3043,7 +2860,6 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
             None,
             &[],
             None,
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -3140,7 +2956,6 @@ async fn codex_legacy_verification_session_uses_active_ideation_features() {
             None,
             &[],
             None,
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -3209,7 +3024,6 @@ async fn task_execution_launch_injects_compact_runtime_context_and_state_env() {
             Some("executing"),
             Some("project-runtime"),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -3273,7 +3087,6 @@ async fn task_execution_launch_fails_closed_without_project_identity() {
             Some("executing"),
             None,
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -3313,7 +3126,6 @@ async fn task_reexecution_launch_injects_reexecuting_state() {
             Some("re_executing"),
             Some("project-runtime"),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -3357,7 +3169,6 @@ async fn review_launch_injects_reviewing_runtime_context_and_state_env() {
             Some("reviewing"),
             Some("project-runtime"),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -4303,7 +4114,6 @@ async fn test_plan_verifier_sets_subagent_cap_env_var() {
             Some("verification"),
             Some("proj-1"),
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             None,
@@ -4358,7 +4168,6 @@ async fn test_plan_verifier_subagent_cap_uses_haiku_default_when_no_db_rows() {
             Some("verification"),
             None, // no project_id → no project row
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             None,
@@ -4443,7 +4252,6 @@ async fn test_non_verifier_ideation_agent_subagent_cap_is_agent_own_model() {
             None, // no entity_status → ralphx-ideation
             Some("proj-1"),
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             Some(lane_repo_arc),
@@ -4536,7 +4344,6 @@ async fn test_orchestrator_ideation_uses_ideation_subagent_cap() {
             None, // no entity_status → ralphx-ideation
             Some("proj-1"),
             &[],
-            false,
             attachment_repo,
             artifact_repo,
             Some(lane_repo_arc),
@@ -4613,7 +4420,6 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             None,
             Some("proj-1"),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Some(Arc::clone(&lane_repo_arc)),
@@ -4665,7 +4471,6 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             Some("proj-1"),
             &[],
             None,
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Some(Arc::clone(&lane_repo_arc)),
@@ -4724,7 +4529,6 @@ async fn test_build_command_resumes_from_provider_session_ref_without_legacy_ali
                 None,
                 None,
                 &[],
-                false,
                 Arc::new(MemoryChatAttachmentRepository::new()),
                 Arc::new(MemoryArtifactRepository::new()),
                 None,

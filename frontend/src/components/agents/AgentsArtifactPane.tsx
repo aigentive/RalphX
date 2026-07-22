@@ -76,7 +76,6 @@ import { withAlpha } from "@/lib/theme-colors";
 import type {
   PlanDisplayConversationReference,
   PlanDisplayBodyMode,
-  TeamMetadata,
 } from "@/components/Ideation/PlanDisplay";
 import { useChatStore } from "@/stores/chatStore";
 import {
@@ -2839,17 +2838,6 @@ function AgentPlanPanel({
     setViewingEnrichment(undefined);
   }, [planArtifact?.id, planArtifact?.metadata.version, session?.id]);
 
-  const teamMetadata = useMemo<TeamMetadata | undefined>(() => {
-    if (!session?.teamMode || session.teamMode === "solo") {
-      return undefined;
-    }
-    return {
-      teamIdeated: true,
-      teamMode: session.teamMode as "research" | "debate",
-      teammateCount: session.teamConfig?.maxTeammates ?? 0,
-      findings: [],
-    };
-  }, [session?.teamConfig?.maxTeammates, session?.teamMode]);
   const criticalPathSet = useMemo(
     () => new Set(dependencyGraph?.criticalPath ?? []),
     [dependencyGraph?.criticalPath],
@@ -3149,7 +3137,6 @@ function AgentPlanPanel({
         "project",
         session.projectId,
         PLAN_IMPLEMENT_DIRECTLY_REQUEST,
-        undefined,
         undefined,
         {
           conversationId: workspace.conversationId,
@@ -3820,7 +3807,6 @@ function AgentPlanPanel({
                 isExpanded={isPlanExpanded}
                 onExpandedChange={setIsPlanExpanded}
                 chromeless
-                {...(teamMetadata !== undefined && { teamMetadata })}
               />
             </Suspense>
             {planBodyMode === "proposals" &&
