@@ -176,6 +176,31 @@ function mockPersonaCommands(personas: RawPersona[]) {
       if (index >= 0) store.splice(index, 1);
       return undefined;
     }
+    if (command === "unarchive_persona") {
+      const persona = store.find((item) => item.id === input?.id);
+      if (!persona) throw new Error("persona missing");
+      const collision = store.find(
+        (item) =>
+          item.id !== persona.id &&
+          item.slug === persona.slug &&
+          item.status === "active" &&
+          item.project_id === persona.project_id,
+      );
+      if (collision) {
+        throw new Error(
+          `Cannot restore persona: active persona \`${collision.name}\` already uses slug \`${persona.slug}\` in this scope`,
+        );
+      }
+      persona.status = "active";
+      return persona;
+    }
+    if (command === "list_persona_usage") {
+      return store.map((persona) => ({
+        personaId: persona.id,
+        boundConversationCount: persona.id === "persona-active" ? 2 : 0,
+        lastRunAt: persona.id === "persona-active" ? "2026-07-21T09:00:00Z" : null,
+      }));
+    }
     throw new Error(`Unexpected command: ${command}`);
   });
 }
@@ -421,7 +446,7 @@ describe("PersonasManagementSection", () => {
     expect(screen.getByLabelText("Slug")).toHaveValue("new-persona");
     await user.type(screen.getByLabelText("Description"), "A crisp design voice");
     await user.type(screen.getByLabelText("Instructions"), "Prefer concrete language.");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     await screen.findByText("New Persona");
     expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
@@ -452,7 +477,7 @@ describe("PersonasManagementSection", () => {
     await user.type(screen.getByLabelText("Name"), "Project Voice");
     await user.type(screen.getByLabelText("Description"), "Scoped to RalphX");
     await user.type(screen.getByLabelText("Instructions"), "Use project context.");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
@@ -493,7 +518,7 @@ describe("PersonasManagementSection", () => {
       screen.getByLabelText("Instructions"),
       "---\nname: pasted-persona\nkind: persona\ndescription: Pasted\n---\nUse the pasted document.",
     );
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
@@ -514,14 +539,14 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Reviewer Voice");
     await user.click(screen.getByRole("button", { name: "New persona" }));
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Save/ })).toBeDisabled();
 
     await user.type(screen.getByLabelText("Name"), "Ready Persona");
     await user.type(screen.getByLabelText("Description"), "Ready to write");
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Save/ })).toBeDisabled();
 
     await user.type(screen.getByLabelText("Instructions"), "Write with care.");
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Save/ })).toBeEnabled();
   });
 
   it("shows a save validation error inline and keeps the active edit form populated", async () => {
@@ -542,7 +567,7 @@ describe("PersonasManagementSection", () => {
     expect(screen.getByTestId("persona-editor-scope")).toHaveTextContent("Global");
     const instructions = screen.getByLabelText("Instructions");
     fireEvent.change(instructions, { target: { value: "<blocked-tag>" } });
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     expect(await screen.findByText(/Save failed: body contains blocked structural tag/)).toBeInTheDocument();
     expect(screen.getByLabelText("Instructions")).toHaveValue("<blocked-tag>");
@@ -611,7 +636,7 @@ describe("PersonasManagementSection", () => {
     fireEvent.change(screen.getByLabelText("Instructions"), {
       target: { value: "Updated body" },
     });
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("update_persona", {
@@ -649,12 +674,12 @@ describe("PersonasManagementSection", () => {
 
     expect(screen.getByLabelText("Description")).toBeEnabled();
     expect(screen.getByLabelText("Instructions")).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Save" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Save/ })).toBeVisible();
 
     fireEvent.change(screen.getByLabelText("Instructions"), {
       target: { value: "Updated draft body" },
     });
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("update_persona_draft", {
@@ -696,7 +721,7 @@ describe("PersonasManagementSection", () => {
     await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
     await user.clear(screen.getByLabelText("Instructions"));
     await user.type(screen.getByLabelText("Instructions"), "Stale local edit");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     expect(
       await screen.findByText("This draft changed since you loaded it."),
@@ -724,7 +749,7 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Terse Architect");
     await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: /^Save/ }));
 
     expect(await screen.findByText("Save failed: invalid persona body")).toBeInTheDocument();
     expect(screen.queryByText("This draft changed since you loaded it.")).not.toBeInTheDocument();
@@ -859,6 +884,144 @@ describe("PersonasManagementSection", () => {
 
     await user.hover(archive);
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Archive Reviewer Voice");
+  });
+
+  it("filters personas by search across name, slug, and description", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona, draftPersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    const search = screen.getByLabelText("Search personas");
+    await user.type(search, "terse");
+    expect(screen.getByText("Terse Architect")).toBeInTheDocument();
+    expect(screen.queryByText("Reviewer Voice")).not.toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "careful reviewer");
+    expect(screen.getByText("Reviewer Voice")).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "no-such-persona");
+    expect(
+      screen.getByText('No personas match "no-such-persona".'),
+    ).toBeInTheDocument();
+  });
+
+  it("shows archived personas on the Archived tab and restores them", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona, archivedPersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    expect(screen.queryByText("Old Voice")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /Archived/ }));
+    expect(screen.getByText("Old Voice")).toBeInTheDocument();
+    expect(screen.queryByText("Reviewer Voice")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Edit Old Voice" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Restore Old Voice" }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("unarchive_persona", {
+        input: { id: "persona-archived" },
+      }),
+    );
+    await user.click(screen.getByRole("tab", { name: /All/ }));
+    expect(await screen.findByText("Old Voice")).toBeInTheDocument();
+  });
+
+  it("surfaces a restore slug collision as an inline actionable error", async () => {
+    const user = userEvent.setup();
+    const archivedTwin: RawPersona = {
+      ...archivedPersona,
+      slug: activePersona.slug,
+    };
+    mockPersonaCommands([activePersona, archivedTwin]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("tab", { name: /Archived/ }));
+    await user.click(screen.getByRole("button", { name: "Restore Old Voice" }));
+
+    expect(
+      await screen.findByText(
+        /active persona `Reviewer Voice` already uses slug `reviewer-voice`/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Old Voice")).toBeInTheDocument();
+  });
+
+  it("renders derived usage per row and description text", async () => {
+    mockPersonaCommands([activePersona, draftPersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    expect(
+      await screen.findByTestId("persona-usage-persona-active"),
+    ).toHaveTextContent(/2 conversations · last run/);
+    expect(screen.getByTestId("persona-usage-persona-draft")).toHaveTextContent(
+      "never used",
+    );
+    expect(screen.getAllByText("A careful reviewer.").length).toBeGreaterThan(0);
+  });
+
+  it("renders an em-dash instead of zero when the usage query fails", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_personas") return [activePersona];
+      if (command === "list_persona_usage") throw new Error("usage backend down");
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    expect(
+      await screen.findByTestId("persona-usage-error-persona-active"),
+    ).toHaveTextContent("—");
+    expect(screen.queryByText(/0 conversations/)).not.toBeInTheDocument();
+  });
+
+  it("labels the edit save button with the version it will create", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("button", { name: "Edit Reviewer Voice" }));
+    expect(
+      screen.getByRole("button", { name: "Save (creates v4)" }),
+    ).toBeInTheDocument();
+  });
+
+  it("previews and diffs instructions without mutating persona state", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("button", { name: "Edit Reviewer Voice" }));
+    fireEvent.change(screen.getByLabelText("Instructions"), {
+      target: { value: "Review **boldly**." },
+    });
+
+    await user.click(screen.getByRole("tab", { name: "Preview" }));
+    expect(
+      screen.getByTestId("persona-instructions-preview"),
+    ).toHaveTextContent("Review boldly.");
+
+    await user.click(screen.getByRole("tab", { name: "Diff vs v3" }));
+    expect(await screen.findByTestId("persona-diff")).toBeInTheDocument();
+    expect(screen.getByText("Review **boldly**.")).toBeInTheDocument();
+    expect(screen.getByText("Review carefully.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Write" }));
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Review **boldly**.");
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+      "update_persona",
+      expect.anything(),
+    );
   });
 });
 

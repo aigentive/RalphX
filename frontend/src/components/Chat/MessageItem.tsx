@@ -114,6 +114,7 @@ export interface MessageItemProps {
   showProviderMeta?: boolean | undefined;
   hideMeta?: boolean | undefined;
   agentPersonasEnabled?: boolean | undefined;
+  personaId?: string | null | undefined;
   personaSlug?: string | null | undefined;
   personaVersion?: number | null | undefined;
   personaInjected?: boolean | null | undefined;
@@ -246,6 +247,7 @@ export const MessageItem = React.memo(function MessageItem({
   showProviderMeta = true,
   hideMeta = false,
   agentPersonasEnabled = false,
+  personaId,
   personaSlug,
   personaVersion,
   personaInjected,
@@ -580,6 +582,7 @@ export const MessageItem = React.memo(function MessageItem({
             )}
             <PersonaRunBadge
               enabled={agentPersonasEnabled}
+              personaId={personaId}
               personaSlug={personaSlug}
               personaVersion={personaVersion}
               personaInjected={personaInjected}
@@ -672,6 +675,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.showProviderMeta === next.showProviderMeta
     && prev.hideMeta === next.hideMeta
     && prev.agentPersonasEnabled === next.agentPersonasEnabled
+    && prev.personaId === next.personaId
     && prev.personaSlug === next.personaSlug
     && prev.personaVersion === next.personaVersion
     && prev.personaInjected === next.personaInjected
