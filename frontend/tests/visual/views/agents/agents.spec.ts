@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { seedAutomationRuntimeVisualState } from "../../../fixtures/agents-automation-runtime.fixtures";
 import { setupApp } from "../../../fixtures/setup.fixtures";
+import { AgentsRuntimePage } from "../../../pages/views/agents-runtime.page";
 import type { StateTransition } from "@/api/tasks";
 import type { ChatMessageResponse } from "@/api/chat";
 import type {
@@ -19,6 +21,7 @@ const baseRef = {
 
 const editConversationId = "conv-agent-edit-visual";
 const ideationConversationId = "conv-agent-ideation-visual";
+const automationConversationId = "conv-agent-automation-visual";
 const archivedConversationId = "conv-agent-archived-visual";
 const stablePublishEventCreatedAt = "2026-05-13T05:20:00";
 
@@ -176,12 +179,14 @@ function makeConversation({
   mode,
   createdAt,
   archivedAt = null,
+  automationId = null,
 }: {
   id: string;
   title: string;
   mode: AgentConversationMode;
   createdAt: string;
   archivedAt?: string | null;
+  automationId?: string | null;
 }): ChatConversation {
   return {
     id,
@@ -193,6 +198,8 @@ function makeConversation({
     upstreamProvider: "openai",
     providerProfile: null,
     agentMode: mode,
+    automationId,
+    automationRunId: null,
     coordinationMode: "solo",
     title,
     messageCount: 0,
@@ -1073,7 +1080,10 @@ async function expectAgentsTaskDetailOneColumn(page: Page, detailTestId: string)
   expect(horizontalOverflow).toBeLessThanOrEqual(2);
 }
 
-async function seedAgentsScenario(page: Page) {
+async function seedAgentsScenario(
+  page: Page,
+  options: { includeAutomation?: boolean } = {},
+) {
   await page.evaluate(() => {
     window.__mockChatApi?.reset();
   });
@@ -1100,6 +1110,20 @@ async function seedAgentsScenario(page: Page) {
     seededMessages(ideationConversationId),
     "ideation",
   );
+  if (options.includeAutomation) {
+    await seedConversationWithWorkspace(
+      page,
+      makeConversation({
+        id: automationConversationId,
+        title: "Release readiness automation",
+        mode: "automation",
+        automationId: "automation-visual-1",
+        createdAt: "2026-04-25T17:45:00.000Z",
+      }),
+      seededMessages(automationConversationId),
+      "automation",
+    );
+  }
   await seedConversationWithWorkspace(
     page,
     makeConversation({
@@ -1594,6 +1618,31 @@ test.describe("Agents View", () => {
       "Main chat is showing this runtime transcript",
     );
     await expectAgentsTaskDetailOneColumn(page, "reviewing-task-detail");
+  });
+
+  test("automation runs render as Runtime tray items", async ({ page }) => {
+    await setupAgentsView(page);
+    await seedAgentsScenario(page, { includeAutomation: true });
+    await seedAutomationRuntimeVisualState(page, {
+      automationId: "automation-visual-1",
+      conversationId: automationConversationId,
+      projectId,
+    });
+    await selectAgentConversation(page, automationConversationId);
+
+    const runtime = new AgentsRuntimePage(page);
+    await runtime.openRuntimeRuns();
+    await expect(runtime.standaloneRunsWidget).toHaveCount(0);
+    await expect(runtime.mainGroup).toBeVisible();
+    await expect(runtime.runRow("automation-visual-1-run-2")).toContainText(
+      "Awaiting plan approval",
+    );
+    await expect(runtime.runRow("automation-visual-1-run-1")).toContainText("Merged");
+
+    await expect(page).toHaveScreenshot("agents-automation-runtime-runs.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
   });
 
   test("v27 sidebar tree and static recent block match visual contract", async ({ page }) => {
