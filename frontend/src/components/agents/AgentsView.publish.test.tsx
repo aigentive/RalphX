@@ -349,6 +349,28 @@ describe("AgentsView publish", () => {
     });
   });
 
+  it("opens closed pull requests in count-free historical cumulative mode", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrStatus: "closed",
+      },
+      changes: [reviewFile],
+    });
+
+    await openPublishPane();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent(
+        "Pull request changes",
+      ),
+    );
+    expect(screen.getByTestId("diff-filter-trigger")).not.toHaveTextContent(
+      "Workspace changes",
+    );
+  });
+
   it("shows inline-pane hydration while the visible review is loading", async () => {
     configurePublishPane();
     getWorkspaceReviewMock.mockImplementation(() => new Promise(() => {}));

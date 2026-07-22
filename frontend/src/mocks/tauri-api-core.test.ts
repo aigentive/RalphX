@@ -1,6 +1,13 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import { getStore, resetStore, seedMockNotifications } from "@/api-mock/store";
+import {
+  mockChatApi,
+  mockGetAgentConversationWorkspace,
+  mockStartAgentConversation,
+  seedMockAgentConversationWorkspace,
+  seedMockConversation,
+} from "@/api-mock/chat";
 
 import { invoke } from "./tauri-api-core";
 
@@ -17,6 +24,90 @@ const notificationSettings = {
   desktop_git_github_enabled: true,
   muted_project_ids: [],
 };
+
+describe("agent workspace diff command mocks", () => {
+  afterEach(() => {
+    mockChatApi.reset();
+  });
+
+  it("returns schema-valid empty annotation envelopes", async () => {
+    await expect(
+      invoke("get_agent_conversation_workspace_pr_annotations", {
+        conversationId: "conversation-annotations",
+      }),
+    ).resolves.toEqual({
+      pr_number: 0,
+      head_sha: null,
+      annotations: [],
+      sources_unavailable: [],
+    });
+    await expect(
+      invoke("get_agent_conversation_workspace_review_hunk_annotations", {
+        conversationId: "conversation-annotations",
+      }),
+    ).resolves.toEqual({
+      artifact_id: null,
+      artifact_version: null,
+      target_scope: null,
+      head_sha: null,
+      diff_fingerprint: null,
+      annotations: [],
+    });
+  });
+
+  it("marks terminal workspace reviews as read-only", async () => {
+    const conversationId = "conversation-terminal-review";
+    seedMockConversation(
+      {
+        id: conversationId,
+        contextType: "project",
+        contextId: "project-mock-1",
+        claudeSessionId: null,
+        providerSessionId: null,
+        providerHarness: "codex",
+        upstreamProvider: "openai",
+        providerProfile: null,
+        agentMode: "edit",
+        coordinationMode: "solo",
+        title: "Terminal review",
+        messageCount: 0,
+        lastMessageAt: null,
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T10:00:00.000Z",
+        archivedAt: null,
+      },
+      [],
+    );
+    await mockStartAgentConversation({
+      projectId: "project-mock-1",
+      conversationId,
+      content: "Seed terminal review",
+      providerHarness: "codex",
+      modelId: "gpt-5.4",
+      mode: "edit",
+      base: {
+        kind: "project_default",
+        ref: "main",
+        displayName: "Project default (main)",
+      },
+    });
+    const workspace = await mockGetAgentConversationWorkspace(conversationId);
+    if (!workspace) throw new Error("Expected seeded workspace");
+    seedMockAgentConversationWorkspace({
+      ...workspace,
+      status: "missing",
+      publicationPrNumber: 451,
+      publicationPrStatus: "merged",
+      publicationPushStatus: "pushed",
+    });
+
+    await expect(
+      invoke("get_agent_conversation_workspace_review", { conversationId }),
+    ).resolves.toEqual(
+      expect.objectContaining({ supports_worktree_modes: false }),
+    );
+  });
+});
 
 describe("notification command mocks", () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
