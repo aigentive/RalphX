@@ -653,6 +653,11 @@ export function extractDelegationMetadata(
     getFirstRecord(resultRecord, "delegated_status", "delegatedStatus");
   const latestRun = getFirstRecord(delegatedStatus, "latest_run", "latestRun");
   const session = getFirstRecord(delegatedStatus, "session");
+  const providerHarness =
+    getFirstString(latestRun, "harness")
+    ?? getFirstString(resultRecord, "harness")
+    ?? getFirstString(session, "harness")
+    ?? getFirstString(argRecord, "harness", "harness_override", "harnessOverride");
 
   const inputTokens = getFirstNumber(latestRun, "input_tokens", "inputTokens")
     ?? getFirstNumber(resultRecord, "input_tokens", "inputTokens");
@@ -669,16 +674,25 @@ export function extractDelegationMetadata(
     "cacheReadTokens",
   ) ?? getFirstNumber(resultRecord, "cache_read_tokens", "cacheReadTokens");
 
-  const totalTokens =
-    inputTokens != null ||
-    outputTokens != null ||
-    cacheCreationTokens != null ||
-    cacheReadTokens != null
-      ? (inputTokens ?? 0)
-        + (outputTokens ?? 0)
-        + (cacheCreationTokens ?? 0)
-        + (cacheReadTokens ?? 0)
-      : undefined;
+  const authoritativeTotalTokens =
+    getFirstNumber(latestRun, "processed_tokens", "processedTokens")
+    ?? getFirstNumber(
+      resultRecord,
+      "total_tokens",
+      "totalTokens",
+      "processed_tokens",
+      "processedTokens",
+    );
+  const hasDetailedTokens = inputTokens != null || outputTokens != null;
+  const totalTokens = authoritativeTotalTokens
+    ?? (hasDetailedTokens && providerHarness === "codex"
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : hasDetailedTokens && providerHarness === "claude"
+        ? (inputTokens ?? 0)
+          + (outputTokens ?? 0)
+          + (cacheCreationTokens ?? 0)
+          + (cacheReadTokens ?? 0)
+        : undefined);
 
   const textOutput =
     getFirstString(resultRecord, "content")
@@ -699,11 +713,6 @@ export function extractDelegationMetadata(
     ?? getFirstString(argRecord, "agent_name", "agentName");
   const prompt = getFirstString(argRecord, "prompt");
   const title = getFirstString(argRecord, "title");
-  const providerHarness =
-    getFirstString(latestRun, "harness")
-    ?? getFirstString(resultRecord, "harness")
-    ?? getFirstString(session, "harness")
-    ?? getFirstString(argRecord, "harness", "harness_override", "harnessOverride");
   const providerSessionId =
     getFirstString(latestRun, "provider_session_id", "providerSessionId")
     ?? getFirstString(resultRecord, "provider_session_id", "providerSessionId")

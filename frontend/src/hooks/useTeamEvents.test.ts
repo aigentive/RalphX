@@ -366,7 +366,7 @@ describe("useTeamEvents", () => {
   // --------------------------------------------------------------------------
   // 9. team:cost_update → token summing
   // --------------------------------------------------------------------------
-  it("should sum input_tokens + output_tokens and pass to updateTeammateCost", () => {
+  it("should sum provider-correct Claude processed tokens and pass them to updateTeammateCost", () => {
     renderHook(() => useTeamEvents(CONTEXT_KEY));
 
     act(() => {
@@ -386,12 +386,14 @@ describe("useTeamEvents", () => {
         teammate_name: "w1",
         input_tokens: 1000,
         output_tokens: 500,
+        cache_creation_tokens: 200,
+        cache_read_tokens: 100,
         estimated_usd: 0.05,
       });
     });
 
     const mate = useTeamStore.getState().activeTeams[CONTEXT_KEY]!.teammates["w1"];
-    expect(mate!.tokensUsed).toBe(1500); // input + output
+    expect(mate!.tokensUsed).toBe(1800);
     expect(mate!.estimatedCostUsd).toBe(0.05);
   });
 

@@ -409,6 +409,7 @@ describe("TaskContextPanel", () => {
             outputTokens: 90,
             cacheCreationTokens: 20,
             cacheReadTokens: 30,
+            processedTokens: 390,
             estimatedUsd: 0.52,
           },
           runUsageTotals: {
@@ -416,6 +417,7 @@ describe("TaskContextPanel", () => {
             outputTokens: 90,
             cacheCreationTokens: 20,
             cacheReadTokens: 30,
+            processedTokens: 390,
             estimatedUsd: 0.52,
           },
           effectiveUsageTotals: {
@@ -423,6 +425,7 @@ describe("TaskContextPanel", () => {
             outputTokens: 90,
             cacheCreationTokens: 20,
             cacheReadTokens: 30,
+            processedTokens: 390,
             estimatedUsd: 0.52,
           },
           usageCoverage: {
@@ -430,6 +433,11 @@ describe("TaskContextPanel", () => {
             providerMessagesWithUsage: 4,
             runCount: 2,
             runsWithUsage: 2,
+            effectiveRunConversationCount: 0,
+            effectiveMessageConversationCount: 2,
+            legacyEstimatedSampleCount: 0,
+            fallbackEstimatedSampleCount: 0,
+            uncountedSampleCount: 0,
             effectiveTotalsSource: "messages",
           },
           attributionCoverage: {
@@ -448,6 +456,7 @@ describe("TaskContextPanel", () => {
                 outputTokens: 90,
                 cacheCreationTokens: 20,
                 cacheReadTokens: 30,
+                processedTokens: 390,
                 estimatedUsd: 0.52,
               },
             },
@@ -462,6 +471,7 @@ describe("TaskContextPanel", () => {
                 outputTokens: 90,
                 cacheCreationTokens: 20,
                 cacheReadTokens: 30,
+                processedTokens: 390,
                 estimatedUsd: 0.52,
               },
             },

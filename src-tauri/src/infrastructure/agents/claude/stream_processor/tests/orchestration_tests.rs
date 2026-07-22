@@ -81,6 +81,7 @@ fn test_processor_session_id_from_result() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.01,
+        usage: None,
     };
 
     let events = processor.process_message(msg);
@@ -125,6 +126,7 @@ fn test_processor_collects_usage_from_assistant_and_result() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.0125,
+        usage: None,
     });
 
     let result = processor.finish();
@@ -133,6 +135,124 @@ fn test_processor_collects_usage_from_assistant_and_result() {
     assert_eq!(result.usage.cache_creation_tokens, Some(50));
     assert_eq!(result.usage.cache_read_tokens, Some(210));
     assert_eq!(result.usage.estimated_usd, Some(0.0125));
+}
+
+#[test]
+fn terminal_result_usage_replaces_provisional_assistant_maxima() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![],
+            stop_reason: Some("tool_use".to_string()),
+            usage: Some(serde_json::json!({
+                "input_tokens": 3,
+                "output_tokens": 73,
+                "cache_creation_input_tokens": 105479,
+                "cache_read_input_tokens": 142307
+            })),
+        },
+        session_id: Some("usage-session".to_string()),
+    });
+    let parsed = StreamProcessor::parse_line(
+        r#"{"type":"result","session_id":"usage-session","is_error":false,"result":"Done","usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_tokens":127826,"cache_read_tokens":1099251}}"#,
+    )
+    .expect("result should parse");
+    processor.process_parsed_line(parsed);
+
+    let capture = processor.current_turn_capture().expect("typed capture");
+    assert_eq!(capture.normalized.input_tokens, Some(13));
+    assert_eq!(capture.normalized.output_tokens, Some(1_434));
+    assert_eq!(capture.normalized.cache_creation_tokens, Some(127_826));
+    assert_eq!(capture.normalized.cache_read_tokens, Some(1_099_251));
+    assert_eq!(capture.provenance, UsageProvenance::ProviderTurnDelta);
+}
+
+#[test]
+fn empty_terminal_result_usage_preserves_provisional_assistant_usage() {
+    let mut processor = StreamProcessor::new();
+    let assistant = StreamProcessor::parse_line(
+        r#"{"type":"assistant","message":{"usage":{"input_tokens":41,"output_tokens":7,"cache_read_input_tokens":30},"content":[]}}"#,
+    )
+    .expect("assistant usage should parse");
+    processor.process_parsed_line(assistant);
+    let result = StreamProcessor::parse_line(
+        r#"{"type":"result","session_id":"session-1","is_error":false,"result":"done","usage":{}}"#,
+    )
+    .expect("empty terminal usage should parse");
+    processor.process_parsed_line(result);
+
+    let capture = processor
+        .current_turn_capture()
+        .expect("assistant usage should remain available");
+    assert_eq!(capture.normalized.input_tokens, Some(41));
+    assert_eq!(capture.normalized.output_tokens, Some(7));
+    assert_eq!(capture.normalized.cache_read_tokens, Some(30));
+    assert_eq!(
+        capture.provenance,
+        UsageProvenance::ProviderSnapshotFallback
+    );
+}
+
+#[test]
+fn nested_terminal_result_usage_does_not_replace_lead_usage() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![],
+            stop_reason: Some("end_turn".to_string()),
+            usage: Some(serde_json::json!({"input_tokens": 10, "output_tokens": 2})),
+        },
+        session_id: Some("lead-session".to_string()),
+    });
+    let mut parsed = StreamProcessor::parse_line(
+        r#"{"type":"result","session_id":"child-session","is_error":false,"result":"Done","usage":{"input_tokens":999,"output_tokens":888}}"#,
+    )
+    .expect("nested result should parse");
+    parsed.parent_tool_use_id = Some("tool-child".to_string());
+    processor.process_parsed_line(parsed);
+
+    let capture = processor.current_turn_capture().expect("fallback capture");
+    assert_eq!(capture.normalized.input_tokens, Some(10));
+    assert_eq!(capture.normalized.output_tokens, Some(2));
+    assert_eq!(
+        capture.provenance,
+        UsageProvenance::ProviderSnapshotFallback
+    );
+}
+
+#[test]
+fn nested_assistant_and_delta_usage_do_not_seed_lead_fallback() {
+    let mut processor = StreamProcessor::new();
+    processor.process_parsed_line(ParsedLine {
+        message: StreamMessage::Assistant {
+            message: AssistantMessage {
+                content: vec![],
+                stop_reason: Some("end_turn".to_string()),
+                usage: Some(serde_json::json!({
+                    "input_tokens": 999,
+                    "output_tokens": 888
+                })),
+            },
+            session_id: Some("child-session".to_string()),
+        },
+        parent_tool_use_id: Some("tool-child".to_string()),
+        is_synthetic: false,
+        tool_use_result: None,
+    });
+    processor.process_parsed_line(ParsedLine {
+        message: StreamMessage::MessageDelta {
+            delta: None,
+            usage: Some(serde_json::json!({
+                "input_tokens": 1_111,
+                "output_tokens": 999
+            })),
+        },
+        parent_tool_use_id: Some("tool-child".to_string()),
+        is_synthetic: false,
+        tool_use_result: None,
+    });
+
+    assert_eq!(processor.current_turn_capture(), None);
 }
 
 #[test]
@@ -153,6 +273,7 @@ fn test_processor_usage_accumulates_across_turns() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.001,
+        usage: None,
     });
     processor.reset_for_next_turn();
 
@@ -177,6 +298,7 @@ fn test_processor_usage_accumulates_across_turns() {
         errors: Vec::new(),
         subtype: None,
         cost_usd: 0.002,
+        usage: None,
     });
 
     let result = processor.finish();
@@ -184,6 +306,22 @@ fn test_processor_usage_accumulates_across_turns() {
     assert_eq!(result.usage.output_tokens, Some(35));
     assert_eq!(result.usage.cache_read_tokens, Some(30));
     assert_eq!(result.usage.estimated_usd, Some(0.003));
+}
+
+#[test]
+fn test_processor_usage_accumulation_does_not_wrap_or_panic() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::MessageDelta {
+        delta: None,
+        usage: Some(serde_json::json!({ "input_tokens": u64::MAX })),
+    });
+    processor.reset_for_next_turn();
+    processor.process_message(StreamMessage::MessageDelta {
+        delta: None,
+        usage: Some(serde_json::json!({ "input_tokens": 1 })),
+    });
+
+    assert_eq!(processor.finish().usage.input_tokens, Some(u64::MAX));
 }
 
 #[test]
@@ -529,8 +667,7 @@ fn test_three_api_calls_all_text_accumulated() {
     let result = processor.finish();
 
     assert_eq!(
-        result.response_text,
-        "Step one: planning.Step two: executing.Step three: done.",
+        result.response_text, "Step one: planning.Step two: executing.Step three: done.",
         "All 3 API call texts must appear in response_text"
     );
 
@@ -603,8 +740,7 @@ fn test_text_plus_tool_use_then_synthesis_text_not_dropped() {
     let result = processor.finish();
 
     assert_eq!(
-        result.response_text,
-        "I'll search for that.Found 3 unused functions.",
+        result.response_text, "I'll search for that.Found 3 unused functions.",
         "Both texts must appear in response_text; synthesis must not be dropped"
     );
 
@@ -768,8 +904,7 @@ fn test_multi_api_call_via_parse_line_accumulates_text() {
     let result = processor.finish();
 
     assert_eq!(
-        result.response_text,
-        "Preparing analysis.Analysis complete.",
+        result.response_text, "Preparing analysis.Analysis complete.",
         "Both assistant lines must be accumulated via parse_line + process_parsed_line"
     );
 

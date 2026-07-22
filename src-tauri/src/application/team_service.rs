@@ -200,6 +200,8 @@ impl TeamService {
     ) -> Result<(), TeamTrackerError> {
         let input_tokens = cost.input_tokens;
         let output_tokens = cost.output_tokens;
+        let cache_creation_tokens = cost.cache_creation_tokens;
+        let cache_read_tokens = cost.cache_read_tokens;
         let estimated_usd = cost.estimated_usd;
 
         self.tracker
@@ -216,6 +218,8 @@ impl TeamService {
                 teammate_name,
                 input_tokens,
                 output_tokens,
+                cache_creation_tokens,
+                cache_read_tokens,
                 estimated_usd,
                 &ctx_type,
                 &ctx_id,

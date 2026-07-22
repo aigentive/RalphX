@@ -28,9 +28,10 @@ use crate::application::team_service::TeamService;
 use crate::application::team_state_tracker::{
     TeamMessageType, TeamStateTracker, TeammateCost, TeammateStatus,
 };
+use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
-    CoordinationMode, MessageRole,
+    AgentRunUsage, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, CoordinationMode, MessageRole,
 };
 use crate::domain::repositories::{ChatConversationRepository, ChatMessageRepository};
 use crate::infrastructure::agents::claude::{
@@ -101,7 +102,7 @@ pub fn start_teammate_stream<R: Runtime>(
                     context_id: teammate_ctx_id,
                     claude_session_id: None,
                     provider_session_id: None,
-                    provider_harness: None,
+                    provider_harness: Some(AgentHarnessKind::Claude),
                     upstream_provider: None,
                     provider_profile: None,
                     agent_mode: None,
@@ -182,6 +183,7 @@ pub fn start_teammate_stream<R: Runtime>(
         let conversation_id_str = teammate_conversation_id
             .as_ref()
             .map(|id| id.as_str());
+        let mut teammate_provider_session_id: Option<String> = None;
 
         // Pre-create empty assistant message (crash recovery pattern)
         let mut assistant_message_id: Option<String> =
@@ -201,8 +203,8 @@ pub fn start_teammate_stream<R: Runtime>(
                     tool_calls: None,
                     content_blocks: None,
                     attribution_source: None,
-                    provider_harness: None,
-                    provider_session_id: None,
+                    provider_harness: Some(AgentHarnessKind::Claude),
+                    provider_session_id: teammate_provider_session_id.clone(),
                     upstream_provider: None,
                     provider_profile: None,
                     logical_model: None,
@@ -214,6 +216,8 @@ pub fn start_teammate_stream<R: Runtime>(
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                     estimated_usd: None,
+                    usage_provenance: None,
+                    raw_usage_snapshot: None,
                     created_at: chrono::Utc::now(),
                 };
                 let msg_id = msg.id.as_str().to_string();
@@ -264,10 +268,8 @@ pub fn start_teammate_stream<R: Runtime>(
         // Fix B: tracks TurnComplete → Idle state between turns
         let mut is_idle = false;
 
-        // Track cumulative cost from result events
-        let mut total_cost_usd: f64 = 0.0;
-        let mut total_input_tokens: u64 = 0;
-        let mut total_output_tokens: u64 = 0;
+        // Completed turns are additive; assistant snapshots are provisional for the current turn.
+        let mut completed_cost = TeammateCost::default();
 
         // Pin exit_signal so it can be used repeatedly in select!
         tokio::pin!(exit_signal);
@@ -370,8 +372,8 @@ pub fn start_teammate_stream<R: Runtime>(
                                             tool_calls: None,
                                             content_blocks: None,
                                             attribution_source: None,
-                                            provider_harness: None,
-                                            provider_session_id: None,
+                                            provider_harness: Some(AgentHarnessKind::Claude),
+                                            provider_session_id: teammate_provider_session_id.clone(),
                                             upstream_provider: None,
                                             provider_profile: None,
                                             logical_model: None,
@@ -383,6 +385,8 @@ pub fn start_teammate_stream<R: Runtime>(
                                             cache_creation_tokens: None,
                                             cache_read_tokens: None,
                                             estimated_usd: None,
+                                            usage_provenance: None,
+                                            raw_usage_snapshot: None,
                                             created_at: chrono::Utc::now(),
                                         };
                                         let new_id = msg.id.as_str().to_string();
@@ -588,9 +592,45 @@ pub fn start_teammate_stream<R: Runtime>(
                                         ),
                                     );
                                 }
-                                StreamEvent::SessionId(_) => {
-                                    // Session ID captured in processor — not needed for
-                                    // teammate streaming (teammates don't use --resume)
+                                StreamEvent::SessionId(session_id) => {
+                                    teammate_provider_session_id = Some(session_id.clone());
+                                    let session_ref = ProviderSessionRef {
+                                        harness: AgentHarnessKind::Claude,
+                                        provider_session_id: session_id,
+                                    };
+                                    if let (Some(repo), Some(conversation_id)) = (
+                                        chat_conversation_repo.as_ref(),
+                                        teammate_conversation_id.as_ref(),
+                                    ) {
+                                        if let Err(error) = repo
+                                            .update_provider_session_ref(
+                                                conversation_id,
+                                                &session_ref,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                error = %error,
+                                                "Failed to persist teammate conversation session attribution"
+                                            );
+                                        }
+                                    }
+                                    if let (Some(repo), Some(message_id)) =
+                                        (chat_message_repo.as_ref(), assistant_message_id.as_ref())
+                                    {
+                                        if let Err(error) = repo
+                                            .update_provider_session_ref(
+                                                &ChatMessageId::from_string(message_id.clone()),
+                                                &session_ref,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                error = %error,
+                                                "Failed to persist teammate message session attribution"
+                                            );
+                                        }
+                                    }
                                 }
                                 StreamEvent::TaskStarted {
                                     tool_use_id,
@@ -784,6 +824,32 @@ pub fn start_teammate_stream<R: Runtime>(
                                     }
                                 }
                                 StreamEvent::TurnComplete { .. } => {
+                                    let turn_capture = processor.current_turn_capture();
+                                    if let Some(capture) = turn_capture.as_ref() {
+                                        add_usage_to_teammate_cost(
+                                            &mut completed_cost,
+                                            &capture.normalized,
+                                        );
+                                        let _ = team_tracker
+                                            .update_teammate_cost(
+                                                &team_name,
+                                                &teammate_name,
+                                                completed_cost.clone(),
+                                            )
+                                            .await;
+                                        team_events::emit_team_cost_update(
+                                            &app_handle,
+                                            &team_name,
+                                            &teammate_name,
+                                            completed_cost.input_tokens,
+                                            completed_cost.output_tokens,
+                                            completed_cost.cache_creation_tokens,
+                                            completed_cost.cache_read_tokens,
+                                            completed_cost.estimated_usd,
+                                            &context_type,
+                                            &context_id,
+                                        );
+                                    }
                                     // Finalize assistant message with accumulated content
                                     if let (Some(ref msg_repo), Some(ref msg_id)) =
                                         (&chat_message_repo, &assistant_message_id)
@@ -800,6 +866,34 @@ pub fn start_teammate_stream<R: Runtime>(
                                                 content_blocks_json.as_deref(),
                                             )
                                             .await;
+
+                                        if let Some(capture) = turn_capture.as_ref() {
+                                            match msg_repo
+                                                .replace_usage_capture(
+                                                    &ChatMessageId::from_string(msg_id.clone()),
+                                                    capture,
+                                                )
+                                                .await
+                                            {
+                                                Ok(()) => {
+                                                    if let Some(ref conv_id) = conversation_id_str {
+                                                        let _ = app_handle.emit(
+                                                            "agent:usage_updated",
+                                                            serde_json::json!({
+                                                                "conversation_id": conv_id,
+                                                                "context_type": context_type,
+                                                                "context_id": context_id,
+                                                            }),
+                                                        );
+                                                    }
+                                                }
+                                                Err(error) => tracing::warn!(
+                                                    message_id = %msg_id,
+                                                    error = %error,
+                                                    "Failed to persist teammate usage capture"
+                                                ),
+                                            }
+                                        }
 
                                         // Emit agent:message_created so frontend can load from DB
                                         if let Some(ref conv_id) = conversation_id_str {
@@ -877,94 +971,40 @@ pub fn start_teammate_stream<R: Runtime>(
                         );
                     }
 
-                    // Check for events with cost/usage info and persist text buffer.
-                    //
-                    // Token sources:
-                    // - "type": "result" — final turn cost + usage (authoritative)
-                    // - "type": "assistant" — per-message usage for real-time updates
-                    //   (emitted mid-turn when model produces each response)
+                    // Assistant usage is a provisional current-turn snapshot. Publish it on top
+                    // of completed turns without committing it, so the terminal result replaces
+                    // rather than double-counts the preview.
                     if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&line) {
                         let event_type = raw.get("type").and_then(|t| t.as_str());
-
-                        if event_type == Some("result") {
-                            // Extract cost_usd from result event
-                            if let Some(cost) = raw.get("cost_usd").and_then(|c| c.as_f64()) {
-                                total_cost_usd += cost;
-                            }
-
-                            // Extract usage tokens if present
-                            if let Some(usage) = raw.get("usage") {
-                                if let Some(input) =
-                                    usage.get("input_tokens").and_then(|t| t.as_u64())
-                                {
-                                    total_input_tokens += input;
-                                }
-                                if let Some(output) =
-                                    usage.get("output_tokens").and_then(|t| t.as_u64())
-                                {
-                                    total_output_tokens += output;
-                                }
-                            }
-
-                            // Update teammate cost via TeamService (which emits team:cost_update)
-                            let cost = TeammateCost {
-                                input_tokens: total_input_tokens,
-                                output_tokens: total_output_tokens,
-                                cache_creation_tokens: 0,
-                                cache_read_tokens: 0,
-                                estimated_usd: total_cost_usd,
-                            };
+                        let has_assistant_usage = event_type == Some("assistant")
+                            && raw
+                                .get("message")
+                                .and_then(|message| message.get("usage"))
+                                .is_some();
+                        if has_assistant_usage {
+                            let current_turn = processor.current_turn_usage();
+                            if !current_turn.is_empty() {
+                                let mut live_cost = completed_cost.clone();
+                                add_usage_to_teammate_cost(&mut live_cost, &current_turn);
                             let _ = team_tracker
-                                .update_teammate_cost(&team_name, &teammate_name, cost)
+                                    .update_teammate_cost(
+                                        &team_name,
+                                        &teammate_name,
+                                        live_cost.clone(),
+                                    )
                                 .await;
-
-                            // Emit cost update event
                             team_events::emit_team_cost_update(
                                 &app_handle,
                                 &team_name,
                                 &teammate_name,
-                                total_input_tokens,
-                                total_output_tokens,
-                                total_cost_usd,
+                                live_cost.input_tokens,
+                                live_cost.output_tokens,
+                                live_cost.cache_creation_tokens,
+                                live_cost.cache_read_tokens,
+                                live_cost.estimated_usd,
                                 &context_type,
                                 &context_id,
                             );
-                        } else if event_type == Some("assistant") {
-                            // Real-time token updates from assistant message events.
-                            // These carry a top-level `message.usage` with cumulative
-                            // input/output tokens for the current turn, letting the UI
-                            // show progress before the final "result" event arrives.
-                            let updated = extract_assistant_usage(
-                                &raw,
-                                &mut total_input_tokens,
-                                &mut total_output_tokens,
-                            );
-                            if updated {
-                                let cost = TeammateCost {
-                                    input_tokens: total_input_tokens,
-                                    output_tokens: total_output_tokens,
-                                    cache_creation_tokens: 0,
-                                    cache_read_tokens: 0,
-                                    estimated_usd: total_cost_usd,
-                                };
-                                let _ = team_tracker
-                                    .update_teammate_cost(
-                                        &team_name,
-                                        &teammate_name,
-                                        cost,
-                                    )
-                                    .await;
-
-                                team_events::emit_team_cost_update(
-                                    &app_handle,
-                                    &team_name,
-                                    &teammate_name,
-                                    total_input_tokens,
-                                    total_output_tokens,
-                                    total_cost_usd,
-                                    &context_type,
-                                    &context_id,
-                                );
                             }
                         }
                     }
@@ -977,7 +1017,7 @@ pub fn start_teammate_stream<R: Runtime>(
                             team = %team_name,
                             lines_seen,
                             lines_parsed,
-                            total_cost_usd,
+                            total_cost_usd = completed_cost.estimated_usd,
                             "[TEAMMATE_STREAM] progress"
                         );
                     }
@@ -999,9 +1039,9 @@ pub fn start_teammate_stream<R: Runtime>(
                         team = %team_name,
                         lines_seen,
                         lines_parsed,
-                        total_cost_usd,
-                        total_input_tokens,
-                        total_output_tokens,
+                        total_cost_usd = completed_cost.estimated_usd,
+                        total_input_tokens = completed_cost.input_tokens,
+                        total_output_tokens = completed_cost.output_tokens,
                         "[TEAMMATE_STREAM] stdout closed (EOF) — final stats"
                     );
                     break;
@@ -1047,57 +1087,28 @@ pub fn start_teammate_stream<R: Runtime>(
         tracing::info!(
             teammate = %teammate_name,
             team = %team_name,
-            total_cost_usd,
-            total_input_tokens,
-            total_output_tokens,
+            total_cost_usd = completed_cost.estimated_usd,
+            total_input_tokens = completed_cost.input_tokens,
+            total_output_tokens = completed_cost.output_tokens,
             "Teammate stream processor finished"
         );
     }.instrument(span))
 }
 
-/// Extract usage tokens from a `"type": "assistant"` event's `message.usage` field.
-///
-/// Claude Code emits assistant events with cumulative usage per-message:
-/// ```json
-/// {"type":"assistant","message":{"usage":{"input_tokens":1234,"output_tokens":567},...},...}
-/// ```
-///
-/// Updates the running totals only if the new values exceed the current totals
-/// (usage is cumulative within a turn, so later messages have higher counts).
-///
-/// Returns `true` if the totals were updated (i.e., the UI should be notified).
-fn extract_assistant_usage(
-    raw: &serde_json::Value,
-    total_input: &mut u64,
-    total_output: &mut u64,
-) -> bool {
-    let usage = raw.get("message").and_then(|m| m.get("usage"));
-    let Some(usage) = usage else {
-        return false;
-    };
-
-    let input = usage
-        .get("input_tokens")
-        .and_then(|t| t.as_u64())
-        .unwrap_or(0);
-    let output = usage
-        .get("output_tokens")
-        .and_then(|t| t.as_u64())
-        .unwrap_or(0);
-
-    // Only update if the new cumulative values exceed current totals.
-    // Assistant usage is cumulative within a turn — later messages have higher counts.
-    if input > *total_input || output > *total_output {
-        if input > *total_input {
-            *total_input = input;
-        }
-        if output > *total_output {
-            *total_output = output;
-        }
-        true
-    } else {
-        false
-    }
+fn add_usage_to_teammate_cost(cost: &mut TeammateCost, usage: &AgentRunUsage) {
+    cost.input_tokens = cost
+        .input_tokens
+        .saturating_add(usage.input_tokens.unwrap_or(0));
+    cost.output_tokens = cost
+        .output_tokens
+        .saturating_add(usage.output_tokens.unwrap_or(0));
+    cost.cache_creation_tokens = cost
+        .cache_creation_tokens
+        .saturating_add(usage.cache_creation_tokens.unwrap_or(0));
+    cost.cache_read_tokens = cost
+        .cache_read_tokens
+        .saturating_add(usage.cache_read_tokens.unwrap_or(0));
+    cost.estimated_usd += usage.estimated_usd.unwrap_or(0.0);
 }
 
 fn teammate_tool_result_event_payload(

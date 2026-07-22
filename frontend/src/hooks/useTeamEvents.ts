@@ -308,14 +308,17 @@ export function useTeamEvents(contextKey: string | null) {
       }),
     );
 
-    // team:cost_update — backend sends `input_tokens`+`output_tokens` and `estimated_usd`
+    // team:cost_update — Claude processed tokens include input, output, and cache traffic.
     unsubs.push(
       bus.subscribe<TeamCostUpdatePayload>("team:cost_update", (payload) => {
         if (matchKey(payload)) {
           updateTeammateCost(
             contextKey,
             payload.teammate_name,
-            payload.input_tokens + payload.output_tokens,
+            payload.input_tokens +
+              payload.output_tokens +
+              payload.cache_creation_tokens +
+              payload.cache_read_tokens,
             payload.estimated_usd,
           );
         }

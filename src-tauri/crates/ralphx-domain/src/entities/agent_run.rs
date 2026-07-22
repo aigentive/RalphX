@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
 
+use super::usage::{
+    processed_tokens, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+};
+
 use crate::agents::{AgentHarnessKind, LogicalEffort};
 
 use super::{ChatConversation, ChatConversationId};
@@ -186,20 +190,6 @@ impl AgentRunStatus {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AgentRunUsage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_creation_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_read_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_usd: Option<f64>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentRunAttribution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<AgentHarnessKind>,
@@ -231,16 +221,6 @@ pub struct PersonaRunAttribution {
     pub injected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped_reason: Option<String>,
-}
-
-impl AgentRunUsage {
-    pub fn is_empty(&self) -> bool {
-        self.input_tokens.is_none()
-            && self.output_tokens.is_none()
-            && self.cache_creation_tokens.is_none()
-            && self.cache_read_tokens.is_none()
-            && self.estimated_usd.is_none()
-    }
 }
 
 /// An agent run tracks the execution of a Claude agent for a conversation
@@ -305,6 +285,12 @@ pub struct AgentRun {
     /// Estimated USD cost attributed to this run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_usd: Option<f64>,
+    /// Semantics of the normalized usage tuple. `None` denotes legacy data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_provenance: Option<UsageProvenance>,
+    /// Raw cumulative provider snapshot retained only for future delta derivation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_usage_snapshot: Option<ProviderUsageSnapshot>,
     /// Approval policy used for the run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<String>,
@@ -372,6 +358,8 @@ impl AgentRun {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
             run_chain_id: Some(chain_id),
@@ -415,6 +403,8 @@ impl AgentRun {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
             run_chain_id: Some(run_chain_id),
@@ -468,6 +458,30 @@ impl AgentRun {
         if let Some(value) = usage.estimated_usd {
             self.estimated_usd = Some(value);
         }
+    }
+
+    pub fn replace_usage_capture(&mut self, capture: &UsageCapture) {
+        self.input_tokens = capture.normalized.input_tokens;
+        self.output_tokens = capture.normalized.output_tokens;
+        self.cache_creation_tokens = capture.normalized.cache_creation_tokens;
+        self.cache_read_tokens = capture.normalized.cache_read_tokens;
+        self.estimated_usd = capture.normalized.estimated_usd;
+        self.usage_provenance = Some(capture.provenance);
+        self.raw_usage_snapshot = capture.raw_snapshot.clone();
+    }
+
+    pub fn processed_tokens(&self) -> Option<u64> {
+        processed_tokens(
+            self.harness,
+            &AgentRunUsage {
+                input_tokens: self.input_tokens,
+                output_tokens: self.output_tokens,
+                cache_creation_tokens: self.cache_creation_tokens,
+                cache_read_tokens: self.cache_read_tokens,
+                estimated_usd: self.estimated_usd,
+            },
+            self.usage_provenance,
+        )
     }
 
     pub fn apply_attribution(&mut self, attribution: &AgentRunAttribution) {
