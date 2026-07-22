@@ -77,7 +77,7 @@ function mainRegionProps(
     onSelectChatFocus: vi.fn(),
     projects: [agentProjectFixture],
     publishShortcutLabel: "P",
-    publishingConversationId: null,
+    publishAttemptsByConversationId: {},
     selectedConversationId: "conversation-1",
     selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn((_: ReactNode) => undefined),
