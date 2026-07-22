@@ -2326,7 +2326,7 @@ pub async fn complete_agent_workspace_pr_fix(
             None,
         ));
     }
-    let workspace_head_sha = GitService::get_branch_sha(&target.working_dir, &target.branch_name)
+    let workspace_head_sha = GitService::get_head_sha(&target.working_dir)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     let has_uncommitted_changes = GitService::has_uncommitted_changes(&target.working_dir)

@@ -2071,6 +2071,99 @@
     }
 
     #[tokio::test]
+    async fn complete_pr_fix_rejects_configured_branch_tip_when_worktree_head_is_detached() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "detached-head",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        git(&workspace.worktree_path, &["checkout", "--detach", "HEAD^"]);
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed failing CI check".to_string(),
+                blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+            }),
+        )
+        .await
+        .expect_err("detached worktree HEAD must reject the configured branch tip");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("not the current workspace HEAD"));
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_completed"));
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_rejects_configured_branch_tip_when_worktree_switches_branch() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "switched-head",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        git(
+            &workspace.worktree_path,
+            &["checkout", "-b", "unexpected-pr-fix-head", "HEAD^"],
+        );
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed failing CI check".to_string(),
+                blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+            }),
+        )
+        .await
+        .expect_err("switched worktree branch must reject the configured branch tip");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("not the current workspace HEAD"));
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_completed"));
+    }
+
+    #[tokio::test]
     async fn complete_pr_fix_blocker_needs_no_sha_or_github_preflight() {
         let fixture = setup_pr_fix_workspace_with_review_gate(
             "blocker-no-head",
