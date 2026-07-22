@@ -2450,7 +2450,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     let mut send_options = agent_workspace_pr_fixer_send_options(
         &workspace_for_options,
         working_dir,
-        Some(agent_run_repo),
+        agent_run_repo.as_ref(),
     )
     .await?;
     send_options.preallocated_agent_run_id = Some(preallocated_run_id);
@@ -3048,7 +3048,7 @@ pub async fn sync_agent_workspace_auto_merge_preference_for_workspace(
     .await
 }
 
-fn classify_agent_workspace_pr_autofix_issue(
+pub(crate) fn classify_agent_workspace_pr_autofix_issue(
     pr_number: i64,
     health: &PrHealth,
 ) -> Option<AgentWorkspacePrAutofixIssue> {
