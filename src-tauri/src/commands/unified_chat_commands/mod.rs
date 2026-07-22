@@ -128,7 +128,7 @@ use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     default_effort_for_provider, default_efforts_for_provider, AgentHarnessKind, LogicalEffort,
-    DEFAULT_AGENT_HARNESS,
+    RoutingRole, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::task_step::StepProgressSummary;
@@ -196,6 +196,8 @@ pub struct SendAgentMessageInput {
     pub logical_effort: Option<LogicalEffort>,
     /// Optional Codex Fast Mode override for this send.
     pub codex_fast_mode: Option<bool>,
+    /// Complete permission-free runtime tuple for a backend-derived role launch.
+    pub runtime_override: Option<crate::domain::agents::ManualRoleRuntimeOverride>,
     /// Internal handoff messages should reach the runtime without rendering as user chat.
     #[serde(default)]
     pub suppress_user_message: bool,
@@ -1167,6 +1169,8 @@ pub struct StartAgentConversationResponse {
 pub struct SwitchAgentConversationModeInput {
     pub conversation_id: String,
     pub mode: String,
+    /// Complete permission-free runtime for a user-confirmed Plan → Edit handoff.
+    pub runtime_override: Option<crate::domain::agents::ManualRoleRuntimeOverride>,
     /// Optional base ref kind used when upgrading a branchless chat into edit/ideation mode.
     pub base_ref_kind: Option<String>,
     /// Optional branch work policy: isolated creates a new RalphX branch; linked uses the selected branch.
@@ -3558,6 +3562,29 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     {
         return Err(automation_run_mode_locked_error_message());
     }
+    if input.runtime_override.is_some() && target_mode != AgentConversationWorkspaceMode::Edit {
+        return Err("A mode runtime override is supported only for Edit handoffs".to_string());
+    }
+    if let Some(runtime_override) = input.runtime_override.as_ref() {
+        let project = state
+            .project_repo
+            .get_by_id(&ProjectId::from_string(conversation.context_id.clone()))
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
+        crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
+            crate::infrastructure::agents::claude::agent_names::AGENT_GENERAL_WORKER,
+            Some(project.id.as_str()),
+            Some(std::path::Path::new(&project.working_directory)),
+            RoutingRole::WorkspaceEdit,
+            Some(runtime_override),
+            None,
+            None,
+            &state.manual_role_default_service(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
 
     let running_key = RunningAgentKey::new(
         ChatContextType::Project.to_string(),
@@ -3905,12 +3932,36 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         );
     }
 
-    state
-        .chat_conversation_repo
-        .update_agent_mode(&conversation.id, Some(target_mode))
-        .await
-        .map_err(|error| error.to_string())?;
-    conversation.set_agent_mode(Some(target_mode));
+    if let Some(runtime_override) = input.runtime_override.as_ref() {
+        let coordination_mode = runtime_override.coordination_mode.unwrap_or_default();
+        state
+            .chat_conversation_repo
+            .update_agent_mode_and_role_default_bindings(
+                &conversation.id,
+                target_mode,
+                coordination_mode,
+                runtime_override
+                    .persona_id
+                    .as_ref()
+                    .map(|persona_id| persona_id.as_str()),
+                false,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        conversation.coordination_mode = coordination_mode;
+        conversation.persona_id = runtime_override
+            .persona_id
+            .as_ref()
+            .map(|persona_id| persona_id.to_string());
+        conversation.set_agent_mode(Some(target_mode));
+    } else {
+        state
+            .chat_conversation_repo
+            .update_agent_mode(&conversation.id, Some(target_mode))
+            .await
+            .map_err(|error| error.to_string())?;
+        conversation.set_agent_mode(Some(target_mode));
+    }
 
     let conversation = state
         .chat_conversation_repo
@@ -4039,7 +4090,19 @@ pub async fn send_agent_message(
         "[SEND_MSG] send_agent_message command invoked"
     );
     let context_type = parse_context_type(&input.context_type)?;
-    let harness_override = input
+    if input.runtime_override.is_some()
+        && (input.provider_harness.is_some()
+            || input.model_override.is_some()
+            || input.logical_effort.is_some()
+            || input.codex_fast_mode.is_some()
+            || input.team_intent.is_some())
+    {
+        return Err(
+            "runtimeOverride cannot be combined with legacy provider, model, effort, speed, or capability fields"
+                .to_string(),
+        );
+    }
+    let legacy_harness_override = input
         .provider_harness
         .as_deref()
         .map(str::parse::<AgentHarnessKind>)
@@ -4053,7 +4116,11 @@ pub async fn send_agent_message(
     } else {
         None
     };
-    let requested_harness = harness_override
+    let requested_harness = input
+        .runtime_override
+        .as_ref()
+        .map(|runtime| runtime.harness)
+        .or(legacy_harness_override)
         .or_else(|| {
             persisted_conversation
                 .as_ref()
@@ -4061,9 +4128,12 @@ pub async fn send_agent_message(
         })
         .unwrap_or(DEFAULT_AGENT_HARNESS);
     let requested_capability = input
-        .team_intent
+        .runtime_override
         .as_ref()
-        .map(|intent| intent.coordination_mode)
+        .and_then(|runtime| runtime.coordination_mode)
+        .or_else(|| input.team_intent
+        .as_ref()
+        .map(|intent| intent.coordination_mode))
         .or_else(|| {
             persisted_conversation
                 .as_ref()
@@ -4079,7 +4149,11 @@ pub async fn send_agent_message(
         .then(|| {
             crate::application::agent_capability_validation::codex_ultra_support_for_model(
                 requested_harness,
-                input.model_override.as_deref(),
+                input
+                    .runtime_override
+                    .as_ref()
+                    .and_then(|runtime| runtime.model.as_deref())
+                    .or(input.model_override.as_deref()),
             )
         })
         .flatten();
@@ -4147,7 +4221,11 @@ pub async fn send_agent_message(
         context_type,
         &input.context_id,
         "send_agent_message",
-        harness_override,
+        input
+            .runtime_override
+            .as_ref()
+            .map(|runtime| runtime.harness)
+            .or(legacy_harness_override),
     )
     .await?;
 
@@ -4199,7 +4277,7 @@ pub async fn send_agent_message(
         .map(str::to_string);
     let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
         &state,
-        harness_override,
+        legacy_harness_override,
         model_override,
         input.logical_effort,
     )
@@ -4222,7 +4300,7 @@ pub async fn send_agent_message(
             &app,
             parent_conversation_id.as_ref(),
             &input.content,
-            harness_override,
+            legacy_harness_override,
             service_tier_override.clone(),
         )
         .await?
@@ -4268,10 +4346,11 @@ pub async fn send_agent_message(
                 metadata: input
                     .suppress_user_message
                     .then(hidden_user_message_metadata),
-                harness_override,
+                harness_override: legacy_harness_override,
                 model_override,
                 logical_effort_override,
                 service_tier_override,
+                manual_role_runtime_override: input.runtime_override,
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,

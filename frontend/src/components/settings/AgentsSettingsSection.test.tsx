@@ -237,11 +237,11 @@ describe("AgentsSettingsSection", () => {
 
     await user.click(screen.getByRole("button", { name: /^Workspace/ }));
     expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
-    expect(screen.queryByRole("combobox", { name: "Workspace role provider" }))
+    expect(screen.queryByRole("button", { name: /^Runtime:/ }))
       .not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Edit Workspace role" }));
-    expect(screen.getByRole("combobox", { name: "Workspace role provider" }))
+    expect(screen.getByRole("button", { name: /^Runtime:/ }))
       .toBeInTheDocument();
   });
 
@@ -298,7 +298,7 @@ describe("AgentsSettingsSection", () => {
     expect(screen.getAllByTestId("manual-role-row")).toHaveLength(1);
     expect(screen.getByText("Automation role")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Needs repair");
-    expect(screen.getByRole("button", { name: "Persona & access" }))
+    expect(screen.getByRole("button", { name: "Permissions" }))
       .toHaveAttribute("aria-expanded", "true");
   });
 

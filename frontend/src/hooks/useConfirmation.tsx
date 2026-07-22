@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import {
   AlertDialog,
@@ -19,10 +19,13 @@ export interface ConfirmOptions {
   pendingText?: string;
   cancelText?: string;
   variant?: "default" | "destructive";
+  body?: ReactNode;
+  /** Keep body controls visible but immutable after a partial backend commit. */
+  bodyDisabled?: boolean;
   confirmDisabled?: boolean;
   onConfirm?: () => Promise<unknown> | unknown;
   /** Runs after the dialog shell opens; return copy updates for the same dialog. */
-  prepare?: () =>
+  prepare?: (controller: ConfirmationController) =>
     | Promise<ConfirmOptionUpdate>
     | ConfirmOptionUpdate;
   /** Map a preparation failure to caller-specific copy and disabled state. */
@@ -40,8 +43,20 @@ export interface ConfirmOptions {
     | null;
 }
 
-type ConfirmOptionUpdate = Partial<
-  Pick<ConfirmOptions, "title" | "description" | "confirmText" | "confirmDisabled">
+export interface ConfirmationController {
+  update: (patch: Partial<ConfirmOptions>) => boolean;
+  isCurrent: () => boolean;
+}
+export type ConfirmOptionUpdate = Partial<
+  Pick<
+    ConfirmOptions,
+    | "title"
+    | "description"
+    | "confirmText"
+    | "confirmDisabled"
+    | "body"
+    | "bodyDisabled"
+  >
 >;
 
 interface ConfirmationDialogProps {
@@ -81,6 +96,14 @@ function ConfirmationDialogComponent({
         <AlertDialogHeader>
           <AlertDialogTitle>{options.title}</AlertDialogTitle>
           <AlertDialogDescription>{options.description}</AlertDialogDescription>
+          {options.body && (
+            <fieldset
+              disabled={isSubmitting || options.bodyDisabled === true}
+              className="m-0 min-w-0 border-0 p-0"
+            >
+              {options.body}
+            </fieldset>
+          )}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onCancel} disabled={isSubmitting}>
@@ -141,19 +164,35 @@ export function useConfirmation(): UseConfirmationReturn {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [prepareFailed, setPrepareFailed] = useState(false);
-  const resolveRef = useRef<((value: boolean) => void) | null>(null);
+  const resolveRef = useRef<{
+    requestId: number;
+    resolve: (value: boolean) => void;
+  } | null>(null);
   const requestIdRef = useRef(0);
 
   const confirm = useCallback((opts: ConfirmOptions): Promise<boolean> => {
+    const requestId = ++requestIdRef.current;
+    resolveRef.current?.resolve(false);
     setOptions(opts);
     setIsSubmitting(false);
     setIsPreparing(Boolean(opts.prepare));
     setPrepareFailed(false);
     setIsOpen(true);
-    const requestId = ++requestIdRef.current;
     if (opts.prepare) {
-      void Promise.resolve()
-        .then(opts.prepare)
+      const controller: ConfirmationController = {
+        update: (patch) => {
+          if (requestId !== requestIdRef.current) return false;
+          setOptions((current) => (current ? { ...current, ...patch } : current));
+          return true;
+        },
+        isCurrent: () => requestId === requestIdRef.current,
+      };
+      const prepareAfterPaint = () =>
+        new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+        });
+      void prepareAfterPaint()
+        .then(() => opts.prepare?.(controller))
         .then((prepared) => {
           if (requestId !== requestIdRef.current) return;
           if (prepared) {
@@ -184,18 +223,22 @@ export function useConfirmation(): UseConfirmationReturn {
         });
     }
     return new Promise((resolve) => {
-      resolveRef.current = resolve;
+      resolveRef.current = { requestId, resolve };
     });
   }, []);
 
-  const settle = useCallback((value: boolean) => {
+  const settle = useCallback((requestId: number, value: boolean) => {
+    if (requestId !== requestIdRef.current) return false;
+    const pending = resolveRef.current;
+    if (!pending || pending.requestId !== requestId) return false;
     requestIdRef.current += 1;
     setIsOpen(false);
     setOptions(null);
     setIsPreparing(false);
     setPrepareFailed(false);
-    resolveRef.current?.(value);
     resolveRef.current = null;
+    pending.resolve(value);
+    return true;
   }, []);
 
   const onConfirm = useCallback(() => {
@@ -208,19 +251,19 @@ export function useConfirmation(): UseConfirmationReturn {
       return;
     }
 
+    const requestId = requestIdRef.current;
     const action = options?.onConfirm;
     const recoverFromError = options?.recoverFromError;
     if (!action) {
-      settle(true);
+      settle(requestId, true);
       return;
     }
 
-    const requestId = requestIdRef.current;
     setIsSubmitting(true);
     void Promise.resolve()
       .then(action)
       .then(() => {
-        settle(true);
+        settle(requestId, true);
       })
       .catch((error: unknown) =>
         Promise.resolve()
@@ -234,10 +277,11 @@ export function useConfirmation(): UseConfirmationReturn {
               );
               return;
             }
-            settle(false);
+            settle(requestId, false);
           }),
       )
       .finally(() => {
+        if (requestId !== requestIdRef.current) return;
         setIsSubmitting(false);
       });
   }, [isPreparing, isSubmitting, options, prepareFailed, settle]);
@@ -246,7 +290,7 @@ export function useConfirmation(): UseConfirmationReturn {
     if (isSubmitting) {
       return;
     }
-    settle(false);
+    settle(requestIdRef.current, false);
   }, [isSubmitting, settle]);
 
   const confirmationDialogProps = useMemo(

@@ -349,6 +349,7 @@ async fn resolve_plan_pr_describer_runtime(
         RoutingRole::UtilityPrDescriber,
         None,
         None,
+        None,
         manual_role_default_service,
     )
     .await?;

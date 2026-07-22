@@ -876,6 +876,49 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
             .await
     }
 
+    async fn update_agent_mode_and_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        agent_mode: AgentConversationWorkspaceMode,
+        coordination_mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let agent_mode = agent_mode.to_string();
+        let coordination_mode = coordination_mode.to_string();
+        let persona_id = persona_id.map(str::to_string);
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE chat_conversations
+                     SET agent_mode = ?2,
+                         coordination_mode = ?3,
+                         persona_id = ?4,
+                         claude_session_id = CASE WHEN ?5 THEN NULL ELSE claude_session_id END,
+                         provider_session_id = CASE WHEN ?5 THEN NULL ELSE provider_session_id END,
+                         provider_harness = CASE WHEN ?5 THEN NULL ELSE provider_harness END,
+                         updated_at = ?6
+                     WHERE id = ?1",
+                    rusqlite::params![
+                        id,
+                        agent_mode,
+                        coordination_mode,
+                        persona_id,
+                        clear_provider_session,
+                        Utc::now().to_rfc3339(),
+                    ],
+                )?;
+                if changed == 0 {
+                    return Err(crate::error::AppError::NotFound(
+                        "Chat conversation not found".to_string(),
+                    ));
+                }
+                Ok(())
+            })
+            .await
+    }
+
     async fn update_title(&self, id: &ChatConversationId, title: &str) -> AppResult<()> {
         let id_str = id.as_str().to_string();
         let title = title.to_string();

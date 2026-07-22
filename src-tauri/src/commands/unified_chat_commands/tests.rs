@@ -73,8 +73,8 @@ use crate::application::{
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentHarnessKind, AgentModelDefinition, AgentOutput, AgentResponse,
-    AgentResult, AgenticClient, ClientCapabilities, LogicalEffort, ProviderSessionRef,
-    ResponseChunk,
+    AgentResult, AgenticClient, ClientCapabilities, LogicalEffort, ManualRoleRuntimeOverride,
+    ManualServiceTier, ProviderSessionRef, ResponseChunk,
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
@@ -7386,6 +7386,7 @@ async fn switching_to_chat_without_existing_workspace_keeps_workspace_absent() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7394,6 +7395,89 @@ async fn switching_to_chat_without_existing_workspace_keeps_workspace_absent() {
 
     assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
     assert!(response.workspace.is_none());
+}
+
+#[tokio::test]
+async fn switching_agent_mode_with_runtime_override_persists_one_conversation_tuple() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-runtime-mode-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("abababab-abab-4bab-8bab-abababababab");
+    let mut project = Project::new(
+        "Runtime Mode Switch".to_string(),
+        "/tmp/runtime-mode-switch".to_string(),
+    );
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persisted");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id;
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+    conversation.set_coordination_mode(CoordinationMode::RxNativeTeam);
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation persisted");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Chat,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        Some("Current branch (main)".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/runtime-mode-switch".to_string(),
+        "/tmp/ralphx-runtime-mode-switch".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace persisted");
+
+    let response = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            runtime_override: Some(ManualRoleRuntimeOverride {
+                harness: AgentHarnessKind::Codex,
+                model: None,
+                effort: None,
+                service_tier: ManualServiceTier::ProviderDefault,
+                coordination_mode: Some(CoordinationMode::Solo),
+                persona_id: None,
+            }),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect("mode and runtime bindings persist together");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+    assert_eq!(response.conversation.coordination_mode, "solo");
+    assert!(response.conversation.persona_id.is_none());
+    assert_eq!(response.workspace.expect("workspace returned").mode, "edit");
+
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup succeeds")
+        .expect("conversation exists");
+    assert_eq!(
+        stored.agent_mode,
+        Some(AgentConversationWorkspaceMode::Edit)
+    );
+    assert_eq!(stored.coordination_mode, CoordinationMode::Solo);
+    assert!(stored.persona_id.is_none());
 }
 
 #[tokio::test]
@@ -7447,6 +7531,7 @@ async fn switching_to_edit_without_existing_workspace_creates_workspace() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7514,6 +7599,7 @@ async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata
                 base_ref_name: Some("main".to_string()),
                 head_ref_oid: Some(source_sha.clone()),
             }),
+            runtime_override: None,
         },
         &state,
     )
@@ -7629,6 +7715,7 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -7647,6 +7734,7 @@ async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
         ModeSwitchInitiator::User,
@@ -7730,6 +7818,7 @@ async fn switching_edit_to_plan_quiesces_workspace_review_authority_before_persi
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
         &service,
@@ -7828,6 +7917,7 @@ async fn failed_workspace_review_runtime_cleanup_keeps_workspace_out_of_plan_mod
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
         &service,
@@ -7948,6 +8038,7 @@ async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -8021,6 +8112,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -8110,6 +8202,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
@@ -8187,6 +8280,7 @@ async fn switching_agent_mode_preserves_provider_session_for_native_resume() {
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         &state,
     )
