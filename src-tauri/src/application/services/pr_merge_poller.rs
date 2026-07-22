@@ -2376,12 +2376,27 @@ async fn route_agent_workspace_pr_autofix_for_target(
         target.pr_number,
         &issue.classification,
     ));
-    let Some(workspace) =
-        authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
-            .await?
+    let Some(workspace) = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
     else {
         return Ok(false);
     };
+    if !target.authorizes(&workspace) {
+        record_agent_workspace_pr_autofix_dispatch_failure(
+            Arc::clone(&github),
+            working_dir,
+            target.pr_number,
+            workspace_repo.as_ref(),
+            conversation_id,
+            &workspace,
+            &issue.classification,
+            health.auto_merge_request.is_some(),
+            "PR autofix authorization changed after GitHub auto-merge was disabled.",
+        )
+        .await?;
+        return Ok(false);
+    }
     let message = build_agent_workspace_pr_autofix_message(
         target.pr_number,
         target.pr_url.as_deref(),
@@ -2403,10 +2418,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
         }
         Ok(_) => {
             record_agent_workspace_pr_autofix_dispatch_failure(
+                Arc::clone(&github),
+                working_dir,
+                target.pr_number,
                 workspace_repo.as_ref(),
                 conversation_id,
                 &workspace,
-                &issue,
+                &issue.classification,
+                health.auto_merge_request.is_some(),
                 "PR autofix did not start immediately with its reserved run identity.",
             )
             .await?;
@@ -2415,10 +2434,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
         Err(error) => {
             let summary = format!("PR autofix dispatch failed: {error}");
             record_agent_workspace_pr_autofix_dispatch_failure(
+                Arc::clone(&github),
+                working_dir,
+                target.pr_number,
                 workspace_repo.as_ref(),
                 conversation_id,
                 &workspace,
-                &issue,
+                &issue.classification,
+                health.auto_merge_request.is_some(),
                 &summary,
             )
             .await?;
@@ -2465,12 +2488,30 @@ async fn route_agent_workspace_pr_autofix_for_target(
 }
 
 async fn record_agent_workspace_pr_autofix_dispatch_failure(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
     workspace_repo: &dyn AgentConversationWorkspaceRepository,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
-    issue: &AgentWorkspacePrAutofixIssue,
+    classification: &str,
+    restore_auto_merge: bool,
     summary: &str,
 ) -> crate::AppResult<()> {
+    let (auto_merge_current, summary) = if restore_auto_merge && workspace.pr_auto_merge_desired {
+        match github
+            .enable_pr_auto_merge(working_dir, pr_number, &workspace.pr_auto_merge_method)
+            .await
+        {
+            Ok(()) => (true, format!("{summary} GitHub auto-merge was restored.")),
+            Err(error) => (
+                false,
+                format!("{summary} {}", auto_merge_enable_failure_summary(&error)),
+            ),
+        }
+    } else {
+        (false, summary.to_string())
+    };
     workspace_repo
         .update_publication(
             conversation_id,
@@ -2483,9 +2524,9 @@ async fn record_agent_workspace_pr_autofix_dispatch_failure(
     workspace_repo
         .update_pr_auto_merge_state(
             conversation_id,
-            workspace.pr_auto_merge_current,
+            Some(auto_merge_current),
             Some("blocked"),
-            Some(summary),
+            Some(&summary),
         )
         .await?;
     workspace_repo
@@ -2493,8 +2534,8 @@ async fn record_agent_workspace_pr_autofix_dispatch_failure(
             conversation_id.clone(),
             "pr_autofix",
             "failed",
-            summary,
-            Some(issue.classification.clone()),
+            &summary,
+            Some(classification.to_string()),
         ))
         .await
 }
@@ -3387,14 +3428,29 @@ async fn route_agent_workspace_review_feedback_if_present(
         agent_run_repo.as_ref(),
     )
     .await?;
-    let Some(workspace) =
-        authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
-            .await?
+    let Some(workspace) = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
     else {
         return Ok(false);
     };
+    if !target.authorizes(&workspace) {
+        record_agent_workspace_pr_autofix_dispatch_failure(
+            Arc::clone(&github),
+            working_dir,
+            pr_number,
+            workspace_repo.as_ref(),
+            conversation_id,
+            &workspace,
+            &classification,
+            health.auto_merge_request.is_some(),
+            "PR review-fixer authorization changed after GitHub auto-merge was disabled.",
+        )
+        .await?;
+        return Ok(false);
+    }
     let message = build_agent_workspace_pr_review_message(pr_number, &workspace, &feedback);
-    chat_service
+    if let Err(error) = chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
@@ -3402,7 +3458,22 @@ async fn route_agent_workspace_review_feedback_if_present(
             send_options,
         )
         .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
+    {
+        let summary = format!("PR review-fixer dispatch failed: {error}");
+        record_agent_workspace_pr_autofix_dispatch_failure(
+            Arc::clone(&github),
+            working_dir,
+            pr_number,
+            workspace_repo.as_ref(),
+            conversation_id,
+            &workspace,
+            &classification,
+            health.auto_merge_request.is_some(),
+            &summary,
+        )
+        .await?;
+        return Ok(false);
+    }
 
     workspace_repo
         .update_publication(
