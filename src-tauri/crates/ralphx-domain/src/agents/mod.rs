@@ -47,8 +47,9 @@ pub use mcp_policy::{
 };
 pub use provider_settings::{AgentProviderCliManagementMode, AgentProviderSettings};
 pub use routing_role::{
-    ManualRoleDefault, ManualServiceTier, RoutingRole, RoutingRoleFamily, RoutingRoleMetadata,
-    StoredManualRoleDefault, ROUTING_ROLE_COUNT, ROUTING_ROLE_FAMILIES, ROUTING_ROLES,
+    ManualRoleDefault, ManualRoleRuntimeOverride, ManualServiceTier, RoutingRole,
+    RoutingRoleFamily, RoutingRoleMetadata, StoredManualRoleDefault, ROUTING_ROLE_COUNT,
+    ROUTING_ROLE_FAMILIES, ROUTING_ROLES,
 };
 pub use types::{
     AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentRole, ClientType, ResponseChunk,

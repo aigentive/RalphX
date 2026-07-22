@@ -59,7 +59,7 @@ interface AgentsConversationMainRegionProps {
   projects: StartConversationPanelProps["projects"];
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
   promotePublishShortcut?: ActiveConversationPanelProps["promotePublishShortcut"];
-  publishingConversationId: ActiveConversationPanelProps["publishingConversationId"];
+  publishAttemptsByConversationId: ActiveConversationPanelProps["publishAttemptsByConversationId"];
   selectedConversationId: string | null;
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
@@ -120,7 +120,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   projects,
   publishShortcutLabel,
   promotePublishShortcut = false,
-  publishingConversationId,
+  publishAttemptsByConversationId,
   selectedConversationId,
   selectedTaskArtifactId,
   setTerminalChatDockElement,
@@ -177,7 +177,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onStartPersonaBuilder={onStartPersonaBuilder}
         publishShortcutLabel={publishShortcutLabel}
         promotePublishShortcut={promotePublishShortcut}
-        publishingConversationId={publishingConversationId}
+        publishAttemptsByConversationId={publishAttemptsByConversationId}
         selectedConversationId={selectedConversationId}
         selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}

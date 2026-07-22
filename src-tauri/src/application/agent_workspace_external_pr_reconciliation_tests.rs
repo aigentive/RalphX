@@ -466,7 +466,11 @@ async fn reconciliation_links_external_draft_pr() {
 #[tokio::test]
 async fn reconciliation_links_clickup_ticket_from_external_pr_evidence() {
     let project = test_project();
-    let workspace = test_workspace_with_id(&project, "2c2c2c2c-2c2c-2c2c-2c2c-2c2c2c2c2c2c");
+    let mut workspace = test_workspace_with_id(&project, "2c2c2c2c-2c2c-2c2c-2c2c-2c2c2c2c2c2c");
+    // PR title/body are discovery-only evidence; the link itself must be
+    // authorized by a workspace-owned signal, so the ticket token lives in
+    // the branch name.
+    workspace.branch_name = "feature/DEV-42-link-clickup".to_string();
     let conversation_id = workspace.conversation_id.clone();
     let github = Arc::new(MockGithubService::new());
     github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {

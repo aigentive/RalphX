@@ -15,6 +15,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::domain::review::ReviewSettings;
+use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::infrastructure::MockAgenticClient;
 use std::process::Command;
 
@@ -115,6 +116,29 @@ async fn seed_conversation(state: &AppState, workspace: &AgentConversationWorksp
         .create(conversation)
         .await
         .expect("conversation should persist");
+}
+
+fn fixer_attempt_monitor(
+    conversation_id: ChatConversationId,
+    project_id: ProjectId,
+    attempt_id: &str,
+    status: &str,
+) -> AgentWorkspaceReviewMonitor {
+    let fingerprint = format!("diff-{attempt_id}");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project_id);
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some(fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(fingerprint);
+    monitor.review_artifact_id = Some(ArtifactId::from_string(format!("artifact-{attempt_id}")));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_blocking_fingerprint = Some(format!("blocker-{attempt_id}"));
+    monitor.review_fixer_status = Some(status.to_string());
+    monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
+    monitor
 }
 
 async fn wait_for_monitor_status(
@@ -1338,6 +1362,44 @@ async fn start_review_skips_current_and_already_reviewing_targets() {
 }
 
 #[tokio::test]
+async fn refreshed_review_target_invalidates_the_previous_fixer_attempt() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+    let mut monitor = context.monitor;
+    apply_current_target_to_monitor(&mut monitor, Some(&target));
+    monitor.review_blocking_summary = Some("Old blocker".to_string());
+    monitor.review_blocking_fingerprint = Some("blocker-old".to_string());
+    monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
+    monitor.review_fixer_attempt_id = Some("attempt-old".to_string());
+
+    let mut refreshed_target = target;
+    refreshed_target.diff_fingerprint = "diff-refreshed".to_string();
+    apply_current_target_to_monitor(&mut monitor, Some(&refreshed_target));
+
+    assert_eq!(
+        monitor.current_diff_fingerprint.as_deref(),
+        Some("diff-refreshed")
+    );
+    assert_eq!(monitor.review_blocking_summary, None);
+    assert_eq!(monitor.review_blocking_fingerprint, None);
+    assert_eq!(monitor.review_fixer_status, None);
+    assert_eq!(monitor.review_fixer_attempt_id, None);
+}
+
+#[tokio::test]
 async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_completion() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
@@ -1454,6 +1516,7 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         Arc::clone(&state),
         &workspace,
         true,
+        None,
         &chat_service,
     )
     .await
@@ -1667,6 +1730,7 @@ async fn start_review_blocks_monitor_when_child_chat_send_fails() {
         Arc::clone(&state),
         &workspace,
         true,
+        None,
         &chat_service,
     )
     .await
@@ -1726,6 +1790,7 @@ async fn start_review_blocks_monitor_when_child_chat_breaks_reserved_identity() 
         Arc::clone(&state),
         &workspace,
         true,
+        None,
         &chat_service,
     )
     .await
@@ -1779,6 +1844,7 @@ async fn start_review_blocks_monitor_without_sending_when_no_enabled_default_exi
         Arc::clone(&state),
         &workspace,
         true,
+        None,
         &chat_service,
     )
     .await
@@ -1830,6 +1896,7 @@ async fn start_review_rejects_missing_parent_conversation_before_creating_a_chil
         Arc::clone(&state),
         &workspace,
         true,
+        None,
         &chat_service,
     )
     .await
@@ -1900,6 +1967,7 @@ async fn start_review_uses_the_workspace_reviewer_role_default() {
         Arc::clone(&state),
         &workspace,
         true,
+        None,
         &chat_service,
     )
     .await
@@ -1965,6 +2033,7 @@ async fn start_review_passes_the_provider_default_reviewer_model_to_the_child_ch
         Arc::clone(&state),
         &workspace,
         true,
+        None,
         &chat_service,
     )
     .await
@@ -2281,6 +2350,266 @@ async fn startup_reconciliation_blocks_cancelled_workspace_review_monitor() {
     assert_eq!(
         monitor.last_error.as_deref(),
         Some("Workspace reviewer was interrupted when the app restarted")
+    );
+}
+
+#[tokio::test]
+async fn startup_fixer_reconciliation_reconnects_exact_action_run() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let attempt_id = "fixer-attempt-running";
+    let monitor = fixer_attempt_monitor(
+        conversation_id.clone(),
+        ProjectId("project-1".to_string()),
+        attempt_id,
+        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+    );
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("routing monitor should persist");
+
+    let mut run = AgentRun::new(conversation_id.clone());
+    let run_id = run.id.as_str().to_string();
+    run.apply_action_metadata_json(Some(
+        &serde_json::json!({
+            "ralphx_action_kind": "workspace_review_fixer",
+            "ralphx_action_context_id": conversation_id.as_str(),
+            "ralphx_action_target_id": attempt_id,
+        })
+        .to_string(),
+    ));
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("action run should persist");
+
+    let reconciled = reconcile_interrupted_workspace_review_fixers_on_startup(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.queued_message_repo),
+    )
+    .await
+    .expect("fixer reconciliation should succeed");
+
+    assert_eq!(reconciled, 1);
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("monitor should exist");
+    assert_eq!(
+        monitor.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING)
+    );
+    assert_eq!(
+        monitor.review_fixer_run_id.as_deref(),
+        Some(run_id.as_str())
+    );
+    assert_eq!(monitor.review_fixer_attempt_id.as_deref(), Some(attempt_id));
+}
+
+#[tokio::test]
+async fn startup_fixer_reconciliation_fails_orphan_but_preserves_exact_queue() {
+    let state = AppState::new_test();
+    let project_id = ProjectId("project-1".to_string());
+    let queued_conversation_id = ChatConversationId::new();
+    let orphan_conversation_id = ChatConversationId::new();
+    for (conversation_id, attempt_id) in [
+        (&queued_conversation_id, "fixer-attempt-queued"),
+        (&orphan_conversation_id, "fixer-attempt-orphan"),
+    ] {
+        let monitor = fixer_attempt_monitor(
+            conversation_id.clone(),
+            project_id.clone(),
+            attempt_id,
+            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("routing monitor should persist");
+    }
+    let mut queued = QueuedMessage::new("repair".to_string());
+    queued.metadata_override = Some(
+        serde_json::json!({
+            "ralphx_action_kind": "workspace_review_fixer",
+            "ralphx_action_context_id": queued_conversation_id.as_str(),
+            "ralphx_action_target_id": "fixer-attempt-queued",
+        })
+        .to_string(),
+    );
+    state
+        .queued_message_repo
+        .enqueue_back(&QueueKey::project(project_id.as_str()), &queued)
+        .await
+        .expect("queued repair should persist");
+
+    let reconciled = reconcile_interrupted_workspace_review_fixers_on_startup(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.queued_message_repo),
+    )
+    .await
+    .expect("fixer reconciliation should succeed");
+
+    assert_eq!(reconciled, 2);
+    let queued_monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&queued_conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        queued_monitor.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_QUEUED)
+    );
+    let orphan_monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&orphan_conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        orphan_monitor.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert_eq!(
+        orphan_monitor.last_error.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR)
+    );
+}
+
+#[tokio::test]
+async fn startup_fixer_reconciliation_fails_orphaned_queued_and_running_attempts() {
+    let state = AppState::new_test();
+    let project_id = ProjectId("project-1".to_string());
+    let queued_conversation_id = ChatConversationId::new();
+    let running_conversation_id = ChatConversationId::new();
+    for (conversation_id, attempt_id, status) in [
+        (
+            &queued_conversation_id,
+            "fixer-attempt-queued-orphan",
+            WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+        ),
+        (
+            &running_conversation_id,
+            "fixer-attempt-running-orphan",
+            WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+        ),
+    ] {
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(fixer_attempt_monitor(
+                conversation_id.clone(),
+                project_id.clone(),
+                attempt_id,
+                status,
+            ))
+            .await
+            .expect("active fixer monitor should persist");
+    }
+
+    let reconciled = reconcile_interrupted_workspace_review_fixers_on_startup(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.queued_message_repo),
+    )
+    .await
+    .expect("active orphan recovery should succeed");
+
+    assert_eq!(reconciled, 2);
+    for conversation_id in [queued_conversation_id, running_conversation_id] {
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            monitor.review_fixer_status.as_deref(),
+            Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+        );
+        assert_eq!(
+            monitor.last_error.as_deref(),
+            Some(WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR)
+        );
+    }
+}
+
+#[tokio::test]
+async fn startup_fixer_reconciliation_fails_malformed_attempt_and_continues() {
+    let state = AppState::new_test();
+    let project_id = ProjectId("project-1".to_string());
+    let valid_conversation_id = ChatConversationId::new();
+    let valid_attempt_id = "fixer-attempt-valid-after-malformed";
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(fixer_attempt_monitor(
+            valid_conversation_id.clone(),
+            project_id.clone(),
+            valid_attempt_id,
+            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+        ))
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(valid_conversation_id.clone());
+    run.apply_action_metadata_json(Some(
+        &serde_json::json!({
+            "ralphx_action_kind": "workspace_review_fixer",
+            "ralphx_action_context_id": valid_conversation_id.as_str(),
+            "ralphx_action_target_id": valid_attempt_id,
+        })
+        .to_string(),
+    ));
+    state.agent_run_repo.create(run).await.unwrap();
+
+    let malformed_conversation_id = ChatConversationId::new();
+    let mut malformed =
+        AgentWorkspaceReviewMonitor::new(malformed_conversation_id.clone(), project_id);
+    malformed.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(malformed)
+        .await
+        .unwrap();
+
+    let reconciled = reconcile_interrupted_workspace_review_fixers_on_startup(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.queued_message_repo),
+    )
+    .await
+    .expect("one malformed attempt must not block later recovery");
+
+    assert_eq!(reconciled, 2);
+    let malformed = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&malformed_conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        malformed.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert_eq!(
+        malformed.last_error.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR)
+    );
+    let valid = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&valid_conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        valid.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING)
     );
 }
 
@@ -3055,6 +3384,8 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
+        None,
+        None,
         &chat_service,
     )
     .await
@@ -3079,6 +3410,14 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
     assert_eq!(
         options.agent_name_override.as_deref(),
         Some(agent_names::AGENT_WORKSPACE_REPAIR)
+    );
+    let action = AgentRunAction::from_metadata_json(options.metadata.as_deref())
+        .expect("repair send should carry typed action authority");
+    assert_eq!(action.kind, AgentRunActionKind::WorkspaceReviewFixer);
+    assert_eq!(action.context_id, workspace.conversation_id.as_str());
+    assert_eq!(
+        Some(action.target_id.as_str()),
+        start.context.monitor.review_fixer_attempt_id.as_deref()
     );
     let metadata: serde_json::Value = serde_json::from_str(
         options
@@ -3213,6 +3552,8 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
+        None,
+        None,
         &chat_service,
     )
     .await
@@ -3237,7 +3578,7 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
         Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
     assert_eq!(options.service_tier_override.as_deref(), Some("standard"));
-    assert!(!options.preserve_conversation_provider_session_ref);
+    assert!(options.preserve_conversation_provider_session_ref);
     assert!(options.force_new_provider_session);
 }
 
@@ -3301,6 +3642,8 @@ async fn blocking_fixer_records_failed_without_sending_when_no_enabled_default_e
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
+        None,
+        None,
         &chat_service,
     )
     .await
@@ -3372,6 +3715,8 @@ async fn manual_blocking_review_fixer_skips_when_fixer_already_active() {
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
+        None,
+        None,
         &chat_service,
     )
     .await
@@ -3599,12 +3944,21 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
         &target,
         "Preserve parent references.",
     ));
+    monitor.review_fixer_attempt_id = Some("fixer-attempt-1".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor.clone())
+        .await
+        .expect("monitor claim should persist");
 
     let routed = route_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
         &monitor,
         Some(&target),
+        None,
+        None,
+        None,
         &chat_service,
     )
     .await
@@ -3881,6 +4235,7 @@ async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
         Arc::clone(&state),
         &workspace,
         false,
+        None,
         &chat_service,
     )
     .await
