@@ -88,6 +88,7 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
 } from "./agentWorkspacePublishState";
 import {
+  AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
@@ -313,6 +314,18 @@ export function AgentPublishPanel({
       !isRepairPending &&
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
+  });
+  const changeSummaryQuery = useQuery({
+    queryKey: agentWorkspaceKeys.changeSummary(conversationId),
+    queryFn: () =>
+      diffApi.getAgentConversationWorkspaceChangeSummary(conversationId!),
+    enabled:
+      canHydratePublishFacts &&
+      !!conversationId &&
+      inlineDiffsCandidate &&
+      !isRepairPending &&
+      !terminalPublicationStatus,
+    staleTime: AGENT_WORKSPACE_STALE_MS,
   });
   const publicationEventsQuery = useQuery({
     queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
@@ -1556,6 +1569,7 @@ export function AgentPublishPanel({
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
+              liveSummary={changeSummaryQuery.data ?? null}
               {...(inlineDiffDefaultMode !== undefined && {
                 defaultMode: inlineDiffDefaultMode,
               })}
