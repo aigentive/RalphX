@@ -280,7 +280,6 @@ function GoalItems({
       </div>
       <AutomationPhaseProgress
         value={value}
-        limit={6}
         planByGoalItemId={planByGoalItemId}
       />
     </div>

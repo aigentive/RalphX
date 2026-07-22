@@ -18,6 +18,7 @@ const {
   retryPlanJudgeMock,
   triggerRunNowMock,
   skipJudgeMock,
+  deleteRunMock,
   deleteAutomationMock,
   useArtifactMock,
   listConversationTasksMock,
@@ -36,6 +37,7 @@ const {
   retryPlanJudgeMock: vi.fn(),
   triggerRunNowMock: vi.fn(),
   skipJudgeMock: vi.fn(),
+  deleteRunMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
   useArtifactMock: vi.fn(),
   listConversationTasksMock: vi.fn(),
@@ -79,6 +81,7 @@ vi.mock("@/api/automations", () => ({
     retryPlanJudge: retryPlanJudgeMock,
     triggerRunNow: triggerRunNowMock,
     skipJudge: skipJudgeMock,
+    deleteRun: deleteRunMock,
     delete: deleteAutomationMock,
   },
 }));
@@ -260,6 +263,7 @@ describe("AutomationDetailView", () => {
     retryPlanJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     triggerRunNowMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     skipJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
+    deleteRunMock.mockReset().mockResolvedValue(undefined);
     deleteAutomationMock.mockReset().mockResolvedValue(undefined);
     useArtifactMock.mockReset().mockReturnValue({
       data: null,
@@ -1461,6 +1465,71 @@ describe("AutomationDetailView", () => {
 
     const failure = screen.getByTestId("automation-run-run-failed-failure");
     expect(failure).toHaveTextContent("Publish step exited with code 1");
+  });
+
+  it("deletes the latest failed run after confirmation and invalidates automation queries", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getAutomationMock.mockResolvedValue({
+      automation: automation(),
+      runs: [run({ id: "run-failed", runIndex: 7, status: "agent_failed" })],
+      usage,
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName="Demo Project"
+            onBack={vi.fn()}
+            onOpenRunConversation={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
+    await userEvent.click(screen.getByTestId("automation-run-run-failed-delete"));
+
+    expect(screen.getByText("Delete run?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(deleteRunMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        runId: "run-failed",
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Run deleted");
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: ["automations", "detail", "automation-1"],
+        }),
+      ),
+    );
+  });
+
+  it("does not delete the latest failed run when confirmation is canceled", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [run({ id: "run-failed", runIndex: 7, status: "agent_failed" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await openRunsTab();
+    await userEvent.click(screen.getByTestId("automation-run-run-failed-delete"));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(deleteRunMock).not.toHaveBeenCalled();
   });
 
   it("renders fallback run metadata and deletes terminal automations after confirmation", async () => {

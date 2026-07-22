@@ -137,6 +137,18 @@ export function isAutomationRunCancellable(run: AutomationRun | null): run is Au
   return Boolean(run && OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status));
 }
 
+/** A run may be deleted from the timeline only when it is the latest run AND its
+ *  status is failed, running, or stopped. A `running` run is stopped-then-deleted
+ *  by the backend. Completed/published/merged/pending/provisioning/awaiting_plan_approval
+ *  are never deletable. Latest-ness is enforced by the caller and re-checked by the backend. */
+export function isAutomationRunDeletable(run: AutomationRun | null): run is AutomationRun {
+  return !!run && (
+    run.status === "agent_failed"
+    || run.status === "running"
+    || run.status === "cancelled"
+  );
+}
+
 /**
  * Frontend mirror of backend `latest_run_holds_goal_authority`, intentionally
  * independent from `isOpenAutomationRun`.

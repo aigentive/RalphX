@@ -226,6 +226,29 @@ export function AutomationDetailView({
     },
     onError: () => toast.error("Failed to delete automation"),
   });
+  const deleteRunMutation = useMutation({
+    mutationFn: (runId: string) => automationsApi.deleteRun({ id: automationId, runId }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Run deleted");
+    },
+    onError: () => toast.error("Failed to delete run"),
+  });
+  const handleDeleteRun = useCallback(async (run: AutomationRun) => {
+    const running = run.status === "running";
+    const confirmed = await confirm({
+      title: running ? "Stop and delete run?" : "Delete run?",
+      description: running
+        ? `This stops the running agent, then permanently deletes Run ${run.runIndex}, its worktree, and branch. The conversation is archived. This cannot be undone.`
+        : `This permanently deletes Run ${run.runIndex}, its worktree, and branch. The conversation is archived. This cannot be undone.`,
+      confirmText: running ? "Stop & delete" : "Delete",
+      pendingText: running ? "Stopping..." : "Deleting...",
+      variant: "destructive",
+    });
+    if (confirmed) {
+      deleteRunMutation.mutate(run.id);
+    }
+  }, [confirm, deleteRunMutation]);
   const goalItemsJson = detail.data?.automation.goalItemsJson ?? null;
   const activeGoalItem = useMemo(
     () => findInProgressAutomationGoalItem(goalItemsJson),
@@ -290,6 +313,7 @@ export function AutomationDetailView({
     || retryPlanJudgeMutation.isPending
     || runNowMutation.isPending
     || skipJudgeMutation.isPending
+    || deleteRunMutation.isPending
     || deleteMutation.isPending;
 
   const handleRunNow = async () => {
@@ -423,6 +447,7 @@ export function AutomationDetailView({
                 onRetryPlanJudge={() => retryPlanJudgeMutation.mutate()}
                 onRetryJudge={() => retryJudgeMutation.mutate()}
                 onRunNow={() => void handleRunNow()}
+                onDeleteRun={handleDeleteRun}
                 {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                 {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
               />

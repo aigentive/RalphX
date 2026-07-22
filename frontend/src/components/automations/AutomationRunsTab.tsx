@@ -26,6 +26,7 @@ export interface AutomationRunsTabProps {
   onRetryPlanJudge: () => void;
   onRetryJudge: () => void;
   onRunNow: () => void;
+  onDeleteRun?: (run: AutomationRun) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
@@ -42,6 +43,7 @@ export function AutomationRunsTab({
   onRetryPlanJudge,
   onRetryJudge,
   onRunNow,
+  onDeleteRun,
   onOpenRunConversation,
   onOpenAutomationRun,
 }: AutomationRunsTabProps) {
@@ -112,21 +114,24 @@ export function AutomationRunsTab({
           </p>
         ) : (
           <div className="relative space-y-4 before:absolute before:bottom-0 before:left-[5px] before:top-2 before:w-px before:bg-[var(--border-default)]">
-            {newestRuns.map((run) => (
-              <RunTimelineItem
-                key={run.id}
-                run={run}
-                automation={automation}
-                projectId={projectId}
-                defaultExpanded={
-                  run.runIndex === latest?.runIndex || isOpenAutomationRun(run)
-                }
-                activeGoalItem={activeGoalItem}
-                {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
-                {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
-                setupConversationId={automation.setupConversationId}
-              />
-            ))}
+            {newestRuns.map((run) => {
+              const isLatest = run.runIndex === latest?.runIndex;
+              return (
+                <RunTimelineItem
+                  key={run.id}
+                  run={run}
+                  automation={automation}
+                  projectId={projectId}
+                  defaultExpanded={isLatest || isOpenAutomationRun(run)}
+                  activeGoalItem={activeGoalItem}
+                  isLatest={isLatest}
+                  {...(onDeleteRun ? { onDeleteRun } : {})}
+                  {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
+                  {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
+                  setupConversationId={automation.setupConversationId}
+                />
+              );
+            })}
           </div>
         )}
       </Section>

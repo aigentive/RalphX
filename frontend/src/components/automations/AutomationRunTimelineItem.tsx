@@ -1,5 +1,5 @@
 import { memo, type ReactNode, useCallback, useState } from "react";
-import { ChevronDown, ChevronUp, FileText } from "lucide-react";
+import { ChevronDown, ChevronUp, FileText, Trash2 } from "lucide-react";
 
 import type { Automation, AutomationRun } from "@/api/automations";
 import {
@@ -18,7 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 
 import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
-import { getAutomationRunJudgeLabel } from "./automationRunView";
+import { getAutomationRunJudgeLabel, isAutomationRunDeletable } from "./automationRunView";
 import { ExpandableText, Pill } from "./automationDetailShared";
 
 const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
@@ -265,6 +265,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   projectId,
   defaultExpanded,
   activeGoalItem,
+  isLatest, onDeleteRun,
   onOpenRunConversation,
   onOpenAutomationRun,
   setupConversationId,
@@ -274,6 +275,8 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   projectId: string | null;
   defaultExpanded: boolean;
   activeGoalItem: AutomationGoalItem | null;
+  isLatest?: boolean;
+  onDeleteRun?: (run: AutomationRun) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
   setupConversationId: string | null;
@@ -282,6 +285,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   const [promptOpen, setPromptOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const openPlan = useCallback(() => setPlanOpen(true), []);
+  const ExpandIcon = expanded ? ChevronUp : ChevronDown;
   const canOpenConversation = Boolean(
     projectId &&
       run.conversationId &&
@@ -352,34 +356,43 @@ export const RunTimelineItem = memo(function RunTimelineItem({
         }}
         data-testid={`automation-run-${run.id}-card`}
       >
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
-          className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
-        >
-          <AutomationRunStatusHeader
-            automation={automation}
-            run={run}
-            density="card"
-            activeGoalItem={activeGoalItem}
-            showPr={false}
-            phaseTestId={`automation-run-${run.id}-phase`}
-            testId={`automation-run-${run.id}-header`}
-          />
-          <span className="flex shrink-0 items-center gap-2">
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              {formatDate(run.updatedAt)}
+        <div className="flex items-start gap-1">
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
+            className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
+          >
+            <AutomationRunStatusHeader
+              automation={automation} run={run} density="card"
+              activeGoalItem={activeGoalItem} showPr={false}
+              phaseTestId={`automation-run-${run.id}-phase`}
+              testId={`automation-run-${run.id}-header`}
+            />
+            <span className="flex shrink-0 items-center gap-2">
+              <span className="text-xs" style={{ color: "var(--text-muted)" }}>{formatDate(run.updatedAt)}</span>
+              <ExpandIcon className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
             </span>
-            {expanded ? (
-              <ChevronUp className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
-            ) : (
-              <ChevronDown className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
-            )}
-          </span>
-        </button>
-
+          </button>
+          {isLatest && onDeleteRun && isAutomationRunDeletable(run) ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button" variant="ghost" size="icon-sm"
+                  aria-label={`${run.status === "running" ? "Stop and delete" : "Delete"} run ${run.runIndex}`}
+                  className="shrink-0"
+                  style={{ color: "var(--status-error)" }}
+                  onClick={() => onDeleteRun?.(run)}
+                  data-testid={`automation-run-${run.id}-delete`}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{run.status === "running" ? "Stop & delete run" : "Delete run"}</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </div>
         {run.prUrl ? (
           <div className="mt-2">
             <AutomationRunPrLink

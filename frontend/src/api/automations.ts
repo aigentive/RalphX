@@ -294,6 +294,14 @@ export const automationsApi = {
       transformAutomationRun,
     ),
 
+  deleteRun: async (input: AutomationRunScopedInput): Promise<void> => {
+    await typedInvoke(
+      "delete_automation_run",
+      { input: transformAutomationRunScopedInput(input) },
+      TauriVoidSchema,
+    );
+  },
+
   delete: async (id: string): Promise<void> => {
     await typedInvoke("delete_automation", { input: { id } }, TauriVoidSchema);
   },

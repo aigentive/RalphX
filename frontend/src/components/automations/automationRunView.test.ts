@@ -13,6 +13,7 @@ import {
   getAutomationJudgeRecovery,
   getAutomationRunJudgeLabel,
   getAutomationRunView,
+  isAutomationRunDeletable,
   isAutomationRunComposerReadOnly,
   isIdleAfterCancelledRun,
   latestRunHoldsGoalAuthority,
@@ -135,6 +136,28 @@ describe("automationRunView", () => {
     "in_progress",
     "failed",
   ];
+
+  it.each(["running", "agent_failed", "cancelled"] as const)(
+    "allows deleting a %s run",
+    (status) => {
+      expect(isAutomationRunDeletable(run({ status }))).toBe(true);
+    },
+  );
+
+  it.each([
+    "completed",
+    "published",
+    "merged",
+    "pending",
+    "provisioning",
+    "awaiting_plan_approval",
+  ] as const)("rejects deleting a %s run", (status) => {
+    expect(isAutomationRunDeletable(run({ status }))).toBe(false);
+  });
+
+  it("rejects deletion when there is no run", () => {
+    expect(isAutomationRunDeletable(null)).toBe(false);
+  });
 
   it("mirrors goal authority independently from open-run semantics", () => {
     expect(
