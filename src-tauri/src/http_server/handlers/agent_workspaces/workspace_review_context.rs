@@ -9,7 +9,10 @@ use axum::{
 };
 
 use super::*;
-use crate::application::agent_workspace_review::apply_workspace_review_runtime_authority;
+use crate::application::agent_workspace_review::{
+    apply_workspace_review_runtime_authority, load_current_workspace_review_eligible,
+    lock_workspace_review_lifecycle,
+};
 use crate::application::agent_workspace_review_context::{
     load_agent_workspace_review_presentation_context, AgentWorkspaceReviewContextReadMode,
 };
@@ -24,6 +27,10 @@ pub async fn get_agent_workspace_review_context(
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
     let workspace_response =
         agent_workspace_response_for_state(state.app_state.as_ref(), workspace.clone())
             .await
