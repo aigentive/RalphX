@@ -931,6 +931,7 @@ describe("AgentsSidebar", () => {
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true, "project-2": false },
       showAllProjects: true,
+      showEmptyProjectGroups: true,
       projectSort: "latest",
       sidebarGroupBy: "project",
       sidebarProjectFilterIds: [],
@@ -2171,6 +2172,33 @@ describe("AgentsSidebar", () => {
     ).toContain("background-color: var(--bg-elevated)");
   });
 
+  it("suppresses empty project headers in archived-only results", () => {
+    const alpha = project({ id: "project-1", name: "alpha" });
+    const beta = project({ id: "project-2", name: "beta" });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-active" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [],
+      total: 0,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([alpha, beta], { showArchived: true });
+
+    expect(screen.queryByTestId("agents-project-project-1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-project-project-2")).not.toBeInTheDocument();
+    expect(useAgentSessionStore.getState().showEmptyProjectGroups).toBe(true);
+  });
+
   it("renders the static v27 Recent block above the add-project action", () => {
     conversationsByProject.set("project-1", {
       data: [conversation()],
@@ -2209,6 +2237,132 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-project-project-1")).toBeInTheDocument();
     expect(screen.queryByText("No chats yet.")).not.toBeInTheDocument();
     expect(screen.queryByText("Start")).not.toBeInTheDocument();
+  });
+
+  it("keeps a newly selected empty project visible and ordered after active projects", async () => {
+    const user = userEvent.setup();
+    const alpha = project({ id: "project-1", name: "alpha" });
+    const beta = project({ id: "project-2", name: "beta" });
+    const gamma = project({ id: "project-3", name: "gamma" });
+    useAgentSessionStore.setState({
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1"],
+    });
+    latestProjectOrderData.current = ["project-1"];
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-active", title: "Active work" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [],
+      total: 0,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([alpha, beta, gamma]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByTestId("agents-filter-projects-section-trigger"));
+    await user.click(screen.getByTestId("agents-filter-project-project-2"));
+
+    expect(screen.getByTestId("agents-filter-projects-section-trigger")).toHaveTextContent(
+      "2/3",
+    );
+    expect(useAgentSessionStore.getState().sidebarProjectFilterIds).toEqual([
+      "project-1",
+      "project-2",
+    ]);
+    expect(getProjectRowOrder()).toEqual([
+      "agents-project-project-1",
+      "agents-project-project-2",
+    ]);
+    expect(screen.queryByTestId("agents-project-project-3")).not.toBeInTheDocument();
+    expect(screen.queryByText("No chats yet.")).not.toBeInTheDocument();
+  });
+
+  it("toggles empty project headers without changing project selection", async () => {
+    const user = userEvent.setup();
+    const alpha = project({ id: "project-1", name: "alpha" });
+    const beta = project({ id: "project-2", name: "beta" });
+    useAgentSessionStore.setState({
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1", "project-2"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-active", title: "Active work" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [],
+      total: 0,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([alpha, beta]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    const emptyGroupsFilter = screen.getByTestId("agents-filter-empty-project-groups");
+    expect(emptyGroupsFilter).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("agents-project-project-2")).toBeInTheDocument();
+
+    await user.click(emptyGroupsFilter);
+    expect(useAgentSessionStore.getState()).toMatchObject({
+      showEmptyProjectGroups: false,
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1", "project-2"],
+    });
+    expect(screen.queryByTestId("agents-project-project-2")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-project-project-1")).toBeInTheDocument();
+
+    await user.click(emptyGroupsFilter);
+    expect(screen.getByTestId("agents-project-project-2")).toBeInTheDocument();
+  });
+
+  it("keeps a loading project header until its empty result settles", async () => {
+    const user = userEvent.setup();
+    const loadingProject = project({ id: "project-1", name: "alpha" });
+    conversationsByProject.set("project-1", {
+      data: [],
+      total: 0,
+      isLoading: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([loadingProject]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByTestId("agents-filter-empty-project-groups"));
+    expect(screen.getByTestId("agents-project-project-1")).toBeInTheDocument();
+
+    conversationsByProject.set("project-1", {
+      data: [],
+      total: 0,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useAgentSessionStore.getState().setProjectSort("az");
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-project-project-1")).not.toBeInTheDocument(),
+    );
   });
 
   it("hydrates every project row when the show-all-projects filter is enabled", () => {
@@ -2528,6 +2682,8 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-session-conversation-search")).toHaveTextContent(
       "Fix sidebar search"
     );
+    expect(screen.queryByTestId("agents-project-project-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-project-project-2")).toBeInTheDocument();
   });
 
   it("renders Group, Filters, Sort toolbar controls with grouping outside Filters", async () => {

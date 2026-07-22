@@ -154,7 +154,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     if deps
         .app_state
         .mcp_policy_service()
-        .reconcile_legacy_claude_registration_best_effort()
+        .reconcile_reserved_claude_registration_best_effort()
         .await
         .is_err()
     {

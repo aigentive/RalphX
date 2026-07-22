@@ -1,10 +1,10 @@
 import { Suspense, lazy } from "react";
 
 import type { ProjectSettings } from "@/types/settings";
+import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 
-import type { SettingsSectionId } from "./settings-registry";
+import type { SettingsCompositeTab, SettingsSectionId } from "./settings-registry";
 
-const LazyExecutionSection = lazy(() => import("./sections/ExecutionSection"));
 const LazyAgentsSettingsSection = lazy(() =>
   import("./AgentsSettingsSection").then((module) => ({
     default: module.AgentsSettingsSection,
@@ -15,23 +15,15 @@ const LazyHarnessProvidersSection = lazy(() =>
     default: module.HarnessProvidersSection,
   })),
 );
-const LazyGlobalExecutionSection = lazy(() =>
-  import("./sections/GlobalExecutionSection"),
-);
 const LazyAgentModelsSection = lazy(() =>
   import("./AgentModelsSection").then((module) => ({
     default: module.AgentModelsSection,
   })),
 );
-const LazyReviewPolicySection = lazy(() =>
-  import("./sections/ReviewPolicySection"),
-);
-const LazyWorkspaceReviewSection = lazy(() =>
-  import("./sections/WorkspaceReviewSection"),
-);
-const LazyAutonomyPolicySection = lazy(() =>
-  import("./sections/AutonomyPolicySection"),
-);
+const LazyTasksSettingsSection = lazy(() => import("./sections/TasksSettingsSection"));
+const LazyPlanningSettingsSection = lazy(() => import("./sections/PlanningSettingsSection"));
+const LazyWorkspaceSettingsSection = lazy(() => import("./sections/WorkspaceSettingsSection"));
+const LazyCapacitySettingsSection = lazy(() => import("./sections/CapacitySettingsSection"));
 const LazyRepositorySettingsSection = lazy(() =>
   import("./RepositorySettingsSection").then((module) => ({
     default: module.RepositorySettingsSection,
@@ -42,14 +34,14 @@ const LazyProjectAnalysisSection = lazy(() =>
     default: module.ProjectAnalysisSection,
   })),
 );
-const LazyIdeationSettingsPanel = lazy(() =>
-  import("./IdeationSettingsPanel").then((module) => ({
-    default: module.IdeationSettingsPanel,
-  })),
-);
 const LazyApiKeysSection = lazy(() =>
   import("./ApiKeysSection").then((module) => ({
     default: module.ApiKeysSection,
+  })),
+);
+const LazyExternalMcpSettingsPanel = lazy(() =>
+  import("./ExternalMcpSettingsPanel").then((module) => ({
+    default: module.ExternalMcpSettingsPanel,
   })),
 );
 const LazyAtlassianIntegrationSettingsPanel = lazy(() =>
@@ -124,6 +116,7 @@ function SettingsSectionLoading() {
 
 interface SettingsSectionContentProps {
   section: SettingsSectionId;
+  destinationTab?: SettingsCompositeTab;
   executionSettings: ProjectSettings | null;
   disabled: boolean;
   isHydrated: boolean;
@@ -132,48 +125,63 @@ interface SettingsSectionContentProps {
 
 export function SettingsSectionContent({
   section,
+  destinationTab,
   executionSettings,
   disabled,
   isHydrated,
   onSettingsChange,
 }: SettingsSectionContentProps) {
+  const ideationController = useIdeationSettings(
+    isHydrated && (section === "tasks" || section === "planning"),
+  );
   if (!isHydrated) {
     return <SettingsSectionLoading />;
   }
 
   return (
     <Suspense fallback={<SettingsSectionLoading />}>
-      {section === "execution" &&
-        (executionSettings ? (
-          <LazyExecutionSection
-            settings={executionSettings.execution}
-            onChange={(changes) =>
-              onSettingsChange({
-                ...executionSettings,
-                execution: { ...executionSettings.execution, ...changes },
-              })
-            }
-            disabled={disabled}
-          />
-        ) : null)}
       {section === "providers" && <LazyHarnessProvidersSection />}
       {section === "agents" && <LazyAgentsSettingsSection />}
       {section === "models" && <LazyAgentModelsSection />}
-      {section === "global-execution" && <LazyGlobalExecutionSection />}
       {section === "personas" && <LazyPersonasSection />}
       {section === "capabilities" && <LazyCapabilitiesSection />}
-      {section === "workspace-review" && <LazyWorkspaceReviewSection />}
-      {section === "review" && <LazyReviewPolicySection />}
-      {section === "autonomy" && <LazyAutonomyPolicySection />}
+      {section === "tasks" && (
+        <LazyTasksSettingsSection
+          controller={ideationController}
+          initialTab={
+            destinationTab === "review-policy" || destinationTab === "autonomy-policy"
+              ? destinationTab
+              : "general"
+          }
+        />
+      )}
+      {section === "planning" && (
+        <LazyPlanningSettingsSection controller={ideationController} />
+      )}
+      {section === "workspace" && executionSettings && (
+        <LazyWorkspaceSettingsSection
+          settings={executionSettings}
+          disabled={disabled}
+          onSettingsChange={onSettingsChange}
+          initialTab={destinationTab === "review" ? "review" : "general"}
+        />
+      )}
+      {section === "capacity" && executionSettings && (
+        <LazyCapacitySettingsSection
+          settings={executionSettings}
+          disabled={disabled}
+          onSettingsChange={onSettingsChange}
+        />
+      )}
       {section === "repository" && <LazyRepositorySettingsSection />}
       {section === "project-analysis" && <LazyProjectAnalysisSection />}
-      {section === "ideation-workflow" && <LazyIdeationSettingsPanel />}
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "github" && <LazyGitHubIntegrationSettingsPanel />}
       {section === "linear" && <LazyLinearIntegrationSettingsPanel />}
       {section === "clickup" && <LazyClickUpIntegrationSettingsPanel />}
       {section === "granola" && <LazyGranolaIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
+      {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "mcp" && <LazyMcpSettingsSection />}
       {section === "app-preferences" && <LazyAppPreferencesSection />}
       {section === "accessibility" && <LazyAccessibilitySection />}

@@ -396,6 +396,65 @@ fn agent_workspace_context_cache() -> &'static DashMap<String, AgentWorkspaceCon
     CACHE.get_or_init(DashMap::new)
 }
 
+fn agent_workspace_diff_cache_versions() -> &'static DashMap<String, String> {
+    static VERSIONS: OnceLock<DashMap<String, String>> = OnceLock::new();
+    VERSIONS.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_diff_cache_version(workspace: &AgentConversationWorkspace) -> String {
+    format!(
+        "{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        workspace.updated_at.to_rfc3339(),
+        workspace
+            .publication_pr_number
+            .map(|number| number.to_string())
+            .unwrap_or_default(),
+        workspace
+            .publication_pr_status
+            .as_deref()
+            .unwrap_or_default(),
+        workspace
+            .publication_push_status
+            .as_deref()
+            .unwrap_or_default(),
+        workspace.base_ref,
+        workspace.base_commit.as_deref().unwrap_or_default(),
+        workspace.branch_name,
+    )
+}
+
+async fn ensure_agent_workspace_diff_cache_current(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<()> {
+    let version = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .as_ref()
+        .map(agent_workspace_diff_cache_version)
+        .unwrap_or_default();
+    ensure_agent_workspace_diff_cache_matches(conversation_id, version);
+    Ok(())
+}
+
+fn ensure_agent_workspace_diff_cache_matches(
+    conversation_id: &ChatConversationId,
+    version: String,
+) {
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        return;
+    };
+    if agent_workspace_diff_cache_versions()
+        .get(&key)
+        .is_some_and(|cached| cached.as_str() == version)
+    {
+        return;
+    }
+    invalidate_agent_workspace_diff_caches(conversation_id);
+    agent_workspace_diff_cache_versions().insert(key, version);
+}
+
 fn agent_workspace_context_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
     static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
     LOCKS.get_or_init(DashMap::new)
@@ -898,6 +957,7 @@ async fn get_agent_workspace_context_cached_for_mode(
     conversation_id: &ChatConversationId,
     mode: AgentWorkspaceContextMode,
 ) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
+    ensure_agent_workspace_diff_cache_current(app_state, conversation_id).await?;
     if let Some(context) = cached_agent_workspace_context(conversation_id, mode) {
         return Ok((context, AgentWorkspaceDiffCacheStatus::Hit));
     }
@@ -1314,6 +1374,10 @@ async fn get_agent_conversation_workspace_pr_annotations_cached(
                 conversation_id
             ))
         })?;
+    ensure_agent_workspace_diff_cache_matches(
+        conversation_id,
+        agent_workspace_diff_cache_version(&workspace),
+    );
     let Some(pr_number) = workspace.publication_pr_number else {
         return Ok((
             PrDiffAnnotations::empty(0),
@@ -1383,6 +1447,7 @@ async fn get_agent_conversation_workspace_review_cached(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
 ) -> AppResult<(AgentWorkspaceReviewSnapshot, AgentWorkspaceDiffCacheStatus)> {
+    ensure_agent_workspace_diff_cache_current(app_state, conversation_id).await?;
     if let Some(snapshot) = cached_agent_workspace_review(conversation_id) {
         return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Hit));
     }
@@ -3172,7 +3237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_context_loader_returns_hit_without_repository_lookup() {
+    async fn cached_context_loader_returns_hit_for_current_workspace_version() {
         let conversation_id = test_conversation_id();
         let state = AppState::new_test();
         let context = AgentWorkspaceContext {
@@ -3184,6 +3249,7 @@ mod tests {
             repair_state: None,
         };
         invalidate_agent_workspace_diff_caches(&conversation_id);
+        ensure_agent_workspace_diff_cache_matches(&conversation_id, String::new());
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
@@ -3192,7 +3258,7 @@ mod tests {
 
         let (cached, status) = get_agent_workspace_context_cached(&state, &conversation_id)
             .await
-            .expect("cached context should be returned before repository lookup");
+            .expect("current-version cached context should be returned");
 
         assert_eq!(status.as_str(), "hit");
         assert_eq!(cached.working_path, context.working_path);
@@ -3202,17 +3268,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_review_loader_returns_hit_without_repository_lookup() {
+    async fn cached_review_loader_returns_hit_for_current_workspace_version() {
         let conversation_id = test_conversation_id();
         let state = AppState::new_test();
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         invalidate_agent_workspace_diff_caches(&conversation_id);
+        ensure_agent_workspace_diff_cache_matches(&conversation_id, String::new());
         store_agent_workspace_review(&conversation_id, &snapshot);
 
         let (cached, status) =
             get_agent_conversation_workspace_review_cached(&state, &conversation_id)
                 .await
-                .expect("cached review should be returned before repository lookup");
+                .expect("current-version cached review should be returned");
 
         assert_eq!(status.as_str(), "hit");
         assert_eq!(cached.response.commits.len(), 1);
@@ -3681,6 +3748,9 @@ mod tests {
     async fn file_diff_page_command_rejects_staged_refs_for_read_only_context() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
+        ensure_agent_workspace_diff_cache_current(&state, &conversation_id)
+            .await
+            .expect("workspace cache version should load");
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,
@@ -4484,6 +4554,9 @@ new file mode 100644
     async fn change_summary_command_returns_empty_for_branch_backed_context() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
+        ensure_agent_workspace_diff_cache_current(&state, &conversation_id)
+            .await
+            .expect("workspace cache version should load");
         store_agent_workspace_context(
             &conversation_id,
             AgentWorkspaceContextMode::Strict,

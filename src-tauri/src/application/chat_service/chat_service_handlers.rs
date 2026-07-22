@@ -509,7 +509,6 @@ async fn recovery_retry_folder_refs_context<R: Runtime>(
     conversation: &ChatConversation,
     project_id: Option<&str>,
     working_directory: &Path,
-    enabled: bool,
 ) -> Result<(Option<String>, Vec<PathBuf>), String> {
     let Some(handle) = app_handle else {
         tracing::warn!(
@@ -529,7 +528,6 @@ async fn recovery_retry_folder_refs_context<R: Runtime>(
         Some(app_state.app_paths.app_data_dir()),
         Some(app_state.app_paths.app_data_dir()),
         Some(Arc::clone(&app_state.conversation_folder_reference_repo)),
-        enabled,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -2882,7 +2880,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             conv,
                             resolved_project_id.as_deref(),
                             working_directory,
-                            crate::infrastructure::agents::composer_folder_references_enabled(),
                         )
                         .await;
 

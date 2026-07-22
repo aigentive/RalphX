@@ -416,7 +416,7 @@ export function AgentComposerSurface({
   const removeFolderReference = useRemoveConversationFolderReference();
   const folderReferences = useConversationFolderReferences(
     conversationId,
-    featureFlags.composerFolderReferences === true && folderReferencesEnabled,
+    folderReferencesEnabled,
   );
   const isControlled = controlledValue !== undefined;
   const [internalValue, setInternalValue] = useState("");
@@ -471,9 +471,8 @@ export function AgentComposerSurface({
     (!isSubmitting || canQueue);
   const attachmentDisabled = isReadOnly || (isSubmitting && !canQueue);
   const folderReferencesSupported =
-    featureFlags.composerFolderReferences === true &&
-    ((mode?.value === "persona_builder" && featureFlags.agentPersonas === true) ||
-      (mode?.value !== "persona_builder" && Boolean(project.value?.trim())));
+    (mode?.value === "persona_builder" && featureFlags.agentPersonas === true) ||
+    (mode?.value !== "persona_builder" && Boolean(project.value?.trim()));
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
     : questionMode

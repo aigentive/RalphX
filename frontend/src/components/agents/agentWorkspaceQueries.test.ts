@@ -175,16 +175,28 @@ describe("resolveWorkspaceReviewOwnerConversationId", () => {
     ).toBe("parent-workspace-conversation");
   });
 
-  it("uses the selected conversation for reviewable project workspaces without parents", () => {
+  it("rejects PLAN workspaces without falling back to their parent", () => {
     expect(
       resolveWorkspaceReviewOwnerConversationId({
         activeConversationContextType: "project",
         activeConversationId: "workspace-conversation",
-        activeConversationParentId: null,
+        activeConversationParentId: "parent-workspace-conversation",
         activeConversationMode: "plan",
         activeWorkspaceConversationId: "workspace-conversation",
       }),
-    ).toBe("workspace-conversation");
+    ).toBeNull();
+  });
+
+  it("rejects Review PR workspaces without falling back to their parent", () => {
+    expect(
+      resolveWorkspaceReviewOwnerConversationId({
+        activeConversationContextType: "project",
+        activeConversationId: "review-pr-conversation",
+        activeConversationParentId: "parent-workspace-conversation",
+        activeConversationMode: "review_pr",
+        activeWorkspaceConversationId: "review-pr-conversation",
+      }),
+    ).toBeNull();
   });
 
   it("returns null for non-project conversations", () => {

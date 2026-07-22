@@ -1969,7 +1969,6 @@ pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
     folder_reference_repo: Arc<
         dyn crate::domain::repositories::ConversationFolderReferenceRepository,
     >,
-    folder_references_enabled: bool,
 ) -> crate::error::AppResult<Vec<PathBuf>> {
     let mut roots = resolve_mcp_filesystem_read_roots(
         context_type,
@@ -1987,7 +1986,7 @@ pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
             super::PERSONA_BUILDER_CONTEXT_ERROR.to_string(),
         ));
     }
-    if !folder_references_enabled || (context_type != ChatContextType::Project && !builder_mode) {
+    if context_type != ChatContextType::Project && !builder_mode {
         return Ok(roots);
     }
     if builder_mode && roots.is_empty() {

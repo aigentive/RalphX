@@ -32,8 +32,10 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
-    apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review_blocking_fixer,
+    apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
+    load_agent_workspace_review_context, load_current_workspace_review_eligible,
+    lock_workspace_review_lifecycle, review_gate_publish_blocker,
+    start_agent_workspace_review_blocking_fixer, workspace_review_mode_is_eligible,
     AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
     AgentWorkspaceReviewTarget,
 };
@@ -1315,7 +1317,11 @@ fn workspace_review_action_error(error: AppError) -> JsonError {
         AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    json_error(status, error.to_string(), None)
+    let message = match error {
+        AppError::Conflict(message) => message,
+        error => error.to_string(),
+    };
+    json_error(status, message, None)
 }
 
 /// GET /api/agent-workspaces/{conversation_id}/workspace-review-start-preview
@@ -1325,6 +1331,7 @@ pub async fn get_agent_workspace_review_start_preview(
 ) -> Result<Json<AgentWorkspaceReviewStartPreviewResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let preview = preview_manual_workspace_review_start(state.app_state.as_ref(), &workspace)
         .await
         .map_err(workspace_review_action_error)?;
@@ -1510,9 +1517,13 @@ pub async fn write_agent_workspace_review_artifact(
     let content_bytes = content.len();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(workspace_review_action_error)?;
     let mut monitor = context.monitor;
     let created_by_run_id = validate_workspace_review_tool_run_id(
         &monitor,
@@ -1689,6 +1700,10 @@ pub async fn write_agent_workspace_review_hunk_annotations(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
     let project = state
         .app_state
         .project_repo
@@ -1704,7 +1719,7 @@ pub async fn write_agent_workspace_review_hunk_annotations(
         })?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(workspace_review_action_error)?;
 
     if !context.is_current {
         return Err(json_error(
@@ -1898,9 +1913,13 @@ pub async fn complete_agent_workspace_review_run(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(workspace_review_action_error)?;
     let created_by_run_id = validate_workspace_review_tool_run_id(
         &context.monitor,
         created_by_run_id.as_deref(),
@@ -1912,7 +1931,7 @@ pub async fn complete_agent_workspace_review_run(
         outcome.as_deref(),
     )
     .await?;
-    let monitor = crate::application::agent_workspace_review::complete_agent_workspace_review_run(
+    let monitor = complete_agent_workspace_review_run_unlocked(
         state.app_state.as_ref(),
         &workspace,
         outcome,
@@ -3328,7 +3347,8 @@ fn auto_publish_can_resume_after_workspace_review(
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
 ) -> bool {
-    monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
+    workspace_review_mode_is_eligible(workspace.mode)
+        && monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
         && workspace.auto_publish_initial_pr_enabled
         && workspace.publication_pr_number.is_none()
         && !workspace.has_terminal_publication_pr_status()

@@ -367,6 +367,44 @@ describe("AgentsView artifact pane", () => {
     );
   });
 
+  it("does not query or open Workspace Review for a PLAN workspace", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "plan" }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+    await screen.findByTestId("agents-artifact-pane");
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
+
+    act(() => {
+      fireAgentViewEvent("workspace_review_artifact:created", {
+        conversationId: "conversation-1",
+        artifact: {
+          id: "stale-review-artifact",
+          name: "Workspace Review",
+          version: 1,
+        },
+      });
+    });
+
+    expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+      "data-active-tab",
+      "plan",
+    );
+  });
+
   it("promotes Commit & Publish in the header when the open Review is passed and current", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));

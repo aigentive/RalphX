@@ -163,6 +163,7 @@ import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
+  isLocalWorkspaceReviewModeEligible,
   prReviewContextForConversation,
   refreshWorkspaceReviewContext,
   resolveWorkspaceReviewOwnerConversationId,
@@ -178,9 +179,9 @@ import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
-  PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
 import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
+import { implementAgentPlanDirectly } from "./implementAgentPlanDirectly";
 import { ArtifactSelectionProvider } from "./artifact-selection/ArtifactSelectionProvider";
 import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
@@ -955,7 +956,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const shouldLoadWorkspaceReviewContext = Boolean(
     workspaceReviewConversationId &&
     scopedWorkspace &&
-    ["edit", "ideation", "plan"].includes(scopedWorkspace.mode),
+    isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode),
   );
   const workspaceReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReview(
@@ -2115,6 +2116,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     ? async () => {}
                     : handleApproveReviewAnyway
                 }
+                {...(!isReviewPrWorkspace &&
+                reviewDisplayContext?.monitor.reviewConversationId
+                  ? { onViewTranscript: handleOpenReview }
+                  : {})}
                 planArtifact={planArtifact}
                 isPlanLoading={isPlanHydrating}
                 onPlanUpdated={handlePlanUpdated}
@@ -2141,7 +2146,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 onOpenTasks={() => onTabChange("tasks")}
                 taskArtifactSelectedId={taskArtifactSelectedId}
                 onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
-                skillsEnabled={skillsEnabled}
               />
             </ArtifactSelectionProvider>
           )}
@@ -2202,6 +2206,7 @@ type ArtifactContentProps = {
   onStartReview: (force: boolean) => void;
   onFixIssues: () => void;
   onApproveAnyway: () => Promise<void>;
+  onViewTranscript?: () => void;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -2280,6 +2285,7 @@ function ArtifactContent({
   onStartReview,
   onFixIssues,
   onApproveAnyway,
+  onViewTranscript,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -2442,6 +2448,7 @@ function ArtifactContent({
         onStartReview={onStartReview}
         onFixIssues={onFixIssues}
         onApproveAnyway={onApproveAnyway}
+        {...(onViewTranscript ? { onViewTranscript } : {})}
       />
     );
   }
@@ -2801,14 +2808,11 @@ function AgentPlanPanel({
         !planComplexityQuery.data,
       approvedAt: planArtifact?.planApproval?.approvedAt,
     });
-  const planActionHint =
-    !tasksEnabled && isPlanApproved
-      ? "Tasks is off. Implement this approved plan directly."
-      : buildPlanActionHint({
-          assessment: planComplexityQuery.data,
-          isAssessing: isPlanRecommendationPending,
-          canChoose: canImplementDirectly && canCreateProposals,
-        });
+  const planActionHint = buildPlanActionHint({
+    assessment: planComplexityQuery.data,
+    isAssessing: isPlanRecommendationPending,
+    canChoose: canImplementDirectly && canCreateProposals,
+  });
   const primaryPlanAction = tasksEnabled
     ? planComplexityQuery.data?.recommendedAction
     : "implement_directly";
@@ -2883,31 +2887,12 @@ function AgentPlanPanel({
     }
     setIsImplementingPlanDirectly(true);
     try {
-      if (workspace.mode !== "edit") {
-        const result = await chatApi.switchAgentConversationMode({
-          conversationId: workspace.conversationId,
-          mode: "edit",
-        });
-        if (result.workspace) {
-          queryClient.setQueryData(
-            agentWorkspaceKeys.workspace(workspace.conversationId),
-            result.workspace,
-          );
-        }
-        void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
-      }
-
-      await chatApi.sendAgentMessage(
-        "project",
-        session.projectId,
-        PLAN_IMPLEMENT_DIRECTLY_REQUEST,
-        undefined,
-        undefined,
-        {
-          conversationId: workspace.conversationId,
-          suppressUserMessage: true,
-        },
-      );
+      await implementAgentPlanDirectly({
+        projectId: session.projectId,
+        workspace,
+        queryClient,
+        ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
+      });
       toast.success("Implementation started");
     } catch (err) {
       console.error("Failed to implement plan directly:", err);
@@ -2917,7 +2902,13 @@ function AgentPlanPanel({
     } finally {
       setIsImplementingPlanDirectly(false);
     }
-  }, [canImplementDirectly, queryClient, session, workspace]);
+  }, [
+    canImplementDirectly,
+    onConversationModeSwitched,
+    queryClient,
+    session,
+    workspace,
+  ]);
 
   const handleStartNewConversationWithPlan = useCallback(
     (reference: PlanDisplayConversationReference) => {
@@ -3464,6 +3455,10 @@ function AgentPlanPanel({
       : planLifecycleState === "approved"
         ? "Plan approved"
         : "Plan accepted";
+  const shouldShowPlanLifecycleBanner = Boolean(
+    planLifecycleState &&
+      (planLifecycleState !== "approved" || planLifecycleActions.length > 0),
+  );
 
   if (isPlanLoading) {
     return <EmptyArtifactState title="Loading plan..." />;
@@ -3487,7 +3482,7 @@ function AgentPlanPanel({
           </Suspense>
         ) : (
           <>
-            {planLifecycleState && (
+            {shouldShowPlanLifecycleBanner && planLifecycleState && (
               <PlanLifecycleBanner
                 state={planLifecycleState}
                 title={planLifecycleTitle}

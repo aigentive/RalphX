@@ -187,17 +187,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
     if workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.publication_push_status.as_deref() == Some("needs_agent")
     {
-        let current_review_target = match resolve_review_target(&workspace, &project).await {
-            Ok(target) => target,
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = conversation_id.as_str(),
-                    error = %error,
-                    "Could not resolve current Workspace Review target for PR supervision stale repair recovery"
-                );
-                None
-            }
-        };
+        let current_review_target = resolve_review_target(&workspace, &project).await?;
         let (recovered_workspace, _was_recovered) =
             recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
                 Arc::clone(&deps.workspace_repo),

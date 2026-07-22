@@ -202,17 +202,7 @@ async fn current_pr_fix_review_handoff_target_for_state(
     let Some(project) = state.project_repo.get_by_id(&workspace.project_id).await? else {
         return Ok(None);
     };
-    match resolve_review_target(workspace, &project).await {
-        Ok(target) => Ok(target),
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = workspace.conversation_id.as_str(),
-                error = %error,
-                "Could not resolve current Workspace Review target for stale publish repair recovery"
-            );
-            Ok(None)
-        }
-    }
+    resolve_review_target(workspace, &project).await
 }
 
 pub async fn recover_stale_publish_repair_for_workspace(

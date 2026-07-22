@@ -41,11 +41,14 @@ import { useChatStore } from "@/stores/chatStore";
 import { canonicalizeToolName } from "@/components/Chat/tool-widgets/tool-name";
 import {
   extractDelegationMetadata,
+  buildDelegationLifecycleTask,
   findDelegationTaskKey,
   isDelegationControlToolCall,
   isDelegationStartToolCall,
   mergeDelegationTaskMetadata,
   parseToolResultId,
+  reconcileDelegationTaskMap,
+  reconcileDelegationTaskMarkers,
 } from "@/components/Chat/delegation-tool-calls";
 
 function stableSerialize(value: unknown): string {
@@ -502,6 +505,7 @@ interface UseChatEventsProps {
   contextType: ContextType | null;
   streamingToolCalls?: ToolCall[];
   streamingContentBlocks?: StreamingContentBlock[];
+  streamingTasks?: Map<string, StreamingTask>;
   setStreamingToolCalls: Dispatch<SetStateAction<ToolCall[]>>;
   setStreamingContentBlocks: Dispatch<SetStateAction<StreamingContentBlock[]>>;
   setStreamingTasks: Dispatch<SetStateAction<Map<string, StreamingTask>>>;
@@ -522,6 +526,7 @@ export function useChatEvents({
   contextType,
   streamingToolCalls = [],
   streamingContentBlocks = [],
+  streamingTasks = new Map(),
   setStreamingToolCalls,
   setStreamingContentBlocks,
   setStreamingTasks,
@@ -532,6 +537,7 @@ export function useChatEvents({
   const queryClient = useQueryClient();
   const streamingToolCallsRef = useRef(streamingToolCalls);
   const streamingContentBlocksRef = useRef(streamingContentBlocks);
+  const streamingTasksRef = useRef(streamingTasks);
 
   useEffect(() => {
     streamingToolCallsRef.current = streamingToolCalls;
@@ -540,6 +546,10 @@ export function useChatEvents({
   useEffect(() => {
     streamingContentBlocksRef.current = streamingContentBlocks;
   }, [streamingContentBlocks]);
+
+  useEffect(() => {
+    streamingTasksRef.current = streamingTasks;
+  }, [streamingTasks]);
 
   // Resolve feature flags from registry
   const config = contextType ? getContextConfig(contextType) : null;
@@ -710,24 +720,23 @@ export function useChatEvents({
               && (canonicalizeToolName(parentTask.toolName) === "delegate_start" || delegation.jobId)
             ) {
               const directTask = prev.get(toolUseId);
-              const baseTask = directTask && matchedKey !== toolUseId
-                ? {
-                    ...directTask,
-                    ...parentTask,
-                    toolUseId,
-                    description: directTask.description || parentTask.description,
-                    childToolCalls: directTask.childToolCalls.length > 0
-                      ? directTask.childToolCalls
-                      : parentTask.childToolCalls,
-                  }
-                : parentTask;
+              const providerKey = directTask ? toolUseId : matchedKey!;
+              const baseTask = directTask ?? parentTask;
               const updatedTask = mergeDelegationTaskMetadata(baseTask, delegation);
-              if (matchedKey && matchedKey !== toolUseId) next.delete(matchedKey);
-              next.set(toolUseId, updatedTask);
+              const reconciled = reconcileDelegationTaskMap(prev, {
+                source: "provider",
+                toolUseId: providerKey,
+                providerToolUseId: providerKey,
+                ...(delegation.jobId ? { jobId: delegation.jobId } : {}),
+                ...(payload.seq != null ? { seq: payload.seq } : {}),
+                task: updatedTask,
+              });
+              next.clear();
+              reconciled.tasks.forEach((task, key) => next.set(key, task));
               changed = true;
             }
 
-            for (const [taskId, task] of prev) {
+            for (const [taskId, task] of next) {
               const childIdx = task.childToolCalls.findIndex((tc) => tc.id === toolUseId);
               if (childIdx >= 0) {
                 const updatedCalls = [...task.childToolCalls];
@@ -747,25 +756,20 @@ export function useChatEvents({
           if (delegationResult.jobId) {
             const temporaryId = `delegate-job:${delegationResult.jobId}`;
             setStreamingContentBlocks((prev) => {
-              const hasPlacement = prev.some(
-                (block) => block.type === "task" && block.toolUseId === toolUseId,
+              const matchedKey = findDelegationTaskKey(
+                streamingTasksRef.current,
+                toolUseId,
+                delegationResult.jobId,
               );
-              let changed = false;
-              const next = prev.filter((block) => {
-                if (block.type !== "task" || block.toolUseId !== temporaryId) return true;
-                changed = true;
-                return !hasPlacement;
+              const canonicalKey = streamingTasksRef.current.has(toolUseId)
+                ? toolUseId
+                : matchedKey ?? toolUseId;
+              return reconcileDelegationTaskMarkers(prev, {
+                canonicalKey,
+                aliasKeys: [toolUseId, temporaryId, matchedKey].filter(
+                  (key): key is string => key != null,
+                ),
               });
-              if (!hasPlacement && changed) {
-                const temporaryIndex = prev.findIndex(
-                  (block) => block.type === "task" && block.toolUseId === temporaryId,
-                );
-                const replacement = prev[temporaryIndex];
-                if (replacement?.type === "task") {
-                  next.splice(temporaryIndex, 0, { ...replacement, toolUseId });
-                }
-              }
-              return changed ? next : prev;
             });
           }
 
@@ -802,14 +806,14 @@ export function useChatEvents({
 
         if (!parent_tool_use_id && isDelegationStartToolCall(canonicalToolName)) {
           setStreamingContentBlocks((prev) => {
-            const alreadyHasMarker = prev.some(
-              (block) => block.type === "task" && block.toolUseId === id,
-            );
-            if (alreadyHasMarker) return prev;
-            return [...prev, { type: "task", toolUseId: id, receivedAt }];
+            return reconcileDelegationTaskMarkers(prev, {
+              canonicalKey: id,
+              aliasKeys: [id],
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+              receivedAt,
+            });
           });
           setStreamingTasks((prev) => {
-            if (prev.has(id)) return prev;
             const delegation = extractDelegationMetadata(args, result);
             const description =
               delegation.title
@@ -817,8 +821,7 @@ export function useChatEvents({
               ?? (typeof args === "object" && args != null && "prompt" in args && typeof (args as { prompt?: unknown }).prompt === "string"
                 ? (args as { prompt: string }).prompt
                 : "");
-            const next = new Map(prev);
-            next.set(id, {
+            const task: StreamingTask = {
               toolUseId: id,
               toolName: tool_name,
               description,
@@ -841,8 +844,15 @@ export function useChatEvents({
               ...(delegation.effectiveEffort ? { effectiveEffort: delegation.effectiveEffort } : {}),
               ...(delegation.approvalPolicy ? { approvalPolicy: delegation.approvalPolicy } : {}),
               ...(delegation.sandboxMode ? { sandboxMode: delegation.sandboxMode } : {}),
-            });
-            return next;
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+            };
+            return reconcileDelegationTaskMap(prev, {
+              source: "provider",
+              toolUseId: id,
+              ...(delegation.jobId ? { jobId: delegation.jobId } : {}),
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+              task,
+            }).tasks;
           });
           return;
         }
@@ -854,9 +864,15 @@ export function useChatEvents({
             if (!matchedKey) return prev;
             const task = prev.get(matchedKey);
             if (!task) return prev;
-            const next = new Map(prev);
-            next.set(matchedKey, mergeDelegationTaskMetadata(task, delegation));
-            return next;
+            const updated = mergeDelegationTaskMetadata(task, delegation);
+            return reconcileDelegationTaskMap(prev, {
+              source: "provider",
+              toolUseId: matchedKey,
+              providerToolUseId: matchedKey,
+              ...(delegation.jobId ? { jobId: delegation.jobId } : {}),
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+              task: updated,
+            }).tasks;
           });
           return;
         }
@@ -1026,6 +1042,29 @@ export function useChatEvents({
           const isDelegated = isDelegatedTaskEventPayload(payload);
           if (isDelegated && activeAgentRunId && payload.run_id !== activeAgentRunId) return;
           if (!supportsSubagentTasks && !isDelegated) return;
+          if (isDelegated) {
+            const lifecycleTask = buildDelegationLifecycleTask(payload);
+            const evidence = {
+              source: "lifecycle-start" as const,
+              toolUseId: payload.tool_use_id,
+              ...(payload.delegated_job_id != null ? { jobId: payload.delegated_job_id } : {}),
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+              allowSingleUnresolvedPlaceholder: true,
+              task: lifecycleTask,
+            };
+            const identity = reconcileDelegationTaskMap(
+              streamingTasksRef.current,
+              evidence,
+            );
+            setStreamingContentBlocks((prev) => reconcileDelegationTaskMarkers(prev, {
+              canonicalKey: identity.canonicalKey,
+              aliasKeys: identity.aliasKeys,
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+              receivedAt,
+            }));
+            setStreamingTasks((prev) => reconcileDelegationTaskMap(prev, evidence).tasks);
+            return;
+          }
           setStreamingContentBlocks((prev) => {
             const alreadyHasMarker = prev.some(
               (block) => block.type === "task" && block.toolUseId === payload.tool_use_id,
@@ -1158,6 +1197,41 @@ export function useChatEvents({
             && payload.run_id !== activeAgentRunId
           ) return;
           if (!supportsSubagentTasks && !isDelegatedPayload) return;
+          if (isDelegatedPayload) {
+            const currentKey = findDelegationTaskKey(
+              streamingTasksRef.current,
+              payload.tool_use_id,
+              payload.delegated_job_id,
+            );
+            const current = currentKey ? streamingTasksRef.current.get(currentKey) : undefined;
+            const terminalTask = buildDelegationLifecycleTask(
+              {
+                ...payload,
+                status: normalizeDelegatedTaskStatus(payload.status) ?? "completed",
+              },
+              current,
+            );
+            const evidence = {
+              source: "lifecycle-complete" as const,
+              toolUseId: payload.tool_use_id,
+              ...(payload.delegated_job_id != null ? { jobId: payload.delegated_job_id } : {}),
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+              allowSingleUnresolvedPlaceholder: true,
+              task: terminalTask,
+            };
+            const identity = reconcileDelegationTaskMap(
+              streamingTasksRef.current,
+              evidence,
+            );
+            setStreamingContentBlocks((prev) => reconcileDelegationTaskMarkers(prev, {
+              canonicalKey: identity.canonicalKey,
+              aliasKeys: identity.aliasKeys,
+              ...(payload.seq != null ? { seq: payload.seq } : {}),
+              receivedAt: Date.now(),
+            }));
+            setStreamingTasks((prev) => reconcileDelegationTaskMap(prev, evidence).tasks);
+            return;
+          }
           setStreamingTasks((prev) => {
             const taskKey = findDelegationTaskKey(
               prev,

@@ -199,6 +199,9 @@ ignore:
   - "src-tauri/src/application/orphan_worktree_cleanup.rs"
   - "src-tauri/src/application/pr_startup_recovery.rs"
   - "src-tauri/crates/ralphx-domain/src/repositories/agent_conversation_workspace_repository.rs"
+  # Workspace Review auto-merge coordinates GitHub calls, reviewer startup,
+  # and durable recovery; deterministic behavior is covered by sidecar tests.
+  - "src-tauri/src/application/agent_workspace_review_auto_merge.rs"
   # Merge recovery controller/composition surfaces coordinate long-lived Git
   # worktrees, agent routing, Tauri command glue, and startup reconciliation.
   # Deterministic PR-branch publication behavior is covered by helper and

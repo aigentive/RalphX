@@ -37,7 +37,6 @@ async fn all_flags_on_project_persona_builder_succeeds_through_standard_pipeline
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
     set_standalone_conversations_override(Some(true));
-    set_composer_folder_references_override(Some(true));
     ralphx_lib::testing::seed_available_harness_probes_for_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let db = SqliteTestDb::new("seeded-refine-scope-lock");
@@ -123,10 +122,9 @@ async fn all_flags_on_project_persona_builder_succeeds_through_standard_pipeline
 }
 
 #[tokio::test]
-async fn folder_references_off_project_builder_still_materializes_text_attachment() {
+async fn project_builder_still_materializes_text_attachment() {
     let _reset = PersonaFlagsOverrideReset;
     set_agent_personas_override(Some(true));
-    set_composer_folder_references_override(Some(false));
     ralphx_lib::testing::seed_available_harness_probes_for_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let db = SqliteTestDb::new("builder-start-attachment-sync");

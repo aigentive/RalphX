@@ -770,6 +770,7 @@ async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
     let (_temp_dir, project, mut workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-needs-agent").await;
     let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha.clone());
     workspace.publication_push_status = Some("needs_agent".to_string());
     workspace.pr_supervision_status = Some("fixing".to_string());
 

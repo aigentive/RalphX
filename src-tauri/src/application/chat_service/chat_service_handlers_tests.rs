@@ -768,7 +768,6 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
         &conversation,
         Some(project_id.as_str()),
         &project_root,
-        true,
     )
     .await
     .expect("resolve recovery retry folder refs");
@@ -778,18 +777,6 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
         .contains(&folder.to_string_lossy().to_string()));
     assert!(roots.contains(&folder));
 
-    let (disabled_block, disabled_roots) = recovery_retry_folder_refs_context(
-        &app_handle,
-        &conversation,
-        Some(project_id.as_str()),
-        &project_root,
-        false,
-    )
-    .await
-    .expect("disabled folder refs preserve legacy retry inputs");
-    assert!(disabled_block.is_none());
-    assert!(disabled_roots.is_empty());
-
     let mut builder = conversation;
     builder.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
     let (builder_block, builder_roots) = recovery_retry_folder_refs_context(
@@ -797,7 +784,6 @@ async fn recovery_retry_folder_refs_context_carries_prompt_block_and_roots() {
         &builder,
         Some(project_id.as_str()),
         &project_root,
-        true,
     )
     .await
     .expect("builder folder refs are skipped");

@@ -10,12 +10,14 @@ use ralphx_lib::application::agent_conversation_workspace::resolve_agent_convers
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
-    AgentHarnessKind, ManualRoleDefault, ManualServiceTier, RoutingRole,
+    AgentHarnessKind, AgentProviderSettings, LogicalEffort, ManualRoleDefault, ManualServiceTier,
+    RoutingRole,
 };
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
-    ChatConversation, DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind,
-    IdeationSession, Persona, PersonaId, PersonaStatus, Project, ProjectId, SessionPurpose,
+    ChatContextType, ChatConversation, DelegatedSession, DelegatedSessionId,
+    IdeationAnalysisBaseRefKind, IdeationSession, Persona, PersonaId, PersonaStatus, Project,
+    ProjectId, SessionPurpose,
 };
 use ralphx_lib::domain::repositories::DelegatedSessionRepository;
 use ralphx_lib::error::{AppError, AppResult};
@@ -258,6 +260,19 @@ fn build_state(app_state: Arc<AppState>) -> HttpServerState {
     }
 }
 
+async fn seed_codex_provider_default(app_state: &AppState, model: &str, effort: LogicalEffort) {
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    codex.model = Some(model.to_string());
+    codex.effort = Some(effort);
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&codex)
+        .await
+        .expect("Codex provider default should persist");
+}
+
 #[test]
 fn delegate_start_request_accepts_legacy_message_alias_for_prompt() {
     let parsed: DelegateStartRequest = serde_json::from_str(
@@ -334,6 +349,15 @@ async fn create_project_agent_workspace(
     app_state: &AppState,
     worktree_parent: &Path,
 ) -> (Project, ChatConversation, AgentConversationWorkspace) {
+    create_project_agent_workspace_with_harness(app_state, worktree_parent, AgentHarnessKind::Codex)
+        .await
+}
+
+async fn create_project_agent_workspace_with_harness(
+    app_state: &AppState,
+    worktree_parent: &Path,
+    parent_harness: AgentHarnessKind,
+) -> (Project, ChatConversation, AgentConversationWorkspace) {
     let mut project = Project::new(
         "Delegation Agent Workspace Project".to_string(),
         repo_root().display().to_string(),
@@ -342,7 +366,7 @@ async fn create_project_agent_workspace(
     let project = app_state.project_repo.create(project).await.unwrap();
 
     let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+    conversation.provider_harness = Some(parent_harness);
     let conversation = app_state
         .chat_conversation_repo
         .create(conversation)
@@ -650,6 +674,7 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
     let worktree_parent = TempDir::new().expect("worktree parent");
     let app_state = Arc::new(AppState::new_sqlite_test());
     let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
     let (project, parent_conversation, workspace) =
         create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
     let parent_conversation_id = parent_conversation.id.as_str();
@@ -715,6 +740,291 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
     .expect("canonicalize expected test agent workspace");
     assert_eq!(captured_cwds, vec![expected_workspace]);
     assert_ne!(captured_cwds[0], PathBuf::from(&project.working_directory));
+}
+
+#[tokio::test]
+async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("provider-default-cwds.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    seed_codex_provider_default(app_state.as_ref(), "gpt-5.6-terra", LogicalEffort::Medium).await;
+    let state = build_state(app_state);
+    let (project, parent_conversation, workspace) = create_project_agent_workspace_with_harness(
+        state.app_state.as_ref(),
+        worktree_parent.path(),
+        AgentHarnessKind::Claude,
+    )
+    .await;
+
+    let start = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: Some("turn-provider-default".to_string()),
+            parent_message_id: Some("msg-provider-default".to_string()),
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the project using delegated defaults.".to_string(),
+            title: Some("Delegated provider defaults".to_string()),
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("provider-default delegation should start")
+    .0;
+
+    assert_eq!(start.harness, "codex");
+    assert_eq!(start.logical_model, None);
+    assert_eq!(start.effective_model_id.as_deref(), Some("gpt-5.6-terra"));
+    assert_eq!(start.effective_effort.as_deref(), Some("medium"));
+    let delegated = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&DelegatedSessionId::from_string(
+            start.delegated_session_id.clone(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delegated.harness, AgentHarnessKind::Codex);
+
+    let waited = {
+        let mut snapshot = None;
+        for _ in 0..20 {
+            let candidate = wait_delegate(
+                State(state.clone()),
+                Json(DelegateWaitRequest {
+                    job_id: start.job_id.clone(),
+                    include_delegated_status: Some(true),
+                    include_child_status: None,
+                    include_messages: Some(false),
+                    message_limit: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .0;
+            if candidate.status != "running" {
+                snapshot = Some(candidate);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        snapshot.expect("provider-default delegation should settle")
+    };
+    let latest_run = waited
+        .delegated_status
+        .and_then(|status| status.latest_run)
+        .expect("latest delegated run");
+    assert_eq!(latest_run.harness.as_deref(), Some("codex"));
+    assert_eq!(latest_run.logical_model, None);
+    assert_eq!(
+        latest_run.effective_model_id.as_deref(),
+        Some("gpt-5.6-terra")
+    );
+    assert_eq!(latest_run.effective_effort.as_deref(), Some("medium"));
+    let expected_workspace = ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+        Path::new(&workspace.worktree_path),
+        "expected provider-default agent workspace",
+    )
+    .unwrap()
+    .canonicalize()
+    .expect("canonicalize expected provider-default workspace");
+    assert_eq!(
+        wait_for_captured_cwds(&captured_cwd_path, 1).await,
+        vec![expected_workspace.clone()]
+    );
+    assert_ne!(
+        expected_workspace,
+        PathBuf::from(&project.working_directory)
+    );
+
+    let partial = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: Some("turn-partial-default".to_string()),
+            parent_message_id: Some("msg-partial-default".to_string()),
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the project with only a model override.".to_string(),
+            title: Some("Delegated partial defaults".to_string()),
+            inherit_context: true,
+            harness: None,
+            model: Some("gpt-5.6-explicit".to_string()),
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("partial-override delegation should start")
+    .0;
+    assert_eq!(partial.harness, "codex");
+    assert_eq!(partial.logical_model.as_deref(), Some("gpt-5.6-explicit"));
+    assert_eq!(
+        partial.effective_model_id.as_deref(),
+        Some("gpt-5.6-explicit")
+    );
+    assert_eq!(partial.effective_effort.as_deref(), Some("medium"));
+    assert_eq!(
+        wait_for_captured_cwds(&captured_cwd_path, 2).await,
+        vec![expected_workspace.clone(), expected_workspace]
+    );
+}
+
+#[tokio::test]
+async fn test_delegate_start_rejects_reused_session_identity_conflicts() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir.path().join("reuse-conflict-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let mut existing = DelegatedSession::new(
+        project.id.clone(),
+        "project",
+        project.id.as_str(),
+        "ralphx-general-explorer",
+        AgentHarnessKind::Codex,
+    );
+    existing.status = "pending".to_string();
+    let existing = state
+        .app_state
+        .delegated_session_repo
+        .create(existing)
+        .await
+        .expect("existing delegated session should persist");
+
+    let agent_error = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: Some(existing.id.as_str().to_string()),
+            child_session_id: None,
+            agent_name: "ralphx-general-worker".to_string(),
+            prompt: "This conflicting specialist must not launch.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect_err("reused session specialist conflict should fail");
+    assert!(agent_error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("agent")));
+
+    let harness_error = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: Some(existing.id.as_str().to_string()),
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "This conflicting harness must not launch.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Claude),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect_err("reused session harness conflict should fail");
+    assert!(harness_error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("harness")));
+
+    let stored = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&existing.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "pending");
+    assert_eq!(stored.agent_name, "ralphx-general-explorer");
+    assert_eq!(stored.harness, AgentHarnessKind::Codex);
+    assert_eq!(stored.error, None);
+    assert_eq!(stored.completed_at, None);
+    assert!(state
+        .app_state
+        .chat_conversation_repo
+        .get_active_for_context(ChatContextType::Delegation, existing.id.as_str())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(
+        !captured_args_path.exists(),
+        "no delegated process should spawn"
+    );
+    let sessions = state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("project", project.id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "conflicts must not create another session"
+    );
 }
 
 #[tokio::test]
@@ -787,6 +1097,7 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
     let worktree_parent = TempDir::new().expect("worktree parent");
     let app_state = Arc::new(AppState::new_sqlite_test());
     let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
     let (project, parent_conversation, workspace) =
         create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
     let parent_conversation_id = parent_conversation.id.as_str();
