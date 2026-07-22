@@ -117,6 +117,7 @@ export function AgentRoleDefaultEditor({
   personas,
   forcePersonaAccessOpen,
   onUpdate,
+  onManagePersonas,
 }: AgentRoleDefaultEditorProps) {
   const value = entry.configured ?? entry.effective;
   const blocked = disabled || value === null;
@@ -160,6 +161,7 @@ export function AgentRoleDefaultEditor({
           modelsForProvider={modelsForProvider}
           personas={personas}
           disabled={blocked}
+          onManagePersonas={onManagePersonas}
           onChange={(selection) => onUpdate({ ...value, ...selection })}
         />
       </section>

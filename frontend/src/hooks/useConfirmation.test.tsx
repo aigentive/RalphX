@@ -84,10 +84,11 @@ function RecoveringConfirmationHarness({
             description: "Ready to start.",
             confirmText: "Start review",
             pendingText: "Starting...",
+            body: <input aria-label="Runtime model" defaultValue="sonnet" />,
             onConfirm,
             recoverFromError: () => ({
               description: "Complete or abort the Git operation before retrying.",
-              confirmDisabled: true,
+              bodyDisabled: true,
             }),
           });
         }}
@@ -306,14 +307,20 @@ describe("useConfirmation", () => {
       screen.getByRole("button", { name: "Open recoverable confirmation" }),
     );
     const dialog = await screen.findByRole("alertdialog");
+    const runtimeModel = within(dialog).getByRole("textbox", {
+      name: "Runtime model",
+    });
     await user.click(within(dialog).getByRole("button", { name: "Start review" }));
+
+    expect(runtimeModel).toBeDisabled();
 
     await waitFor(() => {
       expect(
         within(dialog).getByText("Complete or abort the Git operation before retrying."),
       ).toBeInTheDocument();
-      expect(within(dialog).getByRole("button", { name: "Start review" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Start review" })).toBeEnabled();
     });
+    expect(runtimeModel).toBeDisabled();
     expect(within(dialog).queryByRole("button", { name: "Starting..." })).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
 

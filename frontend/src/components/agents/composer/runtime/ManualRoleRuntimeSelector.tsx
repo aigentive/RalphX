@@ -122,6 +122,25 @@ export function ManualRoleRuntimeSelector({
     disabled: !option.enabled,
     ...(option.disabledReason ? { disabledReason: option.disabledReason } : {}),
   }));
+  const personaDisabledReason = entry.controls.persona.enabled
+    ? null
+    : entry.controls.persona.disabledReason ?? "Personas are unavailable for this role.";
+  const personaOptions: ComposerRuntimeOption[] = [
+    {
+      id: NO_PERSONA,
+      label: "No role persona",
+      ...(personaDisabledReason
+        ? { disabled: true, disabledReason: personaDisabledReason }
+        : {}),
+    },
+    ...personas.map((persona) => ({
+      id: persona.id,
+      label: persona.name,
+      ...(personaDisabledReason
+        ? { disabled: true, disabledReason: personaDisabledReason }
+        : {}),
+    })),
+  ];
 
   const commit = (patch: Partial<ManualRoleRuntimeSelection>) =>
     onChange({ ...value, ...patch });
@@ -180,33 +199,26 @@ export function ManualRoleRuntimeSelector({
               },
             }
           : {})}
-        {...(entry.controls.persona.enabled
-          ? {
-              persona: {
-                value: value.personaId ?? NO_PERSONA,
-                options: [
-                  { id: NO_PERSONA, label: "No role persona" },
-                  ...personas.map((persona) => ({ id: persona.id, label: persona.name })),
-                ],
-                disabled,
-                onValueChange: (personaId) =>
-                  commit({ personaId: personaId === NO_PERSONA ? null : personaId }),
-                ...(onManagePersonas
-                  ? {
-                      footerAction: (
-                        <button
-                          type="button"
-                          className="px-2 py-1 text-xs text-[var(--accent-primary)]"
-                          onClick={onManagePersonas}
-                        >
-                          Manage personas
-                        </button>
-                      ),
-                    }
-                  : {}),
-              },
-            }
-          : {})}
+        persona={{
+          value: value.personaId ?? NO_PERSONA,
+          options: personaOptions,
+          disabled,
+          onValueChange: (personaId) =>
+            commit({ personaId: personaId === NO_PERSONA ? null : personaId }),
+          ...(onManagePersonas
+            ? {
+                footerAction: (
+                  <button
+                    type="button"
+                    className="px-2 py-1 text-xs text-[var(--accent-primary)]"
+                    onClick={onManagePersonas}
+                  >
+                    Manage personas
+                  </button>
+                ),
+              }
+            : {}),
+        }}
         speed={{
           value: value.serviceTier,
           options: speedOptions,

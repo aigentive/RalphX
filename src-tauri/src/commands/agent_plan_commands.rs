@@ -224,9 +224,13 @@ pub(crate) async fn activate_agent_task_pipeline_for_state(
         .await
         .map_err(|error| error.to_string())?;
     }
-    let workspace =
-        activate_agent_task_pipeline_service(state, &input.conversation_id, &input.session_id)
-            .await?;
+    let workspace = activate_agent_task_pipeline_service(
+        state,
+        &input.conversation_id,
+        &input.session_id,
+        input.runtime_override.as_ref(),
+    )
+    .await?;
     agent_workspace_response_for_state(state, workspace).await
 }
 

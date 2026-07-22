@@ -61,7 +61,11 @@ const entry: ManualRoleCatalogEntry = {
   },
 };
 
-function renderEditor(onUpdate = vi.fn(), forcePersonaAccessOpen = false) {
+function renderEditor(
+  onUpdate = vi.fn(),
+  forcePersonaAccessOpen = false,
+  onManagePersonas = vi.fn(),
+) {
   render(
     <AgentRoleDefaultEditor
       entry={entry}
@@ -73,7 +77,7 @@ function renderEditor(onUpdate = vi.fn(), forcePersonaAccessOpen = false) {
       personas={[]}
       forcePersonaAccessOpen={forcePersonaAccessOpen}
       onUpdate={onUpdate}
-      onManagePersonas={vi.fn()}
+      onManagePersonas={onManagePersonas}
     />,
   );
   return onUpdate;
@@ -107,14 +111,32 @@ describe("AgentRoleDefaultEditor", () => {
     expect(screen.getByText("Team is currently unavailable")).toBeInTheDocument();
     fireEvent.pointerMove(screen.getByRole("button", { name: /^Speed,/ }));
     expect(screen.getByText("Fast is unavailable for this model")).toBeInTheDocument();
+    const personaTrigger = screen.getByTestId(
+      "agent-composer-runtime-persona-menu-trigger",
+    );
+    fireEvent.pointerMove(personaTrigger);
     expect(
-      screen.queryByTestId("agent-composer-runtime-persona-menu-trigger"),
-    ).not.toBeInTheDocument();
+      screen.getByText("Personas are unavailable for this role"),
+    ).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Permissions" }));
     expect(screen.getByRole("combobox", { name: "Edit approval policy" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Edit sandbox mode" })).toBeInTheDocument();
+  });
+
+  it("keeps persona management reachable when the backend disables selection", async () => {
+    const user = userEvent.setup();
+    const onManagePersonas = vi.fn();
+    renderEditor(vi.fn(), false, onManagePersonas);
+
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.pointerMove(
+      screen.getByTestId("agent-composer-runtime-persona-menu-trigger"),
+    );
+    await user.click(screen.getByRole("button", { name: "Manage personas" }));
+
+    expect(onManagePersonas).toHaveBeenCalledTimes(1);
   });
 
   it("keeps diagnostic-forced persona and access controls visibly open", async () => {

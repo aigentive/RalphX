@@ -20,6 +20,8 @@ export interface ConfirmOptions {
   cancelText?: string;
   variant?: "default" | "destructive";
   body?: ReactNode;
+  /** Keep body controls visible but immutable after a partial backend commit. */
+  bodyDisabled?: boolean;
   confirmDisabled?: boolean;
   onConfirm?: () => Promise<unknown> | unknown;
   /** Runs after the dialog shell opens; return copy updates for the same dialog. */
@@ -48,7 +50,12 @@ export interface ConfirmationController {
 export type ConfirmOptionUpdate = Partial<
   Pick<
     ConfirmOptions,
-    "title" | "description" | "confirmText" | "confirmDisabled" | "body"
+    | "title"
+    | "description"
+    | "confirmText"
+    | "confirmDisabled"
+    | "body"
+    | "bodyDisabled"
   >
 >;
 
@@ -89,7 +96,14 @@ function ConfirmationDialogComponent({
         <AlertDialogHeader>
           <AlertDialogTitle>{options.title}</AlertDialogTitle>
           <AlertDialogDescription>{options.description}</AlertDialogDescription>
-          {options.body}
+          {options.body && (
+            <fieldset
+              disabled={isSubmitting || options.bodyDisabled === true}
+              className="m-0 min-w-0 border-0 p-0"
+            >
+              {options.body}
+            </fieldset>
+          )}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onCancel} disabled={isSubmitting}>

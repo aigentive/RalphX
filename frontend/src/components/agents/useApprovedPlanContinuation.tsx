@@ -1,6 +1,16 @@
 import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 
 import { useRoleRuntimeConfirmation } from "./useRoleRuntimeConfirmation";
+import { PlanContinuationCommittedError } from "./agentPlanProposalActivation";
+
+function recoverCommittedContinuation(error: unknown) {
+  if (!(error instanceof PlanContinuationCommittedError)) return null;
+  return {
+    description: error.message,
+    confirmDisabled: false,
+    bodyDisabled: true,
+  };
+}
 
 export function useApprovedPlanContinuation({
   conversationId,
@@ -26,6 +36,7 @@ export function useApprovedPlanContinuation({
         confirmText: "Implement directly",
         pendingText: "Starting implementation…",
         onConfirm,
+        recoverFromError: recoverCommittedContinuation,
       }),
     confirmCreateProposals: (
       onConfirm: (selection: ManualRoleRuntimeSelection) => Promise<unknown>,
@@ -38,6 +49,7 @@ export function useApprovedPlanContinuation({
         confirmText: "Create proposals",
         pendingText: "Creating proposals…",
         onConfirm,
+        recoverFromError: recoverCommittedContinuation,
       }),
     confirmationDialogProps: runtimeConfirmation.confirmationDialogProps,
     ConfirmationDialog: runtimeConfirmation.ConfirmationDialog,

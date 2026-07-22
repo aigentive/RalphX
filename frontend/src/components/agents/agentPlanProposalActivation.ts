@@ -40,6 +40,13 @@ interface ActivateAgentPlanProposalsParams {
   onWorkspaceActivated?: () => void;
 }
 
+export class PlanContinuationCommittedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlanContinuationCommittedError";
+  }
+}
+
 export async function refreshTransitionedAgentWorkspace({
   queryClient,
   conversationId,
@@ -126,7 +133,12 @@ export async function activateAgentPlanProposals({
     void invalidateWorkspaceQueries(queryClient, conversationId);
     workspaceIsTasks = activatedWorkspace.mode === "tasks";
     if (workspaceIsTasks) onWorkspaceActivated?.();
-  } else if (ownsSession && workspaceIsTasks && conversationId) {
+  } else if (
+    ownsSession &&
+    workspaceIsTasks &&
+    workspace?.mode === "tasks" &&
+    conversationId
+  ) {
     onConversationModeSwitched?.(conversationId, "tasks", workspace);
   }
 
@@ -152,7 +164,7 @@ export async function activateAgentPlanProposals({
         ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
       });
       const detail = error instanceof Error ? ` ${error.message}` : "";
-      throw new Error(
+      throw new PlanContinuationCommittedError(
         `Tasks mode is active, but proposal launch failed. Retry will only send the proposal request; it will not activate Tasks again.${detail}`,
       );
     }

@@ -181,6 +181,7 @@ import {
 } from "./agentPlanModeActions";
 import {
   activateAgentPlanProposals,
+  PlanContinuationCommittedError,
   refreshTransitionedAgentWorkspace,
 } from "./agentPlanProposalActivation";
 import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
@@ -2716,9 +2717,13 @@ function AgentPlanPanel({
   const handleCreateProposals = useCallback(() => {
     if (!session) return;
     let workspaceActivationCompleted = workspace?.mode === "tasks";
+    let committedRuntimeOverride:
+      | import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection
+      | null = null;
     const perform = async (
       runtimeOverride?: import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection,
     ) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
       try {
       await activateAgentPlanProposals({
         sessionId: session.id,
@@ -2729,10 +2734,13 @@ function AgentPlanPanel({
         ...(onFocusIdeationSessionForConversation
           ? { onFocusIdeationSessionForConversation }
           : {}),
-        ...(runtimeOverride ? { runtimeOverride } : {}),
+        ...(runtimeForAttempt ? { runtimeOverride: runtimeForAttempt } : {}),
         workspaceActivationCompleted,
         onWorkspaceActivated: () => {
           workspaceActivationCompleted = true;
+          if (runtimeForAttempt) {
+            committedRuntimeOverride = { ...runtimeForAttempt };
+          }
         },
       });
       } catch (err) {
@@ -2919,14 +2927,18 @@ function AgentPlanPanel({
       return;
     }
     let modeTransitionCompleted = workspace.mode === "edit";
+    let committedRuntimeOverride:
+      | import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection
+      | null = null;
     void confirmImplementDirectly(async (runtimeOverride) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
       setIsImplementingPlanDirectly(true);
       try {
       if (!modeTransitionCompleted) {
         const result = await chatApi.switchAgentConversationMode({
           conversationId: workspace.conversationId,
           mode: "edit",
-          runtimeOverride,
+          runtimeOverride: runtimeForAttempt,
         });
         if (result.workspace) {
           queryClient.setQueryData(
@@ -2941,6 +2953,7 @@ function AgentPlanPanel({
         }
         void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
         modeTransitionCompleted = true;
+        committedRuntimeOverride = { ...runtimeForAttempt };
       }
 
       await chatApi.sendAgentMessage(
@@ -2951,20 +2964,20 @@ function AgentPlanPanel({
         undefined,
         {
           conversationId: workspace.conversationId,
-          runtimeOverride,
+          runtimeOverride: runtimeForAttempt,
           suppressUserMessage: true,
         },
       );
       useAgentSessionStore.getState().setRuntimeForConversation(
         workspace.conversationId,
         session.projectId,
-        materializeWorkspaceRuntimeSelection(runtimeOverride, modelRegistry),
+        materializeWorkspaceRuntimeSelection(runtimeForAttempt, modelRegistry),
       );
       useAgentSessionStore
         .getState()
         .setServiceTierForConversation(
           workspace.conversationId,
-          runtimeOverride.serviceTier,
+          runtimeForAttempt.serviceTier,
         );
       toast.success("Implementation started");
       } catch (err) {
@@ -2975,7 +2988,7 @@ function AgentPlanPanel({
           ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
         });
         const detail = err instanceof Error ? ` ${err.message}` : "";
-        throw new Error(
+        throw new PlanContinuationCommittedError(
           `Edit mode is active, but implementation launch failed. Retry will only send the implementation request; it will not switch modes again.${detail}`,
         );
       }

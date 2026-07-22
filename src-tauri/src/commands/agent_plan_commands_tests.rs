@@ -12,11 +12,13 @@ use crate::application::{
     },
     AppState,
 };
+use crate::domain::agents::{AgentHarnessKind, ManualRoleRuntimeOverride, ManualServiceTier};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactBucketId,
     ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelationType, ArtifactType,
-    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, IdeationSessionStatus, Priority, Project, ProposalCategory, TaskProposal,
+    ChatConversation, CoordinationMode, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, Priority, Project,
+    ProposalCategory, TaskProposal,
 };
 use crate::domain::repositories::PlanApprovalActor;
 use std::path::Path;
@@ -328,6 +330,94 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
             .is_empty(),
         "Create Proposals authority must not create Kanban tasks",
     );
+}
+
+#[tokio::test]
+async fn task_pipeline_activation_atomically_applies_explicit_role_bindings() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Runtime-bound plan".to_string(),
+            content: "# Runtime-bound plan".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    let conversation_id = conversation.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE chat_conversations
+                 SET coordination_mode = 'rx_native_team',
+                     persona_id = 'stale-workspace-persona'
+                 WHERE id = ?1",
+                [conversation_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+            runtime_override: Some(ManualRoleRuntimeOverride {
+                harness: AgentHarnessKind::Claude,
+                model: None,
+                effort: None,
+                service_tier: ManualServiceTier::ProviderDefault,
+                coordination_mode: Some(CoordinationMode::Solo),
+                persona_id: None,
+            }),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let conversation_id = conversation.id.as_str().to_string();
+    let stored = state
+        .db
+        .run(move |conn| {
+            Ok(conn.query_row(
+                "SELECT agent_mode, coordination_mode, persona_id
+                 FROM chat_conversations WHERE id = ?1",
+                [conversation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored.0, "tasks");
+    assert_eq!(stored.1, "solo");
+    assert!(stored.2.is_none());
 }
 
 #[tokio::test]

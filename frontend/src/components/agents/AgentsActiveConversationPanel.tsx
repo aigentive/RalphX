@@ -93,7 +93,10 @@ import type {
   AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
-import type { ManualServiceTier } from "@/api/manual-role-defaults.types";
+import type {
+  ManualRoleRuntimeSelection,
+  ManualServiceTier,
+} from "@/api/manual-role-defaults.types";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 
@@ -164,6 +167,7 @@ import {
 } from "./agentPlanModeActions";
 import {
   activateAgentPlanProposals,
+  PlanContinuationCommittedError,
   refreshTransitionedAgentWorkspace,
 } from "./agentPlanProposalActivation";
 import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
@@ -2016,7 +2020,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return;
     }
     let workspaceActivationCompleted = activeWorkspace?.mode === "tasks";
+    let committedRuntimeOverride: ManualRoleRuntimeSelection | null = null;
     void confirmCreateProposals(async (runtimeOverride) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
       setIsCreatingPlanProposals(true);
       try {
         await activateAgentPlanProposals({
@@ -2026,10 +2032,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         canPromoteWorkspace: true,
         onConversationModeSwitched,
           onFocusIdeationSessionForConversation,
-          runtimeOverride,
+          runtimeOverride: runtimeForAttempt,
           workspaceActivationCompleted,
           onWorkspaceActivated: () => {
             workspaceActivationCompleted = true;
+            committedRuntimeOverride = { ...runtimeForAttempt };
           },
         });
         toast.success("Proposal creation requested");
@@ -2059,14 +2066,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return;
     }
     let modeTransitionCompleted = activeWorkspace.mode === "edit";
+    let committedRuntimeOverride: ManualRoleRuntimeSelection | null = null;
     void confirmImplementDirectly(async (runtimeOverride) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
       setIsImplementingPlanDirectly(true);
       try {
       if (!modeTransitionCompleted) {
         const result = await chatApi.switchAgentConversationMode({
           conversationId: activeWorkspace.conversationId,
           mode: "edit",
-          runtimeOverride,
+          runtimeOverride: runtimeForAttempt,
         });
         if (result.workspace) {
           queryClient.setQueryData(
@@ -2084,6 +2093,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           activeWorkspace.conversationId,
         );
         modeTransitionCompleted = true;
+        committedRuntimeOverride = { ...runtimeForAttempt };
       } else if (activeWorkspace.mode === "edit") {
         onConversationModeSwitched(
           activeWorkspace.conversationId,
@@ -2100,20 +2110,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         undefined,
         {
           conversationId: activeWorkspace.conversationId,
-          runtimeOverride,
+          runtimeOverride: runtimeForAttempt,
           suppressUserMessage: true,
         },
       );
       useAgentSessionStore.getState().setRuntimeForConversation(
         activeWorkspace.conversationId,
         activeProjectId,
-        materializeWorkspaceRuntimeSelection(runtimeOverride, modelRegistry),
+        materializeWorkspaceRuntimeSelection(runtimeForAttempt, modelRegistry),
       );
       useAgentSessionStore
         .getState()
         .setServiceTierForConversation(
           activeWorkspace.conversationId,
-          runtimeOverride.serviceTier,
+          runtimeForAttempt.serviceTier,
         );
       toast.success("Implementation started");
       } catch (err) {
@@ -2124,7 +2134,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           onConversationModeSwitched,
         });
         const detail = err instanceof Error ? ` ${err.message}` : "";
-        throw new Error(
+        throw new PlanContinuationCommittedError(
           `Edit mode is active, but implementation launch failed. Retry will only send the implementation request; it will not switch modes again.${detail}`,
         );
       }

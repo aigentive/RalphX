@@ -400,6 +400,56 @@ describe("useWorkspaceReviewActions", () => {
     });
   });
 
+  it("keeps fixer recovery open and disabled when authoritative refetch fails", async () => {
+    const context: AgentWorkspaceReviewContext = {
+      success: true,
+      workspace: {} as AgentWorkspaceReviewContext["workspace"],
+      events: [],
+      target: {
+        scope: "workspace_delta",
+        baseRef: "main",
+        baseSha: "base",
+        headRef: "HEAD",
+        headSha: "head",
+        diffFingerprint: "old-diff",
+        sourcePullRequestNumber: null,
+      },
+      monitor: {
+        reviewArtifactId: "artifact-old",
+        reviewArtifactVersion: 1,
+        reviewBlockingFingerprint: "old-blocker",
+        reviewBlockingSummary: "Old finding",
+      } as AgentWorkspaceReviewContext["monitor"],
+      reviewArtifactIsCurrent: true,
+      reviewArtifactIsOutdated: false,
+      canMutateReviewState: true,
+      reviewRuntimeState: "active_owned",
+      isCurrent: true,
+      isOutdated: false,
+      shouldShowTab: true,
+    };
+    vi.mocked(chatApi.getAgentWorkspaceReviewContext).mockRejectedValue(
+      new Error("backend offline"),
+    );
+    const onStartFixer = vi.fn().mockRejectedValue(
+      new AgentWorkspaceHttpError(409, "Conflict", "stale receipt"),
+    );
+    const user = userEvent.setup();
+
+    render(<FixerHarness context={context} onStartFixer={onStartFixer} />);
+    await user.click(screen.getByRole("button", { name: "Fix issues" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(await within(dialog).findByRole("button", { name: "Fix issues" }));
+
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText("Could not prepare this action. Cancel and try again."),
+      ).toBeInTheDocument();
+    });
+    expect(within(dialog).getByRole("button", { name: "Fix issues" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
   it("renders an actionable disabled state when preview finds unfinished Git state", async () => {
     vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview).mockRejectedValue(
       new AgentWorkspaceHttpError(409, "Conflict", unfinishedGitDetail),

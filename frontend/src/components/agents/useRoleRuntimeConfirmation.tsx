@@ -52,15 +52,38 @@ export function useRoleRuntimeConfirmation({
         error: unknown,
       ) =>
         | Promise<
-            Partial<Pick<ConfirmOptions, "description" | "confirmDisabled">> | null
+            Partial<
+              Pick<
+                ConfirmOptions,
+                "description" | "confirmDisabled" | "bodyDisabled"
+              >
+            > | null
           >
-        | Partial<Pick<ConfirmOptions, "description" | "confirmDisabled">>
+        | Partial<
+            Pick<
+              ConfirmOptions,
+              "description" | "confirmDisabled" | "bodyDisabled"
+            >
+          >
         | null;
       recoverFromError?: (
         error: unknown,
-      ) => Promise<
-        Partial<Pick<ConfirmOptions, "description" | "confirmDisabled">> | null
-      >;
+      ) =>
+        | Promise<
+            Partial<
+              Pick<
+                ConfirmOptions,
+                "description" | "confirmDisabled" | "bodyDisabled"
+              >
+            > | null
+          >
+        | Partial<
+            Pick<
+              ConfirmOptions,
+              "description" | "confirmDisabled" | "bodyDisabled"
+            >
+          >
+        | null;
       onConfirm: (selection: ManualRoleRuntimeSelection) => Promise<unknown>;
     }) => {
       if (!conversationId) return Promise.resolve(false);
@@ -77,6 +100,7 @@ export function useRoleRuntimeConfirmation({
             harnessProvidersApi.list({ refreshRuntime: true }),
             prepareDescription?.(),
           ]);
+          if (!controller.isCurrent()) return {};
           const entry = catalog.roles.find((candidate) => candidate.role === role);
           if (!entry?.effective) {
             throw new Error(`No effective runtime is available for ${role}`);

@@ -170,10 +170,19 @@ export function useWorkspaceReviewActions({
           if (!isWorkspaceReviewStartConflict(error)) {
             return null;
           }
-          fixerContext = await chatApi.getAgentWorkspaceReviewContext(
-            conversationId,
-            { refreshTarget: true },
-          );
+          try {
+            fixerContext = await chatApi.getAgentWorkspaceReviewContext(
+              conversationId,
+              { refreshTarget: true },
+            );
+          } catch (refreshError) {
+            confirmation = null;
+            return {
+              description:
+                blockedWorkspaceReviewCopy(refreshError) ?? GENERIC_PREPARATION_ERROR,
+              confirmDisabled: true,
+            };
+          }
           confirmation = fixerConfirmation(fixerContext);
           if (!confirmation) {
             return {
