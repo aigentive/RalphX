@@ -126,7 +126,12 @@ pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod managed_team;
 pub mod memory_archive_service;
+pub mod memory_capture_service;
+#[cfg(test)]
+mod memory_capture_service_tests;
 pub mod memory_orchestration;
+#[cfg(test)]
+mod memory_orchestration_tests;
 pub(crate) mod merge_pipeline_visibility;
 pub(crate) mod native_menu;
 pub mod notification_context_resolver;

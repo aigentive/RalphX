@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use axum::{extract::State, Json};
 
-use super::upsert_memories;
 use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{MemoryBucket, ProjectId};
+use crate::http_server::handlers::memory::upsert_memories;
 use crate::http_server::types::{HttpServerState, MemoryEntryInput, UpsertMemoriesRequest};
 
 fn test_state(app_state: Arc<AppState>) -> HttpServerState {
@@ -78,7 +78,7 @@ async fn upsert_memories_creates_memory_entry_and_capture_event() {
 }
 
 #[tokio::test]
-async fn upsert_memories_skips_duplicate_and_records_no_capture_decision() {
+async fn upsert_memories_skips_duplicate_and_records_capture_decision() {
     let app_state = Arc::new(AppState::new_test());
     let project_id = ProjectId::from_string("project-memory-duplicate".to_string());
     let input = memory_input("Avoid duplicate memory capture");
