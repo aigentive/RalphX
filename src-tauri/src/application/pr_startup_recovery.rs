@@ -1801,7 +1801,7 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             // only force-cleans RalphX-owned branches, never the canonical ticket
             // branch.
             let repo_path = std::path::Path::new(&project.working_directory);
-            match ticket_branch_repo.as_ref() {
+            let strict_ticket_managed = match ticket_branch_repo.as_ref() {
                 Some(repository) => match repository
                     .get_by_branch_name(&workspace.project_id, &workspace.branch_name)
                     .await
@@ -1853,8 +1853,9 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                                 continue;
                             }
                         }
+                        true
                     }
-                    Ok(_) => {}
+                    Ok(_) => false,
                     Err(error) => {
                         stats.branches_failed += 1;
                         tracing::warn!(
@@ -1865,8 +1866,8 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                         continue;
                     }
                 },
-                None => {}
-            }
+                None => false,
+            };
             match crate::application::agent_workspace_terminal_cleanup::terminal_cleanup_target_path(
                 &workspace,
                 &project,
@@ -1892,14 +1893,23 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                 ),
             }
 
-            let outcome =
+            let outcome = if strict_ticket_managed {
+                crate::application::agent_workspace_terminal_cleanup::cleanup_terminal_strict_ticket_workspace_after_pr(
+                    Arc::clone(&workspace_repo),
+                    Some(Arc::clone(&plan_branch_repo)),
+                    &workspace.conversation_id,
+                    &project,
+                )
+                .await
+            } else {
                 crate::application::agent_workspace_terminal_cleanup::cleanup_terminal_agent_workspace_after_pr(
                     Arc::clone(&workspace_repo),
                     Some(Arc::clone(&plan_branch_repo)),
                     &workspace.conversation_id,
                     &project,
                 )
-                .await;
+                .await
+            };
             stats.cleanup_markers_written += usize::from(matches!(
                 outcome.cleanup_claim,
                 crate::application::agent_workspace_terminal_cleanup::TerminalCleanupClaimState::Claimed

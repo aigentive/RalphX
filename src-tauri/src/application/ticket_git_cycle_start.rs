@@ -3,7 +3,7 @@ use std::path::Path;
 use chrono::Utc;
 
 use super::{update_strict_branch_from_target, validate_branch_reuse_evidence};
-use crate::application::git_artifact_cleanup::cleanup_terminal_agent_workspace_local_artifacts;
+use crate::application::git_artifact_cleanup::cleanup_terminal_strict_ticket_workspace_local_artifacts;
 use crate::application::git_service::GitService;
 use crate::application::ticket_git_strict_start::{
     StrictTicketGitBlocker, StrictTicketGitBlockerCode,
@@ -60,7 +60,7 @@ pub async fn prepare_merged_strict_ticket_cycle_for_start(
     validate_branch_reuse_evidence(repo_path, &binding.branch_name, &target_ref)
         .await
         .map_err(|error| blocker(binding, error.to_string()))?;
-    let cleanup = cleanup_terminal_agent_workspace_local_artifacts(&project, &prior, false)
+    let cleanup = cleanup_terminal_strict_ticket_workspace_local_artifacts(&project, &prior)
         .await
         .map_err(|error| blocker(binding, error.to_string()))?;
     if let Some(reason) = cleanup.skipped_reason {
