@@ -31,6 +31,7 @@ import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
   activeConversation: AgentConversation | null;
+  focusedAutomationRunConversationId?: string | null;
   focusedWorkspaceReviewConversation?: AgentConversation | null;
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
   modelRegistry: AgentModelRegistry;
@@ -42,6 +43,7 @@ interface UseAgentsWorkspaceModelArgs {
 
 export function useAgentsWorkspaceModel({
   activeConversation,
+  focusedAutomationRunConversationId = null,
   focusedWorkspaceReviewConversation = null,
   focusedWorkspaceReviewConversationId = null,
   optimisticWorkspacesByConversationId,
@@ -84,8 +86,6 @@ export function useAgentsWorkspaceModel({
     activeRuntime,
     modelRegistry,
   );
-  const terminalPublicationLabel =
-    getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
   const canInspectActiveWorkspaceFreshness =
     canInspectAgentWorkspaceFreshness(activeWorkspace);
   const activeWorkspaceFreshnessQuery = useQuery({
@@ -99,25 +99,69 @@ export function useAgentsWorkspaceModel({
       canInspectActiveWorkspaceFreshness,
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
-  const isPublishShortcutCurrent = isAgentWorkspacePublishCurrent(
-    activeWorkspace,
-    activeWorkspaceFreshnessQuery.data,
-  );
   const activeWorkspaceFreshness = activeWorkspaceFreshnessQuery.data;
+  // While an automation run is focused, the publish shortcut must describe the
+  // run conversation's own workspace, never the automation setup workspace.
+  const focusedRunWorkspaceQuery = useQuery({
+    queryKey: agentWorkspaceKeys.workspace(focusedAutomationRunConversationId),
+    queryFn: () =>
+      chatApi.getAgentConversationWorkspace(focusedAutomationRunConversationId!),
+    enabled: !!focusedAutomationRunConversationId,
+    staleTime: AGENT_WORKSPACE_STALE_MS,
+  });
+  const focusedRunWorkspace = focusedAutomationRunConversationId
+    ? focusedRunWorkspaceQuery.data ?? null
+    : null;
+  const canInspectFocusedRunFreshness =
+    canInspectAgentWorkspaceFreshness(focusedRunWorkspace);
+  const focusedRunFreshnessQuery = useQuery({
+    queryKey: agentWorkspaceKeys.scopedFreshness(
+      focusedAutomationRunConversationId,
+      "local",
+    ),
+    queryFn: () =>
+      chatApi.getAgentConversationWorkspaceFreshness(
+        focusedAutomationRunConversationId!,
+        { scope: "local" },
+      ),
+    enabled:
+      !!focusedAutomationRunConversationId && canInspectFocusedRunFreshness,
+    staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
+  });
+  const publishShortcutSourceWorkspace = focusedAutomationRunConversationId
+    ? focusedRunWorkspace
+    : activeWorkspace;
+  const publishShortcutFreshness = focusedAutomationRunConversationId
+    ? focusedRunFreshnessQuery.data
+    : activeWorkspaceFreshness;
+  const terminalPublicationLabel = getAgentWorkspaceTerminalPublicationLabel(
+    publishShortcutSourceWorkspace,
+  );
+  const isPublishShortcutCurrent = isAgentWorkspacePublishCurrent(
+    publishShortcutSourceWorkspace,
+    publishShortcutFreshness,
+  );
   const publishShortcutLabel = terminalPublicationLabel
     ? terminalPublicationLabel
-    : activeWorkspaceFreshness?.baseStatus === "blocked"
+    : publishShortcutFreshness?.baseStatus === "blocked"
       ? "Base unavailable"
-      : activeWorkspaceFreshness?.isBaseAhead
+      : publishShortcutFreshness?.isBaseAhead
         ? `Update from ${
-            activeWorkspaceFreshness.effectiveBaseRef ??
-            activeWorkspaceFreshness.baseRef ??
-            activeWorkspace?.baseRef ??
-            getAgentWorkspaceEffectiveBaseLabel(activeWorkspace, activeWorkspaceFreshness)
+            publishShortcutFreshness.effectiveBaseRef ??
+            publishShortcutFreshness.baseRef ??
+            publishShortcutSourceWorkspace?.baseRef ??
+            getAgentWorkspaceEffectiveBaseLabel(
+              publishShortcutSourceWorkspace,
+              publishShortcutFreshness,
+            )
           }`
         : isPublishShortcutCurrent
           ? "Published"
           : "Commit & Publish";
+  // Fail closed: without a resolved run workspace the shortcut is suppressed
+  // instead of silently falling back to the automation setup workspace.
+  const suppressPublishShortcut =
+    !!focusedAutomationRunConversationId && !focusedRunWorkspace;
   const activeConversationModeLocked = activeConversation
     ? isConversationModeLocked(activeConversation, activeWorkspace)
     : false;
@@ -136,6 +180,8 @@ export function useAgentsWorkspaceModel({
     activeWorkspaceFreshness,
     normalizedActiveRuntime,
     publishShortcutLabel,
+    publishShortcutWorkspace: focusedRunWorkspace,
+    suppressPublishShortcut,
     terminalArchivedReason,
     terminalUnavailableReason,
   };

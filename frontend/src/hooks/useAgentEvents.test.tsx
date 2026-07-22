@@ -821,6 +821,9 @@ describe("useAgentEvents", () => {
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["agents", "conversation-workspace-publication-events", "conv-1"],
       });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "workspace-change-summary", "conv-1"],
+      });
       expect(chatApi.reconcileAgentConversationWorkspacePublication).toHaveBeenCalledWith(
         "conv-1"
       );
@@ -870,6 +873,9 @@ describe("useAgentEvents", () => {
       });
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["agents", "workspace-commits", "conv-camel"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "workspace-change-summary", "conv-camel"],
       });
       expect(invalidateSpy).not.toHaveBeenCalledWith({
         queryKey: ["agents", "conversation-workspace", "   "],

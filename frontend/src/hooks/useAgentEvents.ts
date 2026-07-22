@@ -349,6 +349,9 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       queryClient.invalidateQueries({
         queryKey: ["agents", "workspace-commits", conversationId],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["agents", "workspace-change-summary", conversationId],
+      });
     }
 
     function workspaceChangedConversationId(payload: unknown): string | null {

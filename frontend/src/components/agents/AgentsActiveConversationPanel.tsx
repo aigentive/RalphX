@@ -893,6 +893,8 @@ interface AgentsActiveConversationPanelProps {
   onSelectChatFocus: (type: AgentsChatFocusType) => void;
   onStartPersonaBuilder: () => void;
   publishShortcutLabel: string;
+  publishShortcutWorkspace?: AgentConversationWorkspace | null;
+  suppressPublishShortcut?: boolean;
   promotePublishShortcut?: boolean;
   publishingConversationId: string | null;
   selectedConversationId: string;
@@ -945,6 +947,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onSelectChatFocus,
   onStartPersonaBuilder,
   publishShortcutLabel,
+  publishShortcutWorkspace = null,
+  suppressPublishShortcut = false,
   promotePublishShortcut = false,
   publishingConversationId,
   selectedConversationId,
@@ -3277,10 +3281,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 onPreloadArtifacts={onPreloadArtifacts}
                 publishShortcutLabel={publishShortcutLabel}
                 publishShortcutWorkspace={
-                  promotePublishShortcut ? activeWorkspace : null
+                  publishShortcutWorkspace ??
+                  (promotePublishShortcut ? activeWorkspace : null)
                 }
+                suppressPublishShortcut={suppressPublishShortcut}
                 promotePublishShortcut={promotePublishShortcut}
-                isPublishingWorkspace={publishingConversationId === selectedConversationId}
+                isPublishingWorkspace={
+                  publishingConversationId ===
+                  (getFocusedAutomationRunConversationId(chatFocus) ??
+                    selectedConversationId)
+                }
                 onToggleArtifacts={onToggleArtifacts}
                 onSelectArtifact={onSelectArtifact}
                 {...(isFocusedChildChat

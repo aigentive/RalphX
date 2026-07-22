@@ -63,6 +63,7 @@ import {
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useReviewSettings } from "@/hooks/useReviewSettings";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
+import { useAgentWorkspacePublishLiveRefresh } from "./useAgentWorkspacePublishLiveRefresh";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
@@ -293,6 +294,7 @@ export function AgentPublishPanel({
     conversationTitle,
   });
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
+  useAgentWorkspacePublishLiveRefresh(conversationId);
   const isRepairPending =
     workspace?.publicationPushStatus === "needs_agent" &&
     !getAgentWorkspaceTerminalPublicationStatus(workspace);
