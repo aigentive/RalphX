@@ -28,6 +28,7 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 - Shared concepts are limited to read-only inspection, local checkout access, versioned review artifacts, and actionable findings; do not share state machines, action tools, freshness rules, or fixer behavior by analogy.
 - Review PR mutations fail closed when live PR health cannot be confirmed. Late proposals/submissions use repository guards/CAS and cannot resurrect actions after terminal settlement.
 - Durable state is authoritative. UI projections suppress stale action controls when either workspace publication or monitor state is terminal and keep polling every nonterminal Review PR context.
+- Workspace Review reviewer/repair confirmations use the exact per-conversation role runtime override for provider, model, effort, and speed; approval and sandbox remain backend-resolved role defaults, while the backend alone owns target receipts and repair attempt identity.
 
 ## Ownership And Debugging
 

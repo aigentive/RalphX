@@ -298,6 +298,7 @@ pub async fn draft_agent_workspace_pr_description(
             Some(project.id.as_str()),
             Some(Path::new(&project.working_directory)),
             crate::domain::agents::RoutingRole::UtilityPrDescriber,
+            None,
             agent_names::AGENT_PR_DESCRIBER,
             "agent workspace PR describer",
             conversation.provider_harness,

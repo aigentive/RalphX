@@ -138,6 +138,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         state,
         ModeSwitchInitiator::User,

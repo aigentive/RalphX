@@ -14,6 +14,7 @@ import {
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -27,7 +28,9 @@ import type {
   ComposerRuntimeCapabilityField,
   ComposerRuntimeEffortField,
   ComposerRuntimeModelField,
+  ComposerRuntimePersonaField,
   ComposerRuntimeProviderField,
+  ComposerRuntimeSpeedField,
 } from "./runtimeSelectorTypes";
 
 const NARROW_RUNTIME_SELECTOR_WIDTH = 720;
@@ -37,6 +40,8 @@ interface ComposerRuntimeSelectorProps {
   model: ComposerRuntimeModelField;
   effort: ComposerRuntimeEffortField;
   capability?: ComposerRuntimeCapabilityField;
+  persona?: ComposerRuntimePersonaField;
+  speed?: ComposerRuntimeSpeedField;
   runtimeDefault?: {
     source?: string | null;
     isResetting?: boolean;
@@ -53,11 +58,36 @@ export function ComposerRuntimeSelector({
   model,
   effort,
   capability,
+  persona,
+  speed,
   runtimeDefault,
   compact = false,
   className,
   surfaceRef,
 }: ComposerRuntimeSelectorProps) {
+  const effectiveSpeed = useMemo<ComposerRuntimeSpeedField | undefined>(() => {
+    if (speed) return speed;
+    const fastMode = model.fastMode;
+    if (!fastMode?.visible) return undefined;
+    return {
+      value: fastMode.value ? "fast" : "standard",
+      onValueChange: (value) => fastMode.onValueChange(value === "fast"),
+      options: [
+        { id: "standard", label: "Standard", description: "Default speed." },
+        {
+          id: "fast",
+          label: "Fast",
+          description: fastMode.description ?? "Use priority processing when supported.",
+          ...(fastMode.disabled
+            ? {
+                disabled: true,
+                disabledReason: fastMode.description ?? "Fast mode is unavailable.",
+              }
+            : {}),
+        },
+      ],
+    };
+  }, [model.fastMode, speed]);
   const [open, setOpen] = useState(false);
   const [level, setLevel] = useState<ComposerRuntimeMenuLevel>("overview");
   const [viewingProvider, setViewingProvider] = useState<AgentProvider>(
@@ -82,7 +112,7 @@ export function ComposerRuntimeSelector({
     providerLabel,
     modelLabel,
     effortLabel,
-    fastMode: Boolean(model.fastMode?.visible && model.fastMode.value),
+    fastMode: effectiveSpeed?.value === "fast",
   });
   const modelText = modelLabel.trim();
   const modelSelectionAvailable =
@@ -90,7 +120,8 @@ export function ComposerRuntimeSelector({
   const runtimeReadOnly = Boolean(
     provider.disabled && model.disabled && effort.disabled,
   );
-  const showUnifiedMenu = !runtimeReadOnly || Boolean(capability);
+  const showUnifiedMenu =
+    !runtimeReadOnly || Boolean(capability || persona || effectiveSpeed);
   const optionSignature = useMemo(
     () => effort.options.map((option) => option.id).join("\u0000"),
     [effort.options],
@@ -148,7 +179,7 @@ export function ComposerRuntimeSelector({
     return () => window.cancelAnimationFrame(frame);
   }, [open, showUnifiedMenu]);
 
-  if (!modelSelectionAvailable && !capability) return null;
+  if (!modelSelectionAvailable && !capability && !persona) return null;
 
   const returnToOverview = (returningFrom: ComposerRuntimeMenuLevel) => {
     setLevel("overview");
@@ -163,6 +194,7 @@ export function ComposerRuntimeSelector({
   };
 
   return (
+    <TooltipProvider>
     <Popover
       open={open}
       onOpenChange={(nextOpen) => {
@@ -186,7 +218,7 @@ export function ComposerRuntimeSelector({
               runtimeSummary={summary || "Runtime settings"}
               compact={compact}
               fastMode={Boolean(
-                model.fastMode?.visible && model.fastMode.value,
+                effectiveSpeed?.value === "fast",
               )}
               includesCapabilities={Boolean(capability)}
               {...(modelText.length === 0
@@ -198,7 +230,10 @@ export function ComposerRuntimeSelector({
         </TooltipTrigger>
         <TooltipContent side="top" className="flex items-center gap-2">
           <span>
-            Choose provider, model, effort{capability ? ", and capabilities" : ""}
+            Choose provider, model, effort
+            {capability ? ", capabilities" : ""}
+            {persona ? ", persona" : ""}
+            {effectiveSpeed ? ", and speed" : ""}
           </span>
           <kbd className="rounded border border-[var(--tooltip-border)] px-1.5 py-0.5 text-[0.625rem] font-semibold">
             ⌃⇧M
@@ -246,6 +281,8 @@ export function ComposerRuntimeSelector({
             model={model}
             effort={effort}
             {...(capability ? { capability } : {})}
+            {...(persona ? { persona } : {})}
+            {...(effectiveSpeed ? { speed: effectiveSpeed } : {})}
             {...(runtimeDefault ? { runtimeDefault } : {})}
             viewingProvider={viewingProvider}
             onViewingProviderChange={setViewingProvider}
@@ -264,5 +301,6 @@ export function ComposerRuntimeSelector({
         )}
       </PopoverContent>
     </Popover>
+    </TooltipProvider>
   );
 }

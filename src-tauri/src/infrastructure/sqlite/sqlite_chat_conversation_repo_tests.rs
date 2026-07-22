@@ -898,6 +898,33 @@ async fn test_update_role_default_bindings_preserves_session_tuple_when_requeste
     assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
 }
 
+#[tokio::test]
+async fn test_update_agent_mode_and_role_bindings_persists_one_tuple() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = make_conversation(ChatContextType::Project, "project-atomic-edit");
+    let conversation_id = conversation.id;
+    repo.create(conversation).await.unwrap();
+
+    repo.update_agent_mode_and_role_default_bindings(
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        CoordinationMode::RxNativeWorkflow,
+        Some("persona-edit"),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.agent_mode,
+        Some(AgentConversationWorkspaceMode::Edit)
+    );
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeWorkflow);
+    assert_eq!(loaded.persona_id.as_deref(), Some("persona-edit"));
+}
+
 // --- clear_claude_session_id ---
 
 #[tokio::test]
