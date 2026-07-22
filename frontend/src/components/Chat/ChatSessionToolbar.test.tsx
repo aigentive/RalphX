@@ -29,6 +29,7 @@ function makeStats(
       outputTokens: 40,
       cacheCreationTokens: 10,
       cacheReadTokens: 20,
+      processedTokens: 240,
       estimatedUsd: null,
     },
     runUsageTotals: {
@@ -36,6 +37,7 @@ function makeStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     effectiveUsageTotals: {
@@ -43,6 +45,7 @@ function makeStats(
       outputTokens: 40,
       cacheCreationTokens: 10,
       cacheReadTokens: 20,
+      processedTokens: 240,
       estimatedUsd: null,
     },
     usageCoverage: {
@@ -50,6 +53,11 @@ function makeStats(
       providerMessagesWithUsage: 1,
       runCount: 0,
       runsWithUsage: 0,
+      effectiveRunConversationCount: 0,
+      effectiveMessageConversationCount: 1,
+      legacyEstimatedSampleCount: 0,
+      fallbackEstimatedSampleCount: 0,
+      uncountedSampleCount: 0,
       effectiveTotalsSource: "messages",
     },
     attributionCoverage: {
@@ -64,6 +72,7 @@ function makeStats(
       outputTokens: 40,
       cacheCreationTokens: 10,
       cacheReadTokens: 20,
+      processedTokens: 240,
       estimatedUsd: null,
     } }],
     byModel: [{ key: "gpt-5.4", count: 1, usage: {
@@ -71,6 +80,7 @@ function makeStats(
       outputTokens: 40,
       cacheCreationTokens: 10,
       cacheReadTokens: 20,
+      processedTokens: 240,
       estimatedUsd: null,
     } }],
     byEffort: [{ key: "xhigh", count: 1, usage: {
@@ -78,6 +88,7 @@ function makeStats(
       outputTokens: 40,
       cacheCreationTokens: 10,
       cacheReadTokens: 20,
+      processedTokens: 240,
       estimatedUsd: null,
     } }],
     ...overrides,

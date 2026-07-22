@@ -34,6 +34,7 @@ pub struct ChatMessageResponse {
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
+    pub usage_provenance: Option<String>,
     pub created_at: String,
 }
 
@@ -65,6 +66,7 @@ impl From<ChatMessage> for ChatMessageResponse {
             cache_creation_tokens: message.cache_creation_tokens,
             cache_read_tokens: message.cache_read_tokens,
             estimated_usd: message.estimated_usd,
+            usage_provenance: message.usage_provenance.map(|value| value.to_string()),
             created_at: message.created_at.to_rfc3339(),
         }
     }

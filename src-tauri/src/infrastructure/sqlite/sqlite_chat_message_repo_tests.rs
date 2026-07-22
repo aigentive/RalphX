@@ -375,7 +375,9 @@ async fn test_update_attribution_updates_message_attribution_fields() {
     repo.update_attribution(
         &message.id,
         &ChatMessageAttribution {
-            attribution_source: Some("historical_backfill_claude_project_jsonl_anthropic".to_string()),
+            attribution_source: Some(
+                "historical_backfill_claude_project_jsonl_anthropic".to_string(),
+            ),
             provider_harness: Some(AgentHarnessKind::Claude),
             provider_session_id: Some("claude-session-999".to_string()),
             upstream_provider: Some("anthropic".to_string()),
@@ -1025,6 +1027,29 @@ fn create_test_conversation(db: &SqliteTestDb) -> ChatConversationId {
         .unwrap();
     });
     id
+}
+
+#[tokio::test]
+async fn get_by_id_rejects_unknown_non_null_usage_provenance() {
+    let db = setup_test_db();
+    let project_id = ProjectId::new();
+    create_test_project(&db, &project_id, "Test", "/test");
+    let session_id = create_test_session(&db, &project_id);
+    let repo = SqliteChatMessageRepository::from_shared(db.shared_conn());
+    let message = ChatMessage::orchestrator_in_session(session_id, "usage");
+    let message_id = message.id.clone();
+    repo.create(message).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE chat_messages SET usage_provenance = 'future_capture_kind' WHERE id = ?1",
+            [message_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    repo.get_by_id(&message_id)
+        .await
+        .expect_err("unknown provenance must not be reclassified as legacy data");
 }
 
 #[tokio::test]
