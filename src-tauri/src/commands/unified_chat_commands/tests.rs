@@ -63,6 +63,7 @@ use crate::application::agent_conversation_workspace_base::{
     BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
 };
 use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
+use crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairClaim;
 use crate::application::git_service::GitService;
 use crate::application::publish_resilience::PublishBranchFreshnessStatus;
 use crate::application::{
@@ -93,6 +94,7 @@ use crate::domain::entities::{
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::AgentWorkspaceRepairStateGuard;
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::github_service::{PrAutoMergeRequest, PrHealth};
 use crate::domain::services::{
@@ -1629,6 +1631,17 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
     assert_eq!(messages.len(), 1);
     assert!(messages[0].contains("Commit & Publish failed for this agent workspace."));
     assert!(messages[0].contains("Workspace branch: ralphx/test/agent-command"));
+    let claimed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claimed.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(claimed.pr_supervision_status.as_deref(), Some("fixing"));
 
     let events = state
         .agent_conversation_workspace_repo
@@ -1683,6 +1696,17 @@ async fn fixable_update_failure_records_repair_send_failure() {
         .list_publication_events(&workspace.conversation_id)
         .await
         .expect("events should list");
+    let settled = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        settled.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(settled.pr_supervision_status.as_deref(), Some("blocked"));
     assert!(events.iter().any(|event| {
         event.step == "repair_requested"
             && event.classification.as_deref() == Some("agent_fixable:update_only")
@@ -2651,6 +2675,10 @@ async fn deferred_repair_spawn_without_app_handle_noops() {
         AgentWorkspaceRepairRuntimeOverrides::default(),
         target,
         AgentWorkspacePostRepairAction::Publish,
+        AgentWorkspaceRepairClaim {
+            conversation_id: workspace.conversation_id.clone(),
+            guard: AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
+        },
     )
     .await;
 

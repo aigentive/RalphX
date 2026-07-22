@@ -16,6 +16,9 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_publish_repair_state::{
+    claim_agent_workspace_repair, settle_agent_workspace_repair_failure,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
@@ -1737,23 +1740,16 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
 
     let repair_summary =
         format!("Auto Publish routed PR #{pr_number} merge conflicts to workspace repair.");
-    workspace_repo
-        .update_publication(
-            conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            Some("open"),
-            Some("needs_agent"),
-        )
-        .await?;
-    workspace_repo
-        .update_pr_auto_merge_state(
-            conversation_id,
-            Some(auto_merge_current),
-            Some("fixing"),
-            Some(&repair_summary),
-        )
-        .await?;
+    let Some(claim) = claim_agent_workspace_repair(
+        Arc::clone(&workspace_repo),
+        conversation_id,
+        &repair_summary,
+        Some(auto_merge_current),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
     workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
@@ -1808,15 +1804,20 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
                 error = %error,
                 "Failed to send GitHub PR conflict repair message"
             );
-            workspace_repo
-                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                    conversation_id.clone(),
-                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                    "failed",
-                    format!("Failed to send base update failure to workspace agent: {error}"),
-                    Some("operational".to_string()),
-                ))
-                .await?;
+            let summary = format!("Failed to send base update failure to workspace agent: {error}");
+            if settle_agent_workspace_repair_failure(Arc::clone(&workspace_repo), &claim, &summary)
+                .await?
+            {
+                workspace_repo
+                    .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                        conversation_id.clone(),
+                        AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                        "failed",
+                        summary,
+                        Some("operational".to_string()),
+                    ))
+                    .await?;
+            }
         }
     }
 

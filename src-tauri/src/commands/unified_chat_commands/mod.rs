@@ -76,6 +76,10 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_publish_repair_state::{
+    claim_agent_workspace_repair, settle_agent_workspace_failure_without_repair,
+    settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
+};
 use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::tool_result_preview::{
@@ -8095,8 +8099,35 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     if !route_fixable_failures_to_agent
         || !matches!(failure_class, PublishFailureClass::AgentFixable)
     {
+        let _ = settle_agent_workspace_failure_without_repair(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            &workspace.conversation_id,
+            push_status,
+            error,
+        )
+        .await;
         return;
     }
+
+    let claim = match claim_agent_workspace_repair(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        &workspace.conversation_id,
+        post_repair_action.repair_requested_summary(),
+        None,
+    )
+    .await
+    {
+        Ok(Some(claim)) => claim,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Failed to claim agent workspace repair state"
+            );
+            return;
+        }
+    };
 
     let _ = append_agent_workspace_publication_event(
         state,
@@ -8117,6 +8148,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             runtime_overrides,
             target.clone(),
             post_repair_action,
+            claim,
         )
         .await;
         return;
@@ -8151,15 +8183,24 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             );
             let repair_summary =
                 post_repair_action.repair_send_failed_summary(&repair_error.to_string());
-            let _ = append_agent_workspace_publication_event(
-                state,
-                &workspace.conversation_id,
-                AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                "failed",
+            if settle_agent_workspace_repair_failure(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                &claim,
                 &repair_summary,
-                Some("operational".to_string()),
             )
-            .await;
+            .await
+            .unwrap_or(false)
+            {
+                let _ = append_agent_workspace_publication_event(
+                    state,
+                    &workspace.conversation_id,
+                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                    "failed",
+                    &repair_summary,
+                    Some("operational".to_string()),
+                )
+                .await;
+            }
         }
     }
 }
@@ -8228,6 +8269,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
     runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
     target: AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
+    claim: AgentWorkspaceRepairClaim,
 ) {
     let Some(app_handle) = state.app_handle.clone() else {
         return;
@@ -8273,15 +8315,26 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 break;
             }
             if wait_started.elapsed() >= Duration::from_secs(300) {
-                let _ = append_agent_workspace_publication_event(
-                    state.inner(),
-                    &conversation_id,
-                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                    "failed",
-                    "Timed out waiting for active workspace agent turn before sending repair",
-                    Some("operational".to_string()),
+                let summary =
+                    "Timed out waiting for active workspace agent turn before sending repair";
+                if settle_agent_workspace_repair_failure(
+                    Arc::clone(&state.agent_conversation_workspace_repo),
+                    &claim,
+                    summary,
                 )
-                .await;
+                .await
+                .unwrap_or(false)
+                {
+                    let _ = append_agent_workspace_publication_event(
+                        state.inner(),
+                        &conversation_id,
+                        AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                        "failed",
+                        summary,
+                        Some("operational".to_string()),
+                    )
+                    .await;
+                }
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),
                     elapsed_ms = wait_started.elapsed().as_millis(),
@@ -8342,15 +8395,24 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 );
                 let repair_summary =
                     post_repair_action.repair_send_failed_summary(&repair_error.to_string());
-                let _ = append_agent_workspace_publication_event(
-                    state.inner(),
-                    &conversation_id,
-                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                    "failed",
+                if settle_agent_workspace_repair_failure(
+                    Arc::clone(&state.agent_conversation_workspace_repo),
+                    &claim,
                     &repair_summary,
-                    Some("operational".to_string()),
                 )
-                .await;
+                .await
+                .unwrap_or(false)
+                {
+                    let _ = append_agent_workspace_publication_event(
+                        state.inner(),
+                        &conversation_id,
+                        AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                        "failed",
+                        &repair_summary,
+                        Some("operational".to_string()),
+                    )
+                    .await;
+                }
             }
         }
     });

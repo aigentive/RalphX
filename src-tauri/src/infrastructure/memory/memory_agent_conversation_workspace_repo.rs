@@ -548,6 +548,37 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn compare_and_set_repair_state(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: &crate::domain::repositories::AgentWorkspaceRepairStateGuard,
+        transition: &crate::domain::repositories::AgentWorkspaceRepairStateTransition,
+    ) -> AppResult<bool> {
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publication_push_status != expected.publication_push_status
+            || workspace.pr_supervision_status != expected.pr_supervision_status
+            || workspace.pr_supervision_updated_at != expected.pr_supervision_updated_at
+        {
+            return Ok(false);
+        }
+
+        workspace.publication_push_status = transition.publication_push_status.clone();
+        workspace.pr_supervision_status = transition.pr_supervision_status.clone();
+        workspace.pr_supervision_summary = transition.pr_supervision_summary.clone();
+        workspace.pr_supervision_updated_at = Some(transition.pr_supervision_updated_at);
+        if let Some(auto_merge_current) = transition.pr_auto_merge_current {
+            workspace.pr_auto_merge_current = Some(auto_merge_current);
+        }
+        if let Some(base_commit) = transition.base_commit.as_ref() {
+            workspace.base_commit = Some(base_commit.clone());
+        }
+        workspace.updated_at = transition.pr_supervision_updated_at;
+        Ok(true)
+    }
+
     async fn list_worktree_paths_by_project_id(
         &self,
         project_id: &ProjectId,
