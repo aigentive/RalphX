@@ -20,6 +20,7 @@ import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { personaKeys } from "@/hooks/usePersonas";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -199,17 +200,29 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
     );
-    expect(screen.getByTestId("agents-start-heading")).toHaveTextContent("Start your agent");
-    expect(screen.getByTestId("agents-start-heading-word")).toHaveTextContent("agent");
+    expect(screen.getByTestId("agents-start-heading")).toHaveTextContent(
+      "Start your agent",
+    );
+    expect(screen.getByTestId("agents-start-heading-word")).toHaveTextContent(
+      "agent",
+    );
     expect(screen.getByTestId("agents-start-project")).toBeInTheDocument();
     expect(screen.getByTestId("agents-start-base")).toBeInTheDocument();
-    expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-composer-runtime-pill"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-new-project"),
+    ).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-new-project"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("integrated-chat-panel"),
+    ).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     // Workflow modes live on the Mode chip popover, not the "+" action menu.
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
@@ -223,7 +236,9 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Plan"),
+      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent(
+        "Plan",
+      ),
     );
   });
 
@@ -232,9 +247,15 @@ describe("AgentsView start conversation", () => {
     const { queryClient } = renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
-    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
-    expect(screen.queryByTestId("agents-start-mode-autopilot")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show more modes" }),
+    );
+    expect(
+      screen.queryByTestId("agents-start-mode-autopilot"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-mode-ideation"),
+    ).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
 
     queryClient.setQueryData(
@@ -242,15 +263,24 @@ describe("AgentsView start conversation", () => {
       enabledFeatureFlags({ agentConversationAutopilot: true }),
     );
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
-    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
-    expect(screen.getByTestId("agents-start-mode-autopilot")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-start-mode-ideation")).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show more modes" }),
+    );
+    expect(
+      screen.getByTestId("agents-start-mode-autopilot"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-mode-ideation"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows Persona only when enabled and preserves a consumed locked project across project-query churn", async () => {
     const atlas = { ...project, id: "project-atlas", name: "Atlas" };
     mockAgentViewData();
-    useProjectsMock.mockReturnValue({ data: [project, atlas], isLoading: false });
+    useProjectsMock.mockReturnValue({
+      data: [project, atlas],
+      isLoading: false,
+    });
     resetAgentSessionState({
       startConversationDraft: {
         projectId: "project-atlas",
@@ -263,27 +293,48 @@ describe("AgentsView start conversation", () => {
 
     await screen.findByTestId("persona-build-banner");
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
-    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent(
+      "Atlas",
+    );
     expect(screen.getByTestId("agents-start-project")).toBeDisabled();
-    expect(screen.getByLabelText("Persona build project is locked")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Persona build project is locked"),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
-    expect(screen.queryByTestId("agents-start-mode-persona_builder")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-mode-persona_builder"),
+    ).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
-    useProjectsMock.mockReturnValue({ data: [{ ...project }, { ...atlas }], isLoading: false });
+    useProjectsMock.mockReturnValue({
+      data: [{ ...project }, { ...atlas }],
+      isLoading: false,
+    });
     view.queryClient.setQueryData(
       FEATURE_FLAGS_QUERY_KEY,
       enabledFeatureFlags({ agentPersonas: true }),
     );
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
-    expect(screen.getByTestId("agents-start-mode-persona_builder")).toHaveTextContent("Persona");
+    expect(
+      screen.getByTestId("agents-start-mode-persona_builder"),
+    ).toHaveTextContent("Persona");
     await userEvent.keyboard("{Escape}");
-    expect(screen.getByTestId("agents-start-project")).toHaveTextContent("Atlas");
-    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-start-project")).toHaveTextContent(
+      "Atlas",
+    );
+    expect(
+      screen.queryByTestId("agents-start-capability"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Choose persona" }),
+    ).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByRole("button", { name: "Add files" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add folder" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add files" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add folder" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps standalone reachable with zero projects and prevents project-only controls", async () => {
@@ -304,19 +355,29 @@ describe("AgentsView start conversation", () => {
       expect(screen.getByTestId("agents-start-project")).not.toBeDisabled(),
     );
     await userEvent.click(screen.getByTestId("agents-start-project"));
-    expect(screen.getByTestId("agents-start-project-standalone")).toHaveTextContent(
-      "No project (standalone)",
+    expect(
+      screen.getByTestId("agents-start-project-standalone"),
+    ).toHaveTextContent("No project (standalone)");
+    await userEvent.click(
+      screen.getByTestId("agents-start-project-standalone"),
     );
-    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
 
     expect(screen.getByText("Runs in a private workspace")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Ask");
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent(
+      "Ask",
+    );
     expect(
-      screen.getByText(/Project-requiring modes are unavailable without a project/),
+      screen.getByText(
+        /Project-requiring modes are unavailable without a project/,
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-base")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-start-capability")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Choose persona" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-capability"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Choose persona" }),
+    ).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     expect(screen.getByTestId("agents-start-mode-edit")).toBeDisabled();
@@ -324,12 +385,16 @@ describe("AgentsView start conversation", () => {
     await userEvent.keyboard("{Escape}");
 
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.queryByRole("button", { name: "Add folder" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Add folder" }),
+    ).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "/" },
     });
-    expect(screen.queryByTestId("agent-composer-command-menu")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-command-menu"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the zero-project picker disabled when standalone is flag-off", async () => {
@@ -338,7 +403,9 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     expect(await screen.findByTestId("agents-start-project")).toBeDisabled();
-    expect(screen.queryByTestId("agents-start-project-standalone")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-project-standalone"),
+    ).not.toBeInTheDocument();
   });
 
   it("prefills and consumes an explicit start draft ahead of the saved default", async () => {
@@ -398,12 +465,16 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
-        "replace ideation command with agent composer"
-      )
+        "replace ideation command with agent composer",
+      ),
     );
-    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Agent");
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent(
+      "Agent",
+    );
     expect(
-      screen.getByTestId("agent-composer-reference-pill-integration:clickup:TASK-123")
+      screen.getByTestId(
+        "agent-composer-reference-pill-integration:clickup:TASK-123",
+      ),
     ).toHaveTextContent("Demo task");
     const planReferencePill = screen.getByTestId(
       "agent-composer-reference-pill-artifact:plan:plan-artifact-1",
@@ -430,13 +501,17 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Automation")
+      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent(
+        "Automation",
+      ),
     );
     expect(screen.getByTestId("agents-start-textarea")).toHaveAttribute(
       "placeholder",
       "Describe your goal for the new automation",
     );
-    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Setup Automation");
+    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent(
+      "Setup Automation",
+    );
     expect(createAutomationDraftMock).not.toHaveBeenCalled();
     expect(startAgentConversationMock).not.toHaveBeenCalled();
   });
@@ -461,10 +536,12 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
-        "continue this draft"
-      )
+        "continue this draft",
+      ),
     );
-    expect(screen.getByTestId("chat-attachment-gallery")).toHaveTextContent("notes.md");
+    expect(screen.getByTestId("chat-attachment-gallery")).toHaveTextContent(
+      "notes.md",
+    );
   });
 
   it("restores a persisted selected conversation even when it is outside the first sidebar page", async () => {
@@ -504,10 +581,12 @@ describe("AgentsView start conversation", () => {
 
     renderAgentsView();
 
-    expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-session-conversation-restored")).toHaveTextContent(
-      "Older restored agent"
-    );
+    expect(
+      await screen.findByTestId("integrated-chat-panel"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-session-conversation-restored"),
+    ).toHaveTextContent("Older restored agent");
   });
 
   it("deselects a clicked sidebar conversation on second click and shows the starter", async () => {
@@ -556,23 +635,27 @@ describe("AgentsView start conversation", () => {
 
     renderAgentsView();
 
-    const clickedRow = await screen.findByTestId("agents-session-conversation-older");
+    const clickedRow = await screen.findByTestId(
+      "agents-session-conversation-older",
+    );
     const clickedButton = clickedRow.querySelector("button");
     expect(clickedButton).not.toBeNull();
     fireEvent.click(clickedButton as HTMLButtonElement);
 
     await waitFor(() =>
       expect(useAgentSessionStore.getState().selectedConversationId).toBe(
-        clickedConversation.id
-      )
+        clickedConversation.id,
+      ),
     );
     expect(clickedButton).toHaveAttribute("aria-current", "true");
-    expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-start-composer"),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(clickedButton);
 
     await waitFor(() =>
-      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull()
+      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull(),
     );
     expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument();
   });
@@ -616,7 +699,7 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
     );
     const file = new File(["draft"], "starter-draft.txt", {
       type: "text/plain",
@@ -629,21 +712,25 @@ describe("AgentsView start conversation", () => {
     });
     expect(screen.getByText("starter-draft.txt")).toBeInTheDocument();
 
-    const row = await screen.findByTestId("agents-session-conversation-existing");
+    const row = await screen.findByTestId(
+      "agents-session-conversation-existing",
+    );
     const button = row.querySelector("button");
     expect(button).not.toBeNull();
     fireEvent.click(button as HTMLButtonElement);
     await waitFor(() =>
-      expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument()
+      expect(
+        screen.queryByTestId("agents-start-composer"),
+      ).not.toBeInTheDocument(),
     );
 
     fireEvent.click(button as HTMLButtonElement);
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
     );
 
     expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
-      "keep this starter draft"
+      "keep this starter draft",
     );
     expect(screen.getByText("starter-draft.txt")).toBeInTheDocument();
   });
@@ -673,12 +760,12 @@ describe("AgentsView start conversation", () => {
             ref: "main",
             branchMode: "isolated",
           }),
-        })
-      )
+        }),
+      ),
     );
     expect(createConversationMock).not.toHaveBeenCalled();
     expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
-      "conversationId"
+      "conversationId",
     );
     expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
       "personaId",
@@ -687,26 +774,34 @@ describe("AgentsView start conversation", () => {
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-2",
         "fix agent landing flow",
-        "codex"
-      )
+        "codex",
+      ),
     );
     await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument(),
     );
-    expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agents-conversation-workspace-line")).toHaveTextContent(
-      "agent-conversation-2"
-    );
-    expect(useAgentSessionStore.getState().selectedConversationId).toBe("conversation-2");
     expect(
-      useAgentSessionStore.getState().artifactByConversationId["conversation-2"]
+      screen.queryByTestId("agents-start-composer"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-conversation-workspace-line"),
+    ).toHaveTextContent("agent-conversation-2");
+    expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+      "conversation-2",
+    );
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId[
+        "conversation-2"
+      ],
     ).toEqual(
       expect.objectContaining({
         isOpen: false,
         activeTab: "plan",
-      })
+      }),
     );
-    expect(queryClient.getQueryData(["chat", "conversations", "conversation-2"])).toEqual({
+    expect(
+      queryClient.getQueryData(["chat", "conversations", "conversation-2"]),
+    ).toEqual({
       conversation: expect.objectContaining({ id: "conversation-2" }),
       messages: [
         expect.objectContaining({
@@ -717,12 +812,16 @@ describe("AgentsView start conversation", () => {
       ],
     });
     expect(
-      queryClient.getQueryData(["agents", "conversation-workspace", "conversation-2"])
+      queryClient.getQueryData([
+        "agents",
+        "conversation-workspace",
+        "conversation-2",
+      ]),
     ).toEqual(expect.objectContaining({ conversationId: "conversation-2" }));
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         queryKey: ["agents", "project-conversations", "project-1"],
-      })
+      }),
     );
     invalidateSpy.mockRestore();
   });
@@ -762,10 +861,16 @@ describe("AgentsView start conversation", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Choose persona" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Choose persona" }),
+      ).toBeInTheDocument(),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Choose persona" }));
-    await userEvent.click(screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Choose persona" }),
+    );
+    await userEvent.click(
+      screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "Review the current changes" },
     });
@@ -789,16 +894,18 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
-        "opus",
-      ),
+      expect(
+        screen.getByTestId("agent-composer-runtime-pill"),
+      ).toHaveTextContent("opus"),
     );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "use the current role default" },
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledOnce(),
+    );
     const startInput = startAgentConversationMock.mock.calls[0]?.[0];
     expect(startInput).not.toHaveProperty("providerHarness");
     expect(startInput).not.toHaveProperty("modelId");
@@ -834,7 +941,9 @@ describe("AgentsView start conversation", () => {
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledOnce(),
+    );
     expect(startAgentConversationMock).toHaveBeenCalledWith(
       expect.objectContaining({
         providerHarness: "codex",
@@ -867,21 +976,25 @@ describe("AgentsView start conversation", () => {
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     await userEvent.click(screen.getByTestId("agents-start-mode-plan"));
     await waitFor(() =>
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
-        "gpt-5.5",
-      ),
+      expect(
+        screen.getByTestId("agent-composer-runtime-pill"),
+      ).toHaveTextContent("gpt-5.5"),
     );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "plan with the plan role default" },
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledOnce(),
+    );
     const startInput = startAgentConversationMock.mock.calls[0]?.[0];
     expect(startInput).not.toHaveProperty("providerHarness");
     expect(startInput).not.toHaveProperty("modelId");
     expect(startInput).not.toHaveProperty("logicalEffort");
-    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).not.toEqual({
+    expect(
+      useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+    ).not.toEqual({
       provider: "claude",
       modelId: "opus",
       effort: "high",
@@ -941,7 +1054,9 @@ describe("AgentsView start conversation", () => {
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
     expect(startAgentConversationMock).not.toHaveBeenCalled();
-    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+    expect(
+      useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+    ).toEqual({
       provider: "claude",
       modelId: "opus",
       effort: "high",
@@ -949,11 +1064,15 @@ describe("AgentsView start conversation", () => {
 
     resolveRefetch?.(roleDefault);
     await waitFor(() =>
-      expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toBeUndefined(),
+      expect(
+        useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+      ).toBeUndefined(),
     );
 
     fireEvent.click(screen.getByTestId("agents-start-submit"));
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledOnce(),
+    );
     const startInput = startAgentConversationMock.mock.calls[0]?.[0];
     expect(startInput).not.toHaveProperty("providerHarness");
     expect(startInput).not.toHaveProperty("modelId");
@@ -1007,7 +1126,9 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(screen.getByText("role default unavailable")).toBeInTheDocument(),
     );
-    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+    expect(
+      useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+    ).toEqual({
       provider: "claude",
       modelId: "opus",
       effort: "high",
@@ -1018,7 +1139,9 @@ describe("AgentsView start conversation", () => {
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledOnce(),
+    );
     expect(startAgentConversationMock).toHaveBeenCalledWith(
       expect.objectContaining({
         providerHarness: "claude",
@@ -1047,7 +1170,9 @@ describe("AgentsView start conversation", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument(),
+      expect(
+        screen.getByTestId("agent-composer-runtime-pill"),
+      ).toBeInTheDocument(),
     );
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
     await userEvent.click(
@@ -1084,17 +1209,19 @@ describe("AgentsView start conversation", () => {
       expect(loadPullRequestBaseOptionsMock).toHaveBeenCalledWith({
         projectId: "project-1",
         query: "",
-      })
+      }),
     );
     const prOption = await screen.findByText("#42 Add PR picker");
     const prOptionButton = prOption.closest("button");
     expect(prOptionButton).not.toBeNull();
     await user.click(prOptionButton as HTMLButtonElement);
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "#42 Add PR picker",
+      ),
     );
     expect(
-      screen.getByRole("switch", { name: /Use isolated branch/i })
+      screen.getByRole("switch", { name: /Use isolated branch/i }),
     ).toHaveAttribute("aria-checked", "true");
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "review this PR" },
@@ -1118,8 +1245,8 @@ describe("AgentsView start conversation", () => {
               headRefOid: "abc123",
             }),
           }),
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -1135,7 +1262,9 @@ describe("AgentsView start conversation", () => {
     const prOption = await screen.findByText("#42 Add PR picker");
     await user.click(prOption.closest("button") as HTMLButtonElement);
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "#42 Add PR picker",
+      ),
     );
 
     const isolatedSwitch = screen.getByRole("switch", {
@@ -1163,8 +1292,8 @@ describe("AgentsView start conversation", () => {
               headRefName: "feature/pr-picker",
             }),
           }),
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -1175,8 +1304,8 @@ describe("AgentsView start conversation", () => {
     startAgentConversationMock
       .mockRejectedValueOnce(
         new Error(
-          `${LINKED_SETUP_FAILURE_MARKER} Selected branch 'feature/pr-picker' is already checked out; choose isolated branch mode`
-        )
+          `${LINKED_SETUP_FAILURE_MARKER} Selected branch 'feature/pr-picker' is already checked out; choose isolated branch mode`,
+        ),
       )
       .mockResolvedValueOnce({
         conversation: conversation({
@@ -1214,7 +1343,9 @@ describe("AgentsView start conversation", () => {
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledTimes(1),
+    );
     expect(createConversationMock).not.toHaveBeenCalled();
     const linkedPayload = startAgentConversationMock.mock.calls[0]?.[0];
     expect(linkedPayload).not.toHaveProperty("conversationId");
@@ -1229,31 +1360,39 @@ describe("AgentsView start conversation", () => {
             headRefName: "feature/pr-picker",
           }),
         }),
-      })
+      }),
     );
     await waitFor(() =>
       expect(useAgentSessionStore.getState().startConversationFailure).toEqual(
         expect.objectContaining({
           kind: "linked_setup",
           message: expect.stringContaining("feature/pr-picker"),
-        })
-      )
+        }),
+      ),
     );
     await waitFor(() =>
-      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull()
+      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull(),
     );
 
-    const linkedError = await screen.findByTestId("agents-start-linked-setup-error");
+    const linkedError = await screen.findByTestId(
+      "agents-start-linked-setup-error",
+    );
     expect(linkedError).toHaveTextContent("Linked branch setup failed");
-    expect(linkedError).toHaveTextContent("Selected branch 'feature/pr-picker'");
-    expect(linkedError).toHaveTextContent("Branch isolation creates a separate RalphX branch");
+    expect(linkedError).toHaveTextContent(
+      "Selected branch 'feature/pr-picker'",
+    );
+    expect(linkedError).toHaveTextContent(
+      "Branch isolation creates a separate RalphX branch",
+    );
     expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
-      "review this PR directly"
+      "review this PR directly",
     );
 
     await user.click(screen.getByTestId("agents-start-linked-setup-retry"));
 
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledTimes(2),
+    );
     const retryPayload = startAgentConversationMock.mock.calls[1]?.[0];
     expect(retryPayload).not.toHaveProperty("conversationId");
     expect(retryPayload).toEqual(
@@ -1267,12 +1406,12 @@ describe("AgentsView start conversation", () => {
             headRefName: "feature/pr-picker",
           }),
         }),
-      })
+      }),
     );
     await waitFor(() =>
       expect(useAgentSessionStore.getState().selectedConversationId).toBe(
-        "conversation-linked-retry"
-      )
+        "conversation-linked-retry",
+      ),
     );
   });
 
@@ -1294,7 +1433,9 @@ describe("AgentsView start conversation", () => {
     const recovery = await screen.findByTestId("agents-start-mcp-setup-error");
     expect(recovery).toHaveTextContent("MCP setup needs attention");
     expect(recovery).not.toHaveTextContent("claude mcp remove");
-    expect(screen.getByTestId("agents-start-textarea")).toHaveValue("keep this draft");
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this draft",
+    );
     expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
     expect(useAgentSessionStore.getState().startConversationFailure).toEqual(
       expect.objectContaining({ kind: "mcp_setup", serverId: "ralphx" }),
@@ -1344,7 +1485,9 @@ describe("AgentsView start conversation", () => {
         },
       ),
     );
-    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledTimes(2),
+    );
     expect(startAgentConversationMock.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({ content: "keep this cleanup draft" }),
     );
@@ -1354,7 +1497,9 @@ describe("AgentsView start conversation", () => {
 
   it("snapshots files and folders before MCP cleanup, gates Send, and replays those references once", async () => {
     const user = userEvent.setup();
-    const file = new File(["same bytes"], "recovery.txt", { type: "text/plain" });
+    const file = new File(["same bytes"], "recovery.txt", {
+      type: "text/plain",
+    });
     const folder = {
       id: "folder-recovery",
       folderPath: "/work/recovery",
@@ -1375,7 +1520,11 @@ describe("AgentsView start conversation", () => {
       <AgentsStartComposer
         projects={[project]}
         defaultProjectId={project.id}
-        defaultRuntime={{ provider: "codex", modelId: "gpt-5.5", effort: "xhigh" }}
+        defaultRuntime={{
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        }}
         isLoadingProjects={false}
         isSubmitting={false}
         modelRegistry={{
@@ -1409,7 +1558,9 @@ describe("AgentsView start conversation", () => {
         }),
     );
     await user.click(screen.getByRole("button", { name: "Retry cleanup" }));
-    expect(screen.getByRole("button", { name: "Retrying cleanup…" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Retrying cleanup…" }),
+    ).toBeDisabled();
     expect(screen.getByTestId("agents-start-submit")).toBeDisabled();
     fireEvent.click(screen.getByTestId("agents-start-submit"));
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -1447,9 +1598,9 @@ describe("AgentsView start conversation", () => {
         expect.anything(),
       ),
     );
-    expect(screen.getByTestId("agents-start-mcp-setup-error")).toHaveTextContent(
-      "Retry cleanup",
-    );
+    expect(
+      screen.getByTestId("agents-start-mcp-setup-error"),
+    ).toHaveTextContent("Retry cleanup");
     expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
       "keep this failed cleanup draft",
     );
@@ -1502,8 +1653,8 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
-        "Current branch (feature/current)"
-      )
+        "Current branch (feature/current)",
+      ),
     );
     await userEvent.click(screen.getByTestId("agents-start-base"));
     const isolatedSwitch = screen.getByRole("switch", {
@@ -1526,8 +1677,8 @@ describe("AgentsView start conversation", () => {
             branchMode: "isolated",
             ref: "feature/current",
           }),
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -1579,8 +1730,8 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
-        "Project default (main)"
-      )
+        "Project default (main)",
+      ),
     );
     expect(getTicketAssociationsMock).not.toHaveBeenCalled();
 
@@ -1605,8 +1756,8 @@ describe("AgentsView start conversation", () => {
               key: "RX-88",
             }),
           ],
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -1666,7 +1817,9 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("develop")
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "develop",
+      ),
     );
     expect(getTicketAssociationsMock).not.toHaveBeenCalled();
 
@@ -1692,8 +1845,8 @@ describe("AgentsView start conversation", () => {
               key: "ENG-99",
             }),
           ],
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -1710,7 +1863,9 @@ describe("AgentsView start conversation", () => {
     await user.click(screen.getByRole("tab", { name: /PRs/i }));
     await user.click(await screen.findByText("#42 Add PR picker"));
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "#42 Add PR picker",
+      ),
     );
 
     const isolatedSwitch = screen.getByRole("switch", {
@@ -1738,8 +1893,8 @@ describe("AgentsView start conversation", () => {
               headRefName: "feature/pr-picker",
             }),
           }),
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -1753,16 +1908,18 @@ describe("AgentsView start conversation", () => {
     await user.click(screen.getByTestId("agents-start-mode-review_pr"));
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent(
-        "Review PR"
-      )
+        "Review PR",
+      ),
     );
     await user.type(
       screen.getByTestId("agents-start-textarea"),
-      "review without a PR"
+      "review without a PR",
     );
     await user.click(screen.getByTestId("agents-start-submit"));
 
-    expect(await screen.findByText("Select a pull request to review.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Select a pull request to review."),
+    ).toBeInTheDocument();
     expect(startAgentConversationMock).not.toHaveBeenCalled();
   });
 
@@ -1773,7 +1930,7 @@ describe("AgentsView start conversation", () => {
     loadPullRequestBaseOptionsMock.mockImplementation(() => {
       pullRequestSearches += 1;
       return Promise.resolve(
-        pullRequestSearches === 1 ? [prPickerBranchOption()] : []
+        pullRequestSearches === 1 ? [prPickerBranchOption()] : [],
       );
     });
 
@@ -1783,10 +1940,15 @@ describe("AgentsView start conversation", () => {
     await user.click(screen.getByRole("tab", { name: /PRs/i }));
     await user.click(await screen.findByText("#42 Add PR picker"));
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "#42 Add PR picker",
+      ),
     );
 
-    await user.type(screen.getByPlaceholderText(/Search pull requests/i), "missing");
+    await user.type(
+      screen.getByPlaceholderText(/Search pull requests/i),
+      "missing",
+    );
 
     await waitFor(() => expect(pullRequestSearches).toBe(2));
     expect(screen.getAllByText("#42 Add PR picker").length).toBeGreaterThan(1);
@@ -1796,7 +1958,7 @@ describe("AgentsView start conversation", () => {
     const user = userEvent.setup();
     mockAgentViewData();
     loadPullRequestBaseOptionsMock.mockRejectedValue(
-      new Error("GitHub search failed")
+      new Error("GitHub search failed"),
     );
 
     renderAgentsView();
@@ -1815,12 +1977,14 @@ describe("AgentsView start conversation", () => {
       title: null,
     });
     let resolveStart:
-      | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
+      | ((
+          value: Awaited<ReturnType<typeof startAgentConversationMock>>,
+        ) => void)
       | null = null;
     startAgentConversationMock.mockReturnValue(
       new Promise((resolve) => {
         resolveStart = resolve;
-      })
+      }),
     );
 
     const { queryClient } = renderAgentsView();
@@ -1831,7 +1995,7 @@ describe("AgentsView start conversation", () => {
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument(),
     );
     const optimisticConversationId =
       useAgentSessionStore.getState().selectedConversationId;
@@ -1844,10 +2008,14 @@ describe("AgentsView start conversation", () => {
         sendOptions: expect.objectContaining({
           conversationId: optimisticConversationId,
         }),
-      })
+      }),
     );
     expect(
-      queryClient.getQueryData(["chat", "conversations", optimisticConversationId])
+      queryClient.getQueryData([
+        "chat",
+        "conversations",
+        optimisticConversationId,
+      ]),
     ).toEqual({
       conversation: expect.objectContaining({
         id: optimisticConversationId,
@@ -1866,12 +2034,12 @@ describe("AgentsView start conversation", () => {
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
           content: "start without waiting",
-        })
-      )
+        }),
+      ),
     );
     expect(createConversationMock).not.toHaveBeenCalled();
     expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
-      "conversationId"
+      "conversationId",
     );
 
     resolveStart?.({
@@ -1891,8 +2059,8 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(useAgentSessionStore.getState().selectedConversationId).toBe(
-        "conversation-resolved-no-file"
-      )
+        "conversation-resolved-no-file",
+      ),
     );
   });
 
@@ -1923,11 +2091,13 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-paused-banner")).toHaveTextContent(
-        "Execution is paused"
-      )
+      expect(
+        screen.getByTestId("agents-start-paused-banner"),
+      ).toHaveTextContent("Execution is paused"),
     );
-    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Queue Prompt");
+    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent(
+      "Queue Prompt",
+    );
 
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: queuedPrompt },
@@ -1938,29 +2108,35 @@ describe("AgentsView start conversation", () => {
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
           content: queuedPrompt,
-        })
-      )
+        }),
+      ),
     );
     expect(createConversationMock).not.toHaveBeenCalled();
     expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
-      "conversationId"
+      "conversationId",
     );
     await waitFor(() =>
-      expect(useChatStore.getState().queuedMessages["project:conversation-paused"]).toEqual([
+      expect(
+        useChatStore.getState().queuedMessages["project:conversation-paused"],
+      ).toEqual([
         expect.objectContaining({
           id: "queued-paused-start",
           content: queuedPrompt,
           isEditing: false,
         }),
-      ])
+      ]),
     );
 
-    const queuedEmptyState = await screen.findByTestId("agents-paused-queued-empty-state");
+    const queuedEmptyState = await screen.findByTestId(
+      "agents-paused-queued-empty-state",
+    );
     expect(queuedEmptyState).toHaveTextContent("Execution is paused");
     expect(queuedEmptyState).toHaveTextContent(
-      "This prompt will start when execution resumes."
+      "This prompt will start when execution resumes.",
     );
-    const queuedPromptPreview = screen.getByTestId("agents-paused-queued-prompt");
+    const queuedPromptPreview = screen.getByTestId(
+      "agents-paused-queued-prompt",
+    );
     expect(queuedPromptPreview).not.toHaveTextContent(queuedPrompt);
     expect(queuedPromptPreview.textContent).toMatch(/^build queued feature/);
     expect(queuedPromptPreview.textContent).toMatch(/\.\.\.$/);
@@ -1991,8 +2167,8 @@ describe("AgentsView start conversation", () => {
           providerHarness: "claude",
           modelId: "opus",
           logicalEffort: "high",
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -2004,7 +2180,14 @@ describe("AgentsView start conversation", () => {
         providers: [
           {
             ...baseSettings.providers[0]!,
-            supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            supportedEfforts: [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra",
+            ],
             supportedModelAliases: ["gpt-5.6-terra"],
           },
           baseSettings.providers[1]!,
@@ -2034,8 +2217,8 @@ describe("AgentsView start conversation", () => {
           providerHarness: "codex",
           modelId: "gpt-5.6-terra",
           logicalEffort: "ultra",
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -2054,11 +2237,13 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
-        "gpt-5.5"
-      )
+      expect(
+        screen.getByTestId("agent-composer-runtime-pill"),
+      ).toHaveTextContent("gpt-5.5"),
     );
-    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+    expect(
+      useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+    ).toEqual({
       provider: "codex",
       modelId: "gpt-5.6-terra",
       effort: "ultra",
@@ -2108,7 +2293,7 @@ describe("AgentsView start conversation", () => {
           setOptimisticWorkspacesByConversationId: vi.fn(),
           setRuntimeForConversation: vi.fn(),
         }),
-      { wrapper }
+      { wrapper },
     );
 
     await result.current({
@@ -2133,7 +2318,7 @@ describe("AgentsView start conversation", () => {
         providerHarness: "codex",
         modelId: "gpt-5.5",
         logicalEffort: "xhigh",
-      })
+      }),
     );
   });
 
@@ -2172,16 +2357,21 @@ describe("AgentsView start conversation", () => {
       const selectConversation = vi.fn();
       const handleAutoManagedTitle = vi.fn();
       const wrapper = ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
       );
       const { result } = renderHook(
         () =>
           useStartAgentConversation({
             handleAutoManagedTitle,
-            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            invalidateProjectConversations: vi
+              .fn()
+              .mockResolvedValue(undefined),
             queryClient,
             selectConversation,
-            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setActiveConversation:
+              useChatStore.getState().setActiveConversation,
             setFocusedProject: vi.fn(),
             setOptimisticConversationsById: vi.fn(),
             setOptimisticSelectedConversationId: vi.fn(),
@@ -2280,16 +2470,21 @@ describe("AgentsView start conversation", () => {
         throw new Error(`Unexpected command: ${command}`);
       });
       const wrapper = ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
       );
       const { result } = renderHook(
         () =>
           useStartAgentConversation({
             handleAutoManagedTitle: vi.fn(),
-            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            invalidateProjectConversations: vi
+              .fn()
+              .mockResolvedValue(undefined),
             queryClient,
             selectConversation: vi.fn(),
-            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setActiveConversation:
+              useChatStore.getState().setActiveConversation,
             setFocusedProject: vi.fn(),
             setOptimisticConversationsById: vi.fn(),
             setOptimisticSelectedConversationId: vi.fn(),
@@ -2371,16 +2566,21 @@ describe("AgentsView start conversation", () => {
         },
       });
       const wrapper = ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
       );
       const { result } = renderHook(
         () =>
           useStartAgentConversation({
             handleAutoManagedTitle: vi.fn(),
-            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            invalidateProjectConversations: vi
+              .fn()
+              .mockResolvedValue(undefined),
             queryClient,
             selectConversation: vi.fn(),
-            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setActiveConversation:
+              useChatStore.getState().setActiveConversation,
             setFocusedProject: vi.fn(),
             setOptimisticConversationsById: vi.fn(),
             setOptimisticSelectedConversationId: vi.fn(),
@@ -2438,8 +2638,8 @@ describe("AgentsView start conversation", () => {
           providerHarness: "codex",
           modelId: "gpt-5.5",
           logicalEffort: "xhigh",
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -2480,9 +2680,9 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
-        "sonnet",
-      )
+      expect(
+        screen.getByTestId("agent-composer-runtime-pill"),
+      ).toHaveTextContent("sonnet"),
     );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "use available provider" },
@@ -2495,8 +2695,8 @@ describe("AgentsView start conversation", () => {
           providerHarness: "claude",
           modelId: "sonnet",
           logicalEffort: "medium",
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -2523,10 +2723,14 @@ describe("AgentsView start conversation", () => {
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
     await user.click(screen.getByRole("button", { name: /^Provider,/ }));
-    await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+    await user.click(
+      screen.getByTestId("agent-composer-runtime-provider-claude"),
+    );
 
     expect(screen.getByText("Claude is not enabled")).toBeInTheDocument();
-    expect(screen.getByText("Enable this provider in settings to use its models.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Enable this provider in settings to use its models."),
+    ).toBeInTheDocument();
   });
 
   it("blocks new agent runs when no provider is enabled and validated", async () => {
@@ -2553,14 +2757,18 @@ describe("AgentsView start conversation", () => {
     });
 
     expect(screen.getByTestId("agents-start-submit")).toBeDisabled();
-    expect(screen.getByTestId("agents-start-provider-status")).toHaveTextContent(
-      "Enable in Settings.",
+    expect(
+      screen.getByTestId("agents-start-provider-status"),
+    ).toHaveTextContent("Enable in Settings.");
+    fireEvent.click(
+      screen.getByTestId("agents-start-provider-status-settings"),
     );
-    fireEvent.click(screen.getByTestId("agents-start-provider-status-settings"));
 
     expect(startAgentConversationMock).not.toHaveBeenCalled();
     expect(useUiStore.getState().activeModal).toBe("settings");
-    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
+    expect(useUiStore.getState().modalContext).toEqual({
+      section: "providers",
+    });
   });
 
   it("remembers runtime changes made on the starter composer before creating a conversation", async () => {
@@ -2570,18 +2778,22 @@ describe("AgentsView start conversation", () => {
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
     await userEvent.click(screen.getByRole("button", { name: /^Provider,/ }));
-    await userEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+    await userEvent.click(
+      screen.getByTestId("agent-composer-runtime-provider-claude"),
+    );
     await userEvent.click(screen.getByRole("button", { name: /^Model,/ }));
     await userEvent.click(screen.getByTestId("agents-start-model-opus"));
     await userEvent.click(screen.getByRole("button", { name: /^Effort,/ }));
     await userEvent.click(screen.getByTestId("agents-start-effort-max"));
 
     await waitFor(() =>
-      expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+      expect(
+        useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+      ).toEqual({
         provider: "claude",
         modelId: "opus",
         effort: "max",
-      })
+      }),
     );
 
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
@@ -2595,8 +2807,8 @@ describe("AgentsView start conversation", () => {
           providerHarness: "claude",
           modelId: "opus",
           logicalEffort: "max",
-        })
-      )
+        }),
+      ),
     );
   });
 
@@ -2616,7 +2828,9 @@ describe("AgentsView start conversation", () => {
     });
     useHarnessProvidersMock.mockImplementation(
       (options?: { refreshRuntime?: boolean }) => {
-        const settings = options?.refreshRuntime ? refreshedSettings : snapshotSettings;
+        const settings = options?.refreshRuntime
+          ? refreshedSettings
+          : snapshotSettings;
         return {
           settings,
           providers: settings.providers,
@@ -2629,22 +2843,30 @@ describe("AgentsView start conversation", () => {
           isUpdating: false,
           updateError: null,
         };
-      }
+      },
     );
 
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
     await user.click(screen.getByRole("button", { name: /^Provider,/ }));
-    await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+    await user.click(
+      screen.getByTestId("agent-composer-runtime-provider-claude"),
+    );
     await user.click(screen.getByRole("button", { name: /^Model,/ }));
 
-    expect(useHarnessProvidersMock).toHaveBeenCalledWith({ refreshRuntime: true });
-    expect(await screen.findByTestId("agents-start-model-fable")).toBeInTheDocument();
+    expect(useHarnessProvidersMock).toHaveBeenCalledWith({
+      refreshRuntime: true,
+    });
+    expect(
+      await screen.findByTestId("agents-start-model-fable"),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByTestId("agents-start-model-fable"));
 
-    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent("fable");
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+      "fable",
+    );
   });
 
   it("shows manage models link in the runtime selector popover", async () => {
@@ -2666,13 +2888,15 @@ describe("AgentsView start conversation", () => {
       title: null,
     });
     let resolveStart:
-      | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
+      | ((
+          value: Awaited<ReturnType<typeof startAgentConversationMock>>,
+        ) => void)
       | null = null;
     createConversationMock.mockResolvedValue(seededConversation);
     startAgentConversationMock.mockReturnValue(
       new Promise((resolve) => {
         resolveStart = resolve;
-      })
+      }),
     );
     vi.mocked(invoke).mockResolvedValue({ id: "attachment-seeded" });
 
@@ -2689,13 +2913,20 @@ describe("AgentsView start conversation", () => {
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
     await waitFor(() =>
-      expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+      expect(createConversationMock).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+      ),
     );
     await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument(),
     );
     expect(
-      queryClient.getQueryData(["chat", "conversations", "conversation-seeded"])
+      queryClient.getQueryData([
+        "chat",
+        "conversations",
+        "conversation-seeded",
+      ]),
     ).toEqual({
       conversation: expect.objectContaining({ id: "conversation-seeded" }),
       messages: [
@@ -2707,23 +2938,27 @@ describe("AgentsView start conversation", () => {
       ],
     });
     expect(
-      useChatStore.getState().agentStatus["project:conversation-seeded"]
+      useChatStore.getState().agentStatus["project:conversation-seeded"],
     ).toBe("generating");
     expect(
-      useChatStore.getState().isSending["project:conversation-seeded"]
+      useChatStore.getState().isSending["project:conversation-seeded"],
     ).toBe(true);
     expect(
-      useChatStore.getState().agentActivityLabels["project:conversation-seeded"]
+      useChatStore.getState().agentActivityLabels[
+        "project:conversation-seeded"
+      ],
     ).toBe("Setup workspace");
     expect(
-      useAgentSessionStore.getState().runtimeByConversationId["conversation-seeded"]
+      useAgentSessionStore.getState().runtimeByConversationId[
+        "conversation-seeded"
+      ],
     ).toEqual({
       provider: "codex",
       modelId: "gpt-5.5",
       effort: "xhigh",
     });
     expect(useAgentSessionStore.getState().selectedConversationId).toBe(
-      "conversation-seeded"
+      "conversation-seeded",
     );
     expect(integratedChatPanelRenderMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -2736,13 +2971,13 @@ describe("AgentsView start conversation", () => {
           modelId: "gpt-5.5",
           logicalEffort: "xhigh",
         }),
-      })
+      }),
     );
     expect(startAgentConversationMock).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: "conversation-seeded",
         content: "fix agent landing flow",
-      })
+      }),
     );
 
     resolveStart?.({
@@ -2764,21 +2999,23 @@ describe("AgentsView start conversation", () => {
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-seeded",
         "fix agent landing flow",
-        "codex"
-      )
+        "codex",
+      ),
     );
   });
 
   it("stores selected references on the seeded optimistic folder message", async () => {
     vi.mocked(invoke).mockImplementation((command, args) => {
       if (command === "add_conversation_folder_reference") {
-        const input = (args as {
-          input: {
-            conversationId: string;
-            folderPath: string;
-            displayName: string;
-          };
-        }).input;
+        const input = (
+          args as {
+            input: {
+              conversationId: string;
+              folderPath: string;
+              displayName: string;
+            };
+          }
+        ).input;
         return Promise.resolve({
           id: "folder-1",
           ...input,
@@ -2800,12 +3037,14 @@ describe("AgentsView start conversation", () => {
     });
     createConversationMock.mockResolvedValue(seededConversation);
     let resolveStart:
-      | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
+      | ((
+          value: Awaited<ReturnType<typeof startAgentConversationMock>>,
+        ) => void)
       | null = null;
     startAgentConversationMock.mockReturnValue(
       new Promise((resolve) => {
         resolveStart = resolve;
-      })
+      }),
     );
     const setOptimisticSelectedConversationId = vi.fn();
     const wrapper = ({ children }: { children: ReactNode }) => (
@@ -2825,7 +3064,7 @@ describe("AgentsView start conversation", () => {
           setOptimisticWorkspacesByConversationId: vi.fn(),
           setRuntimeForConversation: vi.fn(),
         }),
-      { wrapper }
+      { wrapper },
     );
 
     const startPromise = result.current({
@@ -2860,7 +3099,7 @@ describe("AgentsView start conversation", () => {
     });
 
     await waitFor(() =>
-      expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
+      expect(setOptimisticSelectedConversationId).toHaveBeenCalled(),
     );
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
@@ -2873,7 +3112,8 @@ describe("AgentsView start conversation", () => {
     );
     const optimisticMessage = queryClient.getQueryData<{
       messages: Array<{ metadata: string | null }>;
-    }>(["chat", "conversations", "conversation-seeded-references"])?.messages[0];
+    }>(["chat", "conversations", "conversation-seeded-references"])
+      ?.messages[0];
     expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
       composer_folder_references: [
         {
@@ -2965,7 +3205,7 @@ describe("AgentsView start conversation", () => {
           setRuntimeForConversation: vi.fn(),
           onJiraLinked,
         }),
-      { wrapper }
+      { wrapper },
     );
 
     await result.current({
@@ -3001,12 +3241,14 @@ describe("AgentsView start conversation", () => {
     });
     expect(onJiraLinked).toHaveBeenCalledWith("conversation-with-jira");
     expect(
-      useAgentSessionStore.getState().artifactByConversationId["conversation-with-jira"]
+      useAgentSessionStore.getState().artifactByConversationId[
+        "conversation-with-jira"
+      ],
     ).toEqual(
       expect.objectContaining({
         isOpen: true,
         activeTab: "jira",
-      })
+      }),
     );
   });
 
@@ -3057,7 +3299,7 @@ describe("AgentsView start conversation", () => {
           setRuntimeForConversation: vi.fn(),
           onLinearLinked,
         }),
-      { wrapper }
+      { wrapper },
     );
 
     await result.current({
@@ -3087,12 +3329,107 @@ describe("AgentsView start conversation", () => {
     });
     expect(onLinearLinked).toHaveBeenCalledWith("conversation-with-linear");
     expect(
-      useAgentSessionStore.getState().artifactByConversationId["conversation-with-linear"]
+      useAgentSessionStore.getState().artifactByConversationId[
+        "conversation-with-linear"
+      ],
     ).toEqual(
       expect.objectContaining({
         isOpen: true,
         activeTab: "linear",
-      })
+      }),
+    );
+  });
+
+  it("opens and invalidates the ClickUp tab after starting with a ClickUp reference", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const seededConversation = conversation({
+      id: "conversation-with-clickup",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-with-clickup",
+      }),
+      sendResult: {
+        conversationId: "conversation-with-clickup",
+        agentRunId: "run-with-clickup",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const onClickUpLinked = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+          onClickUpLinked,
+        }),
+      { wrapper },
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start with clickup",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "task-42",
+          key: "CU-42",
+          title: "Restore rich artifact details",
+        },
+      ],
+    });
+
+    expect(startWorkFromTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticketRef: { provider: "clickup", id: "task-42", key: "CU-42" },
+      }),
+    );
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: ticketingKeys.conversationTicket("conversation-with-clickup"),
+    });
+    expect(onClickUpLinked).toHaveBeenCalledWith("conversation-with-clickup");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId[
+        "conversation-with-clickup"
+      ],
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: true,
+        activeTab: "clickup",
+      }),
     );
   });
 
@@ -3109,7 +3446,9 @@ describe("AgentsView start conversation", () => {
       title: null,
     });
     createConversationMock.mockResolvedValue(seededConversation);
-    startAgentConversationMock.mockRejectedValue(new Error("backend unavailable"));
+    startAgentConversationMock.mockRejectedValue(
+      new Error("backend unavailable"),
+    );
     vi.mocked(invoke).mockResolvedValue({ id: "attachment-failed-start" });
     const wrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -3128,7 +3467,7 @@ describe("AgentsView start conversation", () => {
           setOptimisticWorkspacesByConversationId: vi.fn(),
           setRuntimeForConversation: vi.fn(),
         }),
-      { wrapper }
+      { wrapper },
     );
 
     await expect(
@@ -3143,7 +3482,7 @@ describe("AgentsView start conversation", () => {
         mode: "edit",
         base: null,
         files: [new File(["draft"], "draft.txt", { type: "text/plain" })],
-      })
+      }),
     ).rejects.toThrow("backend unavailable");
 
     expect(createConversationMock).toHaveBeenCalledWith("project", "project-1");
@@ -3157,16 +3496,22 @@ describe("AgentsView start conversation", () => {
       conversationId: "conversation-failed-start",
     });
     expect(
-      queryClient.getQueryData(["chat", "conversations", "conversation-failed-start"])
+      queryClient.getQueryData([
+        "chat",
+        "conversations",
+        "conversation-failed-start",
+      ]),
     ).toBeUndefined();
     expect(
-      useChatStore.getState().agentStatus["project:conversation-failed-start"]
+      useChatStore.getState().agentStatus["project:conversation-failed-start"],
     ).toBeUndefined();
     expect(
-      useChatStore.getState().isSending["project:conversation-failed-start"]
+      useChatStore.getState().isSending["project:conversation-failed-start"],
     ).toBeUndefined();
     expect(
-      useChatStore.getState().agentActivityLabels["project:conversation-failed-start"]
+      useChatStore.getState().agentActivityLabels[
+        "project:conversation-failed-start"
+      ],
     ).toBeUndefined();
   });
 
@@ -3185,7 +3530,9 @@ describe("AgentsView start conversation", () => {
       title: null,
     });
     createConversationMock.mockResolvedValue(seededConversation);
-    startAgentConversationMock.mockRejectedValue(new Error("start response was lost"));
+    startAgentConversationMock.mockRejectedValue(
+      new Error("start response was lost"),
+    );
     vi.mocked(invoke).mockImplementation((command) => {
       if (command === "upload_chat_attachment") {
         return Promise.resolve({ id: "attachment-survived-start" });
@@ -3267,7 +3614,7 @@ describe("AgentsView start conversation", () => {
         id: "conversation-seeded-remap",
         contextId: "project-1",
         title: null,
-      })
+      }),
     );
     startAgentConversationMock.mockResolvedValue({
       conversation: conversation({
@@ -3297,7 +3644,7 @@ describe("AgentsView start conversation", () => {
           typeof next === "function"
             ? next(optimisticSelectedConversationId)
             : next;
-      }
+      },
     );
     const { result } = renderHook(
       () =>
@@ -3313,7 +3660,7 @@ describe("AgentsView start conversation", () => {
           setOptimisticWorkspacesByConversationId: vi.fn(),
           setRuntimeForConversation: vi.fn(),
         }),
-      { wrapper }
+      { wrapper },
     );
 
     await result.current({
@@ -3330,18 +3677,26 @@ describe("AgentsView start conversation", () => {
     });
 
     expect(
-      useChatStore.getState().agentStatus["project:conversation-seeded-remap"]
+      useChatStore.getState().agentStatus["project:conversation-seeded-remap"],
     ).toBeUndefined();
     expect(
-      useChatStore.getState().isSending["project:conversation-seeded-remap"]
+      useChatStore.getState().isSending["project:conversation-seeded-remap"],
     ).toBeUndefined();
     expect(
-      useChatStore.getState().agentStatus["project:conversation-resolved-remap"]
+      useChatStore.getState().agentStatus[
+        "project:conversation-resolved-remap"
+      ],
     ).toBe("generating");
     expect(
-      queryClient.getQueryData(["chat", "conversations", "conversation-resolved-remap"])
+      queryClient.getQueryData([
+        "chat",
+        "conversations",
+        "conversation-resolved-remap",
+      ]),
     ).toEqual({
-      conversation: expect.objectContaining({ id: "conversation-resolved-remap" }),
+      conversation: expect.objectContaining({
+        id: "conversation-resolved-remap",
+      }),
       messages: [
         expect.objectContaining({
           conversationId: "conversation-resolved-remap",
@@ -3352,17 +3707,17 @@ describe("AgentsView start conversation", () => {
     });
     expect(
       queryClient.getQueryData(
-        chatKeys.conversationSummary("conversation-resolved-remap")
-      )
+        chatKeys.conversationSummary("conversation-resolved-remap"),
+      ),
     ).toEqual(expect.objectContaining({ id: "conversation-resolved-remap" }));
     expect(optimisticSelectedConversationId).toBe(
-      "conversation-resolved-remap"
+      "conversation-resolved-remap",
     );
     expect(handleAutoManagedTitle).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: "conversation-resolved-remap",
         content: "start then remap",
-      })
+      }),
     );
   });
 
@@ -3377,10 +3732,10 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
     );
     expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
-      "Project default (main)"
+      "Project default (main)",
     );
   });
 
@@ -3392,7 +3747,7 @@ describe("AgentsView start conversation", () => {
     loadBranchBaseOptionsMock.mockReturnValue(
       new Promise((resolve) => {
         resolveBranchOptions = resolve;
-      })
+      }),
     );
     resetAgentSessionState({
       branchBaseCacheByProjectId: {
@@ -3433,11 +3788,13 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
-    expect(screen.getByTestId("agents-start-base")).toHaveTextContent("feature/cached");
+    expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+      "feature/cached",
+    );
     expect(loadBranchBaseOptionsMock).not.toHaveBeenCalled();
     expect(listIdeationSessionsMock).not.toHaveBeenCalled();
     expect(listConversationsMock).not.toHaveBeenCalled();
@@ -3450,18 +3807,21 @@ describe("AgentsView start conversation", () => {
         expect.objectContaining({
           projectId: "project-1",
           workingDirectory: "/tmp/ralphx",
-        })
-      )
+        }),
+      ),
     );
     expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
     expect(screen.getAllByText("feature/cached").length).toBeGreaterThan(0);
 
     await userEvent.click(screen.getByText("Project default (main)"));
     expect(
-      useAgentSessionStore.getState().lastBranchBaseSelectionByProjectId["project-1"]
+      useAgentSessionStore.getState().lastBranchBaseSelectionByProjectId[
+        "project-1"
+      ],
     ).toBe("project_default:main");
     expect(
-      useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]?.selectedKey
+      useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]
+        ?.selectedKey,
     ).toBe("project_default:main");
 
     resolveBranchOptions?.({
@@ -3542,15 +3902,15 @@ describe("AgentsView start conversation", () => {
             kind: "project_default",
             ref: "main",
           }),
-        })
-      )
+        }),
+      ),
     );
     await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument(),
     );
-    expect(screen.getByTestId("agents-conversation-workspace-line")).toHaveTextContent(
-      "agent-conversation-chat"
-    );
+    expect(
+      screen.getByTestId("agents-conversation-workspace-line"),
+    ).toHaveTextContent("agent-conversation-chat");
   });
 
   it("starts automation mode from the selected current branch", async () => {
@@ -3653,7 +4013,9 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
-    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show more modes" }),
+    );
     await userEvent.click(screen.getByTestId("agents-start-mode-automation"));
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("get_start_composer_role_default", {
@@ -3675,7 +4037,7 @@ describe("AgentsView start conversation", () => {
           ref: "feature/automation-base",
           displayName: "Current branch (feature/automation-base)",
         },
-      })
+      }),
     );
     await waitFor(() =>
       expect(updateAutomationSetupMock).toHaveBeenCalledWith(
@@ -3695,15 +4057,15 @@ describe("AgentsView start conversation", () => {
           content: "set up a weekly dependency cleanup automation",
           conversationId: "automation-setup-conversation",
           mode: "automation",
-        })
-      )
+        }),
+      ),
     );
     const startInput = startAgentConversationMock.mock.calls[0]?.[0];
     expect(startInput).not.toHaveProperty("providerHarness");
     expect(startInput).not.toHaveProperty("modelId");
     expect(startInput).not.toHaveProperty("logicalEffort");
     await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument(),
     );
     expect(useAgentSessionStore.getState().selectedConversationId).toBe(
       "automation-setup-conversation",
@@ -3790,7 +4152,7 @@ describe("AgentsView start conversation", () => {
           ref: "main",
           displayName: "Project default (main)",
         },
-      })
+      }),
     );
   });
 
@@ -3819,20 +4181,24 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument(),
     );
     fireEvent.change(screen.getByLabelText("Message input"), {
       target: { value: "continue this run" },
     });
 
     expect(screen.getByTestId("agents-conversation-submit")).toBeDisabled();
-    expect(screen.getByTestId("agents-conversation-provider-status")).toHaveTextContent(
-      "Codex CLI not found",
+    expect(
+      screen.getByTestId("agents-conversation-provider-status"),
+    ).toHaveTextContent("Codex CLI not found");
+    fireEvent.click(
+      screen.getByTestId("agents-conversation-provider-status-settings"),
     );
-    fireEvent.click(screen.getByTestId("agents-conversation-provider-status-settings"));
 
     expect(useUiStore.getState().activeModal).toBe("settings");
-    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
+    expect(useUiStore.getState().modalContext).toEqual({
+      section: "providers",
+    });
   });
 
   it("archives the selected conversation, clears the active view, and refreshes archived counts", async () => {
@@ -3847,7 +4213,7 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument(),
     );
 
     await user.click(screen.getByRole("button", { name: "Session actions" }));
@@ -3857,17 +4223,24 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(archiveConversationMock).toHaveBeenCalledWith("conversation-1", {
         closePullRequest: false,
-      })
+      }),
     );
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
     );
-    expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("integrated-chat-panel"),
+    ).not.toBeInTheDocument();
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        queryKey: ["agents", "project-conversations", "project-1", "archived-count"],
+        queryKey: [
+          "agents",
+          "project-conversations",
+          "project-1",
+          "archived-count",
+        ],
         refetchType: "active",
-      })
+      }),
     );
 
     invalidateSpy.mockRestore();
@@ -3876,10 +4249,13 @@ describe("AgentsView start conversation", () => {
   it("uploads starter attachments against a seeded conversation before sending the first message", async () => {
     mockAgentViewData();
     createConversationMock.mockResolvedValue(
-      conversation({ id: "conversation-seeded", contextId: "project-1" })
+      conversation({ id: "conversation-seeded", contextId: "project-1" }),
     );
     startAgentConversationMock.mockResolvedValue({
-      conversation: conversation({ id: "conversation-seeded", contextId: "project-1" }),
+      conversation: conversation({
+        id: "conversation-seeded",
+        contextId: "project-1",
+      }),
       workspace: {
         conversationId: "conversation-seeded",
         projectId: "project-1",
@@ -3933,7 +4309,10 @@ describe("AgentsView start conversation", () => {
       fireEvent.click(screen.getByTestId("agents-start-submit"));
 
       await waitFor(() =>
-        expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+        expect(createConversationMock).toHaveBeenCalledWith(
+          "project",
+          "project-1",
+        ),
       );
       await waitFor(() =>
         expect(invoke).toHaveBeenCalledWith("upload_chat_attachment", {
@@ -3942,7 +4321,7 @@ describe("AgentsView start conversation", () => {
             fileName: "screenshot.png",
             mimeType: "image/png",
           }),
-        })
+        }),
       );
       await waitFor(() =>
         expect(startAgentConversationMock).toHaveBeenCalledWith(
@@ -3954,12 +4333,16 @@ describe("AgentsView start conversation", () => {
             modelId: "gpt-5.5",
             logicalEffort: "xhigh",
             mode: "edit",
-          })
-        )
+          }),
+        ),
       );
       await waitFor(() =>
         expect(
-          queryClient.getQueryData(["chat", "conversations", "conversation-seeded"])
+          queryClient.getQueryData([
+            "chat",
+            "conversations",
+            "conversation-seeded",
+          ]),
         ).toEqual({
           conversation: expect.objectContaining({ id: "conversation-seeded" }),
           messages: [
@@ -3977,7 +4360,7 @@ describe("AgentsView start conversation", () => {
               ],
             }),
           ],
-        })
+        }),
       );
       expect(createObjectURL).toHaveBeenCalledWith(file);
     } finally {
@@ -3990,9 +4373,15 @@ describe("AgentsView start conversation", () => {
 
   it("restores unsent starter composer folders from the draft store", async () => {
     mockAgentViewData();
-    useChatStore.getState().setComposerDraftFolders("agents:start", [
-      { id: "draft-folder-1", folderPath: "/work/design-notes", displayName: "design-notes" },
-    ]);
+    useChatStore
+      .getState()
+      .setComposerDraftFolders("agents:start", [
+        {
+          id: "draft-folder-1",
+          folderPath: "/work/design-notes",
+          displayName: "design-notes",
+        },
+      ]);
 
     const { queryClient } = renderAgentsView();
     queryClient.setQueryData(
@@ -4007,20 +4396,30 @@ describe("AgentsView start conversation", () => {
     ).toHaveTextContent("design-notes");
 
     await userEvent.click(screen.getByTestId("agents-start-project"));
-    await userEvent.click(screen.getByTestId("agents-start-project-standalone"));
-    expect(screen.getByTestId("draft-folder-reference-chips")).toHaveTextContent(
-      "design-notes",
+    await userEvent.click(
+      screen.getByTestId("agents-start-project-standalone"),
     );
+    expect(
+      screen.getByTestId("draft-folder-reference-chips"),
+    ).toHaveTextContent("design-notes");
   });
 
   it("registers a pre-send picked folder against the seeded conversation before sending the first message", async () => {
     mockAgentViewData();
     createConversationMock.mockResolvedValue(
-      conversation({ id: "conversation-folder-seeded", contextId: "project-1" })
+      conversation({
+        id: "conversation-folder-seeded",
+        contextId: "project-1",
+      }),
     );
     startAgentConversationMock.mockResolvedValue({
-      conversation: conversation({ id: "conversation-folder-seeded", contextId: "project-1" }),
-      workspace: conversationWorkspace({ conversationId: "conversation-folder-seeded" }),
+      conversation: conversation({
+        id: "conversation-folder-seeded",
+        contextId: "project-1",
+      }),
+      workspace: conversationWorkspace({
+        conversationId: "conversation-folder-seeded",
+      }),
       sendResult: {
         conversationId: "conversation-folder-seeded",
         agentRunId: "run-folder-1",
@@ -4030,7 +4429,9 @@ describe("AgentsView start conversation", () => {
         queuedMessageId: null,
       },
     });
-    vi.mocked(openDialog).mockResolvedValue("/Users/test/projects/test-project");
+    vi.mocked(openDialog).mockResolvedValue(
+      "/Users/test/projects/test-project",
+    );
     vi.mocked(invoke).mockImplementation((cmd) => {
       if (cmd === "add_conversation_folder_reference") {
         return Promise.resolve({
@@ -4045,14 +4446,9 @@ describe("AgentsView start conversation", () => {
     });
 
     const { queryClient } = renderAgentsView();
-    queryClient.setQueryData(
-      FEATURE_FLAGS_QUERY_KEY,
-      enabledFeatureFlags(),
-    );
+    queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, enabledFeatureFlags());
 
-    fireEvent.click(
-      await screen.findByTestId("agent-composer-actions-menu"),
-    );
+    fireEvent.click(await screen.findByTestId("agent-composer-actions-menu"));
     fireEvent.click(screen.getByRole("button", { name: "Add folder" }));
 
     expect(await screen.findByText("test-project")).toBeInTheDocument();
@@ -4063,7 +4459,10 @@ describe("AgentsView start conversation", () => {
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
     await waitFor(() =>
-      expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+      expect(createConversationMock).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+      ),
     );
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("add_conversation_folder_reference", {
@@ -4072,16 +4471,15 @@ describe("AgentsView start conversation", () => {
           folderPath: "/Users/test/projects/test-project",
           displayName: "test-project",
         },
-      })
+      }),
     );
     await waitFor(() =>
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
           conversationId: "conversation-folder-seeded",
           content: "review this folder",
-        })
-      )
+        }),
+      ),
     );
   });
-
 });
