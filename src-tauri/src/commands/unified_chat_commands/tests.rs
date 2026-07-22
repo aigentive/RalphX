@@ -103,6 +103,7 @@ use crate::domain::services::{
     RunningAgentRegistry,
 };
 use crate::error::AppError;
+use crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use crate::tests::mock_github_service::MockGithubService;
 use async_trait::async_trait;
@@ -1474,6 +1475,10 @@ async fn publish_repair_message_routes_spawn_to_effective_target_worktree() {
     assert_eq!(options[0].model_override, None);
     assert_eq!(options[0].logical_effort_override, None);
     assert_eq!(
+        options[0].queue_policy,
+        crate::application::chat_service::SendQueuePolicy::RequireImmediateStart
+    );
+    assert_eq!(
         options[0].working_directory_override.as_deref(),
         Some(Path::new("/tmp/project-repo"))
     );
@@ -1718,6 +1723,94 @@ async fn fixable_update_failure_records_repair_send_failure() {
             && event.summary.contains("Failed to send base update failure")
             && event.classification.as_deref() == Some("operational")
     }));
+}
+
+#[tokio::test]
+async fn repair_request_event_failure_settles_without_dispatch() {
+    let mut state = AppState::new_test();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    state.agent_conversation_workspace_repo =
+        workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
+    let workspace = command_test_workspace();
+    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    workspace_repo.fail_next_matching_publication_event(
+        "repair_requested",
+        "started",
+        "repair request event unavailable",
+    );
+    let service = MockChatService::new();
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+    )
+    .await;
+
+    assert!(service.get_sent_messages().await.is_empty());
+    let settled = workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.pr_supervision_status.as_deref(), Some("blocked"));
+}
+
+#[tokio::test]
+async fn successful_dispatch_remains_completable_when_success_event_write_fails() {
+    let mut state = AppState::new_test();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    state.agent_conversation_workspace_repo =
+        workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
+    let workspace = command_test_workspace();
+    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    workspace_repo.fail_next_matching_publication_event(
+        "repair_sent",
+        "succeeded",
+        "repair success event unavailable",
+    );
+    let service = MockChatService::with_agent_run_repo(Arc::clone(&state.agent_run_repo));
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+    )
+    .await;
+
+    assert_eq!(service.get_sent_messages().await.len(), 1);
+    let current = workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion(
+        state.agent_conversation_workspace_repo,
+        state.agent_run_repo,
+        &current,
+    )
+    .await
+    .unwrap()
+    .is_some());
 }
 
 #[tokio::test]

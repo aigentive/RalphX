@@ -48,6 +48,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     next_publication_event_error: Mutex<Option<String>>,
     #[cfg(test)]
+    matching_publication_event_error: Mutex<Option<(String, String, String)>>,
+    #[cfg(test)]
     next_publication_update_error: Mutex<Option<String>>,
     #[cfg(test)]
     next_worktree_path_list_error: Mutex<Option<String>>,
@@ -73,6 +75,8 @@ impl MemoryAgentConversationWorkspaceRepository {
             #[cfg(test)]
             next_publication_event_error: Mutex::new(None),
             #[cfg(test)]
+            matching_publication_event_error: Mutex::new(None),
+            #[cfg(test)]
             next_publication_update_error: Mutex::new(None),
             #[cfg(test)]
             next_worktree_path_list_error: Mutex::new(None),
@@ -89,6 +93,17 @@ impl MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     pub fn fail_next_publication_event(&self, message: impl Into<String>) {
         *self.next_publication_event_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_matching_publication_event(
+        &self,
+        step: impl Into<String>,
+        status: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        *self.matching_publication_event_error.lock().unwrap() =
+            Some((step.into(), status.into(), message.into()));
     }
 
     #[cfg(test)]
@@ -751,6 +766,17 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         #[cfg(test)]
         if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
             return Err(AppError::Infrastructure(message));
+        }
+        #[cfg(test)]
+        {
+            let mut matching_error = self.matching_publication_event_error.lock().unwrap();
+            if matching_error
+                .as_ref()
+                .is_some_and(|(step, status, _)| step == &event.step && status == &event.status)
+            {
+                let (_, _, message) = matching_error.take().expect("matching event error");
+                return Err(AppError::Infrastructure(message));
+            }
         }
         self.publication_events
             .write()

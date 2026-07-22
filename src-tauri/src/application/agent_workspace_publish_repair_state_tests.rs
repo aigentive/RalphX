@@ -225,3 +225,74 @@ async fn stale_completion_claim_cannot_overwrite_a_failed_attempt() {
     assert_eq!(current.pr_supervision_status.as_deref(), Some("blocked"));
     assert_eq!(current.base_commit.as_deref(), Some("base"));
 }
+
+#[tokio::test]
+async fn completion_requires_dispatch_evidence_for_the_current_claim() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let conversation_id = ChatConversationId::from_string("repair-completion-current-claim");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .unwrap();
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "repair_sent",
+            "succeeded",
+            "Older repair dispatch",
+            Some("agent_fixable".to_string()),
+        ))
+        .await
+        .unwrap();
+
+    let claim = claim_agent_workspace_repair(
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &conversation_id,
+        "New repair claim",
+        None,
+    )
+    .await
+    .unwrap()
+    .expect("new claim");
+    let claimed_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(current_agent_workspace_repair_claim_for_completion(
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&run_repo) as Arc<dyn AgentRunRepository>,
+        &claimed_workspace,
+    )
+    .await
+    .unwrap()
+    .is_none());
+
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "repair_sent",
+            "succeeded",
+            "Current repair dispatch",
+            Some("agent_fixable".to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        current_agent_workspace_repair_claim_for_completion(
+            workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
+            run_repo as Arc<dyn AgentRunRepository>,
+            &claimed_workspace,
+        )
+        .await
+        .unwrap()
+        .expect("current dispatch authorizes completion"),
+        claim
+    );
+}

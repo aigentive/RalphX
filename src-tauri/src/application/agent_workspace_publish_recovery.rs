@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::application::agent_workspace_publish_repair_state::reconcile_active_agent_workspace_repair;
+use crate::application::agent_workspace_publish_repair_state::{
+    reconcile_active_agent_workspace_repair, settle_terminal_agent_workspace_repair,
+    terminal_run_authorizes_repair_recovery,
+};
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewTarget,
 };
@@ -17,8 +20,8 @@ use crate::error::AppResult;
 
 pub(super) const STALE_REPAIR_RECOVERED_STEP: &str = "stale_repair_recovered";
 pub(super) const STALE_NEEDS_AGENT_CLASSIFICATION: &str = "stale_needs_agent";
-pub(super) const STALE_PR_AUTOFIX_SUMMARY: &str =
-    "Recovered stale PR autofix state; no active fixer run is running.";
+pub(super) const STALE_REPAIR_BLOCKED_SUMMARY: &str =
+    "Recovered stale workspace repair state; no active repair run is running.";
 pub(super) const STALE_TRANSIENT_RECOVERED_STEP: &str = "stale_transient_recovered";
 pub(super) const STALE_TRANSIENT_CLASSIFICATION: &str = "stale_transient_status";
 pub const STALE_TRANSIENT_STATUS_STALE_SECS: u64 = 300;
@@ -236,6 +239,9 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
     let publication_events = workspace_repo
         .list_publication_events(&workspace.conversation_id)
         .await?;
+    if !terminal_run_authorizes_repair_recovery(&workspace, &publication_events, &latest_run) {
+        return Ok(false);
+    }
     let review_monitor = workspace_repo
         .get_workspace_review_monitor(&workspace.conversation_id)
         .await?;
@@ -253,24 +259,14 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
         return Ok(false);
     }
 
-    workspace_repo
-        .update_publication(
-            &workspace.conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            workspace.publication_pr_status.as_deref(),
-            Some("failed"),
-        )
-        .await?;
-    if workspace.pr_autofix_enabled {
-        workspace_repo
-            .update_pr_auto_merge_state(
-                &workspace.conversation_id,
-                workspace.pr_auto_merge_current,
-                Some("blocked"),
-                Some(STALE_PR_AUTOFIX_SUMMARY),
-            )
-            .await?;
+    if !settle_terminal_agent_workspace_repair(
+        Arc::clone(&workspace_repo),
+        &workspace,
+        STALE_REPAIR_BLOCKED_SUMMARY,
+    )
+    .await?
+    {
+        return Ok(false);
     }
     workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(

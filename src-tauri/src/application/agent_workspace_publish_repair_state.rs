@@ -4,7 +4,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRun,
-    ChatConversationId,
+    AgentRunId, ChatConversationId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairStateGuard,
@@ -15,11 +15,25 @@ use crate::error::AppResult;
 pub(crate) const REPAIR_REQUESTED_STEP: &str = "repair_requested";
 pub(crate) const REPAIR_DEFERRED_STEP: &str = "repair_deferred";
 pub(crate) const REPAIR_SENT_STEP: &str = "repair_sent";
+const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentWorkspaceRepairClaim {
     pub conversation_id: ChatConversationId,
     pub guard: AgentWorkspaceRepairStateGuard,
+}
+
+pub(crate) fn repair_run_event_classification(run_id: &AgentRunId) -> String {
+    format!("{REPAIR_RUN_CLASSIFICATION_PREFIX}{}", run_id.as_str())
+}
+
+fn repair_event_run_id(
+    event: &AgentConversationWorkspacePublicationEvent,
+) -> Option<&str> {
+    event
+        .classification
+        .as_deref()?
+        .strip_prefix(REPAIR_RUN_CLASSIFICATION_PREFIX)
 }
 
 fn next_transition_at(previous: Option<DateTime<Utc>>) -> DateTime<Utc> {
@@ -157,27 +171,103 @@ pub(crate) fn repair_event_authorizes_active_run(
     let Some(event) = latest_repair_event(events) else {
         return false;
     };
-    if event.created_at < active_run.started_at {
-        return false;
-    }
     match event.step.as_str() {
         REPAIR_REQUESTED_STEP | REPAIR_DEFERRED_STEP => {
-            matches!(event.status.as_str(), "started" | "succeeded")
+            event.created_at >= active_run.started_at
+                && matches!(event.status.as_str(), "started" | "succeeded")
         }
-        REPAIR_SENT_STEP => event.status == "succeeded",
+        REPAIR_SENT_STEP => {
+            if let Some(run_id) = repair_event_run_id(event) {
+                run_id == active_run.id.as_str()
+                    && matches!(event.status.as_str(), "started" | "succeeded")
+            } else {
+                event.status == "succeeded" && event.created_at >= active_run.started_at
+            }
+        }
         _ => false,
     }
+}
+
+fn repair_sent_event_authorizes_run(
+    event: &AgentConversationWorkspacePublicationEvent,
+    active_run: &AgentRun,
+    claim_started_at: DateTime<Utc>,
+) -> bool {
+    if event.step != REPAIR_SENT_STEP
+        || !matches!(event.status.as_str(), "started" | "succeeded")
+        || event.created_at < claim_started_at
+    {
+        return false;
+    }
+    if let Some(run_id) = repair_event_run_id(event) {
+        return run_id == active_run.id.as_str();
+    }
+
+    event.status == "succeeded" && event.created_at >= active_run.started_at
 }
 
 fn successful_send_authorizes_completion(
     events: &[AgentConversationWorkspacePublicationEvent],
     active_run: &AgentRun,
+    claim_started_at: DateTime<Utc>,
 ) -> bool {
-    latest_repair_event(events).is_some_and(|event| {
-        event.step == REPAIR_SENT_STEP
-            && event.status == "succeeded"
-            && event.created_at >= active_run.started_at
-    })
+    latest_repair_event(events)
+        .is_some_and(|event| repair_sent_event_authorizes_run(event, active_run, claim_started_at))
+}
+
+pub(crate) fn terminal_run_authorizes_repair_recovery(
+    workspace: &AgentConversationWorkspace,
+    events: &[AgentConversationWorkspacePublicationEvent],
+    terminal_run: &AgentRun,
+) -> bool {
+    let claim_started_at = workspace
+        .pr_supervision_updated_at
+        .unwrap_or(workspace.updated_at);
+    let Some(event) = latest_repair_event(events) else {
+        return terminal_run.started_at >= claim_started_at;
+    };
+    if event.created_at < claim_started_at {
+        return false;
+    }
+
+    match event.step.as_str() {
+        REPAIR_SENT_STEP => {
+            repair_sent_event_authorizes_run(event, terminal_run, claim_started_at)
+        }
+        REPAIR_REQUESTED_STEP => terminal_run.started_at >= event.created_at,
+        REPAIR_DEFERRED_STEP => {
+            terminal_run.started_at >= event.created_at
+                || terminal_run
+                    .completed_at
+                    .is_some_and(|completed_at| event.created_at <= completed_at)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) async fn settle_terminal_agent_workspace_repair(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    workspace: &AgentConversationWorkspace,
+    summary: &str,
+) -> AppResult<bool> {
+    if workspace.publication_push_status.as_deref() != Some("needs_agent") {
+        return Ok(false);
+    }
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some("failed".to_string()),
+        pr_supervision_status: Some("blocked".to_string()),
+        pr_supervision_summary: Some(summary.to_string()),
+        pr_supervision_updated_at: next_transition_at(workspace.pr_supervision_updated_at),
+        pr_auto_merge_current: None,
+        base_commit: None,
+    };
+    workspace_repo
+        .compare_and_set_repair_state(
+            &workspace.conversation_id,
+            &AgentWorkspaceRepairStateGuard::from_workspace(workspace),
+            &transition,
+        )
+        .await
 }
 
 pub(crate) async fn reconcile_active_agent_workspace_repair(
@@ -239,7 +329,10 @@ pub(crate) async fn current_agent_workspace_repair_claim_for_completion(
     let events = workspace_repo
         .list_publication_events(&workspace.conversation_id)
         .await?;
-    if !successful_send_authorizes_completion(&events, &active_run) {
+    let Some(claim_started_at) = workspace.pr_supervision_updated_at else {
+        return Ok(None);
+    };
+    if !successful_send_authorizes_completion(&events, &active_run, claim_started_at) {
         return Ok(None);
     }
     Ok(Some(AgentWorkspaceRepairClaim {

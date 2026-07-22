@@ -10,7 +10,7 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_and_reload,
     recover_stale_publish_repair_for_workspace_and_reload_with_review_target,
     recover_stale_publish_repair_for_workspace_in_state, recover_stale_transient_publish_statuses,
-    STALE_NEEDS_AGENT_CLASSIFICATION, STALE_PR_AUTOFIX_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
+    STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
 };
 use crate::application::agent_workspace_review::{
@@ -419,6 +419,7 @@ mod extracted_inline_tests {
             .expect("load workspace")
             .expect("workspace exists");
         assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("blocked"));
 
         let events = workspace_repo
             .list_publication_events(&workspace.conversation_id)
@@ -492,7 +493,7 @@ mod extracted_inline_tests {
         assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("blocked"));
         assert_eq!(
             refreshed.pr_supervision_summary.as_deref(),
-            Some(STALE_PR_AUTOFIX_SUMMARY)
+            Some(STALE_REPAIR_BLOCKED_SUMMARY)
         );
         assert_eq!(refreshed.pr_auto_merge_current, Some(true));
     }
@@ -585,9 +586,13 @@ mod extracted_inline_tests {
         workspace.publication_push_status = Some("failed".to_string());
 
         let recovered =
-            recover_stale_publish_repair_for_workspace(workspace_repo, agent_run_repo, workspace)
-                .await
-                .expect("check repair state");
+            recover_stale_publish_repair_for_workspace(
+                Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+                agent_run_repo,
+                workspace,
+            )
+            .await
+            .expect("check repair state");
 
         assert!(!recovered);
     }
@@ -600,10 +605,13 @@ mod extracted_inline_tests {
             ChatConversationId::from_string("55555555-5555-5555-5555-555555555555");
         let workspace = needs_agent_workspace(conversation_id);
 
-        let recovered =
-            recover_stale_publish_repair_for_workspace(workspace_repo, agent_run_repo, workspace)
-                .await
-                .expect("check repair state");
+        let recovered = recover_stale_publish_repair_for_workspace(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            agent_run_repo,
+            workspace,
+        )
+        .await
+        .expect("check repair state");
 
         assert!(!recovered);
     }
@@ -633,7 +641,7 @@ mod extracted_inline_tests {
     }
 
     #[tokio::test]
-    async fn recovers_terminal_run_that_finished_before_workspace_update() {
+    async fn does_not_recover_a_fresh_claim_from_an_older_terminal_run() {
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
         let conversation_id =
@@ -646,12 +654,80 @@ mod extracted_inline_tests {
         create_failed_run(&agent_run_repo, conversation_id).await;
         workspace.updated_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-        let recovered =
-            recover_stale_publish_repair_for_workspace(workspace_repo, agent_run_repo, workspace)
-                .await
-                .expect("check repair state");
+        let recovered = recover_stale_publish_repair_for_workspace(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            agent_run_repo,
+            workspace,
+        )
+        .await
+        .expect("check repair state");
 
-        assert!(recovered);
+        assert!(!recovered);
+        let current = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists");
+        assert_eq!(
+            current.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_recovery_snapshot_cannot_overwrite_newer_workspace_state() {
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+        let conversation_id =
+            ChatConversationId::from_string("99999999-9999-9999-9999-999999999999");
+        let workspace = needs_agent_workspace(conversation_id);
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+        create_failed_run(&agent_run_repo, conversation_id).await;
+        workspace_repo
+            .update_publication(
+                &conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                workspace.publication_pr_status.as_deref(),
+                Some("pushed"),
+            )
+            .await
+            .expect("persist newer publication state");
+        workspace_repo
+            .update_pr_auto_merge_state(
+                &conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("monitoring"),
+                Some("Newer state is authoritative"),
+            )
+            .await
+            .expect("persist newer supervision state");
+
+        let recovered = recover_stale_publish_repair_for_workspace(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            agent_run_repo,
+            workspace,
+        )
+        .await
+        .expect("stale recovery should be rejected");
+
+        assert!(!recovered);
+        let current = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists");
+        assert_eq!(current.publication_push_status.as_deref(), Some("pushed"));
+        assert_eq!(current.pr_supervision_status.as_deref(), Some("monitoring"));
+        assert!(workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|event| event.step != STALE_REPAIR_RECOVERED_STEP));
     }
 
     fn transient_workspace(

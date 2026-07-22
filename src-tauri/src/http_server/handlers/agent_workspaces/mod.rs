@@ -4300,7 +4300,9 @@ fn repair_queued_from_publication_events(
             "repair_requested" | "repair_deferred" | "repair_sent"
         )
     }) {
-        Some(event) if event.step == "repair_sent" => event.status == "succeeded",
+        Some(event) if event.step == "repair_sent" => {
+            matches!(event.status.as_str(), "started" | "succeeded")
+        }
         Some(event) => matches!(event.status.as_str(), "started" | "succeeded"),
         None => false,
     }
