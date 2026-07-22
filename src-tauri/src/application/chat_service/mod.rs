@@ -35,10 +35,14 @@ mod chat_service_types;
 mod continuation_runtime;
 mod conversation_launch_security;
 mod launch_reservation;
+#[cfg(test)]
+mod launch_reservation_tests;
 pub mod freshness_routing;
 mod streaming_state_cache;
 pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
+#[cfg(test)]
+mod verification_child_process_registry_tests;
 
 #[cfg(test)]
 mod continuation_runtime_tests;
@@ -332,6 +336,26 @@ fn registry_entry_blocks_send_because_run_inactive(
             .unwrap_or(i64::MAX);
             age >= chrono::Duration::seconds(grace)
         }
+    }
+}
+
+async fn cleanup_unattached_process_sidecars(
+    context_type: ChatContextType,
+    context_id: &str,
+    runtime_context_id: &str,
+    pid: Option<u32>,
+    interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    interactive_process_token: Option<InteractiveProcessToken>,
+    verification_child_registry: &verification_child_process_registry::VerificationChildProcessRegistry,
+) {
+    if let (Some(registry), Some(token)) =
+        (interactive_process_registry, interactive_process_token)
+    {
+        let key = InteractiveProcessKey::new(context_type.to_string(), runtime_context_id);
+        registry.remove_if_token(&key, token).await;
+    }
+    if let Some(pid) = pid {
+        verification_child_registry.remove_if_pid(context_id, pid);
     }
 }
 
@@ -6875,6 +6899,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let cancellation_token = CancellationToken::new();
         let Some(pid) = child.id() else {
             launch_reservation_guard.stop();
+            cleanup_unattached_process_sidecars(
+                context_type,
+                context_id,
+                &runtime_context_id,
+                None,
+                &interactive_process_registry,
+                interactive_process_token,
+                self.verification_child_registry.as_ref(),
+            )
+            .await;
             let _ = child.kill().await;
             let _ = child.wait().await;
             cleanup_and_err!(ChatServiceError::SpawnFailed(
@@ -6896,6 +6930,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         {
             Ok(AttachProcessResult::Attached) => {}
             Ok(AttachProcessResult::ClaimLost) => {
+                cleanup_unattached_process_sidecars(
+                    context_type,
+                    context_id,
+                    &runtime_context_id,
+                    Some(pid),
+                    &interactive_process_registry,
+                    interactive_process_token,
+                    self.verification_child_registry.as_ref(),
+                )
+                .await;
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 cleanup_and_err!(ChatServiceError::SpawnFailed(
@@ -6903,6 +6947,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 ));
             }
             Err(error) => {
+                cleanup_unattached_process_sidecars(
+                    context_type,
+                    context_id,
+                    &runtime_context_id,
+                    Some(pid),
+                    &interactive_process_registry,
+                    interactive_process_token,
+                    self.verification_child_registry.as_ref(),
+                )
+                .await;
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 cleanup_and_err!(ChatServiceError::RepositoryError(format!(

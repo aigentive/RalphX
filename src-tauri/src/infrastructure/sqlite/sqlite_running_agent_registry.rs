@@ -331,6 +331,57 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         Ok(info)
     }
 
+    async fn quiesce_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        let ctx_type = key.context_type.clone();
+        let ctx_id = key.context_id.clone();
+        let run_id = agent_run_id.to_string();
+        let info = self
+            .db
+            .run(move |conn| {
+                let info = match conn.query_row(
+                    "SELECT pid, conversation_id, agent_run_id, started_at, worktree_path, last_active_at, model FROM running_agents WHERE context_type = ?1 AND context_id = ?2 AND agent_run_id = ?3",
+                    rusqlite::params![&ctx_type, &ctx_id, &run_id],
+                    parse_running_agent_row,
+                ) {
+                    Ok(info) => info,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                };
+                let renewed_at = chrono::Utc::now().to_rfc3339();
+                let updated = conn.execute(
+                    "UPDATE running_agents SET pid = 0, last_active_at = ?4 WHERE context_type = ?1 AND context_id = ?2 AND agent_run_id = ?3",
+                    rusqlite::params![&ctx_type, &ctx_id, &run_id, renewed_at],
+                )?;
+                Ok((updated == 1).then_some(info))
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if let Some(ref info) = info {
+            let token = {
+                let mut tokens = self.tokens.lock().await;
+                if tokens
+                    .get(key)
+                    .is_some_and(|entry| entry.agent_run_id == agent_run_id)
+                {
+                    tokens.remove(key)
+                } else {
+                    None
+                }
+            };
+            if let Some(token) = token {
+                token.token.cancel();
+            }
+            kill_process(info.pid);
+        }
+
+        Ok(info)
+    }
+
     async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)> {
         let mut results = self
             .db

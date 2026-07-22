@@ -1094,3 +1094,44 @@ async fn test_rapid_restart_dedup_try_register_ideation() {
         "Slot is still the placeholder (no real process spawned yet)"
     );
 }
+
+#[tokio::test]
+async fn memory_quiesce_retains_exact_owner_until_cleanup_finishes() {
+    let registry = MemoryRunningAgentRegistry::new();
+    let key = RunningAgentKey::new("merge", "task-cleanup");
+    registry
+        .register(
+            key.clone(),
+            999_999,
+            "conversation".to_string(),
+            "run-owned".to_string(),
+            Some("/tmp/worktree".to_string()),
+            None,
+        )
+        .await;
+
+    assert!(registry
+        .quiesce_if_owned(&key, "run-stale")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(registry.get(&key).await.unwrap().pid, 999_999);
+
+    let owned = registry
+        .quiesce_if_owned(&key, "run-owned")
+        .await
+        .unwrap()
+        .expect("owner should quiesce");
+    assert_eq!(owned.agent_run_id, "run-owned");
+    assert_eq!(registry.get(&key).await.unwrap().pid, 0);
+    assert!(registry
+        .try_register(key.clone(), "replacement".into(), "run-new".into())
+        .await
+        .is_err());
+
+    registry.unregister(&key, "run-owned").await;
+    assert!(registry
+        .try_register(key, "replacement".into(), "run-new".into())
+        .await
+        .is_ok());
+}

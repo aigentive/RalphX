@@ -164,6 +164,16 @@ pub trait RunningAgentRegistry: Send + Sync {
         agent_run_id: &str,
     ) -> Result<Option<RunningAgentInfo>, String>;
 
+    /// Stop the owned process while retaining a `pid == 0` reservation.
+    ///
+    /// Cleanup callers use this to keep replacement launches excluded until
+    /// owner-derived side effects such as worktree cleanup are complete.
+    async fn quiesce_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String>;
+
     /// Get all running agents (for debugging/monitoring)
     async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)>;
 
@@ -225,13 +235,13 @@ pub trait RunningAgentRegistry: Send + Sync {
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, String>;
 
-    /// Update process details for an already-registered agent.
+    /// Attach process details to an already-registered launch reservation.
     ///
     /// Called after the CLI process has been spawned to fill in the real PID,
-    /// agent_run_id, worktree path, and cancellation token.
+    /// worktree path, and cancellation token while preserving exact run ownership.
     ///
-    /// If the placeholder row was pruned between `try_register` and this call
-    /// (TOCTOU race with GC), re-inserts the full registration via INSERT OR REPLACE.
+    /// If the reservation was removed or replaced between `try_register` and this
+    /// call, returns `AttachProcessResult::ClaimLost` and never recreates it.
     ///
     /// Returns `Err` only if the DB operation itself fails.
     async fn attach_process(
@@ -911,6 +921,33 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
         }
 
         Ok(info)
+    }
+
+    async fn quiesce_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        let info = {
+            let mut agents = self.agents.lock().await;
+            let Some(entry) = agents.get_mut(key) else {
+                return Ok(None);
+            };
+            if entry.agent_run_id != agent_run_id {
+                return Ok(None);
+            }
+            let info = entry.clone();
+            entry.pid = 0;
+            entry.cancellation_token = None;
+            entry.last_active_at = Some(chrono::Utc::now());
+            info
+        };
+
+        if let Some(token) = info.cancellation_token.as_ref() {
+            token.cancel();
+        }
+        self.process_ops.kill(info.pid);
+        Ok(Some(info))
     }
 
     async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)> {

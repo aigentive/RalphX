@@ -1615,12 +1615,26 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             );
             let queued_run_id = queued_run.id.as_str().to_string();
             if let Err(error) = agent_run_repo.create(queued_run).await {
+                let error_string =
+                    format!("Failed to persist queued continuation agent run: {error}");
                 tracing::warn!(
                     error = %error,
                     queued_run_id,
                     conversation_id = %conversation_id,
                     "[QUEUE] Failed to persist queued continuation agent run"
                 );
+                emit_queued_preflight_error(
+                    app_handle.as_ref(),
+                    &conversation_id,
+                    context_type,
+                    context_id,
+                    Some(queued_run_id.clone()),
+                    error_string,
+                );
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id: Some(queued_run_id),
+                };
             }
             let queue_registry_key =
                 RunningAgentKey::new(context_type.to_string(), queue_context_id);

@@ -1,5 +1,8 @@
-use super::*;
-use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentRegistry};
+use std::sync::Arc;
+use std::time::Duration;
+
+use super::launch_reservation::LaunchReservationGuard;
+use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 
 #[tokio::test]
 async fn guard_renews_only_the_owned_launch_reservation() {

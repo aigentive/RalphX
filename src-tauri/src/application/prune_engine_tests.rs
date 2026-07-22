@@ -3,12 +3,14 @@ use std::sync::Arc;
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
+use crate::application::prune_engine::should_defer_terminal_settlement_prune;
 use crate::application::{AppState, PruneEngine};
 use crate::commands::execution_commands::ExecutionState;
 use crate::domain::entities::{
-    AgentRun, AgentRunId, AgentRunStatus, ChatConversationId, InternalStatus, Project, Task,
+    AgentRun, AgentRunId, AgentRunStatus, ChatContextType, ChatConversationId, InternalStatus,
+    Project, Task,
 };
-use crate::domain::services::RunningAgentKey;
+use crate::domain::services::{RunningAgentInfo, RunningAgentKey};
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -20,6 +22,7 @@ fn build_engine(app_state: &AppState, ipr: Option<Arc<InteractiveProcessRegistry
         Arc::clone(&app_state.running_agent_registry),
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.project_repo),
         ipr,
     )
 }
@@ -626,7 +629,9 @@ async fn slot_counter_corrected_after_prune_via_reconciler() {
 async fn evaluate_and_prune_merge_context_removes_worktree_dir() {
     let app_state = AppState::new_test();
 
-    let project = Project::new("P".to_string(), "/test".to_string());
+    let worktree_parent = tempfile::TempDir::new().expect("failed to create worktree parent");
+    let mut project = Project::new("P".to_string(), "/test".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
     app_state
         .project_repo
         .create(project.clone())
@@ -636,14 +641,9 @@ async fn evaluate_and_prune_merge_context_removes_worktree_dir() {
     task.internal_status = InternalStatus::Merging;
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    // Create a real temp directory that represents the merge worktree.
-    let tmp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let worktree_path = tmp.path().to_string_lossy().to_string();
-    // Convert to PathBuf before PruneEngine removes it; keep the handle to avoid
-    // double-remove panic if the drop runs after the dir is already gone.
-    let worktree_path_owned = tmp.path().to_path_buf();
-    // Leak the TempDir so its drop doesn't double-remove the (already-deleted) dir.
-    std::mem::forget(tmp);
+    let worktree_path_owned = project.task_worktree_path(task.id.as_str());
+    std::fs::create_dir_all(&worktree_path_owned).expect("failed to create merge worktree");
+    let worktree_path = worktree_path_owned.to_string_lossy().to_string();
 
     let run_id = create_running_agent_run(&app_state).await;
     let key = RunningAgentKey::new("merge", task.id.as_str());
@@ -781,4 +781,83 @@ async fn evaluate_and_prune_merge_context_healthy_no_worktree_cleanup() {
     // Merging task + alive PID + running run → healthy, no prune.
     let pruned = engine.evaluate_and_prune(&key, info, true).await;
     assert!(!pruned, "healthy merge entry should not be pruned");
+}
+#[cfg(test)]
+mod terminal_settlement_prune_tests {
+    use super::*;
+    use crate::domain::entities::ChatConversationId;
+
+    fn running_info(last_active_at: Option<chrono::DateTime<chrono::Utc>>) -> RunningAgentInfo {
+        RunningAgentInfo {
+            pid: 12_345,
+            conversation_id: "conversation-test".to_string(),
+            agent_run_id: "run-test".to_string(),
+            started_at: chrono::Utc::now(),
+            worktree_path: None,
+            cancellation_token: None,
+            last_active_at,
+            model: None,
+        }
+    }
+
+    fn running_run() -> AgentRun {
+        AgentRun::new(ChatConversationId::new())
+    }
+
+    #[test]
+    fn terminal_settlement_prune_defers_recent_live_merge_status_mismatch() {
+        let info = running_info(Some(chrono::Utc::now()));
+        let run = running_run();
+
+        assert!(should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            true,
+        ));
+    }
+
+    #[test]
+    fn terminal_settlement_prune_rejects_non_settlement_shapes() {
+        let info = running_info(Some(chrono::Utc::now()));
+        let missing_heartbeat = running_info(None);
+        let run = running_run();
+
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            false,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch", "pid_missing"],
+            &info,
+            Some(&run),
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::TaskExecution),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Review),
+            &["task_status_mismatch"],
+            &info,
+            None,
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Review),
+            &["task_status_mismatch"],
+            &missing_heartbeat,
+            Some(&run),
+            true,
+        ));
+    }
 }

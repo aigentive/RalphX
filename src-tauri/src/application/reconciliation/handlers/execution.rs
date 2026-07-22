@@ -513,6 +513,7 @@ impl ReconciliationRunner {
             Arc::clone(&self.running_agent_registry),
             Arc::clone(&self.agent_run_repo),
             Arc::clone(&self.task_repo),
+            Arc::clone(&self.project_repo),
             self.interactive_process_registry.clone(),
         );
 

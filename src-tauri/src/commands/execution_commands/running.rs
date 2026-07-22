@@ -26,6 +26,7 @@ pub(super) async fn prune_stale_execution_registry_entries(
         Arc::clone(&app_state.running_agent_registry),
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.project_repo),
         Some(Arc::clone(&app_state.interactive_process_registry)),
     );
 

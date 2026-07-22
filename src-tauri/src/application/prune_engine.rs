@@ -16,6 +16,7 @@
 //! - GC: removes interactive idle slot tracking, updates running count only when pruned
 //! - Reconciler: always recalculates running count from remaining entries, emits event
 
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ use crate::application::interactive_process_registry::{
 use crate::domain::entities::{
     AgentRun, AgentRunId, AgentRunStatus, ChatContextType, InternalStatus, TaskId,
 };
-use crate::domain::repositories::{AgentRunRepository, TaskRepository};
+use crate::domain::repositories::{AgentRunRepository, ProjectRepository, TaskRepository};
 use crate::domain::services::{RunningAgentInfo, RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::stream_timeouts;
 
@@ -46,7 +47,7 @@ fn context_matches_running_status(context_type: ChatContextType, status: Interna
     }
 }
 
-fn should_defer_terminal_settlement_prune(
+pub(super) fn should_defer_terminal_settlement_prune(
     context_type: Option<ChatContextType>,
     reasons: &[&'static str],
     info: &RunningAgentInfo,
@@ -82,6 +83,7 @@ pub struct PruneEngine {
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     task_repo: Arc<dyn TaskRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
 }
 
@@ -90,12 +92,14 @@ impl PruneEngine {
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
         task_repo: Arc<dyn TaskRepository>,
+        project_repo: Arc<dyn ProjectRepository>,
         interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     ) -> Self {
         Self {
             running_agent_registry,
             agent_run_repo,
             task_repo,
+            project_repo,
             interactive_process_registry,
         }
     }
@@ -239,6 +243,7 @@ impl PruneEngine {
         // Ideation uses session IDs (not task IDs) — skip the task lookup to avoid
         // mis-routing a session ID through the task repository.
         let context_type = ChatContextType::from_str(&key.context_type).ok();
+        let mut merge_cleanup_path: Option<PathBuf> = None;
         if let Some(ctx) = context_type {
             if matches!(
                 ctx,
@@ -249,6 +254,11 @@ impl PruneEngine {
                     Ok(Some(task)) => {
                         if !context_matches_running_status(ctx, task.internal_status) {
                             reasons.push("task_status_mismatch");
+                        }
+                        if ctx == ChatContextType::Merge {
+                            merge_cleanup_path = self
+                                .validated_merge_cleanup_path(&task, info.worktree_path.as_deref())
+                                .await;
                         }
                     }
                     Ok(None) => reasons.push("task_missing"),
@@ -285,8 +295,16 @@ impl PruneEngine {
             return false;
         }
 
-        // Execute prune: stop (if pid alive) or unregister, then cancel the agent_run.
-        let removed = if pid_alive {
+        // Merge cleanup retains the exact owner reservation until the worktree side
+        // effect is complete, so a replacement cannot claim and reuse the path.
+        let merge_cleanup = context_type == Some(ChatContextType::Merge);
+        let removed = if merge_cleanup {
+            self.running_agent_registry
+                .quiesce_if_owned(key, &info.agent_run_id)
+                .await
+                .ok()
+                .flatten()
+        } else if pid_alive {
             self.running_agent_registry
                 .stop_if_owned(key, &info.agent_run_id)
                 .await
@@ -319,100 +337,72 @@ impl PruneEngine {
             "Pruned stale running agent registry entry"
         );
 
-        // Best-effort worktree cleanup for Merging contexts (Bug 5).
-        // Merge worktrees should not persist on disk when the merger agent is pruned.
-        if let Some(ChatContextType::Merge) = context_type {
-            if let Some(path) = &info.worktree_path {
-                if let Err(e) = tokio::fs::remove_dir_all(path).await {
-                    warn!(
-                        path = %path,
-                        error = %e,
-                        "Failed to remove merge worktree after prune"
-                    );
+        if merge_cleanup {
+            if let Some(path) = merge_cleanup_path {
+                if let Err(error) = crate::utils::path_safety::checked_remove_dir_all(
+                    &path,
+                    "pruned merge worktree",
+                )
+                .await
+                {
+                    warn!(path = %path.display(), %error, "Failed to remove merge worktree after prune");
                 }
             }
+            self.running_agent_registry
+                .unregister(key, &info.agent_run_id)
+                .await;
         }
 
         true
     }
-}
 
-#[cfg(test)]
-mod terminal_settlement_prune_tests {
-    use super::*;
-    use crate::domain::entities::ChatConversationId;
-
-    fn running_info(last_active_at: Option<chrono::DateTime<chrono::Utc>>) -> RunningAgentInfo {
-        RunningAgentInfo {
-            pid: 12_345,
-            conversation_id: "conversation-test".to_string(),
-            agent_run_id: "run-test".to_string(),
-            started_at: chrono::Utc::now(),
-            worktree_path: None,
-            cancellation_token: None,
-            last_active_at,
-            model: None,
+    async fn validated_merge_cleanup_path(
+        &self,
+        task: &crate::domain::entities::Task,
+        candidate: Option<&str>,
+    ) -> Option<PathBuf> {
+        let candidate = Path::new(candidate?);
+        let candidate = match crate::utils::path_safety::validate_absolute_non_root_path(
+            candidate,
+            "pruned merge worktree",
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                warn!(path = %candidate.display(), %error, "Refusing unsafe merge worktree cleanup path");
+                return None;
+            }
+        };
+        let project = match self.project_repo.get_by_id(&task.project_id).await {
+            Ok(Some(project)) => project,
+            Ok(None) => {
+                warn!(task_id = %task.id, "Skipping merge worktree cleanup because project is missing");
+                return None;
+            }
+            Err(error) => {
+                warn!(task_id = %task.id, %error, "Skipping merge worktree cleanup because project lookup failed");
+                return None;
+            }
+        };
+        let expected = project.task_worktree_path(task.id.as_str());
+        let expected = match crate::utils::path_safety::validate_absolute_non_root_path(
+            &expected,
+            "expected merge worktree",
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                warn!(task_id = %task.id, %error, "Skipping merge worktree cleanup because the canonical path is unsafe");
+                return None;
+            }
+        };
+        if candidate != expected {
+            warn!(
+                task_id = %task.id,
+                candidate = %candidate.display(),
+                expected = %expected.display(),
+                "Skipping merge worktree cleanup outside the canonical task path"
+            );
+            return None;
         }
-    }
-
-    fn running_run() -> AgentRun {
-        AgentRun::new(ChatConversationId::new())
-    }
-
-    #[test]
-    fn terminal_settlement_prune_defers_recent_live_merge_status_mismatch() {
-        let info = running_info(Some(chrono::Utc::now()));
-        let run = running_run();
-
-        assert!(should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Merge),
-            &["task_status_mismatch"],
-            &info,
-            Some(&run),
-            true,
-        ));
-    }
-
-    #[test]
-    fn terminal_settlement_prune_rejects_non_settlement_shapes() {
-        let info = running_info(Some(chrono::Utc::now()));
-        let missing_heartbeat = running_info(None);
-        let run = running_run();
-
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Merge),
-            &["task_status_mismatch"],
-            &info,
-            Some(&run),
-            false,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Merge),
-            &["task_status_mismatch", "pid_missing"],
-            &info,
-            Some(&run),
-            true,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::TaskExecution),
-            &["task_status_mismatch"],
-            &info,
-            Some(&run),
-            true,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Review),
-            &["task_status_mismatch"],
-            &info,
-            None,
-            true,
-        ));
-        assert!(!should_defer_terminal_settlement_prune(
-            Some(ChatContextType::Review),
-            &["task_status_mismatch"],
-            &missing_heartbeat,
-            Some(&run),
-            true,
-        ));
+        Some(candidate)
     }
 }

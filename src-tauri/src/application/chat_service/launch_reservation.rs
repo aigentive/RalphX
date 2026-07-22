@@ -77,7 +77,3 @@ impl Drop for LaunchReservationGuard {
         self.task.abort();
     }
 }
-
-#[cfg(test)]
-#[path = "launch_reservation_tests.rs"]
-mod tests;

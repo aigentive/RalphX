@@ -665,3 +665,45 @@ async fn test_try_register_blocks_concurrent_claim() {
     assert_eq!(existing.pid, 0); // Still placeholder
     assert_eq!(existing.conversation_id, "conv-1");
 }
+
+#[tokio::test]
+async fn sqlite_quiesce_retains_exact_owner_until_cleanup_finishes() {
+    let db = setup_conn();
+    let registry = SqliteRunningAgentRegistry::new(db.shared_conn());
+    let key = RunningAgentKey::new("merge", "task-cleanup");
+    registry
+        .register(
+            key.clone(),
+            999_999,
+            "conversation".to_string(),
+            "run-owned".to_string(),
+            Some("/tmp/worktree".to_string()),
+            None,
+        )
+        .await;
+
+    assert!(registry
+        .quiesce_if_owned(&key, "run-stale")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(registry.get(&key).await.unwrap().pid, 999_999);
+
+    let owned = registry
+        .quiesce_if_owned(&key, "run-owned")
+        .await
+        .unwrap()
+        .expect("owner should quiesce");
+    assert_eq!(owned.agent_run_id, "run-owned");
+    assert_eq!(registry.get(&key).await.unwrap().pid, 0);
+    assert!(registry
+        .try_register(key.clone(), "replacement".into(), "run-new".into())
+        .await
+        .is_err());
+
+    registry.unregister(&key, "run-owned").await;
+    assert!(registry
+        .try_register(key, "replacement".into(), "run-new".into())
+        .await
+        .is_ok());
+}

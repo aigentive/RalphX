@@ -170,6 +170,8 @@ Moved verbatim from `AGENTS.md` on 2026-07-16 so active roadmap context remains 
 | P1 | `src-tauri/src/commands/git_commands.rs` | Open | Merge retry/control flows still own too much runtime wiring | Move background merge-retry builder/runtime setup behind shared helpers |
 | P1 | Provider-aware runtime factories (`AppState`, transition/chat fallbacks, scheduler fallbacks) | In progress | Behavior still depends too much on whether `AppState` is discoverable from an `AppHandle` | Converge on one provider-aware factory path and keep legacy Claude naming only as compatibility aliases |
 | P1 | Transition-handler branch/base resolution | In progress | Execution, review, and pending-merge freshness drifted because plan branch identity and effective base branch were resolved in multiple places | Keep plan-branch lookup and effective-base resolution centralized on shared helpers keyed by execution plan first, session second |
+| P0 | Verification child sidecar ownership | Open | The verification PID registry is context-keyed, so delayed terminal reconciliation cannot prove it still owns a replacement child before signaling it | Store exact run ownership with each PID and require owner-CAS removal/kill across main, queued, and recovery completions |
+| P0 | Stale-session retry launch parity | Open | The direct retry spawn seam remains separate from the canonical reservation/attach lifecycle, making replacement-owner fencing hard to prove | Route stale-session retries through the shared launch reservation and attachment factory with competing-owner regressions |
 
 ## Cross-Session Tracker Notes
 
