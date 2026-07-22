@@ -2048,56 +2048,6 @@ async fn test_merge_does_not_unblock_task_with_remaining_blocker() {
     );
 }
 
-// ============================================================================
-// Team Mode Priority Tests
-// ============================================================================
-
-#[test]
-fn test_team_mode_defaults_to_none() {
-    let app_state = AppState::new_test();
-    let service = build_test_service(&app_state);
-    assert_eq!(
-        service.team_mode, None,
-        "Default team_mode should be None (unset)"
-    );
-}
-
-#[test]
-fn test_with_team_mode_true_sets_some_true() {
-    let app_state = AppState::new_test();
-    let service = build_test_service(&app_state).with_team_mode(true);
-    assert_eq!(
-        service.team_mode,
-        Some(true),
-        "with_team_mode(true) should set Some(true)"
-    );
-}
-
-#[test]
-fn test_with_team_mode_false_sets_some_false() {
-    let app_state = AppState::new_test();
-    let service = build_test_service(&app_state).with_team_mode(false);
-    assert_eq!(
-        service.team_mode,
-        Some(false),
-        "with_team_mode(false) should set Some(false), not None — explicit solo must skip metadata fallback"
-    );
-}
-
-#[test]
-fn test_with_team_mode_overrides_previous_value() {
-    let app_state = AppState::new_test();
-    // Start with team, then switch to solo
-    let service = build_test_service(&app_state)
-        .with_team_mode(true)
-        .with_team_mode(false);
-    assert_eq!(
-        service.team_mode,
-        Some(false),
-        "Second with_team_mode call should override the first"
-    );
-}
-
 #[test]
 fn test_lane_settings_repo_can_be_applied_before_execution_settings_repo() {
     let app_state = AppState::new_test();

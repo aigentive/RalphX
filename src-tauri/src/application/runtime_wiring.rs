@@ -242,26 +242,12 @@ pub(crate) fn share_plan_verification_runtime(source: &AppState, target: &mut Ap
     target.plan_verification_admissions = Arc::clone(&source.plan_verification_admissions);
 }
 
-pub fn register_managed_state(
-    app: &mut tauri::App<tauri::Wry>,
-    app_state: AppState,
-    service_team_tracker: crate::application::TeamStateTracker,
-) {
-    let team_session_repo = Arc::clone(&app_state.team_session_repo);
-    let team_message_repo = Arc::clone(&app_state.team_message_repo);
-
+pub fn register_managed_state(app: &mut tauri::App<tauri::Wry>, app_state: AppState) {
     let throttled_emitter =
         crate::application::ThrottledEmitter::new(Arc::clone(&app_state.events));
     app.manage(throttled_emitter);
     app.manage(Arc::clone(&app_state.window_focus_state));
     app.manage(app_state);
 
-    let team_service = Arc::new(crate::application::TeamService::new_with_repos(
-        Arc::new(service_team_tracker),
-        app.handle().clone(),
-        team_session_repo,
-        team_message_repo,
-    ));
-    app.manage(team_service);
     app.manage(ExternalMcpHandle::new());
 }

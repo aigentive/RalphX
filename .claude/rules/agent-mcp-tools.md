@@ -22,7 +22,6 @@ paths:
 | RalphX-native delegation rights | `agents/<agent>/agent.yaml` `delegation.allowed_targets` |
 | Claude native tools/model/effort | `agents/<agent>/agent.yaml` `harnesses.claude` + named sets in `config/harnesses/claude.yaml` |
 | Codex runtime features | `agents/<agent>/agent.yaml` `harnesses.codex`; lane defaults in `config/harnesses/codex.yaml` |
-| Team-process ceilings | `config/processes.yaml` |
 | MCP tool schema | focused `plugins/app/ralphx-mcp-server/src/*-tools.ts` module |
 | MCP dispatch | `plugins/app/ralphx-mcp-server/src/index.ts` |
 | MCP authorization | `tool-authorization.ts` loading canonical metadata; `tools.ts` is a registry/facade |
@@ -58,7 +57,7 @@ Do not edit a `TOOL_ALLOWLIST` mirror to grant production access. The compatibil
 | Path | Rule |
 |---|---|
 | Backend-spawned Claude | Rust materializes canonical metadata and injects the effective CLI/MCP configuration. |
-| Claude Task/team subagent | Use generated explicit tool entries when that Claude surface requires them; do not generalize its frontmatter or `mcpServers` behavior to Codex. |
+| Provider-native subagent | Use generated explicit tool entries when that harness surface requires them; do not generalize Claude frontmatter or `mcpServers` behavior to Codex. |
 | Codex | Load canonical MCP capabilities through Codex runtime overrides/sidecars; do not reuse Claude plugin/frontmatter assumptions. |
 | RalphX-native delegation | `delegate_start` caller→target authorization and delegation-tool visibility derive from `delegation.allowed_targets`; caller identity is transport-owned. |
 | Mixed external/internal transport | Public/high-level `mcp_tools` and `harnesses.<harness>.internal_mcp_tools` remain separate surfaces. |
@@ -75,7 +74,7 @@ Only `tools` and `disallowedTools` are valid Claude agent frontmatter fields; `a
 
 ## Ticket Attachment Tools (NON-NEGOTIABLE)
 
-`list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker, coder, and team-lead surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.
+`list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker and coder surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.
 
 ## Persona Builder Tools
 

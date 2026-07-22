@@ -68,11 +68,9 @@ async fn ipc_contract_start_service_plan_mode_links_planning_session_for_automat
     execution_state.pause();
     let app_state = state.clone();
     let app = build_app(state, Arc::clone(&execution_state));
-    let team_service = app.state::<Arc<TeamService>>().inner().clone();
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         app_state.clone(),
         Arc::clone(&execution_state),
-        Some(team_service),
         app.handle().clone(),
     ));
     let provisioner = AutomationRunProvisioner::new(

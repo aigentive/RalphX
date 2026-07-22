@@ -5,19 +5,18 @@
  * Features native vibrancy materials and refined typography.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import { StepList } from "../StepList";
 import { SectionTitle, TwoColumnLayout, DetailCard, StatusBanner } from "./shared";
 import { DurationDisplay } from "./shared/DurationDisplay";
 import { useTaskSteps } from "@/hooks/useTaskSteps";
-import { useTeamModeAvailability } from "@/hooks/useTeamModeAvailability";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { taskKeys } from "@/hooks/useTasks";
 import { executionKeys } from "@/hooks/useExecutionControl";
 import { api } from "@/lib/tauri";
-import { Loader2, Play, RotateCcw, Clock, User, Users, AlertTriangle, ShieldAlert, X, GitBranch } from "lucide-react";
+import { Loader2, Play, RotateCcw, Clock, AlertTriangle, ShieldAlert, X, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   ResumeValidationDialog,
@@ -73,8 +72,6 @@ function getTimeAgo(isoString: string): string {
     return "just now";
   }
 }
-
-type ExecutionMode = "solo" | "team";
 
 // Task statuses that can be restarted
 const RESTARTABLE_STATUSES = new Set(["failed", "stopped", "cancelled", "paused"]);
@@ -224,81 +221,18 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
 }
 
 /**
- * ExecutionModeSelector - Solo/Team radio toggle for execution mode
- */
-function ExecutionModeSelector({
-  mode,
-  onChange,
-  disabled,
-}: {
-  mode: ExecutionMode;
-  onChange: (mode: ExecutionMode) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-1" data-testid="execution-mode-selector">
-      <span
-        className="text-[0.6875rem] font-medium mr-1.5"
-        style={{ color: "var(--text-muted)" }}
-      >
-        Mode
-      </span>
-      {(["solo", "team"] as const).map((m) => {
-        const isSelected = mode === m;
-        const Icon = m === "solo" ? User : Users;
-        return (
-          <button
-            key={m}
-            data-testid={`mode-${m}`}
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(m)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[0.75rem] font-medium transition-colors disabled:opacity-40"
-            style={{
-              backgroundColor: isSelected
-                ? m === "team"
-                  ? "var(--accent-muted)"
-                  : "var(--overlay-moderate)"
-                : "transparent",
-              color: isSelected
-                ? m === "team"
-                  ? "var(--accent-primary)"
-                  : "var(--text-secondary)"
-                : "var(--text-muted)",
-              border: `1px solid ${isSelected ? (m === "team" ? "var(--accent-border)" : "color-mix(in srgb, var(--text-primary) 12%, transparent)") : "transparent"}`,
-            }}
-          >
-            <Icon className="w-3 h-3" />
-            {m === "solo" ? "Solo" : "Team"}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/**
  * ActionButtonsCard - Restart button for terminal/suspended states
  * For stopped tasks with stop metadata, shows enhanced confirmation dialog.
- * Supports execution mode selection (solo/team) for start/restart operations.
  */
 function ActionButtonsCard({ task }: { task: Task }) {
   const queryClient = useQueryClient();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>("solo");
   const [showValidationDialog, setShowValidationDialog] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
   const [restartNote, setRestartNote] = useState("");
   const [restartOutcome, setRestartOutcome] = useState<string | null>(null);
-  const { executionTeamModeAvailable } = useTeamModeAvailability(task.projectId);
   const taskId = task.id;
   const status = task.internalStatus;
-
-  useEffect(() => {
-    if (!executionTeamModeAvailable && executionMode !== "solo") {
-      setExecutionMode("solo");
-    }
-  }, [executionMode, executionTeamModeAvailable]);
 
   // Parse stop metadata for enhanced confirmation dialog
   const stopMetadata = useMemo(
@@ -349,12 +283,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
       const note = restartNote.trim() || undefined;
       if (isStopped || isFailed) {
         // Backend owns smart resume and failed-task recover-or-restart classification.
-        const result = await api.tasks.restart(
-          taskId,
-          false,
-          note,
-          executionMode === "team" ? "team" : undefined
-        );
+        const result = await api.tasks.restart(taskId, false, note);
         if (result.type === "ValidationFailed") {
           throw new Error(
             `Validation failed: ${result.warnings.map((w) => w.message).join(", ")}`
@@ -367,12 +296,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
         return result;
       } else {
         // Fallback to move-to-ready for other restartable statuses
-        const result = await api.tasks.move(
-          taskId,
-          "ready",
-          executionMode === "team" ? "team" : undefined,
-          note
-        );
+        const result = await api.tasks.move(taskId, "ready", note);
         await resumeExecutionIfStopped(task.projectId);
         return result;
       }
@@ -404,7 +328,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
     setIsResuming(true);
     try {
       const note = restartNote.trim() || undefined;
-      await api.tasks.move(taskId, stopMetadata.stoppedFromStatus, undefined, note);
+      await api.tasks.move(taskId, stopMetadata.stoppedFromStatus, note);
       await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
       setShowValidationDialog(false);
@@ -420,7 +344,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
     setIsResuming(true);
     try {
       const note = restartNote.trim() || undefined;
-      await api.tasks.move(taskId, "ready", undefined, note);
+      await api.tasks.move(taskId, "ready", note);
       await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
       setShowValidationDialog(false);
@@ -451,7 +375,6 @@ function ActionButtonsCard({ task }: { task: Task }) {
       : status === "paused"
         ? "paused task"
         : "failed task";
-    const modeNote = executionMode === "team" ? " in team mode" : "";
 
     // Build enhanced confirmation for stopped tasks with metadata
     if (isStopped && stopMetadata) {
@@ -478,10 +401,10 @@ function ActionButtonsCard({ task }: { task: Task }) {
       const confirmed = await confirm({
         title: `${actionLabel} this ${taskLabel}?`,
         description: isReady
-          ? `The task will be started${modeNote}.`
+          ? "The task will be started."
           : isFailed
-            ? `RalphX will recover the existing completed work and continue to review when current-attempt proof is valid. Otherwise it will safely start a fresh execution attempt${modeNote}. Existing work is not cleared if the safety checks cannot complete.`
-            : `The task will be moved to ready status and can be executed again${modeNote}.`,
+            ? "RalphX will recover the existing completed work and continue to review when current-attempt proof is valid. Otherwise it will safely start a fresh execution attempt. Existing work is not cleared if the safety checks cannot complete."
+            : "The task will be moved to ready status and can be executed again.",
         confirmText: actionLabel,
         variant: "default",
       });
@@ -489,7 +412,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
     }
 
     restartMutation.mutate();
-  }, [confirm, status, isReady, isStopped, isFailed, stopMetadata, restartMutation, executionMode, validationWarnings.length]);
+  }, [confirm, status, isReady, isStopped, isFailed, stopMetadata, restartMutation, validationWarnings.length]);
 
   return (
     <DetailCard data-testid="action-buttons">
@@ -520,17 +443,6 @@ function ActionButtonsCard({ task }: { task: Task }) {
           {isReady ? "Start" : status === "paused" ? "Resume" : "Restart"}
         </Button>
       </div>
-
-      {/* Execution Mode Selector */}
-      {executionTeamModeAvailable && (
-        <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--overlay-weak)" }}>
-          <ExecutionModeSelector
-            mode={executionMode}
-            onChange={setExecutionMode}
-            disabled={restartMutation.isPending || isResuming}
-          />
-        </div>
-      )}
 
       {/* Restart Note textarea (for restartable states only, not shown for start) */}
       {!isReady && (

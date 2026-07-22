@@ -32,7 +32,7 @@ use crate::application::ticket_git_strict_start::{
     resolve_strict_ticket_target_base_ref, rollback_strict_ticket_workspace_activation,
     strict_clickup_ticket_policy_applies, StrictTicketGitResolution,
 };
-use crate::application::{AppState, ChatService, SendResult, TeamService};
+use crate::application::{AppState, ChatService, SendResult};
 use crate::application::app_state::ApplicationExecutionState;
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualServiceTier,
@@ -149,7 +149,6 @@ pub struct AgentConversationStartResult {
 pub struct AgentConversationStartDeps<'a, R: Runtime + 'static> {
     pub state: &'a AppState,
     pub execution_state: &'a Arc<ApplicationExecutionState>,
-    pub team_service: Option<Arc<TeamService>>,
     pub app_handle: tauri::AppHandle<R>,
 }
 

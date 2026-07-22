@@ -55,6 +55,8 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
+#[cfg(test)]
+mod team_tests;
 pub mod ticket_canonical_branch;
 pub mod types;
 pub mod usage;
@@ -120,7 +122,6 @@ pub use artifact::{
     Artifact, ArtifactBucket, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata,
     ArtifactRelation, ArtifactRelationId, ArtifactRelationType, ArtifactType,
     ParseArtifactRelationTypeError, ParseArtifactTypeError, ProcessId, TeamArtifactMetadata,
-    VerificationFindingGap, VerificationFindingMetadata,
 };
 pub use artifact_flow::{
     create_plan_updated_sync_flow, create_research_to_dev_flow, ArtifactFlow, ArtifactFlowContext,
@@ -237,10 +238,8 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId,
-    TeamMessageRecord,
-    TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
-    TeammateSnapshot,
+    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageTarget,
+    TeamMessageTargetKind,
 };
 pub use ticket_canonical_branch::{
     TicketCanonicalBranch, TicketCanonicalBranchCycle, TicketCanonicalBranchCycleState,

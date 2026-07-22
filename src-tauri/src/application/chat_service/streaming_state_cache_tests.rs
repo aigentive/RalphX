@@ -8,7 +8,6 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
         model: None,
         status: "running".to_string(),
         agent_id: None,
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,

@@ -245,7 +245,7 @@ function GlobalModelSubsection({
         <ModelRow
           id="global-primary-model"
           label="Primary Ideation Model"
-          description="Model for ralphx-ideation and team-lead agents"
+          description="Model for the primary ideation agent"
           value={settings.primaryModel}
           disabled={false}
           onChange={handlePrimaryChange}
@@ -257,7 +257,7 @@ function GlobalModelSubsection({
         <ModelRow
           id="ideation-subagent-model"
           label="Ideation Subagent Model"
-          description="Model used by subagents spawned by ralphx-ideation and team-lead"
+          description="Model used by subagents spawned by ralphx-ideation"
           value={settings.ideationSubagentModel ?? "inherit"}
           disabled={false}
           onChange={handleIdeationSubagentChange}

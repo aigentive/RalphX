@@ -1,12 +1,12 @@
 /**
- * TeamTaskWidgets — Widgets for TaskCreate, TaskUpdate, TaskList, TeamCreate, TeamDelete tool calls.
+ * TaskWidgets — Widgets for TaskCreate, TaskUpdate, and TaskList tool calls.
  *
  * Uses WidgetCard + WidgetHeader + Badge from shared.tsx.
- * Registered in registry.ts under keys: taskcreate, taskupdate, tasklist, teamcreate, teamdelete.
+ * Registered in registry.ts under keys: taskcreate, taskupdate, and tasklist.
  */
 
 import React, { useMemo } from "react";
-import { CheckSquare, List, Users, Trash2 } from "lucide-react";
+import { CheckSquare, List } from "lucide-react";
 import { WidgetCard, WidgetHeader, Badge } from "./shared";
 import type { ToolCallWidgetProps, BadgeVariant } from "./shared.constants";
 import { getString, parseToolResultAsLines, colors } from "./shared.constants";
@@ -190,74 +190,5 @@ export const TaskListWidget = React.memo(function TaskListWidget({
         </div>
       ))}
     </WidgetCard>
-  );
-});
-
-// ============================================================================
-// TeamCreateWidget — compact card with team name + description preview
-// ============================================================================
-
-export const TeamCreateWidget = React.memo(function TeamCreateWidget({
-  toolCall,
-  compact = false,
-  className,
-}: ToolCallWidgetProps) {
-  const args = toolCall.arguments;
-  const teamName = getString(args, "team_name") ?? "team";
-  const description = getString(args, "description");
-
-  if (!description) {
-    return (
-      <div className={className} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0", margin: "2px 0" }}>
-        <Users size={12} style={{ color: colors.accent, flexShrink: 0 }} />
-        <span style={{ fontSize: 10.5, color: colors.textSecondary }}>Create Team</span>
-        <Badge variant="accent" compact>{teamName}</Badge>
-      </div>
-    );
-  }
-
-  return (
-    <WidgetCard
-      className={className ?? ""}
-      compact={compact}
-      header={
-        <WidgetHeader
-          icon={<Users size={14} style={{ color: colors.accent }} />}
-          title={`Create Team — ${teamName}`}
-          badge={<Badge variant="accent" compact>team</Badge>}
-          compact={compact}
-        />
-      }
-    >
-      <div style={{
-        fontSize: compact ? 10.5 : 11,
-        color: colors.textSecondary,
-        lineHeight: 1.45,
-        WebkitLineClamp: 2,
-        WebkitBoxOrient: "vertical" as const,
-        display: "-webkit-box",
-        overflow: "hidden",
-      }}>
-        {description}
-      </div>
-    </WidgetCard>
-  );
-});
-
-// ============================================================================
-// TeamDeleteWidget — ultra-compact inline indicator
-// ============================================================================
-
-export const TeamDeleteWidget = React.memo(function TeamDeleteWidget({
-  className,
-}: ToolCallWidgetProps) {
-  return (
-    <div
-      className={className}
-      style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0", margin: "2px 0" }}
-    >
-      <Trash2 size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
-      <span style={{ fontSize: 10.5, color: colors.textMuted }}>Team Deleted</span>
-    </div>
   );
 });

@@ -9,7 +9,6 @@ use crate::application::setup_settings::initialize_settings_defaults;
 use crate::application::startup_cleanup::run_startup_cleanup;
 use crate::application::startup_pipeline_launch::launch_startup_pipeline;
 use crate::application::AppPaths;
-use crate::application::TeamStateTracker;
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::shell::event_sink::TauriEventSink;
 use crate::AppState;
@@ -114,6 +113,41 @@ fn configure_bundled_runtime_env(app: &tauri::App<tauri::Wry>) {
     );
 }
 
+fn spawn_tasks_disabled_startup_reconciliation(
+    app_handle: tauri::AppHandle,
+    execution_state: Arc<ExecutionState>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let state = app_handle.state::<AppState>();
+        let tasks_enabled = state
+            .ideation_settings_repo
+            .get_settings()
+            .await
+            .map(|settings| settings.tasks_enabled)
+            .map_err(|error| error.to_string());
+        match tasks_enabled {
+            Ok(true) => {}
+            Ok(false) => {
+                let service = state
+                    .build_tasks_feature_toggle_service(execution_state, Some(app_handle.clone()));
+                let failures = service.drain_active_tasks().await;
+                if !failures.is_empty() {
+                    tracing::error!(
+                        task_ids = ?failures,
+                        "Tasks OFF startup reconciliation remains incomplete"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "Tasks OFF startup reconciliation failed closed while reading settings"
+                );
+            }
+        }
+    });
+}
+
 pub(crate) fn run_app_setup(
     app: &mut tauri::App<tauri::Wry>,
     init_execution_state: Arc<ExecutionState>,
@@ -121,10 +155,10 @@ pub(crate) fn run_app_setup(
     startup_active_project_state: Arc<ActiveProjectState>,
     startup_pr_fix_review_publish_resumer_factory: StartupPrFixReviewPublishResumerFactory,
     http_execution_state: Arc<ExecutionState>,
-    http_team_tracker: TeamStateTracker,
-    service_team_tracker: TeamStateTracker,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
+    let startup_tasks_app_handle = app_handle.clone();
+
     configure_bundled_runtime_env(app);
 
     // Create application state with production SQLite repositories
@@ -160,12 +194,7 @@ pub(crate) fn run_app_setup(
         &app_state,
         Arc::clone(&startup_execution_state),
     );
-    start_server_boot(
-        &app_state,
-        app_handle,
-        http_execution_state,
-        http_team_tracker,
-    );
+    start_server_boot(&app_state, app_handle, http_execution_state);
     launch_startup_pipeline(
         app,
         &app_state,
@@ -174,7 +203,11 @@ pub(crate) fn run_app_setup(
         pr_fix_review_publish_resumer,
     );
 
-    register_managed_state(app, app_state, service_team_tracker);
+    register_managed_state(app, app_state);
+    spawn_tasks_disabled_startup_reconciliation(
+        startup_tasks_app_handle,
+        Arc::clone(&startup_execution_state),
+    );
     crate::commands::agent_workspace_auto_review::install_agent_workspace_auto_review_listeners(
         app,
     );

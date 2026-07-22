@@ -1296,7 +1296,6 @@ describe("AgentsAutomationPanel", () => {
         "project-1",
         expect.stringContaining("Update the bound draft automation now"),
         undefined,
-        undefined,
         {
           conversationId: "conversation-setup",
           providerHarness: "codex",

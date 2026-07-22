@@ -236,13 +236,6 @@ vi.mock("@/hooks/useChatAttachments", () => ({
     uploadProgress: [],
   }),
 }));
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-    isAvailableForContext: () => true,
-  }),
-}));
 vi.mock("@/providers/EventProvider", () => ({
   useEventBus: () => ({ subscribe: vi.fn(() => vi.fn()), emit: vi.fn() }),
 }));

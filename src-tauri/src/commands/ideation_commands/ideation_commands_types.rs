@@ -14,15 +14,6 @@ pub use crate::commands::chat_responses::ChatMessageResponse;
 // Session Types
 // ============================================================================
 
-/// Team configuration input for ideation sessions
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TeamConfigInput {
-    pub max_teammates: u32,
-    pub model_ceiling: String,
-    pub budget_limit: Option<f64>,
-    pub composition_mode: String,
-}
-
 /// Input for creating a cross-project session (imports a verified plan from another project).
 ///
 /// The target project is identified by filesystem path; it will be auto-created if not found.
@@ -44,8 +35,6 @@ pub struct CreateSessionInput {
     pub project_id: String,
     pub title: Option<String>,
     pub seed_task_id: Option<String>,
-    pub team_mode: Option<String>,
-    pub team_config: Option<TeamConfigInput>,
     pub analysis_base_ref_kind: Option<IdeationAnalysisBaseRefKind>,
     pub analysis_base_ref: Option<String>,
     pub analysis_base_display_name: Option<String>,
@@ -66,8 +55,6 @@ pub struct IdeationSessionResponse {
     pub updated_at: String,
     pub archived_at: Option<String>,
     pub converted_at: Option<String>,
-    pub team_mode: Option<String>,
-    pub team_config: Option<serde_json::Value>,
     pub verification_status: String,
     pub verification_in_progress: bool,
     pub gap_score: Option<i32>,
@@ -115,10 +102,6 @@ impl From<IdeationSession> for IdeationSessionResponse {
             updated_at: session.updated_at.to_rfc3339(),
             archived_at: session.archived_at.map(|dt| dt.to_rfc3339()),
             converted_at: session.converted_at.map(|dt| dt.to_rfc3339()),
-            team_mode: session.team_mode,
-            team_config: session
-                .team_config_json
-                .and_then(|s| serde_json::from_str(&s).ok()),
             verification_status: session.verification_status.to_string(),
             verification_in_progress: session.verification_in_progress,
             gap_score,

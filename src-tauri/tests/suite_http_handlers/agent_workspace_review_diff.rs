@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use ralphx_lib::application::agent_workspace_review::load_agent_workspace_review_context;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
@@ -32,15 +32,9 @@ fn git(repo: &StdPath, args: &[&str]) -> String {
 }
 
 fn http_state(app_state: Arc<AppState>) -> HttpServerState {
-    let team_tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-        team_tracker.clone(),
-    )));
     HttpServerState {
         app_state,
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

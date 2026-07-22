@@ -1,5 +1,5 @@
 use super::chat_service_context::*;
-use super::chat_service_helpers::resolve_agent_with_team_mode;
+use super::chat_service_helpers::resolve_agent;
 use super::conversation_launch_security::{
     conversation_launch_security_class, validate_conversation_launch_identity,
     ConversationLaunchSecurityClass,
@@ -657,7 +657,6 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
         Path::new("/tmp/task-runtime-env"),
         Some("re_executing"),
         Some("project-runtime-env"),
-        false,
         None,
         None,
     );
@@ -675,7 +674,6 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
         Path::new("/tmp/project-runtime-env"),
         Some("executing"),
         Some("project-runtime-env"),
-        false,
         None,
         None,
     );
@@ -746,7 +744,6 @@ async fn task_runtime_launch_plans_inject_prompt_env_and_mcp_state() {
             Some("executing"),
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -835,7 +832,6 @@ async fn build_project_agent_launch_plan(
         None,
         Some(project_id.as_str()),
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -910,7 +906,6 @@ async fn build_fresh_ideation_launch_prompt(
         None,
         None,
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -973,7 +968,7 @@ async fn build_fresh_claude_interactive_prompt_for_test(
     .await
     .expect("fresh ideation prompt should build");
 
-    let agent_name = resolve_agent_with_team_mode(&ChatContextType::Ideation, None, false);
+    let agent_name = resolve_agent(&ChatContextType::Ideation, None);
     let spawnable = build_spawnable_interactive_command_for_test(
         cli_path,
         plugin_dir,
@@ -1499,7 +1494,6 @@ async fn project_launch_plans_include_agent_workspace_prompt_context() {
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1579,7 +1573,6 @@ async fn project_child_launch_plans_pass_parent_and_current_conversation_ids_to_
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1732,7 +1725,6 @@ async fn project_launch_plans_include_captured_attachment_context_for_claude_and
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1815,7 +1807,6 @@ async fn project_launch_plans_fall_back_to_pending_attachment_context() {
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             attachment_repo,
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1909,7 +1900,6 @@ async fn resume_commands_append_captured_attachment_context_for_claude_and_codex
             Some(project_id.as_str()),
             &[],
             Some("conversation-id".to_string()),
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -2020,7 +2010,6 @@ async fn project_resume_commands_use_plan_agent_profile_for_claude_and_codex() {
             Some(project_id.as_str()),
             &[],
             Some("conversation-id".to_string()),
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -2136,7 +2125,6 @@ async fn claude_project_launch_plan_resumes_stored_provider_session() {
         None,
         Some(project_id.as_str()),
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -2232,7 +2220,6 @@ async fn codex_project_launch_plan_resume_keeps_current_conversation_id_for_mcp(
         None,
         Some(project_id.as_str()),
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -2308,7 +2295,6 @@ async fn codex_project_noninteractive_resume_keeps_current_conversation_id_for_m
         Some(project_id.as_str()),
         &[],
         None,
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         None,
@@ -2385,7 +2371,6 @@ async fn codex_project_noninteractive_resume_without_resume_capability_uses_reco
         Some(project_id.as_str()),
         &[],
         None,
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         None,

@@ -86,7 +86,6 @@ type SendMessageVariables = {
   content: string;
   composerFolderReferences?: MessageFolderReference[];
   attachmentIds?: string[];
-  target?: string;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -1203,7 +1202,6 @@ export function useChat(
     mutationFn: async ({
       content,
       attachmentIds,
-      target,
       composerArtifactReferences,
       composerProjectReferences,
       composerIntegrationReferences,
@@ -1242,7 +1240,6 @@ export function useChat(
           contextId,
           content,
           attachmentIds,
-          target,
           sendOptions
         );
       }
@@ -1252,13 +1249,12 @@ export function useChat(
         contextId,
         content,
         attachmentIds,
-        target,
         sendOptions
       );
     },
     onMutate: (variables) => {
       setSending(effectiveStoreKey, true);
-      if (!activeConversationId || variables.target) {
+      if (!activeConversationId) {
         return {};
       }
       const optimisticMessage = addOptimisticUserMessageToConversationCache(

@@ -308,19 +308,19 @@ async fn start_guarded_review_after_beginning_merge(
         )
         .await
     });
-    // Generous budget: the spawned review does real git subprocess work
-    // (target resolution) before reaching disable_pr_auto_merge, so on a
-    // heavily loaded CI shard reaching the call can take well over 500ms.
-    // The mock increments the counter on entry and then holds a 250ms
-    // `sleep().await`, so once the call is reached the loop observes the
-    // increment during that yielded window regardless of total wait time.
-    const MAX_DISABLE_POLLS: u32 = 2000;
-    for _ in 0..MAX_DISABLE_POLLS {
-        if github.state().disable_pr_auto_merge_calls == 1 {
-            break;
+    let pause_started = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if github.state().disable_pr_auto_merge_calls == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    })
+    .await;
+    assert!(
+        pause_started.is_ok(),
+        "workspace review did not pause auto-merge before the bounded synchronization deadline"
+    );
     assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
     git_fails(&fixture.worktree, &["merge", "main"]);
     start

@@ -289,28 +289,6 @@ describe("navigateNotification", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("opens team-plan approval in its inline Agent conversation", () => {
-    const onClose = vi.fn();
-
-    navigateNotification(
-      {
-        id: "team-plan-1",
-        category: "team_plan_approval",
-        target: {
-          kind: "agent_conversation",
-          projectId: "project-2",
-          conversationId: "conversation-1",
-        },
-      },
-      {} as QueryClient,
-      { onClose },
-    );
-
-    expect(navigateToAgentConversation).toHaveBeenCalledWith("project-2", "conversation-1");
-    expect(navigateToAgentPlan).not.toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
   it("reports automation navigation success only after exact run focus applies", async () => {
     vi.mocked(requestAutomationRunOpen).mockResolvedValueOnce({
       applied: false,

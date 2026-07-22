@@ -6,7 +6,7 @@ Today RalphX supports two harnesses:
 
 | Harness | Best fit today | Notes |
 |---|---|---|
-| `claude` | Full execution pipeline, team mode, mature plugin/MCP flows | Still the default harness |
+| `claude` | Full execution pipeline, RX-native Team, mature plugin/MCP flows | Still the default harness |
 | `codex` | Ideation plus execution, review, and merge lanes when explicitly configured | Uses Codex CLI semantics, not Claude plugin semantics |
 
 ---
@@ -70,8 +70,8 @@ Codex support is intentionally incremental. The current product contract is:
 
 | Area | Current behavior |
 |---|---|
-| Team mode | Claude-only |
-| Codex team sessions | Not supported; Codex runs are normalized to solo mode |
+| RX-native Team | Provider-neutral; availability follows workflow and harness capabilities |
+| Legacy Claude Team mode | Removed; supported coordination now uses RX-native Team |
 | Codex execution/review/merge | Supported when those lanes are configured to Codex |
 | Legacy Claude sessions/data | Still supported; provider-neutral fields are additive |
 | Harness fallback | A lane may fall back to another harness if configured to do so |
@@ -116,7 +116,6 @@ You may see harness-related behavior in several places:
 Use Claude when you need:
 
 - the broadest current feature coverage
-- team mode
 - established plugin-driven workflows
 
 Use Codex when you want:
@@ -124,6 +123,9 @@ Use Codex when you want:
 - Codex-native ideation, execution, review, or merge on a specific lane
 - Codex sandbox/approval semantics for that lane
 - incremental adoption without moving the whole product to one runtime
+
+RX-native Team is provider-neutral. Its availability follows the capabilities of the
+selected workflow and harness rather than requiring Claude's legacy team mode.
 
 ---
 

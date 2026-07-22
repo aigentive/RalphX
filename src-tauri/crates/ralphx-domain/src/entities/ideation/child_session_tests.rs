@@ -54,8 +54,6 @@ fn build_child_session_inherits_expected_parent_context() {
         ChildSessionDraftInput {
             title: Some("Child".to_string()),
             inherit_context: true,
-            team_mode: Some("solo".to_string()),
-            team_config_json: Some("{\"debate\":false}".to_string()),
             source_task_id: Some("task-1".to_string()),
             source_context_type: Some("review".to_string()),
             source_context_id: Some("review-1".to_string()),
@@ -100,8 +98,6 @@ fn build_child_session_inherits_analysis_base_and_workspace() {
         ChildSessionDraftInput {
             title: Some("Verifier".to_string()),
             inherit_context: true,
-            team_mode: None,
-            team_config_json: None,
             source_task_id: None,
             source_context_type: None,
             source_context_id: None,

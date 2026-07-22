@@ -227,10 +227,6 @@ mod tasks_feature_policy_tests;
 pub(crate) mod tasks_feature_toggle_service;
 #[cfg(test)]
 mod tasks_feature_toggle_service_tests;
-pub mod team_events;
-pub mod team_service;
-pub mod team_state_tracker;
-pub mod team_stream_processor;
 pub mod throttled_emitter;
 pub mod ticket_attachment;
 pub mod ticket_attachment_runtime_store;
@@ -318,7 +314,6 @@ pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
     build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
     resolve_lane_harness_config, resolve_primary_ideation_harness_availability_for_state,
-    team_mode_supported_for_context,
     validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
     IDEATION_LANES,
 };
@@ -376,8 +371,6 @@ pub use task_cleanup_service::{
 pub use task_context_service::TaskContextService;
 pub use task_scheduler_service::{ReadyWatchdog, TaskSchedulerService};
 pub use task_transition_service::TaskTransitionService;
-pub use team_service::TeamService;
-pub use team_state_tracker::TeamStateTracker;
 pub use throttled_emitter::ThrottledEmitter;
 pub use ticketing_cache_invalidator::{
     TicketingCacheInvalidatedEvent, TicketingCacheInvalidator, TICKETING_CACHE_INVALIDATED_EVENT,
@@ -507,9 +500,7 @@ pub use chat_service::{
     AgentChunkPayload, AgentErrorPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
     AgentQueueSentPayload, AgentRunCompletedPayload, AgentRunStartedPayload, AgentToolCallPayload,
     AppChatService, ChatConversationWithMessages, ChatService, ChatServiceError, MockChatResponse,
-    MockChatService, SendResult, TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload,
-    TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
-    TeamTeammateSpawnedPayload, AGENT_MESSAGE_QUEUED,
+    MockChatService, SendResult, AGENT_MESSAGE_QUEUED,
 };
 pub mod agent_capability_gate;
 #[cfg(test)]

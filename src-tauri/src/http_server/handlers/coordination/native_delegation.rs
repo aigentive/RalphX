@@ -34,7 +34,6 @@ fn cached_streaming_task_from_started_payload(
             .or_else(|| payload.logical_model.clone()),
         status: "running".to_string(),
         agent_id: payload.delegated_agent_run_id.clone(),
-        teammate_name: payload.teammate_name.clone(),
         delegated_job_id: payload.delegated_job_id.clone(),
         delegated_session_id: payload.delegated_session_id.clone(),
         delegated_conversation_id: payload.delegated_conversation_id.clone(),
@@ -80,7 +79,6 @@ fn cached_streaming_task_from_completed_payload(
             .agent_id
             .clone()
             .or_else(|| payload.delegated_agent_run_id.clone()),
-        teammate_name: payload.teammate_name.clone(),
         delegated_job_id: payload.delegated_job_id.clone(),
         delegated_session_id: payload.delegated_session_id.clone(),
         delegated_conversation_id: payload.delegated_conversation_id.clone(),

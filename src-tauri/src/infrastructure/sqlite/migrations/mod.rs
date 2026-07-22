@@ -521,6 +521,9 @@ mod v20260720102513_add_tasks_feature_state_tests;
 mod v20260720131416_review_pr_disable_pr_automation;
 #[cfg(test)]
 mod v20260720131416_review_pr_disable_pr_automation_tests;
+mod v20260720140000_remove_legacy_claude_team;
+#[cfg(test)]
+mod v20260720140000_remove_legacy_claude_team_tests;
 mod v20260720200633_auto_verify_draft_plans;
 mod v20260721190000_workspace_review_fixer_attempt;
 #[cfg(test)]
@@ -1706,6 +1709,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260720131416,
         name: "review_pr_disable_pr_automation",
         migrate: v20260720131416_review_pr_disable_pr_automation::migrate,
+    },
+    Migration {
+        version: 20260720140000,
+        name: "remove_legacy_claude_team",
+        migrate: v20260720140000_remove_legacy_claude_team::migrate,
     },
     Migration {
         version: 20260720200633,

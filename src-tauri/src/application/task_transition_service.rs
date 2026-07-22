@@ -902,12 +902,6 @@ pub struct TaskTransitionService {
     /// Cloned before being passed to the app chat service so the transition handler also has access.
     activity_event_repo: Arc<dyn ActivityEventRepository>,
 
-    /// Per-task team mode override. When `Some(true)`, the chat service uses
-    /// team-mode agent names (e.g., orchestrator-execution instead of worker).
-    /// `Some(false)` means solo was explicitly chosen (skip metadata fallback).
-    /// `None` means unset — fall back to task metadata `agent_variant`.
-    team_mode: Option<bool>,
-
     /// Shared InteractiveProcessRegistry from AppState.
     /// When set via `with_interactive_process_registry`, injected into the chat
     /// service so state-machine-spawned agents (execution/review/merge) register
@@ -1145,18 +1139,6 @@ impl TaskTransitionService {
         if let Some(ipr) = self.interactive_process_registry.as_ref() {
             service = service.with_interactive_process_registry(Arc::clone(ipr));
         }
-        match self.team_mode {
-            Some(explicit) => {
-                service = service.with_team_mode(explicit);
-            }
-            None => {
-                use crate::infrastructure::agents::claude::env_variant_override;
-                if env_variant_override("execution").as_deref() == Some("team") {
-                    service = service.with_team_mode(true);
-                }
-            }
-        }
-
         self.chat_service = Arc::new(service);
         Self::log_build_step("rebuild_chat_service_fallback", started_at);
     }
@@ -1212,7 +1194,7 @@ impl TaskTransitionService {
         // Create the unified chat service for worker spawning
         let started_at = Instant::now();
         let chat_service: Arc<dyn ChatService> = {
-            let mut service = if let Some(ref handle) = app_handle {
+            let service = if let Some(ref handle) = app_handle {
                 if let Some(app_state) = handle.try_state::<AppState>() {
                     app_state.build_chat_service_for_runtime(
                         Some(Arc::clone(&execution_state)),
@@ -1254,11 +1236,6 @@ impl TaskTransitionService {
                     None,
                 )
             };
-            // Global env var override: RALPHX_PROCESS_VARIANT_EXECUTION=team
-            use crate::infrastructure::agents::claude::env_variant_override;
-            if env_variant_override("execution").as_deref() == Some("team") {
-                service = service.with_team_mode(true);
-            }
             Arc::new(service)
         };
         Self::log_build_step("initial_chat_service", started_at);
@@ -1330,7 +1307,6 @@ impl TaskTransitionService {
             manual_role_default_service: None,
             review_repo: None,
             activity_event_repo: activity_event_repo_for_services,
-            team_mode: None,
             interactive_process_registry: None,
             merge_lock: Arc::new(tokio::sync::Mutex::new(())),
             merges_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -1631,15 +1607,6 @@ impl TaskTransitionService {
         client: Arc<dyn AgenticClient>,
     ) -> Self {
         self.with_harness_agentic_client_factory(harness, move || Arc::clone(&client))
-    }
-
-    /// Enable team mode for agent spawning (builder pattern).
-    ///
-    /// When enabled, the chat service resolves to team-mode agent names
-    /// (e.g., orchestrator-execution instead of worker).
-    pub fn with_team_mode(mut self, team_mode: bool) -> Self {
-        self.team_mode = Some(team_mode);
-        self
     }
 
     /// Inject the shared AppState InteractiveProcessRegistry (builder pattern).
@@ -3743,31 +3710,6 @@ impl TaskTransitionService {
             InternalStatus::Executing | InternalStatus::ReExecuting
         );
         let state = internal_status_to_state(status);
-
-        // Per-task team_mode override: check builder flag OR task metadata.
-        // Some(true/false) = explicitly set by caller → use directly, skip metadata.
-        // None = unset → fall back to task metadata agent_variant.
-        match self.team_mode {
-            Some(explicit) => {
-                self.chat_service.set_team_mode(explicit);
-            }
-            None => {
-                // No explicit choice — fall back to task metadata.
-                // Always set team_mode explicitly to prevent AtomicBool contamination
-                // from previous tasks sharing the same Arc<ChatService>.
-                let is_team = task
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                    .and_then(|meta| {
-                        meta.get("agent_variant")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s == "team")
-                    })
-                    .unwrap_or(false);
-                self.chat_service.set_team_mode(is_team);
-            }
-        }
 
         // Build common TaskServices, then add entry-specific fields.
         let mut services = self.build_task_services_common();

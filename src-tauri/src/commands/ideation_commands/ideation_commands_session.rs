@@ -49,35 +49,6 @@ pub async fn create_ideation_session_impl<R: tauri::Runtime>(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", project_id.as_str()))?;
     let seed_task_id = input.seed_task_id.map(TaskId::from_string);
-    let team_mode_requested = input
-        .team_mode
-        .as_deref()
-        .is_some_and(|mode| mode != "solo");
-    let team_mode_supported = crate::application::ideation_harness_availability::ideation_team_mode_supported_for_project(
-        &state.agent_lane_settings_repo,
-        Some(project_id.as_str()),
-    )
-    .await;
-    let normalized_team_mode = if team_mode_requested && !team_mode_supported {
-        tracing::info!(
-            project_id = %project_id,
-            "Downgrading ideation session team mode to solo because the primary harness does not support team mode"
-        );
-        Some("solo".to_string())
-    } else {
-        input.team_mode.clone()
-    };
-    let normalized_team_config_json = if team_mode_requested && !team_mode_supported {
-        None
-    } else {
-        input
-            .team_config
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| e.to_string())?
-    };
-
     let session_id = IdeationSessionId::new();
     let analysis = prepare_ideation_analysis_state(
         &project,
@@ -102,14 +73,6 @@ pub async fn create_ideation_session_impl<R: tauri::Runtime>(
 
     if let Some(task_id) = seed_task_id {
         builder = builder.seed_task_id(task_id);
-    }
-
-    if let Some(ref team_mode) = normalized_team_mode {
-        builder = builder.team_mode(team_mode.clone());
-    }
-
-    if let Some(config_json) = normalized_team_config_json {
-        builder = builder.team_config_json(config_json);
     }
 
     let session = builder.build();

@@ -2782,7 +2782,7 @@ describe("chat api", () => {
       is_new_conversation: true,
     });
 
-    await sendAgentMessage("project", "p1", "Hello", undefined, undefined, {
+    await sendAgentMessage("project", "p1", "Hello", undefined, {
       conversationId: "c1",
       providerHarness: "codex",
       modelId: "gpt-5.4",
@@ -2815,7 +2815,6 @@ describe("chat api", () => {
       "project",
       "p1",
       "Update member",
-      undefined,
       undefined,
       {
         conversationId: "c1",
@@ -2853,7 +2852,7 @@ describe("chat api", () => {
       is_new_conversation: false,
     });
 
-    await sendAgentMessage("project", "p1", "Build a workflow", undefined, undefined, {
+    await sendAgentMessage("project", "p1", "Build a workflow", undefined, {
       conversationId: "c1",
       capabilityIntent: { coordinationMode: "rx_native_workflow" },
     });
@@ -2880,7 +2879,6 @@ describe("chat api", () => {
       "project",
       "p1",
       "Run internally",
-      undefined,
       undefined,
       {
         conversationId: "c1",
@@ -2910,7 +2908,6 @@ describe("chat api", () => {
       "project",
       "p1",
       "Read @src/main.ts",
-      undefined,
       undefined,
       {
         composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],

@@ -25,5 +25,4 @@ mod persona_feature_flag_standalone;
 mod persona_feature_flag_support;
 mod persona_prompt_composition;
 mod persona_run_attribution;
-mod session_fixes_integration;
 mod session_linking_integration;
