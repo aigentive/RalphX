@@ -1541,7 +1541,7 @@ export function useAgentsViewController({
     [modelRegistry, setLastRuntimeForProject],
   );
 
-  const { handlePublishWorkspace, publishingConversationId } =
+  const { handlePublishWorkspace, publishAttemptsByConversationId } =
     useAgentWorkspacePublisher({
       activeWorkspace,
       findConversationById,
@@ -1653,7 +1653,7 @@ export function useAgentsViewController({
       projects,
       publishShortcutLabel,
       promotePublishShortcut: promoteWorkspaceReviewPublishShortcut,
-      publishingConversationId,
+      publishAttemptsByConversationId,
       selectedConversationId,
       selectedTaskArtifactId,
       setTerminalChatDockElement,
@@ -1687,7 +1687,7 @@ export function useAgentsViewController({
       automationRunFocusTarget,
       panelDockElement: terminalPanelDockElement,
       publishFocusRequest,
-      publishingConversationId,
+      publishAttemptsByConversationId,
       selectedConversationId,
       setArtifactPaneVisibility,
       setArtifactTaskMode,
