@@ -80,10 +80,12 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| AppError::Database(error.to_string()))?;
 
-        // Production never enables `PRAGMA foreign_keys`, so live databases carry
-        // orphan rows unrelated to legacy Claude team state. Baseline them inside
-        // the transaction and gate only on violations this migration introduces;
-        // counting pre-existing ones as damage aborts startup permanently.
+        // Live databases carry orphan rows unrelated to legacy Claude team state.
+        // Foreign keys are enforced by default (`SQLITE_DEFAULT_FOREIGN_KEYS=1`),
+        // but migrations that rewrite tables disable them, so rows deleted inside
+        // those windows can leave children behind. Baseline the violations here and
+        // gate only on ones this migration introduces; counting pre-existing damage
+        // as our own aborts startup permanently with no way to recover.
         let baseline_violations = foreign_key_violation_counts(conn)?;
         if !baseline_violations.is_empty() {
             tracing::warn!(

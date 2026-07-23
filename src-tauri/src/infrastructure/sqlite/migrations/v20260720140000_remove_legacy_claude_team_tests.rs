@@ -464,11 +464,12 @@ fn migration_restores_pragmas_when_begin_immediate_is_locked() {
         .expect("release competing write lock");
 }
 
-/// Production never enables `PRAGMA foreign_keys`, so live databases carry orphan
-/// rows this migration neither created nor cleans up. A database-wide integrity
-/// check counted those pre-existing violations as migration damage, so the
-/// migration failed, `AppState` initialization panicked, and the app aborted on
-/// every launch with no way to recover.
+/// Live databases carry orphan rows this migration neither created nor cleans up:
+/// foreign keys are enforced by default, but migrations that rewrite tables turn
+/// them off, so deletes inside those windows can leave children behind. A
+/// database-wide integrity check counted those pre-existing violations as
+/// migration damage, so the migration failed, `AppState` initialization panicked,
+/// and the app aborted on every launch with no way to recover.
 #[test]
 fn migration_ignores_preexisting_unrelated_foreign_key_violations() {
     let conn = open_memory_connection().expect("create memory db");
