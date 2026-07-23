@@ -720,6 +720,14 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
             .cloned())
     }
 
+    async fn delete_run_if_deletable(
+        &self,
+        _automation_id: &AutomationId,
+        _run_id: &AutomationRunId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
+    }
+
     async fn list_for_automation(
         &self,
         automation_id: &AutomationId,
@@ -894,6 +902,12 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
+    async fn clear_judge_state(&self, _id: &AutomationRunId) -> crate::error::AppResult<()> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
     async fn clear_plan_judge_state(&self, _id: &AutomationRunId) -> crate::error::AppResult<bool> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
@@ -945,6 +959,12 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         _id: &AutomationRunId,
         _agent_phase_started_at: Option<chrono::DateTime<Utc>>,
     ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn clear_finished_at(&self, _id: &AutomationRunId) -> crate::error::AppResult<()> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
         ))
@@ -1682,6 +1702,93 @@ async fn service_status_controls_use_transition_service_and_fail_closed() {
             },
         ]
     );
+}
+
+#[tokio::test]
+async fn service_resume_judge_stopped_unmet_creates_fresh_run_from_failed_attempt() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut paused = automation("automation-resume-unmet", AutomationStatus::Paused);
+    paused.paused_reason_code = Some("judge_stopped_unmet".to_string());
+    paused.paused_reason_detail = Some("Repair the external blocker, then retry.".to_string());
+    automation_repo.create(paused.clone()).await.unwrap();
+    let mut failed = automation_run(
+        "run-1",
+        &paused.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    failed.run_prompt = "Implement Spec §PR F0".to_string();
+    failed.base_ref_kind = "local_branch".to_string();
+    failed.base_ref_used = "ralphx/base".to_string();
+    run_repo.create_run(failed.clone()).await.unwrap();
+
+    let resumed = service.resume(&paused.id).await.unwrap();
+
+    assert_eq!(resumed.status, AutomationStatus::Active);
+    assert!(resumed.paused_reason_code.is_none());
+    assert!(resumed.paused_reason_detail.is_none());
+    let runs = run_repo.list_for_automation(&paused.id).await.unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].status, AutomationRunStatus::Pending);
+    assert_eq!(runs[1].run_prompt, "Implement Spec §PR F0");
+    assert_eq!(runs[1].prompt_author, AutomationPromptAuthor::SetupAgent);
+    assert_eq!(runs[1].base_ref_kind, "local_branch");
+    assert_eq!(runs[1].base_ref_used, "ralphx/base");
+    assert_eq!(runs[1].base_from_run_id, Some(failed.id));
+    assert!(emitter
+        .events()
+        .contains(&AutomationEvent::AutomationUpdated {
+            automation_id: paused.id.clone(),
+        }));
+    assert!(emitter
+        .events()
+        .iter()
+        .any(|event| matches!(event, AutomationEvent::AutomationRunUpdated { automation_id, run_id } if automation_id == &paused.id && run_id == &runs[1].id)));
+}
+
+#[tokio::test]
+async fn service_resume_judge_stopped_unmet_fails_closed_without_current_unmet_stop_verdict() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut paused = automation("automation-resume-stale", AutomationStatus::Paused);
+    paused.paused_reason_code = Some("judge_stopped_unmet".to_string());
+    automation_repo.create(paused.clone()).await.unwrap();
+    let mut stale = automation_run(
+        "run-1",
+        &paused.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    stale.judge_verdict_json = Some(serde_json::to_string(&stop_verdict(true, "Done")).unwrap());
+    run_repo.create_run(stale).await.unwrap();
+
+    let error = service.resume(&paused.id).await.unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("current unmet stop verdict"))
+    );
+    let stored = automation_repo
+        .get_by_id(&paused.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Paused);
+    assert_eq!(
+        stored.paused_reason_code.as_deref(),
+        Some("judge_stopped_unmet")
+    );
+    assert_eq!(
+        run_repo
+            .list_for_automation(&paused.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(emitter.events().is_empty());
 }
 
 #[tokio::test]

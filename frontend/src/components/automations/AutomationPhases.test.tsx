@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -21,9 +22,15 @@ const phasesJson = JSON.stringify([
   { id: "p5", title: "Docs", status: "pending" },
 ]);
 
+function renderPhases(element: ReactNode) {
+  return render(
+    <TooltipProvider delayDuration={0}>{element}</TooltipProvider>,
+  );
+}
+
 describe("AutomationPhaseProgress", () => {
   it("renders the done count, progress bar, and skipped tally", () => {
-    render(<AutomationPhaseProgress value={phasesJson} testId="phases" />);
+    renderPhases(<AutomationPhaseProgress value={phasesJson} testId="phases" />);
 
     expect(screen.getByTestId("phases-count")).toHaveTextContent("2/5 done");
     expect(screen.getByText("1 skipped")).toBeInTheDocument();
@@ -33,27 +40,35 @@ describe("AutomationPhaseProgress", () => {
     expect(bar).toHaveAttribute("aria-valuemax", "5");
   });
 
-  it("renders every phase title with a distinct status badge", () => {
-    render(<AutomationPhaseProgress value={phasesJson} testId="phases" />);
+  it("uses plain accessible icons for settled/queued phases and one live pill for current work", async () => {
+    const user = userEvent.setup();
+    renderPhases(<AutomationPhaseProgress value={phasesJson} testId="phases" />);
 
     const items = screen.getAllByTestId("phases-item");
     expect(items).toHaveLength(5);
 
     expect(within(items[0]!).getByText("Model context")).toBeInTheDocument();
-    expect(within(items[0]!).getByText("Done")).toBeInTheDocument();
+    expect(within(items[0]!).getByLabelText("Done")).toHaveAttribute("data-phase-status", "done");
     expect(within(items[2]!).getByText("In progress")).toBeInTheDocument();
-    expect(within(items[3]!).getByText("Skipped")).toBeInTheDocument();
-    expect(within(items[4]!).getByText("Pending")).toBeInTheDocument();
+    expect(within(items[3]!).getByLabelText("Skipped")).toHaveAttribute("data-phase-status", "skipped");
+    expect(within(items[4]!).getByLabelText("Pending")).toHaveAttribute("data-phase-status", "pending");
 
-    // Status badges expose the normalized status for styling assertions.
-    expect(within(items[0]!).getByText("Done").closest("[data-phase-status]"))
-      .toHaveAttribute("data-phase-status", "done");
-    expect(within(items[2]!).getByText("In progress").closest("[data-phase-status]"))
-      .toHaveAttribute("data-phase-status", "in_progress");
+    const current = within(items[2]!).getByText("In progress").closest("[data-phase-status]");
+    expect(current).toHaveAttribute("data-phase-status", "in_progress");
+    expect(within(items[2]!).getByText("In progress").closest("[data-tone]")).toHaveAttribute(
+      "data-tone",
+      "accent",
+    );
+    expect(
+      within(items[2]!).getByTestId("automation-phase-in-progress-live-dot"),
+    ).toBeInTheDocument();
+
+    await user.hover(within(items[0]!).getByLabelText("Done"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Done");
   });
 
   it("returns null when there are no phases", () => {
-    const { container } = render(<AutomationPhaseProgress value={null} />);
+    const { container } = renderPhases(<AutomationPhaseProgress value={null} />);
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -66,7 +81,7 @@ describe("AutomationPhaseProgress", () => {
       })),
     );
 
-    render(<AutomationPhaseProgress value={many} limit={6} testId="phases" />);
+    renderPhases(<AutomationPhaseProgress value={many} limit={6} testId="phases" />);
 
     expect(screen.getAllByTestId("phases-item")).toHaveLength(6);
     // Count reflects the full (unsliced) list.
@@ -74,14 +89,12 @@ describe("AutomationPhaseProgress", () => {
   });
 
   it("shows a plan icon only for items with a mapped plan artifact", () => {
-    render(
-      <TooltipProvider>
-        <AutomationPhaseProgress
-          value={phasesJson}
-          testId="phases"
-          planByGoalItemId={new Map([["p3", "plan-artifact-3"]])}
-        />
-      </TooltipProvider>,
+    renderPhases(
+      <AutomationPhaseProgress
+        value={phasesJson}
+        testId="phases"
+        planByGoalItemId={new Map([["p3", "plan-artifact-3"]])}
+      />,
     );
 
     const icons = screen.getAllByTestId("phases-plan-icon");
@@ -92,7 +105,7 @@ describe("AutomationPhaseProgress", () => {
   });
 
   it("renders no plan icons without a plan map (fail-closed for unmapped runs)", () => {
-    render(<AutomationPhaseProgress value={phasesJson} testId="phases" />);
+    renderPhases(<AutomationPhaseProgress value={phasesJson} testId="phases" />);
     expect(screen.queryByTestId("phases-plan-icon")).toBeNull();
   });
 
@@ -103,14 +116,12 @@ describe("AutomationPhaseProgress", () => {
       isError: false,
     });
     const user = userEvent.setup();
-    render(
-      <TooltipProvider>
-        <AutomationPhaseProgress
-          value={phasesJson}
-          testId="phases"
-          planByGoalItemId={new Map([["p3", "plan-artifact-3"]])}
-        />
-      </TooltipProvider>,
+    renderPhases(
+      <AutomationPhaseProgress
+        value={phasesJson}
+        testId="phases"
+        planByGoalItemId={new Map([["p3", "plan-artifact-3"]])}
+      />,
     );
 
     expect(screen.queryByTestId("automation-plan-dialog")).toBeNull();

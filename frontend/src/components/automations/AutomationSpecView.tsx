@@ -3,7 +3,6 @@ import { ChevronDown, ChevronUp, FileText } from "lucide-react";
 
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { ArtifactSelectableRegion } from "@/components/agents/artifact-selection/ArtifactSelectableRegion";
-import { Button } from "@/components/ui/button";
 import { useArtifact } from "@/hooks/useArtifacts";
 
 /**
@@ -38,11 +37,19 @@ const LazySpecMarkdown = lazy(async () => {
 });
 
 const MARKDOWN_TOKEN_PREFIX = /^\s*(?:#{1,6}\s+|[-*+]\s+|>\s+|\d+\.\s+)/;
+const MARKDOWN_LINK = /!?\[([^\]]+)\]\([^)]+\)/g;
+const INLINE_MARKDOWN_TOKEN = /[*_~`]/g;
 
 function buildExcerpt(content: string, maxLines = 3): string {
   const lines = content
     .split(/\r?\n/)
-    .map((line) => line.replace(MARKDOWN_TOKEN_PREFIX, "").trim())
+    .map((line) =>
+      line
+        .replace(MARKDOWN_TOKEN_PREFIX, "")
+        .replace(MARKDOWN_LINK, "$1")
+        .replace(INLINE_MARKDOWN_TOKEN, "")
+        .trim(),
+    )
     .filter((line) => line.length > 0);
   return lines.slice(0, maxLines).join("\n");
 }
@@ -58,7 +65,7 @@ function countWords(content: string): number {
 function PlainSpecContent({ text }: { text: string }) {
   return (
     <p
-      className="whitespace-pre-wrap break-words text-xs leading-5"
+      className="whitespace-pre-wrap break-words text-sm leading-6"
       style={{ color: "var(--text-secondary, #c7c7cc)" }}
     >
       {text}
@@ -104,7 +111,7 @@ export function AutomationSpecView({
 
   return (
     <ArtifactSelectableRegion
-      className="space-y-2"
+      className="space-y-3"
       source={{
         sourceKind: "automation_spec",
         sourceId: data.id,
@@ -114,6 +121,9 @@ export function AutomationSpecView({
         version: data.version,
       }}
     >
+      <p className="text-xs" style={{ color: "var(--text-muted, #8e8e96)" }}>
+        The specification this automation implements.
+      </p>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <FileText
@@ -122,7 +132,7 @@ export function AutomationSpecView({
             aria-hidden="true"
           />
           <span
-            className="truncate text-xs font-semibold"
+            className="truncate text-sm font-medium"
             style={{ color: "var(--text-primary, #f2f2f4)" }}
           >
             {data.name}
@@ -130,7 +140,7 @@ export function AutomationSpecView({
         </div>
         {hasContent ? (
           <span
-            className="shrink-0 whitespace-nowrap text-[0.6875rem] tabular-nums"
+            className="shrink-0 whitespace-nowrap text-xs tabular-nums"
             style={{ color: "var(--text-muted, #8e8e96)" }}
           >
             {wordCount} {wordCount === 1 ? "word" : "words"}
@@ -143,7 +153,10 @@ export function AutomationSpecView({
           Spec has no content yet.
         </p>
       ) : expanded ? (
-        <div data-testid="automation-spec-markdown" className="max-w-none text-xs">
+        <div
+          data-testid="automation-spec-markdown"
+          className="max-w-3xl text-sm leading-6 text-[var(--text-secondary)] [&>*+*]:mt-3"
+        >
           {markdownMounted ? (
             <Suspense fallback={<PlainSpecContent text={content} />}>
               <LazySpecMarkdown text={content} />
@@ -154,30 +167,29 @@ export function AutomationSpecView({
         </div>
       ) : (
         <p
-          className="whitespace-pre-wrap break-words text-xs leading-5"
-          style={{ color: "var(--text-muted, #8e8e96)" }}
+          className="line-clamp-3 whitespace-pre-line break-words text-sm leading-6"
+          style={{ color: "var(--text-secondary, #c7c7cc)" }}
+          data-testid="automation-spec-excerpt"
         >
           {excerpt}
         </p>
       )}
 
       {hasContent ? (
-        <Button
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
-          className="h-auto gap-1.5 px-2 py-1 text-xs"
+          className="inline-flex items-center gap-1 border-0 bg-transparent p-0 text-xs font-normal text-[var(--text-muted)] outline-none transition-colors hover:text-[var(--text-secondary)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
           data-testid="automation-spec-toggle"
         >
           {expanded ? (
-            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+            <ChevronUp className="h-3 w-3" aria-hidden="true" />
           ) : (
-            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+            <ChevronDown className="h-3 w-3" aria-hidden="true" />
           )}
           {expanded ? "Hide spec" : "Show full spec"}
-        </Button>
+        </button>
       ) : null}
     </ArtifactSelectableRegion>
   );

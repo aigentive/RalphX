@@ -67,16 +67,17 @@ describe("AutomationRunTaskLedger", () => {
 
     expect(await screen.findByText("Active work")).toBeInTheDocument();
     expect(screen.getByText("Open work")).toBeInTheDocument();
-    expect(screen.getByText("coder-1")).toBeInTheDocument();
+    expect(screen.queryByText("coder-1")).not.toBeInTheDocument();
 
     // Only actionable (active/open) tasks get their own rows.
     expect(screen.getAllByTestId("automation-run-task-ledger-row")).toHaveLength(2);
     expect(screen.queryByText("Done work")).not.toBeInTheDocument();
     expect(screen.queryByText("Dropped work")).not.toBeInTheDocument();
 
-    expect(
-      screen.getByTestId("automation-run-task-ledger-summary"),
-    ).toHaveTextContent("1 done · 1 dropped");
+    const labelRow = screen.getByTestId("automation-run-task-ledger-label-row");
+    const summary = screen.getByTestId("automation-run-task-ledger-summary");
+    expect(labelRow).toContainElement(summary);
+    expect(summary).toHaveTextContent("1 done · 1 dropped");
   });
 
   it("shows the empty state when there are no agent tasks", async () => {

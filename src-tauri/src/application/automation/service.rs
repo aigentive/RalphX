@@ -51,6 +51,7 @@ const DEFAULT_BASE_REF_KIND: &str = "project_default";
 const DEFAULT_CHAIN_MODE: &str = "merged_base";
 const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
 const JUDGE_FAILED_PAUSED_REASON_CODE: &str = "judge_failed";
+const JUDGE_STOPPED_UNMET_PAUSED_REASON_CODE: &str = "judge_stopped_unmet";
 const DEFAULT_COMPLETION_SIGNAL: &str = "pr_merged";
 const AGENT_COMPLETED_COMPLETION_SIGNAL: &str = "agent_completed";
 pub(crate) const IDEATION_BRIDGE_RUN_MODE: &str = "ideation";
@@ -549,6 +550,10 @@ impl AutomationService {
                 to: AutomationStatus::Active.as_str().to_string(),
             });
         }
+        if automation.paused_reason_code.as_deref() == Some(JUDGE_STOPPED_UNMET_PAUSED_REASON_CODE)
+        {
+            return self.resume_after_judge_stopped_unmet(automation).await;
+        }
         self.transition_automation_status_or_conflict(
             id,
             AutomationStatus::Paused,
@@ -557,6 +562,47 @@ impl AutomationService {
             None,
         )
         .await
+    }
+
+    async fn resume_after_judge_stopped_unmet(
+        &self,
+        automation: Automation,
+    ) -> AppResult<Automation> {
+        let runs = self.run_repo.list_for_automation(&automation.id).await?;
+        let latest = current_unmet_stop_run(&automation, &runs)?;
+        let previous_run_id = latest.id.clone();
+        let retry = CreateAutomationRunInput {
+            automation_id: automation.id.clone(),
+            run_prompt: latest.run_prompt.clone(),
+            prompt_author: latest.prompt_author,
+            base_ref_kind: latest.base_ref_kind.clone(),
+            base_ref_used: latest.base_ref_used.clone(),
+            base_from_run_id: Some(previous_run_id.clone()),
+        };
+        let paused_reason_detail = automation.paused_reason_detail.clone();
+        let resumed = self
+            .transition_automation_status_or_conflict(
+                &automation.id,
+                AutomationStatus::Paused,
+                AutomationStatus::Active,
+                None,
+                None,
+            )
+            .await?;
+
+        if let Err(error) = self.create_run(retry).await {
+            self.rollback_failed_activation_if_still_current(
+                &automation.id,
+                Some(previous_run_id),
+                AutomationStatus::Paused,
+                Some(JUDGE_STOPPED_UNMET_PAUSED_REASON_CODE.to_string()),
+                paused_reason_detail,
+                "judge-stopped-unmet resume",
+            )
+            .await;
+            return Err(error);
+        }
+        Ok(resumed)
     }
 
     pub async fn stop(&self, id: &AutomationId) -> AppResult<Automation> {
@@ -653,17 +699,28 @@ impl AutomationService {
                 reason: None,
             }),
             Err(error) => {
-                self.rollback_failed_restart_if_still_current(id, previous_run_id)
-                    .await;
+                self.rollback_failed_activation_if_still_current(
+                    id,
+                    previous_run_id,
+                    AutomationStatus::Stopped,
+                    None,
+                    None,
+                    "automation restart",
+                )
+                .await;
                 Err(error)
             }
         }
     }
 
-    async fn rollback_failed_restart_if_still_current(
+    async fn rollback_failed_activation_if_still_current(
         &self,
         id: &AutomationId,
         previous_run_id: Option<AutomationRunId>,
+        rollback_status: AutomationStatus,
+        reason_code: Option<String>,
+        reason_detail: Option<String>,
+        operation: &'static str,
     ) {
         let latest_run_id = match self.run_repo.latest_for_automation(id).await {
             Ok(latest) => latest.map(|run| run.id),
@@ -671,7 +728,8 @@ impl AutomationService {
                 tracing::error!(
                     automation_id = %id,
                     error = %error,
-                    "Failed to read current run while rolling back automation restart"
+                    operation,
+                    "Failed to read current run while rolling back automation activation"
                 );
                 return;
             }
@@ -683,16 +741,17 @@ impl AutomationService {
             .transition_automation_status_or_conflict(
                 id,
                 AutomationStatus::Active,
-                AutomationStatus::Stopped,
-                None,
-                None,
+                rollback_status,
+                reason_code,
+                reason_detail,
             )
             .await
         {
             tracing::error!(
                 automation_id = %id,
                 error = %error,
-                "Failed to roll back automation status after restart run creation failed"
+                operation,
+                "Failed to roll back automation status after run creation failed"
             );
         }
     }
@@ -2227,6 +2286,58 @@ impl AutomationService {
 enum SuccessorReadiness {
     Ready,
     NotScheduled(Box<AutomationSuccessorRunOutcome>),
+}
+
+fn current_unmet_stop_run<'a>(
+    automation: &Automation,
+    runs: &'a [AutomationRun],
+) -> AppResult<&'a AutomationRun> {
+    let invalid = |detail: &str| {
+        AppError::Validation(format!(
+            "judge_stopped_unmet resume requires a current unmet stop verdict: {detail}"
+        ))
+    };
+    let latest = runs
+        .last()
+        .ok_or_else(|| invalid("automation has no runs"))?;
+    if !is_signal_terminal_automation_run(latest.status)
+        || latest.judge_state != AutomationJudgeState::Done
+    {
+        return Err(invalid("latest run is not terminal with a completed judge"));
+    }
+    let verdict_json = latest
+        .judge_verdict_json
+        .as_deref()
+        .ok_or_else(|| invalid("latest run has no stored judge verdict"))?;
+    let verdict = parse_automation_judge_verdict(
+        verdict_json,
+        AutomationJudgeValidationContext {
+            automation,
+            previous_run: latest,
+        },
+    )
+    .map_err(|error| invalid(&format!("latest verdict is invalid: {error}")))?;
+    if verdict.decision != AutomationJudgeDecision::Stop || verdict.goal_met {
+        return Err(invalid("latest verdict is not stop with goalMet=false"));
+    }
+    if latest.run_prompt.trim().is_empty() {
+        return Err(invalid("latest run prompt is empty"));
+    }
+    let run_count = runs.len() as i64;
+    if run_count >= automation.max_runs {
+        return Err(AppError::Validation(format!(
+            "{run_count} runs already reached the configured limit {}. Reopen the last run to continue in place, or raise maxRuns.",
+            automation.max_runs
+        )));
+    }
+    let failure_count = consecutive_failure_count(runs);
+    if failure_count >= automation.max_consecutive_failures {
+        return Err(AppError::Validation(format!(
+            "{failure_count} consecutive runs failed (limit {}). Reopen the last run to continue in place, or raise maxConsecutiveFailures.",
+            automation.max_consecutive_failures
+        )));
+    }
+    Ok(latest)
 }
 
 fn schedule_not_scheduled(reason: &str) -> AutomationScheduleOutcome {

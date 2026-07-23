@@ -1,0 +1,409 @@
+import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { Automation, AutomationRun } from "@/api/automations";
+import { TooltipProvider } from "@/components/ui/tooltip";
+
+import { RunTimelineItem } from "./AutomationRunTimelineItem";
+
+const { listConversationTasksMock } = vi.hoisted(() => ({
+  listConversationTasksMock: vi.fn(),
+}));
+
+vi.mock("@/api/agent-tasks", () => ({
+  agentTaskApi: {
+    listConversationTasks: (...args: unknown[]) => listConversationTasksMock(...args),
+  },
+}));
+
+function automation(): Automation {
+  const now = "2026-07-22T00:00:00Z";
+  return {
+    id: "automation-1",
+    projectId: "project-1",
+    name: "Ship migration loop",
+    status: "active",
+    pausedReasonCode: null,
+    pausedReasonDetail: null,
+    goalPrompt: "Keep landing migration tasks.",
+    setupConversationId: "setup-conversation-1",
+    specArtifactId: null,
+    authoringMode: "spec",
+    decompositionVerificationStatus: "not_started",
+    decompositionVerificationVerdictJson: null,
+    providerHarness: "codex",
+    modelId: "gpt-5.6",
+    logicalEffort: "high",
+    runMode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "main",
+    baseSourcePullRequestJson: null,
+    goalItemsJson: null,
+    chainMode: "merged_base",
+    completionSignal: "pr_merged",
+    planApprovalMode: "manual",
+    prMergeMode: "manual",
+    planDeepVerification: false,
+    maxRuns: 25,
+    maxConsecutiveFailures: 3,
+    firstRunPrompt: null,
+    setupAnalysisSummary: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
+  const now = "2026-07-22T00:00:00Z";
+  return {
+    id: "run-10",
+    automationId: "automation-1",
+    runIndex: 10,
+    status: "agent_failed",
+    judgeState: "failed",
+    judgeLeaseExpiresAt: null,
+    planJudgeState: "none",
+    planRevisionRound: 0,
+    planRevisionPending: false,
+    planPhase: false,
+    planArtifactId: null,
+    planApprovedBy: null,
+    planApprovedArtifactVersion: null,
+    planApprovedAt: null,
+    conversationId: null,
+    runPrompt: "Continue the automation.",
+    promptAuthor: "judge",
+    baseRefKind: "project_default",
+    baseRefUsed: "main",
+    baseFromRunId: null,
+    goalItemId: null,
+    branchName: "ralphx/run-10",
+    prNumber: null,
+    prUrl: null,
+    prTitle: null,
+    prHeadRefName: null,
+    prBaseRefName: "main",
+    prMergedAt: null,
+    mergeCommitSha: null,
+    diffStatsJson: null,
+    agentSummary: null,
+    judgeVerdictJson: null,
+    judgeModelId: null,
+    errorCode: "agent_failed",
+    errorDetail: "Agent exited",
+    signalCheckFailures: 0,
+    startedAt: now,
+    finishedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function renderItem(
+  candidate: AutomationRun,
+  options: {
+    isLatest?: boolean;
+    onDeleteRun?: (run: AutomationRun) => void;
+    onResumeRun?: (run: AutomationRun) => void;
+    projectId?: string | null;
+    onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+    defaultExpanded?: boolean;
+  } = {},
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <RunTimelineItem
+          run={candidate}
+          automation={automation()}
+          projectId={options.projectId ?? null}
+          defaultExpanded={options.defaultExpanded ?? false}
+          activeGoalItem={null}
+          setupConversationId={null}
+          {...(options.isLatest !== undefined && { isLatest: options.isLatest })}
+          {...(options.onDeleteRun && { onDeleteRun: options.onDeleteRun })}
+          {...(options.onResumeRun && { onResumeRun: options.onResumeRun })}
+          {...(options.onOpenRunConversation && {
+            onOpenRunConversation: options.onOpenRunConversation,
+          })}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>,
+  );
+}
+
+describe("RunTimelineItem run deletion", () => {
+  beforeEach(() => {
+    listConversationTasksMock.mockReset();
+    listConversationTasksMock.mockResolvedValue([]);
+  });
+
+  it("keeps the collapsed PR link, timestamp, and chevron on the header line", () => {
+    renderItem(run({
+      status: "completed",
+      judgeState: "done",
+      prNumber: 612,
+      prUrl: "https://github.com/aigentive/ralphx.app/pull/612",
+    }));
+
+    const headerRow = screen.getByTestId("automation-run-run-10-header-row");
+    const prLink = screen.getByTestId("automation-run-run-10-pr-link");
+    const updatedAt = screen.getByTestId("automation-run-run-10-updated-at");
+    const expandButton = screen.getByRole("button", { name: "Expand run 10" });
+
+    expect(headerRow).toHaveClass("flex-nowrap");
+    expect(headerRow).toContainElement(prLink);
+    expect(headerRow).toContainElement(updatedAt);
+    expect(prLink.compareDocumentPosition(updatedAt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(expandButton).not.toContainElement(prLink);
+  });
+
+  it("uses a centered compact marker and a soft darker edge for failed runs", () => {
+    renderItem(run());
+
+    expect(screen.getByTestId("automation-run-run-10-marker")).toHaveClass(
+      "left-[0.5px]",
+      "h-2.5",
+      "w-2.5",
+    );
+    const card = screen.getByTestId("automation-run-run-10-card");
+    expect(card.style.backgroundColor).toContain("--bg-surface");
+    expect(card.style.borderColor).toContain("--border-default");
+    expect(card.style.borderStyle).toBe("solid");
+    expect(card.style.borderWidth).toBe("1px");
+  });
+
+  it("keeps collapsed failures to one compact unboxed outcome line", () => {
+    renderItem(run({
+      judgeState: "done",
+      agentSummary: "The agent stopped after the first step.",
+    }));
+
+    const outcome = screen.getByTestId("automation-run-run-10-failure");
+    expect(outcome.tagName).toBe("P");
+    expect(outcome).toHaveClass("truncate", "text-xs");
+    expect(outcome).toHaveTextContent("Agent exited");
+    expect(outcome).toHaveTextContent("The agent stopped after the first step.");
+    expect(outcome.style.backgroundColor).toBe("");
+    expect(screen.getByTestId("automation-run-run-10-card")).toHaveClass("p-3");
+  });
+
+  it("offers deletion for the latest failed run and passes that run to the handler", async () => {
+    const user = userEvent.setup();
+    const candidate = run();
+    const onDeleteRun = vi.fn();
+    renderItem(candidate, { isLatest: true, onDeleteRun });
+
+    const deleteButton = screen.getByTestId("automation-run-run-10-delete");
+    expect(deleteButton).toHaveAccessibleName("Delete run 10");
+    expect(screen.getByRole("button", { name: "Expand run 10" }))
+      .not.toContainElement(deleteButton);
+
+    await user.click(deleteButton);
+
+    expect(onDeleteRun).toHaveBeenCalledOnce();
+    expect(onDeleteRun).toHaveBeenCalledWith(candidate);
+  });
+
+  it("uses stop-and-delete copy for the latest running run", async () => {
+    const user = userEvent.setup();
+    renderItem(run({ status: "running", judgeState: "none", finishedAt: null }), {
+      isLatest: true,
+      onDeleteRun: vi.fn(),
+    });
+
+    const deleteButton = screen.getByRole("button", {
+      name: "Stop and delete run 10",
+    });
+    await user.hover(deleteButton);
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Stop & delete run",
+    );
+  });
+
+  it("does not offer deletion for a completed latest run", () => {
+    renderItem(run({ status: "completed" }), {
+      isLatest: true,
+      onDeleteRun: vi.fn(),
+    });
+
+    expect(
+      screen.queryByTestId("automation-run-run-10-delete"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer deletion for a failed non-latest run", () => {
+    renderItem(run(), { isLatest: false, onDeleteRun: vi.fn() });
+
+    expect(
+      screen.queryByTestId("automation-run-run-10-delete"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not toggle expansion when delete is clicked", async () => {
+    const user = userEvent.setup();
+    renderItem(run(), { isLatest: true, onDeleteRun: vi.fn() });
+    const expandButton = screen.getByRole("button", { name: "Expand run 10" });
+
+    await user.click(screen.getByTestId("automation-run-run-10-delete"));
+
+    expect(expandButton).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByTestId("automation-run-run-10-body"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers resume for the latest failed run and passes that run to the handler", async () => {
+    const user = userEvent.setup();
+    const candidate = run();
+    const onResumeRun = vi.fn();
+    renderItem(candidate, { isLatest: true, onResumeRun, defaultExpanded: true });
+
+    const resumeButton = screen.getByTestId("automation-run-run-10-resume");
+    expect(resumeButton).toHaveAccessibleName("Resume run 10");
+
+    await user.click(resumeButton);
+
+    expect(onResumeRun).toHaveBeenCalledOnce();
+    expect(onResumeRun).toHaveBeenCalledWith(candidate);
+  });
+
+  it.each(["completed", "merged"] as const)(
+    "does not offer resume for a latest %s run",
+    (status) => {
+      renderItem(run({ status }), {
+        isLatest: true,
+        onResumeRun: vi.fn(),
+        defaultExpanded: true,
+      });
+
+      expect(
+        screen.queryByTestId("automation-run-run-10-resume"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not offer resume for a failed non-latest run", () => {
+    renderItem(run(), {
+      isLatest: false,
+      onResumeRun: vi.fn(),
+      defaultExpanded: true,
+    });
+
+    expect(
+      screen.queryByTestId("automation-run-run-10-resume"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders delete and resume together for the latest failed run", () => {
+    renderItem(run(), {
+      isLatest: true,
+      onDeleteRun: vi.fn(),
+      onResumeRun: vi.fn(),
+      defaultExpanded: true,
+    });
+
+    expect(screen.getByTestId("automation-run-run-10-delete")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-run-run-10-resume")).toBeInTheDocument();
+  });
+
+  it("renders Run prompt as a minimal inline disclosure", async () => {
+    const user = userEvent.setup();
+    renderItem(run());
+
+    await user.click(screen.getByRole("button", { name: "Expand run 10" }));
+
+    const promptToggle = screen.getByTestId("automation-run-run-10-prompt-toggle");
+    expect(promptToggle).toHaveClass("border-0", "bg-transparent", "p-0", "text-xs");
+    expect(promptToggle).toHaveClass("text-[var(--text-muted)]");
+  });
+
+  it("uses one status pill and demotes secondary run states to joined text", () => {
+    renderItem(run());
+
+    expect(screen.getByTestId("automation-run-run-10-header-status")).toHaveClass(
+      "rounded-full",
+    );
+    const judgeState = screen.getByTestId("automation-run-run-10-header-judge");
+    expect(judgeState).not.toHaveClass("rounded-full");
+    expect(judgeState.closest("[data-testid='automation-run-run-10-header-secondary-states']"))
+      .toHaveTextContent("failed");
+  });
+
+  it("anchors metadata, task ownership, and workflow actions in their zones", async () => {
+    const user = userEvent.setup();
+    const onOpenRunConversation = vi.fn();
+    listConversationTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "Implement run card",
+        state: "active",
+        ownerAgent: "frontend-specialist",
+        blockedBy: [],
+        blocks: [],
+        availability: "available",
+        updatedAt: "2026-07-22T00:00:00Z",
+      },
+    ]);
+    renderItem(
+      run({
+        status: "running",
+        judgeState: "none",
+        finishedAt: null,
+        conversationId: "conversation-10",
+        planArtifactId: "plan-10",
+        prNumber: 612,
+        prUrl: "https://github.com/aigentive/ralphx.app/pull/612",
+      }),
+      { projectId: "project-1", onOpenRunConversation, defaultExpanded: true },
+    );
+
+    const header = screen.getByTestId("automation-run-run-10-header-row");
+    expect(header).toContainElement(screen.getByTestId("automation-run-run-10-pr-link"));
+    const facts = screen.getByTestId("automation-run-run-10-facts");
+    expect(await screen.findByText("frontend-specialist")).toBeInTheDocument();
+    expect(facts).toHaveTextContent("Agent");
+    expect(facts).toContainElement(screen.getByRole("button", { name: "Copy base ref" }));
+
+    const footer = screen.getByTestId("automation-run-run-10-footer");
+    const planButton = screen.getByRole("button", { name: "View run plan" });
+    const conversationButton = screen.getByRole("button", { name: "Open conversation" });
+    expect(footer).toContainElement(planButton);
+    expect(footer).toContainElement(conversationButton);
+    expect(planButton.compareDocumentPosition(conversationButton) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+
+    await user.click(conversationButton);
+    expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "conversation-10");
+  });
+
+  it("renders expanded failures as a left rule and keeps the footer action persistent", async () => {
+    const user = userEvent.setup();
+    renderItem(run());
+
+    await user.click(screen.getByRole("button", { name: "Expand run 10" }));
+
+    const failure = screen.getByTestId("automation-run-run-10-failure");
+    expect(failure.tagName).toBe("DIV");
+    expect(failure.style.borderLeftColor).toContain("--status-error");
+    expect(failure.style.borderLeftStyle).toBe("solid");
+    expect(failure.style.borderLeftWidth).toBe("2px");
+    expect(screen.getByRole("button", { name: "Open conversation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open conversation" })).toHaveTextContent(
+      "Open conversation",
+    );
+    expect(screen.getByTestId("automation-run-run-10-footer")).toBeInTheDocument();
+
+    await user.hover(screen.getByTestId("automation-run-run-10-conversation-disabled-trigger"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Run has not started");
+  });
+});
