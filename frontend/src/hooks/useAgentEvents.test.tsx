@@ -165,6 +165,7 @@ describe("useAgentEvents", () => {
     useChatStore.setState({
       activeConversationIds: {},
       activeAgentRunIds: {},
+      activeAgentRunHarnesses: {},
       queuedMessages: {},
       agentStatus: {},
       isSending: {},
@@ -190,12 +191,14 @@ describe("useAgentEvents", () => {
           context_type: "task",
           context_id: "task-123",
           conversation_id: "conv-1",
+          provider_harness: "claude",
         });
       });
 
       const state = useChatStore.getState();
       expect(state.agentStatus["task:task-123"]).toBe("generating");
       expect(state.activeAgentRunIds["task:task-123"]).toBe("run-1");
+      expect(state.activeAgentRunHarnesses["task:task-123"]).toBe("claude");
     });
 
     it("sets running state for task_execution context", () => {
@@ -753,6 +756,7 @@ describe("useAgentEvents", () => {
         useChatStore.setState({
           activeConversationIds: { "project:conv-1": "conv-1" },
           activeAgentRunIds: { "project:conv-1": "run-new" },
+          activeAgentRunHarnesses: { "project:conv-1": "codex" },
           agentStatus: { "project:conv-1": "generating" },
         });
       });
@@ -771,6 +775,36 @@ describe("useAgentEvents", () => {
       const state = useChatStore.getState();
       expect(state.agentStatus["project:conv-1"]).toBe("generating");
       expect(state.activeAgentRunIds["project:conv-1"]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses["project:conv-1"]).toBe("codex");
+    });
+
+    it("ignores a completion without an id while a newer run pair is active", () => {
+      const wrapper = createWrapper();
+
+      act(() => {
+        useChatStore.setState({
+          activeConversationIds: { "project:conv-1": "conv-1" },
+          activeAgentRunIds: { "project:conv-1": "run-new" },
+          activeAgentRunHarnesses: { "project:conv-1": "codex" },
+          agentStatus: { "project:conv-1": "generating" },
+        });
+      });
+
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:run_completed", {
+          context_type: "project",
+          context_id: "project-1",
+          conversation_id: "conv-1",
+          status: "completed",
+        });
+      });
+
+      const state = useChatStore.getState();
+      expect(state.agentStatus["project:conv-1"]).toBe("generating");
+      expect(state.activeAgentRunIds["project:conv-1"]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses["project:conv-1"]).toBe("codex");
     });
 
     it("ignores stale completion from a previous active conversation", () => {
@@ -945,6 +979,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:run_completed", {
+          run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",
@@ -1169,6 +1204,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:error", {
+          agent_run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",
@@ -1507,6 +1543,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:run_completed", {
+          run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",
@@ -1585,6 +1622,9 @@ describe("useAgentEvents", () => {
       expect(
         useChatStore.getState().activeAgentRunIds["task_execution:task-123"]
       ).toBeUndefined();
+      expect(
+        useChatStore.getState().activeAgentRunHarnesses["task_execution:task-123"]
+      ).toBeUndefined();
     });
 
     it("rapid burst: turn_completed ×3 keeps agent alive throughout", () => {
@@ -1656,6 +1696,7 @@ describe("useAgentEvents", () => {
 
       act(() => {
         emitEvent("agent:error", {
+          agent_run_id: "run-1",
           context_type: "task_execution",
           context_id: "task-123",
           conversation_id: "conv-1",

@@ -401,6 +401,14 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         return false;
       }
 
+      const activeRunId = useChatStore.getState().activeAgentRunIds[storeKey];
+      if (eventRunId == null && activeRunId != null) {
+        logger.warn(
+          `[AgentEvents] Ignoring ${eventName} without a run id while active=${activeRunId} for key=${storeKey}`
+        );
+        return false;
+      }
+
       const parsed = parseStoreKey(storeKey);
       if (parsed?.contextType === "ideation") {
         const activeChildId = useIdeationStore.getState().activeVerificationChildId[parsed.contextId];
@@ -445,7 +453,11 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
         // Set agent as generating for this context
         setAgentStatus(eventContextKey, "generating");
-        setActiveAgentRun(eventContextKey, payload.run_id);
+        setActiveAgentRun(
+          eventContextKey,
+          payload.run_id,
+          payload.provider_harness ?? payload.providerHarness ?? null,
+        );
 
         updateConversationProviderMetadata({
           conversationId: conversation_id,
