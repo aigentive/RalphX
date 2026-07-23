@@ -60,6 +60,9 @@ export async function seedMergedWorkspace(
         publicationPushStatus: "pushed",
       };
       seedMockAgentConversationWorkspace(terminalWorkspace);
+      await window.__queryClient.cancelQueries({
+        queryKey: ["agents", "sidebar-conversations"],
+      });
       window.__queryClient.removeQueries({ queryKey: ["agents", "sidebar-conversations"] });
       window.__queryClient.removeQueries({ queryKey: ["agents", "project-conversations"] });
     },
