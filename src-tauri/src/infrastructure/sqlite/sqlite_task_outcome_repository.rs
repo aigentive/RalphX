@@ -7,6 +7,9 @@ use tokio::sync::Mutex;
 
 use super::sqlite_learned_skill_repos::{db_parse_error, parse_datetime};
 use super::DbConnection;
+use crate::domain::entities::learned_skill::{
+    is_valid_recurrence_key, TaskOutcomeRecurrenceCorpus,
+};
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
@@ -240,6 +243,73 @@ impl TaskOutcomeRepository for SqliteTaskOutcomeRepository {
                     )?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(rows)
+            })
+            .await
+    }
+
+    async fn recurrence_corpus(
+        &self,
+        project_id: &ProjectId,
+        recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus> {
+        if !is_valid_recurrence_key(recurrence_key) {
+            return Err(AppError::Validation(
+                "task outcome recurrence key is invalid".to_string(),
+            ));
+        }
+        let project_id = project_id.as_str().to_string();
+        let recurrence_key = recurrence_key.to_string();
+        self.db
+            .run(move |conn| {
+                let safe_evidence =
+                    "CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END";
+                let (eligible_observations, distinct_sessions): (i64, i64) = conn.query_row(
+                    &format!(
+                        "SELECT COUNT(*), COUNT(DISTINCT recurrence_session)
+                         FROM (
+                            SELECT
+                                CASE
+                                    WHEN json_type(
+                                        {safe_evidence},
+                                        '$.recurrence_key'
+                                    ) = 'text'
+                                    THEN json_extract(
+                                        {safe_evidence},
+                                        '$.recurrence_key'
+                                    )
+                                END AS recurrence_key,
+                                CASE
+                                    WHEN json_type(
+                                        {safe_evidence},
+                                        '$.recurrence_session'
+                                    ) = 'text'
+                                    THEN trim(json_extract(
+                                        {safe_evidence},
+                                        '$.recurrence_session'
+                                    ))
+                                END AS recurrence_session
+                            FROM task_outcomes
+                            WHERE project_id = ?1
+                              AND source IN (
+                                  'review', 'merge', 'merge_validation', 'agent_conversation'
+                              )
+                              AND status IN ('failed', 'eligible')
+                         )
+                         WHERE recurrence_key = ?2
+                           AND recurrence_session IS NOT NULL
+                           AND recurrence_session <> ''"
+                    ),
+                    rusqlite::params![project_id, recurrence_key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                Ok(TaskOutcomeRecurrenceCorpus {
+                    eligible_observations: u64::try_from(eligible_observations).map_err(|_| {
+                        AppError::Database("negative recurrence observation count".to_string())
+                    })?,
+                    distinct_sessions: u64::try_from(distinct_sessions).map_err(|_| {
+                        AppError::Database("negative recurrence session count".to_string())
+                    })?,
+                })
             })
             .await
     }

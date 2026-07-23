@@ -8,7 +8,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::TaskOutcomeRepository;
 use crate::error::{AppError, AppResult};
 
-use super::failure_fingerprint::failure_fingerprint;
+use super::failure_fingerprint::{attach_recurrence_evidence, failure_fingerprint};
 use super::{new_empty_task_outcome, OutcomeLedgerService};
 
 pub(crate) async fn record_merge_failure_outcome(
@@ -45,6 +45,8 @@ pub(crate) async fn record_merge_failure_outcome(
         "failure_class".to_string(),
         Value::String(class.as_str().to_string()),
     );
+    let trusted_session = task.ideation_session_id.as_ref().map(|id| id.as_str());
+    attach_recurrence_evidence(&mut evidence, fingerprint_evidence, trusted_session);
 
     let mut outcome = new_empty_task_outcome(
         task.project_id.clone(),

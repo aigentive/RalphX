@@ -86,6 +86,40 @@ async fn record_review_decision_outcome(
         "scope_drift_classification": req.scope_drift_classification,
         "followup_session_id": followup_session_id,
     });
+    if matches!(
+        outcome,
+        ReviewToolOutcome::NeedsChanges | ReviewToolOutcome::Escalate
+    ) {
+        let mut recurrence_parts = [
+            req.summary.as_deref(),
+            req.feedback.as_deref(),
+            req.escalation_reason.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        if let Some(issues) = req.issues.as_ref() {
+            for issue in issues {
+                recurrence_parts.extend(
+                    [
+                        issue.title.as_deref(),
+                        issue.description.as_deref(),
+                        issue.category.as_deref(),
+                        issue.file_path.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(str::to_string),
+                );
+            }
+        }
+        crate::domain::services::failure_fingerprint::attach_recurrence_evidence(
+            &mut task_outcome.evidence_json,
+            &recurrence_parts.join("\n"),
+            task.ideation_session_id.as_ref().map(|id| id.as_str()),
+        );
+    }
 
     let service = OutcomeLedgerService::new(Arc::clone(&state.app_state.task_outcome_repo));
     if let Err(error) = service.record_outcome(task_outcome).await {

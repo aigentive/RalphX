@@ -243,3 +243,54 @@ async fn sqlite_round_trips_live_sources_open_classes_and_failure_fingerprints()
         );
     }
 }
+
+#[tokio::test]
+async fn sqlite_recurrence_corpus_matches_memory_scope_and_ignores_malformed_evidence() {
+    let (db, repo) = setup("sqlite-recurrence-corpus").await;
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let key = format!("token-set-v1:{}", "b".repeat(64));
+    for (index, session) in ["session-1", "session-1", "session-2"].iter().enumerate() {
+        let mut outcome = new_empty_task_outcome(
+            project_id.clone(),
+            match index {
+                0 => TaskOutcomeSource::Review,
+                1 => TaskOutcomeSource::Merge,
+                _ => TaskOutcomeSource::MergeValidation,
+            },
+            "fixture",
+            format!("row-{index}"),
+        );
+        outcome.status = TaskOutcomeStatus::Failed;
+        outcome.evidence_json = json!({
+            "recurrence_key": key,
+            "recurrence_session": session,
+        });
+        repo.upsert(UpsertTaskOutcomeInput { outcome })
+            .await
+            .unwrap();
+    }
+    db.shared_conn()
+        .lock()
+        .await
+        .execute(
+            "INSERT INTO task_outcomes (
+                id, project_id, source, source_ref_kind, source_ref_id, status, evidence_json
+             ) VALUES (
+                'malformed', 'project-1', 'review', 'fixture', 'malformed', 'failed', '{'
+             )",
+            [],
+        )
+        .expect("insert malformed legacy evidence");
+
+    let corpus = repo
+        .recurrence_corpus(&project_id, &key)
+        .await
+        .expect("query recurrence corpus");
+
+    assert_eq!(corpus.eligible_observations, 3);
+    assert_eq!(corpus.distinct_sessions, 2);
+    assert!(repo
+        .recurrence_corpus(&project_id, "not-a-key")
+        .await
+        .is_err());
+}

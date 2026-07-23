@@ -1,6 +1,7 @@
 use super::agent_workspace_outcomes::*;
 use std::sync::{Arc, RwLock};
 
+use crate::domain::entities::learned_skill::TaskOutcomeRecurrenceCorpus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ProjectId, TaskOutcome, TaskOutcomeId,
@@ -95,6 +96,14 @@ impl TaskOutcomeRepository for TestTaskOutcomeRepository {
             .filter(|row| options.status.is_none_or(|status| row.status == status))
             .cloned()
             .collect())
+    }
+
+    async fn recurrence_corpus(
+        &self,
+        _project_id: &ProjectId,
+        _recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus> {
+        Ok(TaskOutcomeRecurrenceCorpus::default())
     }
 }
 

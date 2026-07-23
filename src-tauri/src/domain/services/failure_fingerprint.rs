@@ -1,7 +1,12 @@
 use lazy_static::lazy_static;
 use regex::Regex;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
+use crate::domain::entities::learned_skill::{
+    RECURRENCE_KEY_FIELD, RECURRENCE_KEY_PREFIX, RECURRENCE_SESSION_FIELD,
+};
 use crate::domain::entities::TaskOutcomeClass;
 
 lazy_static! {
@@ -50,4 +55,41 @@ pub(crate) fn failure_fingerprint(class: &TaskOutcomeClass, evidence: &str) -> S
         "{:x}",
         Sha256::digest(format!("{}\n{normalized}", class.as_str()).as_bytes())
     )
+}
+
+pub(crate) fn recurrence_key(evidence: &str) -> Option<String> {
+    let tokens = evidence
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    if tokens.is_empty() {
+        return None;
+    }
+    let canonical = tokens.into_iter().collect::<Vec<_>>().join("\n");
+    Some(format!(
+        "{RECURRENCE_KEY_PREFIX}{:x}",
+        Sha256::digest(canonical.as_bytes())
+    ))
+}
+
+pub(crate) fn attach_recurrence_evidence(
+    evidence: &mut Value,
+    recurrence_text: &str,
+    trusted_session: Option<&str>,
+) -> Option<String> {
+    let key = recurrence_key(recurrence_text)?;
+    let object = evidence.as_object_mut()?;
+    object.insert(RECURRENCE_KEY_FIELD.to_string(), Value::String(key.clone()));
+    if let Some(session) = trusted_session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            RECURRENCE_SESSION_FIELD.to_string(),
+            Value::String(session.to_string()),
+        );
+    }
+    Some(key)
 }

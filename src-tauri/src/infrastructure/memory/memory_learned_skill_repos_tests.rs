@@ -4,7 +4,7 @@ use serde_json::json;
 use super::{MemoryProjectSkillRepository, MemoryTaskOutcomeRepository};
 use crate::domain::entities::{
     ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcome,
-    TaskOutcomeClass, TaskOutcomeId, TaskOutcomeStatus,
+    TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     canonical_terminal_pr_source_ref_id, ProjectSkillMatchedMutation, ProjectSkillRepository,
@@ -158,6 +158,53 @@ async fn noncanonical_outcomes_remain_last_write_wins_and_missing_dedupe_is_none
         .await
         .expect("missing read")
         .is_none());
+}
+
+#[tokio::test]
+async fn memory_recurrence_corpus_is_project_and_distinct_session_scoped() {
+    let repo = MemoryTaskOutcomeRepository::new();
+    let key = format!("token-set-v1:{}", "a".repeat(64));
+    for (index, session) in ["session-1", "session-1", "session-2"].iter().enumerate() {
+        let mut outcome = terminal_outcome("recurrence", "same failure");
+        outcome.source = match index {
+            0 => TaskOutcomeSource::Review,
+            1 => TaskOutcomeSource::Merge,
+            _ => TaskOutcomeSource::AgentConversation,
+        };
+        outcome.source_ref_kind = "fixture".to_string();
+        outcome.source_ref_id = format!("row-{index}");
+        outcome.status = if index == 2 {
+            TaskOutcomeStatus::Eligible
+        } else {
+            TaskOutcomeStatus::Failed
+        };
+        outcome.evidence_json = json!({
+            "recurrence_key": key,
+            "recurrence_session": session,
+        });
+        upsert(&repo, outcome).await;
+    }
+    let mut missing_session = terminal_outcome("recurrence", "same failure");
+    missing_session.source = TaskOutcomeSource::MergeValidation;
+    missing_session.source_ref_kind = "fixture".to_string();
+    missing_session.source_ref_id = "missing-session".to_string();
+    missing_session.status = TaskOutcomeStatus::Failed;
+    missing_session.evidence_json = json!({ "recurrence_key": key });
+    upsert(&repo, missing_session).await;
+
+    let corpus = repo
+        .recurrence_corpus(&ProjectId::from_string("project-1".to_string()), &key)
+        .await
+        .expect("query recurrence corpus");
+
+    assert_eq!(corpus.eligible_observations, 3);
+    assert_eq!(corpus.distinct_sessions, 2);
+    assert_eq!(
+        repo.recurrence_corpus(&ProjectId::from_string("project-2".to_string()), &key,)
+            .await
+            .expect("query other project"),
+        Default::default()
+    );
 }
 
 fn project_skill() -> ProjectSkill {

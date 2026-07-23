@@ -1,6 +1,7 @@
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
+use crate::domain::entities::learned_skill::{is_valid_recurrence_key, RECURRENCE_KEY_FIELD};
 use crate::domain::entities::{
     ProjectId, ProjectSkillEvidenceBatch, ProjectSkillEvidenceBatchId,
     ProjectSkillEvidenceBatchItem, ProjectSkillEvidenceBatchStatus, TaskOutcome, TaskOutcomeSource,
@@ -28,12 +29,19 @@ pub(super) fn build_batch(
             "digest": item.digest,
         })).collect::<Vec<_>>(),
     });
-    let fingerprint = outcomes
-        .first()
-        .filter(|_| outcomes.len() == 1)
-        .and_then(verification_gap_fingerprint)
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{:x}", Sha256::digest(canonical.to_string().as_bytes())));
+    let fingerprint = if outcomes
+        .iter()
+        .any(|outcome| recurrence_key(outcome).is_some())
+    {
+        format!("{:x}", Sha256::digest(canonical.to_string().as_bytes()))
+    } else {
+        outcomes
+            .first()
+            .filter(|_| outcomes.len() == 1)
+            .and_then(verification_gap_fingerprint)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{:x}", Sha256::digest(canonical.to_string().as_bytes())))
+    };
     let now = Utc::now();
     ProjectSkillEvidenceBatch {
         id: ProjectSkillEvidenceBatchId::new(),
@@ -50,6 +58,15 @@ pub(super) fn build_batch(
         updated_at: now,
         items,
     }
+}
+
+pub(super) fn recurrence_key(outcome: &TaskOutcome) -> Option<&str> {
+    outcome
+        .evidence_json
+        .get(RECURRENCE_KEY_FIELD)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|key| is_valid_recurrence_key(key))
 }
 
 pub(super) fn verification_gap_fingerprint(outcome: &TaskOutcome) -> Option<&str> {
@@ -97,8 +114,12 @@ fn outcome_digest(outcome: &TaskOutcome) -> String {
         "evidence": outcome.evidence_json,
     })
     .to_string();
-    let prefix = verification_gap_fingerprint(outcome)
-        .map(|fingerprint| format!("verification_gap_fingerprint={fingerprint}\n"))
+    let prefix = recurrence_key(outcome)
+        .map(|key| format!("recurrence_key={key}\n"))
+        .or_else(|| {
+            verification_gap_fingerprint(outcome)
+                .map(|fingerprint| format!("verification_gap_fingerprint={fingerprint}\n"))
+        })
         .unwrap_or_default();
     let remaining = PROJECT_SKILL_EVIDENCE_DIGEST_MAX_CHARS.saturating_sub(prefix.chars().count());
     prefix + &canonical.chars().take(remaining).collect::<String>()
