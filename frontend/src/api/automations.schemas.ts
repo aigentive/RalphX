@@ -99,6 +99,10 @@ export const AutomationSchema = z.object({
   base_ref_kind: AutomationBaseRefKindSchema,
   base_ref: z.string(),
   base_display_name: z.string().nullable(),
+  // Final merge target (fork point, e.g. `main`) when the automation runs on its own
+  // integration branch; detail response only, so optional + nullable.
+  base_target_ref: z.string().nullable().optional(),
+  base_target_display_name: z.string().nullable().optional(),
   base_source_pull_request_json: z.string().nullable(),
   goal_items_json: z.string().nullable(),
   chain_mode: AutomationChainModeSchema,

@@ -18,7 +18,8 @@ paths:
 
 | Rule | Detail |
 |---|---|
-| Local agents run focused Rust validation only | Integration suites → ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'`; lib pinpoints → ✅ `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib` |
+| Local agents run focused Rust validation only | Integration suites → ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'`; lib pinpoints → ✅ `cargo test --manifest-path src-tauri/Cargo.toml --features test-utils <filter> --lib` |
+| `--lib` REQUIRES `--features test-utils` (NON-NEGOTIABLE) | The whole `src-tauri` lib test target must compile before any filter runs, and it depends on Tauri mock-app helpers (`crate::testing::create_mock_app*`, `tauri::test`) that live behind `test-utils`. ❌ bare `cargo test … --lib` fails to compile (E0433/E0425) regardless of filter. The `crates/ralphx-domain` crate tested on its own does NOT need the flag (`cfg(test)` covers it). |
 | Never broaden as fallback | If exact test discovery is uncertain, use the nearest relevant module/suite/crate check or report no applicable local test; ❌ broad lib/workspace/full integration as a confidence fallback |
 | CI owns broad proof | RalphX workspace CI/autofix owns broad lib/integration suites, dual clippy, doctests, coverage, and remediation; local broad runs require explicit user request or reproduction of a named CI failure |
 | Merged suites are nextest-only | `src-tauri/tests/suite_*/main.rs` has a guard that fails under plain libtest; nextest isolates each test process and avoids env/PATH races |
@@ -85,7 +86,7 @@ paths:
 ## Focused Agent Commands
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml db_connection --lib
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils db_connection --lib
 cargo test --manifest-path src-tauri/crates/ralphx-domain/Cargo.toml
 cargo nextest run --manifest-path src-tauri/Cargo.toml --features test-utils --test suite_ipc_commands ipc_contract
 cargo nextest run --manifest-path src-tauri/Cargo.toml --features test-utils --test suite_commands -E 'test(release_notes_commands)'
@@ -133,15 +134,15 @@ python3 scripts/check-test-suite-modules.py
 |---|---|
 | Repo Rust toolchain | `rust-toolchain.toml` pins Rust `1.91.0`; keep CI and local development aligned to that file |
 | Activate pinned toolchain locally | `rustup toolchain install 1.91.0 && rustup override set 1.91.0` from repo root |
-| Homebrew Rust ahead of rustup in PATH | `RUSTC=$(rustup which --toolchain 1.91.0 rustc) rustup run 1.91.0 cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib` |
+| Homebrew Rust ahead of rustup in PATH | `RUSTC=$(rustup which --toolchain 1.91.0 rustc) rustup run 1.91.0 cargo test --manifest-path src-tauri/Cargo.toml --features test-utils <filter> --lib` |
 | Install on macOS | `brew install cargo-nextest` |
 | Install from Cargo | `cargo install cargo-nextest --locked` |
 | Broad root-lib reproduction (explicit only) | `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils` |
 | CI-style root-lib reproduction (explicit only) | `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` |
 | CI-style full-suite reproduction (explicit only) | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils` |
 | CI clippy feature matrix | `cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` |
-| Pinpoint module/test validation | Lib: `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib`; integration: `cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'` |
-| Lib-side capability check | `cargo test --manifest-path src-tauri/Cargo.toml '<filter>' --lib -- --ignored` |
+| Pinpoint module/test validation | Lib: `cargo test --manifest-path src-tauri/Cargo.toml --features test-utils <filter> --lib`; integration: `cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'` |
+| Lib-side capability check | `cargo test --manifest-path src-tauri/Cargo.toml --features test-utils '<filter>' --lib -- --ignored` |
 | CI doctests | `cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc` |
 | CI broad coverage | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils && cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc` |
 
@@ -159,7 +160,7 @@ python3 scripts/check-test-suite-modules.py
 
 | Need | Use |
 |---|---|
-| One unit-test/module substring | `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib` |
+| One unit-test/module substring | `cargo test --manifest-path src-tauri/Cargo.toml --features test-utils <filter> --lib` |
 | Multiple integration targets in one run | `cargo nextest run --manifest-path src-tauri/Cargo.toml --test suite_sqlite_flows --test suite_metrics` |
 | Multiple unrelated unit-test filters | Run separate `cargo test ... --lib` commands sequentially |
 | Fast module-path guess | Derive `folder::tree::module::tests::` from the source tree first; for `#[path = "foo_tests.rs"] mod tests;` under `foo.rs`, prefer `...::foo::tests::` |
@@ -171,15 +172,15 @@ python3 scripts/check-test-suite-modules.py
 Example:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml sqlite_chat_conversation_repo_tests --lib
-cargo test --manifest-path src-tauri/Cargo.toml sqlite_memory_entry_repo_tests --lib
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils sqlite_chat_conversation_repo_tests --lib
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils sqlite_memory_entry_repo_tests --lib
 ```
 
 Module-path example:
 
 ```bash
 rg -n "sqlite_question_repo" src-tauri/src/infrastructure/sqlite src-tauri/tests
-cargo test --manifest-path src-tauri/Cargo.toml 'infrastructure::sqlite::sqlite_question_repo::tests::' --lib
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils 'infrastructure::sqlite::sqlite_question_repo::tests::' --lib
 ```
 
 ## Shared SQLite Test Setup
@@ -249,8 +250,8 @@ cargo test --manifest-path src-tauri/Cargo.toml 'infrastructure::sqlite::sqlite_
 Capability examples:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml 'tests::lib_shutdown_tests::test_wait_for_backend_ready_real_socket_returns_200' --lib -- --ignored
-cargo test --manifest-path src-tauri/Cargo.toml 'domain::services::running_agent_registry::tests::test_kill_process_immediate_kills_process_group_children' --lib -- --ignored
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils 'tests::lib_shutdown_tests::test_wait_for_backend_ready_real_socket_returns_200' --lib -- --ignored
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils 'domain::services::running_agent_registry::tests::test_kill_process_immediate_kills_process_group_children' --lib -- --ignored
 ```
 
 ## Adding Tests Framework

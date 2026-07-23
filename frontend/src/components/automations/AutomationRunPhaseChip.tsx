@@ -16,6 +16,7 @@ export function AutomationRunPhaseChip({
     <StatusPill
       label={item.title}
       tone="accent"
+      live
       {...(className ? { className } : {})}
       {...(testId ? { testId } : {})}
     />
