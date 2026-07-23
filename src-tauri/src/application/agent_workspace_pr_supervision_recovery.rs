@@ -241,11 +241,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     "active_agent_run",
                 ));
             }
-            StalePublishRepairRecoveryOutcome::HandoffPreserved => {
-                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-                    "workspace_review_handoff_preserved",
-                ));
-            }
+            StalePublishRepairRecoveryOutcome::HandoffPreserved => {}
             StalePublishRepairRecoveryOutcome::Manual => {
                 return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
                     "stale_repair_manual",
