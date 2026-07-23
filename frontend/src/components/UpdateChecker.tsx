@@ -30,6 +30,7 @@ interface ReleaseDialogState {
   version?: string | undefined;
   body?: string | null | undefined;
   context?: "current" | "update" | undefined;
+  channel?: UpdateChannel | undefined;
 }
 
 interface CheckForUpdatesOptions {
@@ -49,12 +50,11 @@ export function UpdateChecker() {
     loadError: updateChannelError,
   } = useUpdateChannel();
   const checkInFlight = useRef(false);
-  const manualCheckRequested = useRef(false);
   const notifiedVersion = useRef<string | null>(null);
   const lastCheckAt = useRef<number | null>(null);
   const activeUpdateChannel = useRef<UpdateChannel | null>(null);
   const checkGeneration = useRef(0);
-  const queuedForcedCheck = useRef<UpdateChannel | null>(null);
+  const queuedForcedCheck = useRef<CheckForUpdatesOptions | null>(null);
   const queuedUnsettledCheck = useRef<CheckForUpdatesOptions | null>(null);
   const checkForUpdatesRef = useRef<CheckForUpdates | null>(null);
   const whatsNewVersion = useRef<string | null>(null);
@@ -84,6 +84,7 @@ export function UpdateChecker() {
         version: notes.version,
         body: notes.body,
         context: notes.context,
+        channel: notes.channel,
       });
     },
     [clearVisibleWhatsNew],
@@ -124,14 +125,14 @@ export function UpdateChecker() {
         return;
       }
 
-      if (manual) {
-        manualCheckRequested.current = true;
-        showCheckingForUpdatesToast();
-      }
-
       if (checkInFlight.current) {
         if (force) {
-          queuedForcedCheck.current = target;
+          const queued = queuedForcedCheck.current;
+          queuedForcedCheck.current = {
+            force: true,
+            manual: manual || queued?.manual === true,
+            target,
+          };
         }
         return;
       }
@@ -149,6 +150,9 @@ export function UpdateChecker() {
       checkInFlight.current = true;
       lastCheckAt.current = now;
       const generation = checkGeneration.current;
+      if (manual) {
+        showCheckingForUpdatesToast();
+      }
 
       try {
         const update = await check({ target });
@@ -158,7 +162,7 @@ export function UpdateChecker() {
         ) {
           return;
         }
-        const shouldShowManualResult = manualCheckRequested.current;
+        const shouldShowManualResult = manual;
         if (
           update &&
           (shouldShowManualResult || notifiedVersion.current !== update.version)
@@ -178,7 +182,7 @@ export function UpdateChecker() {
         if (
           generation === checkGeneration.current &&
           target === activeUpdateChannel.current &&
-          manualCheckRequested.current
+          manual
         ) {
           toast.error("Failed to check for updates. Please try again later.", {
             id: UPDATE_CHECK_RESULT_TOAST_ID,
@@ -186,58 +190,26 @@ export function UpdateChecker() {
         }
       } finally {
         checkInFlight.current = false;
-        manualCheckRequested.current = false;
-        const queuedTarget = queuedForcedCheck.current;
+        const queuedCheck = queuedForcedCheck.current;
         queuedForcedCheck.current = null;
-        if (queuedTarget !== null) {
-          void checkForUpdatesRef.current?.({ force: true, target: queuedTarget });
+        if (queuedCheck !== null) {
+          void checkForUpdatesRef.current?.(queuedCheck);
         }
       }
     },
     [isUpdateChannelSettled, openReleaseNotes, updateChannel],
   );
 
-  const handleUpdateFromDialog = useCallback(async () => {
-    if (!isUpdateChannelSettled || checkInFlight.current) {
-      return;
-    }
-    const target = updateChannel;
-    const generation = checkGeneration.current;
-    checkInFlight.current = true;
-    setDialogState({ open: false });
-    showCheckingForUpdatesToast();
-    try {
-      const update = await check({ target });
-      if (
-        generation !== checkGeneration.current ||
-        target !== activeUpdateChannel.current
-      ) {
+  const handleCheckFromDialog = useCallback(
+    (target: UpdateChannel) => {
+      if (!isUpdateChannelSettled) {
         return;
       }
-      if (update) {
-        toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
-        void installUpdate(update);
-      } else {
-        toast.success(`RalphX is up to date on ${updateChannelLabel(target)}.`, {
-          id: UPDATE_CHECK_RESULT_TOAST_ID,
-        });
-      }
-    } catch {
-      if (
-        generation === checkGeneration.current &&
-        target === activeUpdateChannel.current
-      ) {
-        toast.error("Failed to check for updates.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
-      }
-    } finally {
-      checkInFlight.current = false;
-      const queuedTarget = queuedForcedCheck.current;
-      queuedForcedCheck.current = null;
-      if (queuedTarget !== null) {
-        void checkForUpdatesRef.current?.({ force: true, target: queuedTarget });
-      }
-    }
-  }, [isUpdateChannelSettled, updateChannel]);
+      setDialogState({ open: false });
+      void checkForUpdates({ force: true, manual: true, target });
+    },
+    [checkForUpdates, isUpdateChannelSettled],
+  );
 
   useEffect(() => {
     checkForUpdatesRef.current = checkForUpdates;
@@ -260,11 +232,16 @@ export function UpdateChecker() {
       }
 
       whatsNewVersion.current = notes.version;
-      presentWhatsNewToast({ version: notes.version, body, context: "current" });
+      presentWhatsNewToast({
+        version: notes.version,
+        body,
+        context: "current",
+        channel: updateChannel,
+      });
     } catch (error) {
       console.debug("Release notes startup check failed:", error);
     }
-  }, [presentWhatsNewToast]);
+  }, [presentWhatsNewToast, updateChannel]);
 
   useEffect(() => {
     isGlobalModalOpen.current = activeModal !== null;
@@ -309,12 +286,11 @@ export function UpdateChecker() {
     checkGeneration.current += 1;
     notifiedVersion.current = null;
     lastCheckAt.current = null;
-    manualCheckRequested.current = false;
     toast.dismiss("update-available");
     toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
 
     if (checkInFlight.current) {
-      queuedForcedCheck.current = updateChannel;
+      queuedForcedCheck.current = { force: true, target: updateChannel };
       return;
     }
     void checkForUpdates({ force: true, target: updateChannel });
@@ -385,7 +361,8 @@ export function UpdateChecker() {
       initialVersion={dialogState.version}
       initialBody={dialogState.body}
       initialContext={dialogState.context}
-      onRequestUpdate={handleUpdateFromDialog}
+      initialChannel={dialogState.channel}
+      onCheckForUpdates={handleCheckFromDialog}
     />
   );
 }

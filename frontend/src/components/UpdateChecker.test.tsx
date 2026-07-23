@@ -495,6 +495,53 @@ describe("UpdateChecker", () => {
     );
   });
 
+  it("preserves manual feedback when a manual check queues behind an automatic check", async () => {
+    let resolveAutomaticCheck!: (value: null) => void;
+    let rejectManualCheck!: (reason: Error) => void;
+    mocks.check
+      .mockImplementationOnce(
+        () =>
+          new Promise<null>((resolve) => {
+            resolveAutomaticCheck = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectManualCheck = reject;
+          }),
+      );
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+
+    eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+    expect(mocks.toastLoading).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveAutomaticCheck(null);
+      await flushAsyncWork();
+    });
+
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(mocks.toastLoading).toHaveBeenCalledWith(
+      "Checking for updates...",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
+    await act(async () => {
+      rejectManualCheck(new Error("offline"));
+      await flushAsyncWork();
+    });
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to check for updates. Please try again later.",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+  });
+
   it("checks the captured Nightly target on app focus after the lifecycle cooldown", async () => {
     updateChannelState.channel = "nightly";
     mocks.check.mockResolvedValue(null);
@@ -519,6 +566,7 @@ describe("UpdateChecker", () => {
   });
 
   it("opens the release notes dialog from the update toast", async () => {
+    updateChannelState.channel = "nightly";
     mocks.check.mockResolvedValue({
       ...update,
       body: "## Daily Release\n\n- Better update prompts",
@@ -532,6 +580,11 @@ describe("UpdateChecker", () => {
     await flushAsyncWork();
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Nightly/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText(/Better update prompts/)).toBeInTheDocument();
   });
 
   it("opens update toast release notes for the update version when metadata is stale", async () => {
@@ -678,6 +731,26 @@ describe("UpdateChecker", () => {
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
   });
 
+  it("waits for the persisted channel before choosing native-menu history", async () => {
+    updateChannelState.isSettled = false;
+    const { rerender } = render(<UpdateChecker />);
+
+    await act(async () => {
+      eventListeners.get("ralphx://show-release-notes")?.({ payload: undefined });
+      await flushAsyncWork();
+    });
+
+    updateChannelState.channel = "nightly";
+    updateChannelState.isSettled = true;
+    rerender(<UpdateChecker />);
+    await flushAsyncWork();
+
+    expect(screen.getByRole("tab", { name: /Nightly/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
   it("does not show What's new when current release notes were already seen", async () => {
     mocks.check.mockResolvedValue(null);
     mocks.getCurrentReleaseNotes.mockResolvedValue({
@@ -697,7 +770,7 @@ describe("UpdateChecker", () => {
     expect(mocks.markReleaseNotesSeen).not.toHaveBeenCalled();
   });
 
-  it("handleUpdateFromDialog triggers update check and installs when available", async () => {
+  it("checks the dialog's exact channel without installing from history", async () => {
     updateChannelState.channel = "nightly";
     const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
     const versioned = { ...update, version: "0.5.0", downloadAndInstall };
@@ -719,7 +792,7 @@ describe("UpdateChecker", () => {
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
 
-    const updateButton = screen.getByTestId("release-notes-update-button");
+    const updateButton = screen.getByTestId("release-notes-check-updates-button");
     expect(updateButton).toBeInTheDocument();
 
     mocks.check.mockResolvedValueOnce(versioned);
@@ -734,6 +807,7 @@ describe("UpdateChecker", () => {
       [{ target: "nightly" }],
       [{ target: "nightly" }],
     ]);
+    expect(downloadAndInstall).not.toHaveBeenCalled();
   });
 
   it("suppresses a stale release-notes update check after the channel changes", async () => {
@@ -753,7 +827,7 @@ describe("UpdateChecker", () => {
           resolveOldCheck = resolve;
         }),
     );
-    fireEvent.click(screen.getByTestId("release-notes-update-button"));
+    fireEvent.click(screen.getByTestId("release-notes-check-updates-button"));
 
     updateChannelState.channel = "nightly";
     rerender(<UpdateChecker />);
@@ -786,7 +860,7 @@ describe("UpdateChecker", () => {
 
     mocks.check.mockResolvedValueOnce(null);
 
-    const updateButton = screen.getByTestId("release-notes-update-button");
+    const updateButton = screen.getByTestId("release-notes-check-updates-button");
     await act(async () => {
       fireEvent.click(updateButton);
       for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -818,14 +892,14 @@ describe("UpdateChecker", () => {
 
     mocks.check.mockRejectedValueOnce(new Error("network error"));
 
-    const updateButton = screen.getByTestId("release-notes-update-button");
+    const updateButton = screen.getByTestId("release-notes-check-updates-button");
     await act(async () => {
       fireEvent.click(updateButton);
       for (let i = 0; i < 10; i++) await Promise.resolve();
     });
 
     expect(mocks.toastError).toHaveBeenCalledWith(
-      "Failed to check for updates.",
+      "Failed to check for updates. Please try again later.",
       expect.objectContaining({ id: "update-check-result" }),
     );
   });

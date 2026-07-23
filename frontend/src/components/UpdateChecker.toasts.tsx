@@ -12,6 +12,7 @@ export interface ReleaseNotesView {
   version: string;
   body: string | null;
   context: "current" | "update";
+  channel: UpdateChannel;
 }
 
 export function updateChannelLabel(channel: UpdateChannel): "Stable" | "Nightly" {
@@ -26,7 +27,12 @@ export function showUpdateNotification(
 ) {
   const notes = sanitizeReleaseNotesBody(typeof update.body === "string" ? update.body : null);
   const releaseNotes = notes
-    ? { version: update.version, body: notes, context: "update" as const }
+    ? {
+        version: update.version,
+        body: notes,
+        context: "update" as const,
+        channel,
+      }
     : null;
 
   toast(

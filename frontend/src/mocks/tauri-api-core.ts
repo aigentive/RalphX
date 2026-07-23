@@ -3183,6 +3183,19 @@ const commandHandlers: Record<
     }
     return mockUpdateChannel;
   },
+  list_release_notes_versions: async () => ["0.76.0", "0.75.0", "0.74.0"],
+  get_release_notes_for_version: async (args) => ({
+    version: String(args.version),
+    body: `## RalphX ${String(args.version)}\n\n- Release history improvements\n- Faster agent workflows`,
+    source: "development_checkout",
+  }),
+  get_current_release_notes: async () => ({
+    version: "0.76.0",
+    body: null,
+    source: "development_checkout",
+  }),
+  get_last_seen_release_notes_version: async () => "0.76.0",
+  mark_release_notes_seen: async () => undefined,
   update_review_settings: async (args) => {
     const input = args.input as {
       requireHumanReview?: boolean;
