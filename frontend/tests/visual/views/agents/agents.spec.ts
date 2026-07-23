@@ -1792,7 +1792,14 @@ test.describe("Agents View", () => {
 
     const toolbar = page.getByTestId("agents-workspace-toolbar");
     await expect(toolbar).toBeVisible();
-    await expect(page.getByTestId("pr-status-strip")).toBeVisible();
+    const statusStrip = page.getByTestId("pr-status-strip");
+    await expect(statusStrip).toBeVisible();
+    await expect(statusStrip.getByLabel("Approved")).toBeVisible();
+    await expect(statusStrip).not.toContainText("Approved");
+    await expect(toolbar.getByLabel("Workspace sync: Pushed")).toBeVisible();
+    await expect(toolbar).not.toContainText("Pushed");
+    await expect(toolbar.getByLabel(/merges into/)).toBeVisible();
+    await expect(page.getByTestId("agents-workspace-mode-status")).toBeVisible();
     const hasHorizontalOverflow = await toolbar.evaluate(
       (element) => element.scrollWidth > element.clientWidth,
     );

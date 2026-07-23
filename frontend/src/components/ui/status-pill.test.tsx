@@ -44,4 +44,19 @@ describe("StatusPill", () => {
     );
     expect(screen.getByTestId("pill-icon")).toBeInTheDocument();
   });
+
+  it("supports an accessible label without changing visible content", () => {
+    render(
+      <StatusPill
+        label="2"
+        ariaLabel="2 passed"
+        tone="success"
+        testId="pill"
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "2 passed" })).toHaveTextContent(
+      "2",
+    );
+  });
 });

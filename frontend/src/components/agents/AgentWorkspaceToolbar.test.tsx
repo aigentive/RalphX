@@ -1,4 +1,7 @@
+import type { ReactElement, ReactNode } from "react";
+
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -6,6 +9,7 @@ import type {
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
 import type { PullRequestDetail } from "@/api/github";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 
 import { AgentWorkspaceToolbar } from "./AgentWorkspaceToolbar";
@@ -22,6 +26,14 @@ vi.mock("./useAgentWorkspaceFullFreshness", () => ({
 vi.mock("@/components/ticketing/ticketing-open-external", () => ({
   openExternalTicketUrl: vi.fn(),
 }));
+
+function renderToolbar(ui: ReactElement) {
+  return render(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <TooltipProvider delayDuration={0}>{children}</TooltipProvider>
+    ),
+  });
+}
 
 function workspace(
   overrides: Partial<AgentConversationWorkspace> = {},
@@ -140,22 +152,46 @@ describe("AgentWorkspaceToolbar", () => {
   });
 
   it("renders no toolbar without a normal workspace", () => {
-    const { container } = render(<AgentWorkspaceToolbar workspace={null} />);
+    const { container } = renderToolbar(
+      <AgentWorkspaceToolbar workspace={null} />,
+    );
 
     expect(container).toBeEmptyDOMElement();
     expect(usePullRequestDetail).not.toHaveBeenCalled();
   });
 
-  it("keeps immediate workspace context when there is no pull request", () => {
-    render(<AgentWorkspaceToolbar workspace={workspace()} />);
+  it("keeps compact workspace context accessible when there is no pull request", async () => {
+    renderToolbar(<AgentWorkspaceToolbar workspace={workspace()} />);
 
     const toolbar = screen.getByRole("region", { name: "Workspace status" });
     expect(toolbar).toHaveTextContent("ralphx/demo/agent-conversation-1");
-    expect(toolbar).toHaveTextContent("Project default (main)");
+    expect(toolbar).not.toHaveTextContent("Project default (main)");
     expect(toolbar).toHaveTextContent("No PR yet");
     expect(toolbar).toHaveTextContent("Edit");
-    expect(toolbar).toHaveTextContent("Pushed");
+    expect(toolbar).not.toHaveTextContent("Pushed");
+    expect(
+      screen.getByLabelText(
+        "ralphx/demo/agent-conversation-1 merges into Project default (main)",
+      ),
+    ).toHaveAttribute("tabindex", "0");
+    expect(screen.getByLabelText("Workspace sync: Pushed")).toHaveAttribute(
+      "tabindex",
+      "0",
+    );
+    expect(screen.getByLabelText("Workspace mode: Edit")).toHaveClass("ml-auto");
+    expect(
+      screen.getByTestId("agents-workspace-mode-status").style.borderWidth,
+    ).toBe("");
     expect(usePullRequestDetail).not.toHaveBeenCalled();
+
+    screen
+      .getByLabelText(
+        "ralphx/demo/agent-conversation-1 merges into Project default (main)",
+      )
+      .focus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Merges into Project default (main)",
+    );
   });
 
   it("paints the PR shell before enabling deferred health and then shows status", async () => {
@@ -169,7 +205,7 @@ describe("AgentWorkspaceToolbar", () => {
         }) as ReturnType<typeof usePullRequestDetail>,
     );
 
-    render(
+    renderToolbar(
       <AgentWorkspaceToolbar
         workspace={workspace({
           publicationPrNumber: 42,
@@ -204,9 +240,10 @@ describe("AgentWorkspaceToolbar", () => {
         { enabled: true },
       ),
     );
-    expect(screen.getByText("Approved")).toBeInTheDocument();
-    expect(screen.getByText("1 passed")).toBeInTheDocument();
-    expect(screen.getByText("1 pending")).toBeInTheDocument();
+    expect(screen.getByLabelText("Approved")).toHaveTextContent("");
+    expect(screen.getByLabelText("1 passed")).toHaveTextContent("1");
+    expect(screen.getByLabelText("1 pending")).toHaveTextContent("1");
+    expect(screen.queryByText("Approved")).not.toBeInTheDocument();
   });
 
   it("clears old PR health immediately when selector identity changes", async () => {
@@ -224,9 +261,11 @@ describe("AgentWorkspaceToolbar", () => {
       publicationPrUrl: "https://github.com/acme/app/pull/42",
       publicationPrStatus: "open",
     });
-    const { rerender } = render(<AgentWorkspaceToolbar workspace={first} />);
+    const { rerender } = renderToolbar(
+      <AgentWorkspaceToolbar workspace={first} />,
+    );
 
-    await screen.findByText("Approved");
+    await screen.findByLabelText("Approved");
 
     rerender(
       <AgentWorkspaceToolbar
@@ -242,7 +281,7 @@ describe("AgentWorkspaceToolbar", () => {
     expect(
       screen.getByRole("button", { name: "Open PR #77 in GitHub" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Approved")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Approved")).not.toBeInTheDocument();
     expect(screen.getByTestId("pr-status-strip-skeleton")).toBeInTheDocument();
     expect(usePullRequestDetail).toHaveBeenLastCalledWith(
       { projectId: "project-1", prNumber: 77 },
@@ -257,7 +296,7 @@ describe("AgentWorkspaceToolbar", () => {
       isError: false,
     } as ReturnType<typeof useAgentWorkspaceFullFreshness>);
 
-    render(
+    renderToolbar(
       <AgentWorkspaceToolbar
         workspace={workspace({
           sourcePullRequest: {
@@ -303,7 +342,7 @@ describe("AgentWorkspaceToolbar", () => {
       fetchStatus: "idle",
     } as ReturnType<typeof usePullRequestDetail>);
 
-    render(
+    renderToolbar(
       <AgentWorkspaceToolbar
         workspace={workspace({
           publicationPrNumber: null,
@@ -326,8 +365,122 @@ describe("AgentWorkspaceToolbar", () => {
     expect(screen.queryByText("Behind base")).not.toBeInTheDocument();
   });
 
+  it("keeps compact CI-unavailable health visible to assistive technology", () => {
+    vi.mocked(usePullRequestDetail).mockReturnValue({
+      data: detail(42, {
+        checks: [],
+        reviewSummary: null,
+        sourcesUnavailable: ["checks"],
+      }),
+      isLoading: false,
+      isError: false,
+      fetchStatus: "idle",
+    } as ReturnType<typeof usePullRequestDetail>);
+
+    renderToolbar(
+      <AgentWorkspaceToolbar
+        workspace={workspace({
+          publicationPrNumber: 42,
+          publicationPrUrl: "https://github.com/acme/app/pull/42",
+          publicationPrStatus: "open",
+        })}
+      />,
+    );
+
+    expect(screen.getByLabelText("CI unavailable")).toHaveTextContent("");
+    expect(screen.queryByText("CI unavailable")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["pushed", "Pushed"],
+    ["refreshed", "Refreshed"],
+  ])("collapses routine %s sync state behind a tooltip", async (status, label) => {
+    const user = userEvent.setup();
+    renderToolbar(
+      <AgentWorkspaceToolbar
+        workspace={workspace({ publicationPushStatus: status })}
+      />,
+    );
+
+    const sync = screen.getByLabelText(`Workspace sync: ${label}`);
+    expect(sync).toHaveAttribute("tabindex", "0");
+    expect(sync).not.toHaveTextContent(label);
+    await user.hover(sync);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(label);
+  });
+
+  it.each([
+    ["pushing", "Pushing", "accent"],
+    ["committing", "Committing", "accent"],
+    ["checking", "Checking", "accent"],
+    ["refreshing", "Refreshing", "accent"],
+    ["failed", "Failed", "error"],
+    ["description_failed", "Description failed", "error"],
+    ["future_status", "Future status", "neutral"],
+  ])(
+    "keeps non-routine %s sync state visible with %s treatment",
+    (status, label, tone) => {
+      renderToolbar(
+        <AgentWorkspaceToolbar
+          workspace={workspace({ publicationPushStatus: status })}
+        />,
+      );
+
+      const sync = screen.getByTestId("agents-workspace-sync-status");
+      expect(sync).toHaveTextContent(label);
+      expect(sync).toHaveAttribute("data-tone", tone);
+    },
+  );
+
+  it.each([
+    {
+      label: "Repair pending",
+      workspaceOverrides: { publicationPushStatus: "needs_agent" },
+      freshness: null,
+    },
+    {
+      label: "Conflicting",
+      workspaceOverrides: {
+        prSupervisionStatus: "blocked",
+        prSupervisionSummary: "GitHub reported merge conflicts",
+      },
+      freshness: null,
+    },
+    {
+      label: "Base unavailable",
+      workspaceOverrides: {},
+      freshness: { baseStatus: "blocked" as const },
+    },
+    {
+      label: "Behind base",
+      workspaceOverrides: {},
+      freshness: { isBaseAhead: true },
+    },
+  ])(
+    "keeps $label visible with warning treatment",
+    ({ label, workspaceOverrides, freshness }) => {
+      if (freshness) {
+        vi.mocked(useAgentWorkspaceFullFreshness).mockReturnValue({
+          data: fullFreshness(freshness),
+          isLoading: false,
+          isError: false,
+        } as ReturnType<typeof useAgentWorkspaceFullFreshness>);
+      }
+
+      renderToolbar(
+        <AgentWorkspaceToolbar
+          workspace={workspace(workspaceOverrides)}
+        />,
+      );
+
+      const sync = screen.getByTestId("agents-workspace-sync-status");
+      expect(sync).toHaveTextContent(label);
+      expect(sync).toHaveAttribute("data-tone", "warning");
+    },
+  );
+
   it("shows focused workspace loading and unavailable shells without querying", () => {
-    const { rerender } = render(
+    const { rerender } = renderToolbar(
       <AgentWorkspaceToolbar workspace={null} resolutionState="loading" />,
     );
 
@@ -349,7 +502,7 @@ describe("AgentWorkspaceToolbar", () => {
   });
 
   it("re-defers full freshness when the workspace conversation changes", async () => {
-    const { rerender } = render(
+    const { rerender } = renderToolbar(
       <AgentWorkspaceToolbar workspace={workspace()} />,
     );
 
@@ -372,13 +525,20 @@ describe("AgentWorkspaceToolbar", () => {
     );
   });
 
-  it("uses the established Review PR mode label", () => {
-    render(
+  it("uses the established Review PR mode label and tooltip", async () => {
+    const user = userEvent.setup();
+    renderToolbar(
       <AgentWorkspaceToolbar workspace={workspace({ mode: "review_pr" })} />,
     );
 
     expect(screen.getByTestId("agents-workspace-mode-status")).toHaveTextContent(
       "Review PR",
+    );
+    const mode = screen.getByLabelText("Workspace mode: Review PR");
+    expect(mode).toBeInTheDocument();
+    await user.hover(mode);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Workspace mode: Review PR",
     );
   });
 });
