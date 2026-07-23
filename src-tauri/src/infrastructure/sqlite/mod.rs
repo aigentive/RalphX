@@ -78,6 +78,7 @@ pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
 pub mod sqlite_learned_skill_repos;
+mod project_skill_version_rows;
 #[cfg(test)]
 mod sqlite_learned_skill_repos_tests;
 pub mod sqlite_task_outcome_repository;

@@ -2144,6 +2144,10 @@ async fn test_interactive_stdin_learned_skill_usage_is_recorded_as_unscored() {
         predicted_effect: Some("Avoids dropping accepted planning constraints.".to_string()),
         provenance_json: serde_json::json!({ "test": true }),
         companion_of_skill_id: None,
+        content_hash: String::new(),
+        evidence_hash: String::new(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
+        pipeline_role: None,
         created_at: now,
         updated_at: now,
     };
