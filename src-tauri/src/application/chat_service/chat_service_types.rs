@@ -709,6 +709,12 @@ pub struct AgentTaskStartedPayload {
     pub approval_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,
@@ -761,6 +767,12 @@ pub struct AgentTaskCompletedPayload {
     pub approval_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

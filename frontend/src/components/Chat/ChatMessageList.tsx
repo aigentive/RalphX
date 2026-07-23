@@ -57,7 +57,9 @@ import {
   type ToolActivityTask,
 } from "./tool-activity-summary";
 import {
-  foldDelegationTimelineMessages,
+  delegationJobIdForToolCall,
+  projectDelegationTimelineMessages,
+  persistedDelegationJobIds,
   persistedTimelineToolCall,
 } from "./delegation-timeline";
 
@@ -1095,13 +1097,42 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => streamingContentBlocks ?? [],
       [streamingContentBlocks],
     );
+    const delegationProjection = useMemo(
+      () => projectDelegationTimelineMessages(messages, streamingTasks),
+      [messages, streamingTasks],
+    );
+    const persistedDelegateJobIds = useMemo(
+      () => persistedDelegationJobIds(delegationProjection.messages),
+      [delegationProjection.messages],
+    );
+    const shouldHidePersistedDelegationToolCall = useCallback(
+      (toolCall: ToolCall) => {
+        const jobId = delegationJobIdForToolCall(toolCall);
+        return shouldHideCompletedProjectOrchestrationToolCall(toolCall)
+          || (jobId != null && persistedDelegateJobIds.has(jobId))
+          || delegationProjection.liveAliases.has(toolCall.id);
+      },
+      [delegationProjection.liveAliases, persistedDelegateJobIds],
+    );
+    const shouldHidePersistedDelegationTask = useCallback(
+      (task: StreamingTask) =>
+        (task.delegatedJobId != null && persistedDelegateJobIds.has(task.delegatedJobId))
+        || delegationProjection.liveAliases.has(task.toolUseId),
+      [delegationProjection.liveAliases, persistedDelegateJobIds],
+    );
     const liveTranscriptRows = useMemo(
       () => buildLiveTranscriptRows(
         normalizedStreamingContentBlocks,
         streamingTasks,
-        shouldHideCompletedProjectOrchestrationToolCall,
+        shouldHidePersistedDelegationToolCall,
+        shouldHidePersistedDelegationTask,
       ),
-      [normalizedStreamingContentBlocks, streamingTasks],
+      [
+        normalizedStreamingContentBlocks,
+        shouldHidePersistedDelegationTask,
+        shouldHidePersistedDelegationToolCall,
+        streamingTasks,
+      ],
     );
 
     const hasRenderableStreamingBlocks = useMemo(
@@ -1178,7 +1209,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           );
         })
         : messages;
-      const teamFilteredMessages = foldDelegationTimelineMessages(filteredMessages);
+      const filteredMessageIds = new Set(filteredMessages.map((message) => message.id));
+      const teamFilteredMessages = delegationProjection.messages.filter((message) =>
+        filteredMessageIds.has(message.id),
+      );
 
       const pushMessageItem = (
         msg: ChatMessageData,
@@ -1262,7 +1296,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       return items;
-    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, liveTranscriptRows, hasFooterStreamingContent]);
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, delegationProjection.messages, liveTranscriptRows, hasFooterStreamingContent]);
 
     const timelineSenderGroups = useMemo(() => {
       let previousGroupKey: string | null = null;

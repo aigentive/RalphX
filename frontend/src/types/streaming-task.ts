@@ -45,10 +45,12 @@ export interface StreamingTask {
   model: string;
   /** Current status */
   status: StreamingTaskProviderStatus;
-  /** Timestamp when the task started (Date.now()) */
+  /** Backend-owned start timestamp when available; otherwise an explicit local fallback. */
   startedAt: number;
   /** Timestamp when the task completed */
   completedAt?: number;
+  /** Source of the timestamps, so recovered cards never imply a local mount clock is backend time. */
+  clockSource?: "delegated-run" | "delegation-job" | "local-fallback";
   /** Total duration in milliseconds (from task result) */
   totalDurationMs?: number;
   /** Total tokens used (from task result) */

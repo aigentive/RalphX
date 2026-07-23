@@ -886,6 +886,7 @@ export function IntegratedChatPanel({
     isGenerating: agentStatus === "generating",
     isConversationInCurrentContext,
     agentRunStatus: agentRunQuery.data?.status ?? undefined,
+    ...(agentRunQuery.data?.id != null ? { activeAgentRunId: agentRunQuery.data.id } : {}),
     isVisible,
     setStreamingTasks,
     setStreamingToolCalls,
