@@ -311,6 +311,8 @@ fn automation_response_serializes_with_api_layer_snake_case() {
 
     assert_eq!(value["project_id"], "project-1");
     assert_eq!(value["max_runs"], 25);
+    assert!(value["base_target_ref"].is_null());
+    assert!(value["base_target_display_name"].is_null());
     assert!(value.get("projectId").is_none());
     assert!(value.get("maxRuns").is_none());
 }
@@ -407,6 +409,80 @@ async fn automation_detail_response_aggregates_usage_from_run_conversations() {
     assert_eq!(response.usage.cache_creation_tokens, 7);
     assert_eq!(response.usage.cache_read_tokens, 9);
     assert_eq!(response.usage.estimated_usd, Some(0.06));
+}
+
+#[tokio::test]
+async fn automation_detail_response_exposes_integration_fork_point_only_for_local_branch() {
+    let state = AppState::new_test();
+    let setup_conversation_id = ChatConversationId::from_string("automation-setup");
+    let setup_workspace = AgentConversationWorkspace::new(
+        setup_conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/ralphx/automation-abc".to_string(),
+        "/tmp/ralphx-automation-abc".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(setup_workspace)
+        .await
+        .unwrap();
+
+    let mut integration_automation = automation();
+    integration_automation.setup_conversation_id = Some(setup_conversation_id.clone());
+    integration_automation.base_ref_kind = "local_branch".to_string();
+    integration_automation.base_ref = "ralphx/ralphx/automation-abc".to_string();
+    let integration_response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation: integration_automation,
+            runs: Vec::new(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        integration_response.automation.base_target_ref.as_deref(),
+        Some("main")
+    );
+    assert_eq!(
+        integration_response
+            .automation
+            .base_target_display_name
+            .as_deref(),
+        Some("Project default (main)")
+    );
+    assert_ne!(
+        integration_response.automation.base_target_ref.as_deref(),
+        Some("ralphx/ralphx/automation-abc")
+    );
+
+    let mut project_default_automation = automation();
+    project_default_automation.setup_conversation_id = Some(setup_conversation_id);
+    project_default_automation.base_ref = "main".to_string();
+    let project_default_response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation: project_default_automation,
+            runs: Vec::new(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert!(project_default_response
+        .automation
+        .base_target_ref
+        .is_none());
+    assert!(project_default_response
+        .automation
+        .base_target_display_name
+        .is_none());
 }
 
 #[tokio::test]

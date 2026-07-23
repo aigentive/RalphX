@@ -431,6 +431,28 @@ describe("AutomationDetailView", () => {
     }
   });
 
+  it("shows the fork-point target as Base and the integration branch as Branch", async () => {
+    renderDetail({
+      automation: automation({
+        baseRefKind: "local_branch",
+        baseRef: "ralphx/ralphx/automation-b72b3759",
+        baseDisplayName: "Automation branch (ralphx/ralphx/automation-b72b3759)",
+        baseTargetRef: "main",
+        baseTargetDisplayName: "Project default (main)",
+      }),
+      runs: [],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    // BASE shows the final merge target (the fork point), not the integration branch.
+    expect(screen.getByText("Project default (main)")).toBeInTheDocument();
+    // BRANCH surfaces the integration branch that runs stack into.
+    expect(screen.getByTestId("automation-branch-value")).toHaveTextContent(
+      "ralphx/ralphx/automation-b72b3759",
+    );
+  });
+
   it("opens run pull requests through the external opener seam", async () => {
     const user = userEvent.setup();
     renderDetail({

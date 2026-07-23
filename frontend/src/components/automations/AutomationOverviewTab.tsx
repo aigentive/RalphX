@@ -45,6 +45,12 @@ function formatEstimatedUsd(value: AutomationUsage["estimatedUsd"]): string {
 }
 
 function formatBase(automation: Automation): string {
+  // For an integration-branch automation, BASE shows the final merge target (the
+  // fork point, e.g. `main`); the integration branch is surfaced separately as BRANCH.
+  const target = automation.baseTargetDisplayName ?? automation.baseTargetRef;
+  if (target && target.trim()) {
+    return target;
+  }
   return (automation.baseDisplayName ?? automation.baseRef) || automation.baseRefKind;
 }
 

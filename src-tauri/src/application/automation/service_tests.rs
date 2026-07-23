@@ -1280,6 +1280,86 @@ async fn service_update_config_writes_provided_fields_on_draft_and_emits_event()
     );
 }
 
+#[tokio::test]
+async fn service_update_config_preserves_integration_base_from_project_default_downgrade() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter);
+    let mut draft = automation("automation-1", AutomationStatus::Draft);
+    draft.base_ref_kind = "local_branch".to_string();
+    draft.base_ref = "ralphx/ralphx/automation-abc".to_string();
+    draft.base_display_name = Some("ralphx/ralphx/automation-abc".to_string());
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            base_ref_kind: Some("project_default".to_string()),
+            base_ref: Some("main".to_string()),
+            base_display_name: Some("Project default (main)".to_string()),
+            ..empty_config_input(draft.id)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "ralphx/ralphx/automation-abc");
+    assert_eq!(
+        updated.base_display_name.as_deref(),
+        Some("ralphx/ralphx/automation-abc")
+    );
+    assert_ne!(updated.base_ref_kind, "project_default");
+    assert_ne!(updated.base_ref, "main");
+}
+
+#[tokio::test]
+async fn service_update_config_allows_project_default_to_local_branch_change() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter);
+    let draft = automation("automation-1", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            base_ref_kind: Some("local_branch".to_string()),
+            base_ref: Some("some-branch".to_string()),
+            base_display_name: Some("some-branch".to_string()),
+            ..empty_config_input(draft.id)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "some-branch");
+    assert_eq!(updated.base_display_name.as_deref(), Some("some-branch"));
+    assert_ne!(updated.base_ref_kind, "project_default");
+}
+
+#[tokio::test]
+async fn service_update_config_patches_goal_while_preserving_integration_base() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter);
+    let mut draft = automation("automation-1", AutomationStatus::Draft);
+    draft.base_ref_kind = "local_branch".to_string();
+    draft.base_ref = "ralphx/ralphx/automation-abc".to_string();
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            goal_prompt: Some("Updated automation goal".to_string()),
+            base_ref_kind: Some("project_default".to_string()),
+            base_ref: Some("main".to_string()),
+            base_display_name: Some("Project default (main)".to_string()),
+            ..empty_config_input(draft.id)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.goal_prompt, "Updated automation goal");
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "ralphx/ralphx/automation-abc");
+    assert_ne!(updated.base_ref_kind, "project_default");
+    assert_ne!(updated.base_ref, "main");
+}
+
 fn empty_config_input(id: AutomationId) -> UpdateAutomationConfigInput {
     UpdateAutomationConfigInput {
         id,
