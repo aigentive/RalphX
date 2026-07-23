@@ -222,6 +222,7 @@ macro_rules! register_tauri_commands {
             commands::ideation_commands::migrate_proposals,
             commands::ideation_commands::get_ideation_session,
             commands::ideation_commands::get_ideation_session_with_data,
+            commands::ideation_commands::get_ideation_agent_workspace,
             commands::ideation_commands::list_ideation_sessions,
             commands::ideation_commands::get_session_group_counts,
             commands::ideation_commands::list_sessions_by_group,

@@ -252,16 +252,16 @@ Defaults match the plan: everything ON except run completions (info tier). First
 | Category | Icon (lucide) | Icon color | Row action | Click target |
 |---|---|---|---|---|
 | permission_request | ShieldQuestion | --status-warning | Respond | re-raise `PermissionDialog` |
-| agent_question | MessageCircleQuestion | --accent-primary | Answer | conversation (`navigateToIdeationSession` / agents view) |
+| agent_question | MessageCircleQuestion | --accent-primary | Answer | linked setup conversation (`openIdeationInAgents`) or current Agents conversation navigation |
 | plan_approval | FileCheck | --accent-primary | Review plan | session artifact pane, plan tab |
 | review_needed | GitPullRequest | --accent-primary | Review | in-place `ReviewDetailModal` |
 | review_escalated | TriangleAlert | --status-warning | Decide | in-place `ReviewDetailModal` |
-| qa_failed | FlaskConical | --status-error | Open task | `navigateToTask` |
-| merge_conflict | GitMerge | --status-error | Resolve | `navigateToTask` |
-| merge_incomplete | GitMerge | --status-warning | Open task | `navigateToTask` |
-| task_failed | XCircle | --status-error | Open task | `navigateToTask` |
-| task_blocked | Hand | --status-warning | Open task | `navigateToTask` |
-| task_stuck | LifeBuoy | --status-error | Open task | `navigateToTask` |
+| qa_failed | FlaskConical | --status-error | Open task | `openTaskInAgents(taskId, "graph")` |
+| merge_conflict | GitMerge | --status-error | Resolve | `openTaskInAgents(taskId, "graph")` |
+| merge_incomplete | GitMerge | --status-warning | Open task | `openTaskInAgents(taskId, "graph")` |
+| task_failed | XCircle | --status-error | Open task | `openTaskInAgents(taskId, "graph")` |
+| task_blocked | Hand | --status-warning | Open task | `openTaskInAgents(taskId, "graph")` |
+| task_stuck | LifeBuoy | --status-error | Open task | `openTaskInAgents(taskId, "graph")` |
 | provider_paused | PauseCircle | --status-warning | — (info row) | activity view |
 | automation_plan_approval | Bot | --accent-primary | Review plan | `requestAutomationRunOpen` → plan tab |
 | automation_paused | Bot | --status-warning | Open automation | automation detail |

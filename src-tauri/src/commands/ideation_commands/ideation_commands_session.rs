@@ -18,10 +18,12 @@ use crate::application::ideation_workspace::{
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::AppState;
 use crate::application::{StopMode, TaskCleanupService};
+use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_ideation_session;
 use crate::domain::entities::plan_branch::PlanBranchStatus;
 use crate::domain::entities::{
     IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId, SessionPurpose, TaskId,
 };
+use crate::domain::execution::ExecutionTaskAgentWorkspace;
 
 use super::ideation_commands_types::{
     ChatMessageResponse, CreateSessionInput, IdeationSessionResponse,
@@ -32,6 +34,27 @@ use super::ideation_commands_types::{
 // ============================================================================
 // Session Management Commands
 // ============================================================================
+
+/// Resolve the active Agent workspace that owns a linked ideation session.
+#[tauri::command]
+pub async fn get_ideation_agent_workspace(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    get_ideation_agent_workspace_for_app_state(session_id, state.inner()).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_ideation_agent_workspace_for_app_state(
+    session_id: String,
+    state: &AppState,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    resolve_agent_workspace_target_for_ideation_session(
+        state,
+        &IdeationSessionId::from_string(session_id),
+    )
+    .await
+}
 
 /// Core implementation for creating an ideation session.
 /// Generic over Runtime to enable unit testing with MockRuntime.

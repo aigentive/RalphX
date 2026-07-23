@@ -14,10 +14,10 @@ import {
 import { GitHubMarkIcon } from "@/components/github/GitHubMarkIcon";
 import { GranolaIcon } from "@/components/granola/GranolaIcon";
 import type { FeatureFlags } from "@/types/feature-flags";
-import type { ViewType } from "@/types/chat";
+import type { AppView } from "@/types/app-view";
 
 export interface NavItemConfig {
-  view: ViewType;
+  view: AppView;
   label: string;
   icon: React.ElementType;
   shortcut?: string;

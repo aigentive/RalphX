@@ -14,13 +14,13 @@ import { cn } from "@/lib/utils";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useThemeStore, type FontScale } from "@/stores/themeStore";
-import type { ViewType } from "@/types/chat";
+import type { AppView } from "@/types/app-view";
 import type { ChatConversation } from "@/types/chat-conversation";
 
 import { ThemeSelector } from "./ThemeSelector";
 
 interface AppTopBarProps {
-  currentView: ViewType;
+  currentView: AppView;
   attentionCount: number;
   unreadNotificationCount?: number;
   attentionCountStale?: boolean;
@@ -31,7 +31,7 @@ interface AppTopBarProps {
   showProjectSelector?: boolean;
 }
 
-const VIEW_LABELS: Partial<Record<ViewType, string>> = {
+const VIEW_LABELS: Partial<Record<AppView, string>> = {
   agents: "Agents",
   ticketing: "Ticketing",
   github: "GitHub",
@@ -39,7 +39,6 @@ const VIEW_LABELS: Partial<Record<ViewType, string>> = {
   insights: "Insights",
   extensibility: "Extensibility",
   activity: "Activity",
-  task_detail: "Task",
 };
 
 const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
@@ -50,18 +49,18 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
 
 let lastDockBadgeCount: number | undefined;
 
-const PROJECT_SELECTOR_VIEWS = new Set<ViewType>([
+const PROJECT_SELECTOR_VIEWS = new Set<AppView>([
   "ticketing",
   "github",
   "granola",
 ]);
 
-function viewLabel(view: ViewType): string {
+function viewLabel(view: AppView): string {
   return VIEW_LABELS[view] ?? "Workspace";
 }
 
 function breadcrumbItems(
-  currentView: ViewType,
+  currentView: AppView,
   projectName: string | null,
   agentConversationTitle: string | null,
 ): string[] {

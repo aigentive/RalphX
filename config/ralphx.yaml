@@ -31,16 +31,14 @@ file_logging: true
 
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
-# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_AUTOMATIONS_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false, RALPHX_UI_AGENT_PERSONAS=true|false, RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION=true|false
+# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_AUTOMATIONS_PAGE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false, RALPHX_UI_AGENT_PERSONAS=true|false, RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION=true|false
 # Personas v2: RALPHX_UI_AGENT_PERSONAS,
 # and RALPHX_UI_STANDALONE_CONVERSATIONS.
 ui:
   feature_flags:
     activity_page: false
     extensibility_page: false
-    ideation_page: false
     automations_page: true
-    battle_mode: false
     atlassian_oauth: false
     ticketing_dashboard: false
     # Enables experimental agent persona controls.

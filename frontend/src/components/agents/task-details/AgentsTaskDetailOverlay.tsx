@@ -2,7 +2,7 @@
  * AgentsTaskDetailOverlay - Agents-owned inline task detail panel.
  *
  * It displays as an overlay inside the Agents artifact surface so Agents can
- * evolve task details independently from the Kanban and Graph pages.
+ * evolve task details independently from the embedded Kanban and Graph modes.
  *
  * Design spec: specs/design/refined-studio-patterns.md
  */
@@ -334,11 +334,8 @@ export function AgentsTaskDetailOverlay({
   onFocusTaskRuntime,
   readOnly = false,
 }: AgentsTaskDetailOverlayProps) {
-  const globalSelectedTaskId = useUiStore((s) => s.selectedTaskId);
-  const setGlobalSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
-  const selectedTaskId =
-    selectedTaskIdOverride === undefined ? globalSelectedTaskId : selectedTaskIdOverride;
-  // History state from store - shared with IntegratedChatPanel
+  const selectedTaskId = selectedTaskIdOverride ?? null;
+  // History state from store - shared with the Agents chat surface
   const historyState = useUiStore((s) => s.taskHistoryState);
   const setHistoryState = useUiStore((s) => s.setTaskHistoryState);
 
@@ -378,8 +375,7 @@ export function AgentsTaskDetailOverlay({
       onCloseOverride();
       return;
     }
-    setGlobalSelectedTaskId(null);
-  }, [onCloseOverride, setGlobalSelectedTaskId]);
+  }, [onCloseOverride]);
 
   const handleClose = useCallback(() => {
     closeSelectedTask();

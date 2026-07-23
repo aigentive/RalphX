@@ -26,7 +26,7 @@ import type { Unsubscribe } from "@/lib/event-bus";
  * ```tsx
  * function App() {
  *   usePlanArtifactEvents(); // Sets up listener automatically
- *   return <IdeationView />;
+ *   return <AgentsView />;
  * }
  * ```
  */

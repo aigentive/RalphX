@@ -943,7 +943,7 @@ describe("IntegratedChatPanel", () => {
   });
 
   describe("task selection override", () => {
-    it("can ignore the global selected task when host surfaces keep chat pinned to project context", () => {
+    it("omits task context when the host keeps chat pinned to project context", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel

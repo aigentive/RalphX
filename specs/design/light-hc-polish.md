@@ -53,17 +53,12 @@ Source: 24 screenshots at `.artifacts/theme-switch-audit/{dark,light,high-contra
    - Where: Activity `ActivityFilters.tsx` ViewModeToggle.
    - Fix: Add `border: 1px solid var(--border-subtle)` around the full toggle group on Light (theme-agnostic would be fine too — a 1px subtle border always frames the two-segment group; in Dark the current tonal shift is enough but the outline doesn't hurt).
 
-7. **Kanban chat panel vertical divider missing on Light**
-   - What: The split between the main Kanban area and the right project chat panel is a shared `--bg-elevated` on Light (both near-white). No vertical `--border-subtle` is drawn, so the two regions visually bleed into one.
-   - Where: `KanbanSplitLayout` / `ResizeHandle.tsx` — the resize track has no hairline track.
-   - Fix: Add `border-l: 1px solid var(--border-subtle)` on the right panel's outer container. Visible on Light, invisible-to-faint on Dark (hits at `#292C32` against `#1C1E22`) — acceptable trade-off since the tonal shift already separates them on Dark.
-
-8. **Theme dropdown descriptions truncated in Settings Select (Light variant confirmation)**
+7. **Theme dropdown descriptions truncated in Settings Select (Light variant confirmation)**
    - What: Prior audit flagged this and marked it fixed. In the current Light screenshot the trigger now shows "Light" as a clean single label — confirmed fixed. No action needed; listed here only to close the loop.
    - Where: `AccessibilitySection.tsx`.
    - Fix: None — confirmed resolved.
 
-9. **Close X on Settings dialog fades into rail on Light**
+8. **Close X on Settings dialog fades into rail on Light**
    - What: Top-right dialog close `X` button on Light uses `--text-secondary` (`hsl(220 10% 35%)` → ~#4F555F) on a near-white dialog header. Technically meets 7.8:1 but visually reads as quite faint because the icon is only 14-16px and weight 2px stroke.
    - Where: `SettingsDialog.tsx` header close button.
    - Fix: Give the close button a hover `--bg-hover` pill so on hover it gains clear affordance, and consider stroking the icon slightly heavier (2.5px) on Light only via a class-scoped `[data-theme="light"]` override. Lowest-effort alternative: leave color as-is but ensure `hover:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]` is wired.
@@ -77,46 +72,41 @@ Source: 24 screenshots at `.artifacts/theme-switch-audit/{dark,light,high-contra
    - Where: `src/components/TaskGraph/controls/FloatingGraphFilters.tsx:114-124` — `GLASS_STYLE` uses `border: 1px solid var(--overlay-weak)`.
    - Fix (same token swap as Light #1): Replace `border: 1px solid var(--overlay-weak)` with `border: 1px solid var(--border-subtle)`. Because HC overrides `--border-width-default: 2px` and `--border-subtle: rgba(255,255,255,0.5)`, the expression will auto-resolve to a 2px-rgba(255,255,255,0.5) line in HC and a 1px `--gray-300` line in Light. If a fully solid white edge is wanted in HC (matching spec language), use `border: var(--border-width-default) solid var(--border-default)` which HC resolves to `2px solid #FFFFFF`.
 
-2. **Kanban / project chat vertical separator missing in HC**
-   - What: The right chat panel inside Kanban sits flush with the Kanban area. HC spec requires a 2px solid white border between elevated surfaces; there is none. The only visible separator is the input row below, which breaks the "elevation through borders" contract.
-   - Where: Same region as Light #7 — `KanbanSplitLayout` / `ResizeHandle.tsx` / right-dock panel outer.
-   - Fix: Use the same `border-l: var(--border-width-default) solid var(--border-default)` approach. HC auto-draws 2px white; Light gets 1px gray.
-
 ### HIGH
 
-3. **Reviews segmented tabs — active state is not yellow in HC**
+2. **Reviews segmented tabs — active state is not yellow in HC**
    - What: HC spec (`themes/high-contrast.md §4 "Tabs"`) mandates `Trigger active: #FFDD00 bg, #000000 text, +2px border bottom`. In the current Reviews screenshot the active "All (0)" tab appears to have a faint gray fill rather than a yellow pill; "AI (0)" and "Human (0)" are unmarked. Users can't tell which filter is active by color alone.
    - Where: `ReviewsPanel.utils.tsx` FilterTabs component (or wherever `data-state=active` styling for the three tabs is set).
    - Fix: Add an HC-scoped override. In `src/styles/themes/high-contrast.css` add `[data-theme="high-contrast"] [data-state="active"].segmented-tab { background: var(--accent-primary); color: var(--text-inverse); border-bottom: var(--border-width-default) solid var(--border-default); }` — OR scope via a class on the FilterTabs component. Also applies to the Activity Live/History toggle (Light #6) for HC.
 
-4. **Nav item active in Settings HC lacks 4px black left indicator**
+3. **Nav item active in Settings HC lacks 4px black left indicator**
    - What: HC spec §4 Nav explicitly says `Item active: #FFDD00 bg, #000000 text, font-weight 600 + left border: 4px solid #000000 (draws over the yellow, adds shape cue)`. The current "Accessibility" active rail item shows yellow bg + black text + bold — but no 4px black left bar. Shape cue missing.
    - Where: Left rail nav item in `SettingsDialog.tsx` / shared nav component.
    - Fix: Add `[data-theme="high-contrast"] [aria-current="page"] { border-left: 4px solid var(--color-black); padding-left: calc(var(--padding-inline) - 4px); }` to `high-contrast.css`. (The 4px overlay on yellow nav pills is the documented shape reinforcement.)
 
-5. **Reviews count badge "(0)" still peach/orange-muted in HC**
+4. **Reviews count badge "(0)" still peach/orange-muted in HC**
    - What: The prior audit noted the badge switches to neutral on zero — confirmed working on Dark/Light. In HC screenshot the badge renders with a peach-tinted bg (accent-muted at 15% yellow) inside the Reviews panel header. HC should use `#000` bg + 2px white border + white text for a neutral count, or yellow bg + black text if showing active count. Currently it reads as an ambiguous tinted chip.
    - Where: `ReviewsPanel.tsx` header count-badge component.
    - Fix: Replace the accent-muted fallback with explicit HC styling: `[data-theme="high-contrast"] .count-badge-neutral { background: transparent; border: var(--border-width-default) solid var(--border-default); color: var(--text-primary); }` — count of 0 renders as a white-outlined neutral chip, non-zero uses `bg-[var(--accent-primary)] text-[var(--text-inverse)]`.
 
-6. **Ideation ghost-link actions ("Seed from Draft Task" / "Import Session") have no border affordance in HC**
+5. **Ideation ghost-link actions ("Seed from Draft Task" / "Import Session") have no border affordance in HC**
    - What: Under the primary "Start New Session" CTA, the two ghost-link rows render as plain white text on black with no border. HC spec §6 "What to avoid" says "Placeholder-as-label / Soft drop shadows for elevation / Icon-only status indicators" — effectively an affordance must be visible. The existing `.bg-secondary` HC override at `high-contrast.css:202` applies to secondary buttons but not to these ghost-link rows (they appear to be plain `<button>` elements without `bg-secondary`).
-   - Where: `PlanningView.tsx` empty-state (Ideation) ghost actions, and similar ghost rows elsewhere.
+   - Where: Agents Plan/Ideation artifact empty-state ghost actions and similar ghost rows elsewhere.
    - Fix: Extend the existing HC ghost-button override. Add `[data-theme="high-contrast"] button.btn-ghost, [data-theme="high-contrast"] a.btn-ghost { border: var(--border-width-default) solid var(--border-default); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); }` — if the ghost class is different, use whatever selector the components actually attach (e.g., search for any button with `variant="ghost"` on empty-states and class them).
 
 ### MEDIUM
 
-7. **Kanban placeholder contrast passes AAA but reads as ghost on Light-ish HC surfaces**
+6. **Kanban placeholder contrast passes AAA but reads as ghost on Light-ish HC surfaces**
    - What: "Send a message…" in the right project chat panel on HC is the baseline `--text-muted: #B0B0B0` by default. The global placeholder bump at `high-contrast.css:167-171` forces placeholders to `--text-secondary`. Verify the `textarea` placeholder in ChatInput actually picks up this rule — if the component uses a custom placeholder color (via `color-mix` or a component-scoped class), the global rule may be bypassed.
    - Where: `ChatInput.tsx` placeholder color — confirm it resolves to `--text-secondary` on HC.
    - Fix: Audit `ChatInput.tsx` to ensure no component-level placeholder color override beats the theme rule. If any, remove.
 
-8. **"+ New Workflow" in Extensibility HC has proper 2px border — good precedent**
+7. **"+ New Workflow" in Extensibility HC has proper 2px border — good precedent**
    - What: In the Extensibility HC screenshot the "+ New Workflow" button has a clean 2px white border. Confirmed working (likely via the existing `bg-secondary` HC override at `high-contrast.css:202-204`). This is the pattern to mirror for the Ideation ghost-links (HC #6) and any other ghost CTA.
    - Where: N/A — reference, no action.
    - Fix: None — use as pattern reference for other ghost buttons.
 
-9. **Chat panel header icons (history / dock-side / close) read very faint in HC**
+8. **Chat panel header icons (history / dock-side / close) read very faint in HC**
    - What: The three icon-buttons in the Chat panel header use `--text-secondary` (#E0E0E0 on HC) but visually appear faded. AAA-passing (16:1) but reads as low emphasis against the solid white 2px border frame, which draws the eye first.
    - Where: `ChatPanel.tsx` header icon-button styling.
    - Fix: Give the header icons `color: var(--text-primary)` (`#FFFFFF`) on HC explicitly, or bump the icon stroke weight to 2px on HC (lucide default is 2; verify no override to 1.5). Matches `themes/high-contrast.md §9 "Open decisions"` note about considering 2.5px stroke — relevant if this reads too weak.
@@ -146,15 +136,14 @@ Issues worth fixing once in both themes:
 | 5 | Light + HC | Reviews card hover | Replace `border-white/10` with `border-[var(--border-default)]` | `ReviewsPanel.tsx:91` | 2 min |
 | 6 | HC | Ideation empty-state ghost links | Extend `high-contrast.css:202` ghost-button border rule to cover `button.btn-ghost` / variants without bg-secondary | `high-contrast.css` (edit rule) | 10 min |
 | 7 | Light | Chat dock panel | Bump `--shadow-md` Light alphas (`0.04/0.04` → `0.05/0.06`) to restore left-edge lift against near-white | `light.css:86` | 1 min |
-| 8 | Light + HC | Kanban / project chat | Add `border-l: 1px solid var(--border-subtle)` on right chat panel; theme-flips to 2px white on HC automatically | `KanbanSplitLayout.tsx` (or right-panel outer) | 10 min |
-| 9 | HC | Reviews count badge | Force neutral-zero badge styling in HC to transparent bg + 2px white border + white text | `high-contrast.css` (new rule) | 5 min |
-| 10 | Light | Ideation Plans sidebar tile | Add 1px `--accent-border` outline to tile so container is visible on white | `PlanBrowser.tsx` icon tile | 10 min |
+| 8 | HC | Reviews count badge | Force neutral-zero badge styling in HC to transparent bg + 2px white border + white text | `high-contrast.css` (new rule) | 5 min |
+| 9 | Light | Ideation Plans sidebar tile | Add 1px `--accent-border` outline to tile so container is visible on white | `PlanBrowser.tsx` icon tile | 10 min |
 
 ---
 
 ### Ship-readiness assessment
 
 - **Light**: one more pass. Items 1, 2, 5, 7 are token or one-line component edits and land most of the elevation + hover-affordance gaps. After that Light is ship-ready.
-- **HC**: one more pass. Items 1, 3, 4, 8 close the remaining HC spec violations (2px borders on floating surfaces, yellow-bg active tabs, 4px black nav indicator, right-dock border). Once landed HC matches spec.
+- **HC**: one more pass. Items 1, 2, and 3 close the remaining HC spec violations (floating-surface borders, yellow-bg active tabs, and the 4px black nav indicator). Once landed HC matches spec.
 
 Both are close — the open items are narrow, token-level or single-selector CSS changes. No structural rework required.
