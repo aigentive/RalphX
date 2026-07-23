@@ -31,12 +31,11 @@ use crate::application::agent_conversation_workspace::AgentConversationWorkspace
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };
+use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
-    schedule_agent_workspace_pr_supervision_recovery,
-    AgentWorkspacePrSupervisionRecoveryTrigger,
+    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
-use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
     complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
@@ -76,10 +75,11 @@ use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
-    update_agent_conversation_workspace_from_base_for_app_state,
-    AgentConversationWorkspaceFreshnessResponse, AgentWorkspacePrFixReviewPublishCommandResumer,
+    update_agent_conversation_workspace_from_base_for_app_state_with_caller,
+    AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
-    AgentWorkspacePostRepairAction, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+    AgentWorkspacePostRepairAction, AgentWorkspacePrFixReviewPublishCommandResumer,
+    AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
@@ -141,6 +141,8 @@ pub struct UpdateAgentWorkspaceFromBaseRequest {
     pub base_ref_kind: Option<String>,
     pub base_ref: Option<String>,
     pub base_display_name: Option<String>,
+    /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
+    pub created_by_run_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1209,11 +1211,12 @@ pub async fn update_agent_workspace_from_base(
         display_name: req.base_display_name,
         source_pull_request: None,
     };
-    match update_agent_conversation_workspace_from_base_for_app_state(
+    match update_agent_conversation_workspace_from_base_for_app_state_with_caller(
         state.app_state.as_ref(),
         &state.execution_state,
         conversation_id,
         selection,
+        req.created_by_run_id.as_deref(),
     )
     .await
     {

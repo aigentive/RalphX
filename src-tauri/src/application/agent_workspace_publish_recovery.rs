@@ -6,8 +6,9 @@ use crate::application::agent_workspace_pr_autofix_attempt::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, claim_agent_workspace_repair,
-    reconcile_active_agent_workspace_repair, settle_terminal_agent_workspace_repair,
-    terminal_run_authorizes_repair_recovery, AgentWorkspaceRepairClaim,
+    reconcile_active_agent_workspace_repair, restore_refreshed_agent_workspace_pr_fix_claim,
+    settle_terminal_agent_workspace_repair, terminal_run_authorizes_repair_recovery,
+    AgentWorkspaceRepairClaim,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewTarget,
@@ -370,10 +371,12 @@ pub async fn recover_stale_publish_repair_for_workspace(
 async fn recover_stale_publish_repair_for_workspace_with_review_target(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
-    workspace: AgentConversationWorkspace,
+    mut workspace: AgentConversationWorkspace,
     current_review_target: Option<&AgentWorkspaceReviewTarget>,
 ) -> AppResult<StalePublishRepairRecoveryOutcome> {
-    if workspace.publication_push_status.as_deref() != Some("needs_agent") {
+    let refreshed_fixing = workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("fixing");
+    if workspace.publication_push_status.as_deref() != Some("needs_agent") && !refreshed_fixing {
         return Ok(StalePublishRepairRecoveryOutcome::Noop);
     }
 
@@ -388,6 +391,22 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
         }
         None => None,
     };
+    if refreshed_fixing {
+        if latest_exact_autofix_run.is_none()
+            || restore_refreshed_agent_workspace_pr_fix_claim(
+                Arc::clone(&workspace_repo),
+                &workspace,
+            )
+            .await?
+            .is_none()
+        {
+            return Ok(StalePublishRepairRecoveryOutcome::Noop);
+        }
+        workspace = workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await?
+            .unwrap_or(workspace);
+    }
     let publication_events = workspace_repo
         .list_publication_events(&workspace.conversation_id)
         .await?;

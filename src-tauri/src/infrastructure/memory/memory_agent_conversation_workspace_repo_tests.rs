@@ -2268,6 +2268,12 @@ mod tests {
         review_handoff.publication_push_status = Some("refreshed".to_string());
         review_handoff.pr_supervision_status = Some("reviewing".to_string());
         review_handoff.pr_autofix_enabled = true;
+        let mut stranded_fix = candidate_workspace("stranded-fix");
+        stranded_fix.publication_pr_number = Some(47);
+        stranded_fix.publication_pr_status = Some("open".to_string());
+        stranded_fix.publication_push_status = Some("refreshed".to_string());
+        stranded_fix.pr_supervision_status = Some("fixing".to_string());
+        stranded_fix.pr_autofix_enabled = true;
 
         for workspace in [
             first.clone(),
@@ -2276,6 +2282,7 @@ mod tests {
             needs_agent,
             terminal,
             review_handoff.clone(),
+            stranded_fix.clone(),
         ] {
             repo.create_or_update(workspace).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -2286,7 +2293,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].conversation_id, review_handoff.conversation_id);
+        assert_eq!(limited[0].conversation_id, stranded_fix.conversation_id);
 
         let all = repo
             .list_active_direct_pr_supervision_recovery_candidates(10)
@@ -2297,6 +2304,7 @@ mod tests {
                 .map(|workspace| workspace.conversation_id)
                 .collect::<Vec<_>>(),
             vec![
+                stranded_fix.conversation_id,
                 review_handoff.conversation_id,
                 second.conversation_id,
                 first.conversation_id

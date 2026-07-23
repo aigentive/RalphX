@@ -65,6 +65,9 @@ use crate::application::agent_workspace_external_pr_reconciliation::{
     external_pr_reconciliation_skip_reason, schedule_agent_workspace_external_pr_reconciliation,
     AgentWorkspaceExternalPrReconciliationDeps, AgentWorkspaceExternalPrReconciliationTrigger,
 };
+use crate::application::agent_workspace_pr_autofix_attempt::{
+    load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
+};
 use crate::application::agent_workspace_pr_description::{
     draft_agent_workspace_pr_description, get_or_draft_agent_workspace_pr_description,
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
@@ -1077,27 +1080,24 @@ fn schedule_pr_supervision_recovery_for_workspace(
     if pr_supervision_recovery_schedule_skip_reason(workspace).is_some() {
         return;
     }
-    let Some(execution_state) = state
+    let execution_state = state
         .app_handle
         .as_ref()
         .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
-        .map(|state| state.inner().clone())
-    else {
-        return;
-    };
+        .map(|state| state.inner().clone());
     let runtime_app_handle = state.app_handle.clone();
-    let transition_service = Arc::new(state.build_transition_service_for_runtime(
-        Arc::clone(&execution_state),
-        runtime_app_handle.clone(),
-    ));
-    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service_for_runtime(
-        Some(execution_state),
-        runtime_app_handle.clone(),
-    ));
+    let transition_service = execution_state.as_ref().map(|execution_state| {
+        Arc::new(state.build_transition_service_for_runtime(
+            Arc::clone(execution_state),
+            runtime_app_handle.clone(),
+        ))
+    });
+    let chat_service: Arc<dyn ChatService> =
+        Arc::new(state.build_chat_service_for_runtime(execution_state, runtime_app_handle.clone()));
     let Some(deps) = build_agent_workspace_pr_supervision_recovery_deps(
         state,
         runtime_app_handle,
-        Some(transition_service),
+        transition_service,
         Some(chat_service),
         None,
     ) else {
@@ -5767,6 +5767,24 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     conversation_id: ChatConversationId,
     selection: AgentConversationWorkspaceBaseSelection,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+        state,
+        execution_state,
+        conversation_id,
+        selection,
+        None,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    conversation_id: ChatConversationId,
+    selection: AgentConversationWorkspaceBaseSelection,
+    created_by_run_id: Option<&str>,
+) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
@@ -5781,6 +5799,28 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                 conversation_id
             )
         })?;
+    let preserve_pr_autofix_claim = if workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_push_status.as_deref() == Some("needs_agent")
+        && workspace.pr_supervision_status.as_deref() == Some("fixing")
+    {
+        match workspace.publication_pr_number {
+            Some(pr_number) if created_by_run_id.is_some() => matches!(
+                load_pr_autofix_completion_authority(
+                    state.agent_run_repo.as_ref(),
+                    &conversation_id,
+                    pr_number,
+                    created_by_run_id,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+                PrAutofixCompletionAuthority::Current
+            ),
+            _ => false,
+        }
+    } else {
+        false
+    };
 
     let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
@@ -5929,9 +5969,11 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         Some(base_resolution)
     };
 
-    mark_agent_workspace_publish_status(state, &workspace, "refreshing")
-        .await
-        .map_err(|e| e.to_string())?;
+    if !preserve_pr_autofix_claim {
+        mark_agent_workspace_publish_status(state, &workspace, "refreshing")
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     let freshness_conversation_id = workspace.conversation_id.as_str();
     let outcome = if publish_target.plan_branch.is_some() {
@@ -6047,6 +6089,11 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         .create_or_update(workspace)
         .await
         .map_err(|e| e.to_string())?;
+    let final_push_status = if preserve_pr_autofix_claim {
+        "needs_agent"
+    } else {
+        push_status
+    };
     state
         .agent_conversation_workspace_repo
         .update_publication(
@@ -6054,7 +6101,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
             workspace.publication_pr_number,
             workspace.publication_pr_url.as_deref(),
             workspace.publication_pr_status.as_deref(),
-            Some(push_status),
+            Some(final_push_status),
         )
         .await
         .map_err(|e| e.to_string())?;

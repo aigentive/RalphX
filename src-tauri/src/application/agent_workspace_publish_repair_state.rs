@@ -100,6 +100,39 @@ pub(crate) async fn claim_agent_workspace_repair(
     }))
 }
 
+pub(crate) async fn restore_refreshed_agent_workspace_pr_fix_claim(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
+    if workspace.publication_push_status.as_deref() != Some("refreshed")
+        || workspace.pr_supervision_status.as_deref() != Some("fixing")
+    {
+        return Ok(None);
+    }
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some("needs_agent".to_string()),
+        pr_supervision_status: Some("fixing".to_string()),
+        pr_supervision_summary: workspace.pr_supervision_summary.clone(),
+        pr_supervision_updated_at: next_transition_at(workspace.pr_supervision_updated_at),
+        pr_auto_merge_current: None,
+        base_commit: None,
+    };
+    if !workspace_repo
+        .compare_and_set_repair_state(
+            &workspace.conversation_id,
+            &AgentWorkspaceRepairStateGuard::from_workspace(workspace),
+            &transition,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(AgentWorkspaceRepairClaim {
+        conversation_id: workspace.conversation_id.clone(),
+        guard: transition_guard(&transition),
+    }))
+}
+
 pub(crate) async fn settle_agent_workspace_repair_failure(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     claim: &AgentWorkspaceRepairClaim,

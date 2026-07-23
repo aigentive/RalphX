@@ -1191,6 +1191,130 @@
         }
     }
 
+    #[tokio::test]
+    async fn current_pr_fixer_refreshes_base_then_completes_and_publishes_refreshed_head() {
+        let mut fixture = setup_pr_fix_workspace_with_review_gate(
+            "base-refresh-completion",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let workspace_repo =
+            Arc::clone(&fixture.app_state.agent_conversation_workspace_repo);
+        fixture.app_state = Arc::new(
+            fixture
+                .app_state
+                .as_ref()
+                .clone()
+                .with_agent_client(Arc::new(SubmittingPrDescriptionClient::new(
+                    workspace_repo,
+                    fixture.conversation_id.clone(),
+                ))),
+        );
+        fixture
+            .app_state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("workspace review should be disabled for direct publish");
+        let mut workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.auto_publish_enabled = true;
+        fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("auto publish should persist");
+
+        std::fs::write(fixture._repo.path().join("base-refresh.txt"), "new base\n")
+            .expect("base update should be written");
+        git(fixture._repo.path(), &["add", "base-refresh.txt"]);
+        git(
+            fixture._repo.path(),
+            &["commit", "-m", "advance base while fixer runs"],
+        );
+
+        let Json(update_response) = update_agent_workspace_from_base(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(UpdateAgentWorkspaceFromBaseRequest {
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("current PR fixer should refresh from base");
+
+        assert_eq!(update_response.updated, Some(true));
+        assert_eq!(
+            fixture.github.state().push_branch_calls,
+            0,
+            "base refresh must not publish the local branch"
+        );
+        let refreshed = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let refreshed_head = git(
+            std::path::Path::new(&refreshed.worktree_path),
+            &["rev-parse", "HEAD"],
+        );
+        assert_ne!(refreshed_head, fixture.fix_commit_sha);
+        assert_eq!(
+            refreshed.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
+        assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
+        let Json(completion) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Refreshed the fixer branch and retained the repair".to_string(),
+                blocker: None,
+                fix_commit_sha: Some(refreshed_head.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("current PR fixer should publish the refreshed branch");
+
+        assert_eq!(
+            completion.status, "published",
+            "publish error: {:?}",
+            completion.publish_error
+        );
+        assert_eq!(completion.pushed, Some(true));
+        assert_eq!(fixture.github.state().push_branch_calls, 1);
+        let completed = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(
+            completed.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(
+            completed.pr_supervision_status.as_deref(),
+            Some("monitoring")
+        );
+    }
+
     #[test]
     fn review_artifact_gate_accepts_matching_head_sha() {
         let mut monitor = AgentWorkspacePrReviewMonitor::new(
@@ -1724,6 +1848,7 @@
                 base_ref_kind: Some("not-a-kind".to_string()),
                 base_ref: Some("main".to_string()),
                 base_display_name: Some("main".to_string()),
+                created_by_run_id: None,
             }),
         )
         .await

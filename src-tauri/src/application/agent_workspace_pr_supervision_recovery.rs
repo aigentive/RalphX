@@ -217,7 +217,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                 workspace.publication_push_status.as_deref(),
                 workspace.pr_supervision_status.as_deref(),
             ),
-            (Some("needs_agent"), _) | (Some("refreshed"), Some("reviewing"))
+            (Some("needs_agent"), _) | (Some("refreshed"), Some("fixing" | "reviewing"))
         )
     {
         let (recovered_workspace, repair_outcome) =
@@ -885,8 +885,10 @@ pub(crate) fn pr_supervision_recovery_schedule_skip_reason(
         && workspace.pr_supervision_status.as_deref() == Some("blocked");
     let pending_review_handoff = workspace.publication_push_status.as_deref() == Some("refreshed")
         && workspace.pr_supervision_status.as_deref() == Some("reviewing");
+    let stranded_pr_fix = workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("fixing");
     let stale_candidate = workspace.publication_push_status.as_deref() == Some("needs_agent");
-    if blocked_failed || pending_review_handoff || stale_candidate {
+    if blocked_failed || pending_review_handoff || stranded_pr_fix || stale_candidate {
         None
     } else {
         Some("workspace_push_not_recoverable")

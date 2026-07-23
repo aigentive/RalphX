@@ -621,6 +621,7 @@ export async function callUpdateAgentWorkspaceFromBaseTool(callTauri, args, runt
         base_ref_kind,
         base_ref,
         base_display_name,
+        created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     });
 }
 export async function callPublishAgentWorkspaceTool(callTauri, args, runtimeContext) {

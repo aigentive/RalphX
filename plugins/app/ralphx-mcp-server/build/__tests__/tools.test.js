@@ -1084,15 +1084,20 @@ describe('agent workspace publish tool transport', () => {
             base_ref_kind: 'local_branch',
             base_ref: 'feature/base',
             base_display_name: 'feature/base',
+            created_by_run_id: undefined,
         });
     });
     it('defaults base updates to the current runtime workspace conversation', async () => {
         const callTauri = vi.fn().mockResolvedValue({ success: true });
-        await expect(callUpdateAgentWorkspaceFromBaseTool(callTauri, { base_ref_kind: 'project_default' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        await expect(callUpdateAgentWorkspaceFromBaseTool(callTauri, { base_ref_kind: 'project_default' }, {
+            parentConversationId: 'conversation-from-runtime',
+            agentRunId: 'run-from-runtime',
+        })).resolves.toEqual({ success: true });
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/update-from-base', {
             base_ref_kind: 'project_default',
             base_ref: undefined,
             base_display_name: undefined,
+            created_by_run_id: 'run-from-runtime',
         });
     });
     it('routes publish requests to the agent workspace endpoint', async () => {
@@ -1502,6 +1507,7 @@ describe('agent workspace publish tool transport', () => {
                 base_ref_kind: 'local_branch',
                 base_ref: 'feature/base',
                 base_display_name: 'feature/base',
+                created_by_run_id: 'run-from-runtime',
             },
         ],
         ['publish_agent_workspace', 'post', 'agent-workspaces/conversation-1/publish', {}],

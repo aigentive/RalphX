@@ -745,6 +745,7 @@ export async function callUpdateAgentWorkspaceFromBaseTool(
     base_ref_kind,
     base_ref,
     base_display_name,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 
