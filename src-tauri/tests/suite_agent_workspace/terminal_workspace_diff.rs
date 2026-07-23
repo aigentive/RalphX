@@ -296,7 +296,7 @@ async fn terminal_workspace_with_missing_preserved_pr_head_fails_closed() {
 
     let conversation_id = ChatConversationId::from_string("conversation-missing-terminal-head");
     let mut workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         project.id.clone(),
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
