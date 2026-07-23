@@ -159,6 +159,7 @@ async fn recover_stale_publish_repair_for_workspace_in_state_result(
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -418,16 +419,14 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
         .get_active_for_conversation(&workspace.conversation_id)
         .await?
         .is_some()
-    {
-        if reconcile_active_agent_workspace_repair(
+        && reconcile_active_agent_workspace_repair(
             Arc::clone(&workspace_repo),
             Arc::clone(&agent_run_repo),
             &workspace,
         )
         .await?
-        {
-            return Ok(StalePublishRepairRecoveryOutcome::ActiveRepairReconciled);
-        }
+    {
+        return Ok(StalePublishRepairRecoveryOutcome::ActiveRepairReconciled);
     }
 
     let review_monitor = workspace_repo
