@@ -199,11 +199,12 @@ describe("RunTimelineItem run deletion", () => {
     const user = userEvent.setup();
     const candidate = run();
     const onDeleteRun = vi.fn();
-    renderItem(candidate, { isLatest: true, onDeleteRun });
+    renderItem(candidate, { isLatest: true, onDeleteRun, defaultExpanded: true });
 
     const deleteButton = screen.getByTestId("automation-run-run-10-delete");
     expect(deleteButton).toHaveAccessibleName("Delete run 10");
-    expect(screen.getByRole("button", { name: "Expand run 10" }))
+    // Delete lives in the footer now, never inside the collapse control.
+    expect(screen.getByRole("button", { name: "Collapse run 10" }))
       .not.toContainElement(deleteButton);
 
     await user.click(deleteButton);
@@ -217,6 +218,7 @@ describe("RunTimelineItem run deletion", () => {
     renderItem(run({ status: "running", judgeState: "none", finishedAt: null }), {
       isLatest: true,
       onDeleteRun: vi.fn(),
+      defaultExpanded: true,
     });
 
     const deleteButton = screen.getByRole("button", {
@@ -233,6 +235,7 @@ describe("RunTimelineItem run deletion", () => {
     renderItem(run({ status: "completed" }), {
       isLatest: true,
       onDeleteRun: vi.fn(),
+      defaultExpanded: true,
     });
 
     expect(
@@ -241,24 +244,28 @@ describe("RunTimelineItem run deletion", () => {
   });
 
   it("does not offer deletion for a failed non-latest run", () => {
-    renderItem(run(), { isLatest: false, onDeleteRun: vi.fn() });
+    renderItem(run(), { isLatest: false, onDeleteRun: vi.fn(), defaultExpanded: true });
 
     expect(
       screen.queryByTestId("automation-run-run-10-delete"),
     ).not.toBeInTheDocument();
   });
 
-  it("does not toggle expansion when delete is clicked", async () => {
+  it("does not collapse the card when delete is clicked", async () => {
     const user = userEvent.setup();
-    renderItem(run(), { isLatest: true, onDeleteRun: vi.fn() });
-    const expandButton = screen.getByRole("button", { name: "Expand run 10" });
+    const onDeleteRun = vi.fn();
+    renderItem(run(), { isLatest: true, onDeleteRun, defaultExpanded: true });
 
+    // Delete sits in the footer, separate from the collapse control, so clicking it
+    // triggers the handler without bubbling to the card's expand/collapse toggle.
     await user.click(screen.getByTestId("automation-run-run-10-delete"));
 
-    expect(expandButton).toHaveAttribute("aria-expanded", "false");
-    expect(
-      screen.queryByTestId("automation-run-run-10-body"),
-    ).not.toBeInTheDocument();
+    expect(onDeleteRun).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Collapse run 10" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByTestId("automation-run-run-10-body")).toBeInTheDocument();
   });
 
   it("offers resume for the latest failed run and passes that run to the handler", async () => {
