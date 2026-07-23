@@ -1565,3 +1565,162 @@ async fn sqlite_run_repo_round_trips_goal_item_id() {
     let stored_unmapped = run_repo.get_by_id(&unmapped.id).await.unwrap().unwrap();
     assert_eq!(stored_unmapped.goal_item_id, None);
 }
+
+#[tokio::test]
+async fn sqlite_run_repo_delete_run_if_deletable_accepts_each_deletable_status() {
+    for (suffix, status, judge_state) in [
+        (
+            "agent-failed",
+            AutomationRunStatus::AgentFailed,
+            AutomationJudgeState::Done,
+        ),
+        (
+            "cancelled",
+            AutomationRunStatus::Cancelled,
+            AutomationJudgeState::Failed,
+        ),
+    ] {
+        let (_db, project_id, automation_repo, run_repo) = setup_repos();
+        let automation = automation("automation-1", project_id, AutomationStatus::Stopped);
+        automation_repo.create(automation.clone()).await.unwrap();
+        let run = run(&format!("run-{suffix}"), 1, status, judge_state);
+        run_repo.create_run(run.clone()).await.unwrap();
+
+        assert_eq!(
+            run_repo
+                .delete_run_if_deletable(&automation.id, &run.id)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(run_repo.get_by_id(&run.id).await.unwrap().is_none());
+        assert!(run_repo
+            .list_for_automation(&automation.id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn sqlite_run_repo_delete_run_if_deletable_rejects_each_guard_without_deleting() {
+    for (suffix, status, judge_state, add_newer, wrong_automation, wrong_run) in [
+        (
+            "status",
+            AutomationRunStatus::Running,
+            AutomationJudgeState::None,
+            false,
+            false,
+            false,
+        ),
+        (
+            "judge",
+            AutomationRunStatus::AgentFailed,
+            AutomationJudgeState::InProgress,
+            false,
+            false,
+            false,
+        ),
+        (
+            "not-latest",
+            AutomationRunStatus::AgentFailed,
+            AutomationJudgeState::Done,
+            true,
+            false,
+            false,
+        ),
+        (
+            "automation-id",
+            AutomationRunStatus::AgentFailed,
+            AutomationJudgeState::Done,
+            false,
+            true,
+            false,
+        ),
+        (
+            "run-id",
+            AutomationRunStatus::AgentFailed,
+            AutomationJudgeState::Done,
+            false,
+            false,
+            true,
+        ),
+    ] {
+        let (_db, project_id, automation_repo, run_repo) = setup_repos();
+        let automation = automation("automation-1", project_id, AutomationStatus::Stopped);
+        automation_repo.create(automation.clone()).await.unwrap();
+        let target = run(&format!("run-{suffix}"), 1, status, judge_state);
+        run_repo.create_run(target.clone()).await.unwrap();
+        let newer = add_newer.then(|| {
+            run(
+                "run-newer",
+                2,
+                AutomationRunStatus::Completed,
+                AutomationJudgeState::Done,
+            )
+        });
+        if let Some(newer) = newer.as_ref() {
+            run_repo.create_run(newer.clone()).await.unwrap();
+        }
+        let automation_id = if wrong_automation {
+            AutomationId::from_string("automation-other")
+        } else {
+            automation.id.clone()
+        };
+        let run_id = if wrong_run {
+            AutomationRunId::from_string("run-other")
+        } else {
+            target.id.clone()
+        };
+
+        assert_eq!(
+            run_repo
+                .delete_run_if_deletable(&automation_id, &run_id)
+                .await
+                .unwrap(),
+            0,
+            "{suffix} guard must reject the delete"
+        );
+        assert_eq!(
+            run_repo.get_by_id(&target.id).await.unwrap(),
+            Some(target),
+            "{suffix} guard must leave the target row untouched"
+        );
+        if let Some(newer) = newer {
+            assert_eq!(run_repo.get_by_id(&newer.id).await.unwrap(), Some(newer));
+        }
+    }
+}
+
+#[tokio::test]
+async fn sqlite_run_repo_reopen_resets_judge_and_finished_fields_only() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    let automation = automation("automation-1", project_id, AutomationStatus::Stopped);
+    automation_repo.create(automation).await.unwrap();
+    let finished_at = Utc.with_ymd_and_hms(2026, 7, 23, 9, 0, 0).unwrap();
+    let mut failed = run(
+        "run-reopen-reset",
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Failed,
+    );
+    failed.judge_verdict_json = Some(r#"{"decision":"stop"}"#.to_string());
+    failed.judge_model_id = Some("judge-model".to_string());
+    failed.finished_at = Some(finished_at);
+    run_repo.create_run(failed.clone()).await.unwrap();
+
+    run_repo.clear_judge_state(&failed.id).await.unwrap();
+    run_repo.clear_finished_at(&failed.id).await.unwrap();
+
+    let reset = run_repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(reset.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(reset.judge_state, AutomationJudgeState::None);
+    assert!(reset.judge_verdict_json.is_none());
+    assert_eq!(reset.judge_model_id.as_deref(), Some("judge-model"));
+    assert!(reset.finished_at.is_none());
+
+    let missing = AutomationRunId::from_string("missing-run");
+    run_repo.clear_judge_state(&missing).await.unwrap();
+    run_repo.clear_finished_at(&missing).await.unwrap();
+    assert!(run_repo.get_by_id(&missing).await.unwrap().is_none());
+}

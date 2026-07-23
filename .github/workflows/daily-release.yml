@@ -10,16 +10,6 @@ on:
         required: true
         type: boolean
         default: false
-      draft:
-        description: "Create the public release as a draft"
-        required: true
-        type: boolean
-        default: false
-      prerelease:
-        description: "Mark the public release as a prerelease"
-        required: true
-        type: boolean
-        default: false
       release_bump:
         description: "Optional manual bump override. Use major only for an explicitly approved v1 milestone."
         required: true
@@ -118,8 +108,6 @@ jobs:
       MANUAL_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
       MANUAL_RELEASE_NOTES_FROM: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes_from || '' }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
-      DRAFT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
-      PRERELEASE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
       LINUX_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_runner || 'blacksmith' }}
       ARM_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.arm_runner || 'blacksmith' }}
       INTEL_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.intel_runner || 'blacksmith' }}
@@ -331,8 +319,6 @@ jobs:
             --ref main \
             -f "ref=${tag}" \
             -f "version=${version}" \
-            -f "draft=${DRAFT_RELEASE}" \
-            -f "prerelease=${PRERELEASE_RELEASE}" \
             -f "linux_runner=${LINUX_RUNNER}" \
             -f "arm_runner=${ARM_RUNNER}" \
             -f "intel_runner=${INTEL_RUNNER}" \

@@ -75,6 +75,9 @@ describe("AutomationSpecView", () => {
     render(<AutomationSpecView specArtifactId="artifact-spec-1" />);
 
     // Shell chrome paints immediately.
+    expect(
+      screen.getByText("The specification this automation implements."),
+    ).toBeInTheDocument();
     expect(screen.getByText("Migration loop spec")).toBeInTheDocument();
     // Excerpt (heading markers stripped) is visible without expanding.
     expect(screen.getByText(/Build the shared context model\./)).toBeInTheDocument();
@@ -84,11 +87,36 @@ describe("AutomationSpecView", () => {
     expect(screen.getByTestId("automation-spec-toggle")).toHaveTextContent(
       "Show full spec",
     );
+    expect(screen.getByTestId("automation-spec-toggle")).toHaveClass(
+      "border-0",
+      "bg-transparent",
+      "p-0",
+      "text-xs",
+    );
 
     // Heavy markdown must NOT be mounted or evaluated before expansion.
     expect(screen.queryByTestId("automation-spec-markdown")).not.toBeInTheDocument();
     expect(screen.queryByTestId("rendered-markdown")).not.toBeInTheDocument();
     expect(reactMarkdownRenderSpy).not.toHaveBeenCalled();
+  });
+
+  it("strips markdown tokens from the clamped three-line excerpt", () => {
+    useArtifactMock.mockReturnValue({
+      data: artifact({
+        content: "## Phase 1\nBuild the **shared** [context model](https://example.com).\n- Keep it focused.\n> Ship it.\nA fourth line.",
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<AutomationSpecView specArtifactId="artifact-spec-1" />);
+
+    const excerpt = screen.getByTestId("automation-spec-excerpt");
+    expect(excerpt).toHaveClass("line-clamp-3", "text-sm", "leading-6");
+    expect(excerpt).toHaveTextContent("Build the shared context model.");
+    expect(excerpt).not.toHaveTextContent("**");
+    expect(excerpt).not.toHaveTextContent("](");
+    expect(excerpt).not.toHaveTextContent("A fourth line.");
   });
 
   it("hydrates the markdown renderer only after expanding past a paint boundary", async () => {
@@ -104,6 +132,7 @@ describe("AutomationSpecView", () => {
 
     // Region shell appears synchronously with a plain-text fallback.
     const region = screen.getByTestId("automation-spec-markdown");
+    expect(region).toHaveClass("max-w-3xl", "text-sm", "leading-6");
     expect(region).toHaveTextContent("Build the shared context model.");
     expect(screen.getByTestId("automation-spec-toggle")).toHaveTextContent(
       "Hide spec",

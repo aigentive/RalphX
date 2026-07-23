@@ -38,6 +38,38 @@ describe("artifact command mocks", () => {
   });
 });
 
+describe("update channel command mocks", () => {
+  it("persists the scalar channel through the same camel-case command contract", async () => {
+    await expect(invoke("get_update_channel", {})).resolves.toBe("stable");
+    await expect(
+      invoke("set_update_channel", { updateChannel: "nightly" }),
+    ).resolves.toBe("nightly");
+    await expect(invoke("get_update_channel", {})).resolves.toBe("nightly");
+    await invoke("set_update_channel", { updateChannel: "stable" });
+  });
+
+  it("supports deterministic web-mode read and write failures", async () => {
+    const testWindow = window as Window & {
+      __mockUpdateChannelError?: "read" | "write";
+    };
+
+    try {
+      testWindow.__mockUpdateChannelError = "read";
+      await expect(invoke("get_update_channel", {})).rejects.toThrow(
+        "Mock update channel read failure",
+      );
+
+      testWindow.__mockUpdateChannelError = "write";
+      await expect(
+        invoke("set_update_channel", { updateChannel: "nightly" }),
+      ).rejects.toThrow("Mock update channel write failure");
+    } finally {
+      delete testWindow.__mockUpdateChannelError;
+      await invoke("set_update_channel", { updateChannel: "stable" });
+    }
+  });
+});
+
 describe("agent workspace diff command mocks", () => {
   afterEach(() => {
     mockChatApi.reset();
