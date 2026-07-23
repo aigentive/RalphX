@@ -616,3 +616,120 @@ async fn test_stale_terminal_delegate_update_cannot_replace_newer_running_attemp
     assert_eq!(task.delegated_job_id.as_deref(), Some("job-1"));
     assert_eq!(task.delegated_agent_run_id.as_deref(), Some("run-1"));
 }
+
+#[tokio::test]
+async fn test_conflicting_identity_and_missing_sequence_updates_are_rejected() {
+    let cache = StreamingStateCache::new();
+    cache
+        .add_task(
+            "conv-123",
+            CachedStreamingTask {
+                delegated_job_id: Some("job-1".to_string()),
+                delegated_agent_run_id: Some("run-1".to_string()),
+                description: Some("current task".to_string()),
+                seq: Some(4),
+                ..cached_streaming_task("provider-tool-1")
+            },
+        )
+        .await;
+
+    cache
+        .add_task(
+            "conv-123",
+            CachedStreamingTask {
+                delegated_job_id: Some("job-2".to_string()),
+                delegated_agent_run_id: Some("run-2".to_string()),
+                description: Some("conflicting task".to_string()),
+                seq: Some(5),
+                ..cached_streaming_task("provider-tool-1")
+            },
+        )
+        .await;
+    cache
+        .add_task(
+            "conv-123",
+            CachedStreamingTask {
+                delegated_job_id: Some("job-1".to_string()),
+                delegated_agent_run_id: Some("run-1".to_string()),
+                description: Some("unsequenced update".to_string()),
+                ..cached_streaming_task("delegate-job:job-1")
+            },
+        )
+        .await;
+
+    let task = &cache.get("conv-123").await.unwrap().streaming_tasks[0];
+    assert_eq!(task.description.as_deref(), Some("current task"));
+    assert_eq!(task.delegated_job_id.as_deref(), Some("job-1"));
+    assert_eq!(task.delegated_agent_run_id.as_deref(), Some("run-1"));
+    assert_eq!(task.seq, Some(4));
+}
+
+#[tokio::test]
+async fn test_started_at_prefers_parseable_timestamp_when_only_one_value_is_valid() {
+    let cache = StreamingStateCache::new();
+    cache
+        .add_task(
+            "conv-valid-existing",
+            CachedStreamingTask {
+                delegated_job_id: Some("job-1".to_string()),
+                started_at: Some("2026-07-23T00:00:00Z".to_string()),
+                seq: Some(1),
+                ..cached_streaming_task("delegate-job:job-1")
+            },
+        )
+        .await;
+    cache
+        .add_task(
+            "conv-valid-existing",
+            CachedStreamingTask {
+                delegated_job_id: Some("job-1".to_string()),
+                started_at: Some("not-a-date".to_string()),
+                seq: Some(2),
+                ..cached_streaming_task("delegate-job:job-1")
+            },
+        )
+        .await;
+    cache
+        .add_task(
+            "conv-valid-incoming",
+            CachedStreamingTask {
+                delegated_job_id: Some("job-2".to_string()),
+                started_at: Some("not-a-date".to_string()),
+                seq: Some(1),
+                ..cached_streaming_task("delegate-job:job-2")
+            },
+        )
+        .await;
+    cache
+        .add_task(
+            "conv-valid-incoming",
+            CachedStreamingTask {
+                delegated_job_id: Some("job-2".to_string()),
+                started_at: Some("2026-07-23T00:00:00Z".to_string()),
+                seq: Some(2),
+                ..cached_streaming_task("delegate-job:job-2")
+            },
+        )
+        .await;
+
+    assert_eq!(
+        cache
+            .get("conv-valid-existing")
+            .await
+            .unwrap()
+            .streaming_tasks[0]
+            .started_at
+            .as_deref(),
+        Some("2026-07-23T00:00:00Z")
+    );
+    assert_eq!(
+        cache
+            .get("conv-valid-incoming")
+            .await
+            .unwrap()
+            .streaming_tasks[0]
+            .started_at
+            .as_deref(),
+        Some("2026-07-23T00:00:00Z")
+    );
+}

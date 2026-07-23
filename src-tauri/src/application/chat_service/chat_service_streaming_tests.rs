@@ -472,6 +472,59 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
 }
 
 #[tokio::test]
+async fn claude_task_events_cache_lifecycle_defaults_and_stream_sequence() {
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-task","name":"Task","input":{"description":"Inspect cache","subagent_type":"Explore","model":"sonnet"}}]},"session_id":"sess-task"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-task","type":"tool_result","content":{"tool_use_result":{"agentId":"agent-1","totalDurationMs":100,"totalTokens":12,"totalToolUseCount":2}},"is_error":false}]}}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let cache = StreamingStateCache::new();
+
+    let outcome = process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        cache.clone(),
+        None,
+        None,
+        Some("stream-run-id".to_string()),
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert!(
+        outcome.is_ok(),
+        "task-only stream should finish cleanly: {outcome:?}"
+    );
+    let state = cache.get(&conversation_id.as_str()).await.unwrap();
+    let task = &state.streaming_tasks[0];
+    assert_eq!(task.status, "completed");
+    assert_eq!(task.seq, Some(0));
+    assert_eq!(task.started_at, None);
+    assert_eq!(task.completed_at, None);
+    assert_eq!(task.timestamp_provenance, None);
+    assert_eq!(task.total_tokens, Some(12));
+}
+
+#[tokio::test]
 async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout() {
     let child = spawn_interactive_jsonl_process_that_stays_alive(
         r#"{"type":"result","session_id":"sess-overloaded","is_error":true,"errors":["API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment."],"result":"API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment.","cost_usd":0.0}"#,
