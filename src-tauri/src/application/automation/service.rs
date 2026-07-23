@@ -2323,11 +2323,19 @@ fn current_unmet_stop_run<'a>(
     if latest.run_prompt.trim().is_empty() {
         return Err(invalid("latest run prompt is empty"));
     }
-    if runs.len() as i64 >= automation.max_runs {
-        return Err(invalid("max_runs is exhausted"));
+    let run_count = runs.len() as i64;
+    if run_count >= automation.max_runs {
+        return Err(AppError::Validation(format!(
+            "{run_count} runs already reached the configured limit {}. Reopen the last run to continue in place, or raise maxRuns.",
+            automation.max_runs
+        )));
     }
-    if consecutive_failure_count(runs) >= automation.max_consecutive_failures {
-        return Err(invalid("max_consecutive_failures is exhausted"));
+    let failure_count = consecutive_failure_count(runs);
+    if failure_count >= automation.max_consecutive_failures {
+        return Err(AppError::Validation(format!(
+            "{failure_count} consecutive runs failed (limit {}). Reopen the last run to continue in place, or raise maxConsecutiveFailures.",
+            automation.max_consecutive_failures
+        )));
     }
     Ok(latest)
 }

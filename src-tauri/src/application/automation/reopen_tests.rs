@@ -23,12 +23,12 @@ use crate::domain::services::running_agent_registry::RunningAgentKey;
 use crate::error::{AppError, AppResult};
 
 #[derive(Default)]
-struct RecordingRedriver {
+pub(super) struct RecordingRedriver {
     redrives: Mutex<Vec<(ChatConversationId, String)>>,
 }
 
 impl RecordingRedriver {
-    fn redrives(&self) -> Vec<(ChatConversationId, String)> {
+    pub(super) fn redrives(&self) -> Vec<(ChatConversationId, String)> {
         self.redrives.lock().unwrap().clone()
     }
 }
@@ -63,12 +63,12 @@ impl AutomationRunRedriver for PanickingRedriver {
     }
 }
 
-struct ReopenFixture {
+pub(super) struct ReopenFixture {
     _temp: tempfile::TempDir,
-    state: AppState,
-    automation: Automation,
-    run: AutomationRun,
-    conversation_id: ChatConversationId,
+    pub(super) state: AppState,
+    pub(super) automation: Automation,
+    pub(super) run: AutomationRun,
+    pub(super) conversation_id: ChatConversationId,
     events: Arc<RecordingEventSink>,
 }
 
@@ -115,7 +115,7 @@ fn automation(project_id: &ProjectId, status: AutomationStatus) -> Automation {
     }
 }
 
-fn run(
+pub(super) fn run(
     id: &str,
     automation_id: &AutomationId,
     run_index: i64,
@@ -167,6 +167,20 @@ fn run(
     }
 }
 
+pub(super) fn stopped_unmet_verdict() -> String {
+    serde_json::json!({
+        "decision": "stop",
+        "goalMet": false,
+        "reason": "The goal remains unmet after infrastructure failures.",
+        "confidence": 0.9,
+        "goalProgress": null,
+        "updatedItemStatuses": null,
+        "nextRunPrompt": null,
+        "nextBaseBranch": null
+    })
+    .to_string()
+}
+
 async fn setup(status: AutomationRunStatus) -> ReopenFixture {
     setup_with_automation_status(status, AutomationStatus::Paused).await
 }
@@ -174,6 +188,18 @@ async fn setup(status: AutomationRunStatus) -> ReopenFixture {
 async fn setup_with_automation_status(
     run_status: AutomationRunStatus,
     automation_status: AutomationStatus,
+) -> ReopenFixture {
+    let paused_reason_code =
+        (automation_status == AutomationStatus::Paused).then_some("workspace_review_blocked");
+    setup_smart_resume_fixture(run_status, automation_status, paused_reason_code, true, 1).await
+}
+
+pub(super) async fn setup_smart_resume_fixture(
+    run_status: AutomationRunStatus,
+    automation_status: AutomationStatus,
+    paused_reason_code: Option<&str>,
+    attach_run_conversation: bool,
+    run_index: i64,
 ) -> ReopenFixture {
     let temp = tempfile::tempdir().expect("tempdir");
     let worktree = temp.path().join("existing-worktree");
@@ -188,7 +214,8 @@ async fn setup_with_automation_status(
     state.events = events.clone();
     state.project_repo.create(project).await.expect("project");
 
-    let automation = automation(&project_id, automation_status);
+    let mut automation = automation(&project_id, automation_status);
+    automation.paused_reason_code = paused_reason_code.map(str::to_string);
     state
         .automation_repo
         .create(automation.clone())
@@ -258,13 +285,16 @@ async fn setup_with_automation_status(
         .await
         .expect("review monitor");
 
-    let run = run(
+    let mut run = run(
         run_id.as_str(),
         &automation.id,
-        1,
+        run_index,
         run_status,
-        Some(conversation_id),
+        attach_run_conversation.then_some(conversation_id.clone()),
     );
+    if paused_reason_code == Some("judge_stopped_unmet") {
+        run.judge_verdict_json = Some(stopped_unmet_verdict());
+    }
     state
         .automation_run_repo
         .create_run(run.clone())

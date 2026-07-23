@@ -21,6 +21,7 @@ use crate::application::automation::delete::{
     delete_automation_run_with_archive, delete_automation_with_archive,
 };
 use crate::application::automation::reopen::reopen_automation_run;
+use crate::application::automation::resume_orchestrator::resume_automation_smart;
 use crate::application::automation::service::{
     AutomationService, CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
@@ -314,8 +315,7 @@ pub async fn resume_automation(
     state: State<'_, AppState>,
 ) -> Result<AutomationResponse, String> {
     let id = parse_automation_id(&input.id)?;
-    automation_service(&state)
-        .resume(&id)
+    resume_automation_smart(&state, &id)
         .await
         .map(AutomationResponse::from)
         .map_err(|error| error.to_string())

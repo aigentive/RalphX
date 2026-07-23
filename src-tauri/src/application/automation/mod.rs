@@ -10,6 +10,7 @@ pub mod plan_gate;
 pub mod plan_judge;
 pub mod provisioning;
 pub mod reopen;
+pub(crate) mod resume_orchestrator;
 pub mod review_gate;
 pub mod scheduler;
 pub mod service;
@@ -32,6 +33,8 @@ mod plan_judge_tests;
 mod provisioning_tests;
 #[cfg(test)]
 mod reopen_tests;
+#[cfg(test)]
+mod resume_orchestrator_tests;
 #[cfg(test)]
 mod review_gate_tests;
 #[cfg(test)]
