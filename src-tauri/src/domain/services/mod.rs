@@ -47,6 +47,9 @@ pub mod worktree_guard;
 pub use agent_workspace_outcomes::{
     is_direct_edit_workspace, AgentWorkspaceOutcomeAdapter, AGENT_WORKSPACE_OUTCOME_SOURCE,
     AGENT_WORKSPACE_PR_OUTCOME_SOURCE, GITHUB_PR_REVIEW_OUTCOME_SOURCE,
+    WORKSPACE_TERMINAL_REASON_ARCHIVE_ABANDONED, WORKSPACE_TERMINAL_REASON_ARCHIVE_CLOSED,
+    WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED, WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED,
+    WORKSPACE_TERMINAL_REASON_USER_CLOSED,
 };
 pub use artifact_flow_service::{ArtifactFlowService, FlowExecutionResult, StepExecutionResult};
 pub use artifact_service::ArtifactService;
