@@ -4,6 +4,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
@@ -11,6 +12,7 @@ use tauri::{AppHandle, Emitter};
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_pr_autofix_attempt::load_pr_autofix_attempt_decision;
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_with_project_repo;
 use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::agent_workspace_review_publish_handoff::{
@@ -21,6 +23,7 @@ use crate::application::agent_workspace_terminal_cleanup::{
 };
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
+use crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue;
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
@@ -371,6 +374,43 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         pr_sync_state_recovery_skip_reason(&target.branch_name, &sync_state, &local_head_sha)
     {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
+    }
+
+    let health = deps
+        .github
+        .fetch_pr_health(&target.worktree_path, target.pr_number)
+        .await?;
+    if let Some(issue) = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health) {
+        let events = deps
+            .workspace_repo
+            .list_publication_events(&conversation_id)
+            .await?;
+        let legacy_event_exists = events
+            .iter()
+            .any(|event| event.classification.as_deref() == Some(issue.classification.as_str()));
+        let decision = load_pr_autofix_attempt_decision(
+            deps.agent_run_repo.as_ref(),
+            &conversation_id,
+            target.pr_number,
+            &issue.classification,
+            legacy_event_exists,
+        )
+        .await?;
+        let summary = decision.manual_summary().unwrap_or(
+            "The same PR issue remains unresolved; RalphX is keeping supervision blocked while polling for an authorized autofix attempt.",
+        );
+        deps.workspace_repo
+            .update_pr_auto_merge_state(
+                &conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("blocked"),
+                Some(summary),
+            )
+            .await?;
+        start_recovered_pr_polling(&deps, &conversation_id, &project, &target);
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "pr_issue_unresolved",
+        ));
     }
 
     let pr_status = publication_status_for_sync_state(&sync_state);
@@ -935,9 +975,6 @@ fn emit_workspace_changed(app_handle: Option<&AppHandle>, conversation_id: &Chat
 fn claim_recovery(conversation_id: &ChatConversationId, force: bool) -> bool {
     let key = conversation_id.as_str();
     let in_flight = IN_FLIGHT_RECOVERIES.get_or_init(DashMap::new);
-    if in_flight.contains_key(&key) {
-        return false;
-    }
     if !force {
         let ttl = recovery_cache_ttl();
         if !ttl.is_zero() {
@@ -948,8 +985,14 @@ fn claim_recovery(conversation_id: &ChatConversationId, force: bool) -> bool {
             }
         }
     }
-    in_flight.insert(key, ());
-    true
+
+    match in_flight.entry(key) {
+        Entry::Occupied(_) => false,
+        Entry::Vacant(entry) => {
+            entry.insert(());
+            true
+        }
+    }
 }
 
 fn recovery_cache_ttl() -> Duration {

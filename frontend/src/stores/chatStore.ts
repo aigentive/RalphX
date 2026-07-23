@@ -93,6 +93,8 @@ interface ChatState {
   activeConversationIds: Record<string, string | null>;
   /** Active agent run IDs scoped per context key. Used to ignore stale terminal events. */
   activeAgentRunIds: Record<string, string>;
+  /** Harness captured atomically with the matching active agent run ID. */
+  activeAgentRunHarnesses: Record<string, string | null>;
   /** Messages queued to send when agent finishes, keyed by context key (e.g., "task:id", "task_execution:id", "review:id") */
   queuedMessages: Record<string, QueuedMessage[]>;
   /** Agent status keyed by context key. Absent = "idle". Values: "generating" | "waiting_for_input" */
@@ -134,9 +136,13 @@ interface ChatActions {
   setLoading: (isLoading: boolean) => void;
   /** Set the active conversation ID for a specific context key */
   setActiveConversation: (storeKey: string, conversationId: string | null) => void;
-  /** Set the active agent run ID for a specific context key */
-  setActiveAgentRun: (storeKey: string, runId: string) => void;
-  /** Clear the active agent run ID, optionally only if it matches the expected run ID */
+  /** Set the active agent run ID and its harness for a specific context key. */
+  setActiveAgentRun: (
+    storeKey: string,
+    runId: string,
+    harness?: string | null,
+  ) => void;
+  /** Clear the active agent run ID and harness, optionally only for the expected run ID. */
   clearActiveAgentRun: (storeKey: string, expectedRunId?: string | null) => void;
   /** Set agent status for a context (tri-state: "idle" | "generating" | "waiting_for_input") */
   setAgentStatus: (contextKey: string, status: AgentStatus) => void;
@@ -257,6 +263,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
     isLoading: false,
     activeConversationIds: {},
     activeAgentRunIds: {},
+    activeAgentRunHarnesses: {},
     queuedMessages: {},
     agentStatus: {},
     agentActivityLabels: {},
@@ -308,10 +315,16 @@ export const useChatStore = create<ChatState & ChatActions>()(
         state.activeConversationIds[storeKey] = conversationId;
       }),
 
-    setActiveAgentRun: (storeKey, runId) =>
+    setActiveAgentRun: (storeKey, runId, harness = null) =>
       set((state) => {
-        if (state.activeAgentRunIds[storeKey] === runId) return;
+        if (
+          state.activeAgentRunIds[storeKey] === runId &&
+          state.activeAgentRunHarnesses[storeKey] === harness
+        ) {
+          return;
+        }
         state.activeAgentRunIds[storeKey] = runId;
+        state.activeAgentRunHarnesses[storeKey] = harness;
       }),
 
     clearActiveAgentRun: (storeKey, expectedRunId) =>
@@ -320,6 +333,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
         if (activeRunId == null) return;
         if (expectedRunId != null && activeRunId !== expectedRunId) return;
         delete state.activeAgentRunIds[storeKey];
+        delete state.activeAgentRunHarnesses[storeKey];
       }),
 
     setAgentStatus: (contextKey, status) =>
@@ -328,12 +342,14 @@ export const useChatStore = create<ChatState & ChatActions>()(
           if (
             !(contextKey in state.agentStatus)
             && !(contextKey in state.activeAgentRunIds)
+            && !(contextKey in state.activeAgentRunHarnesses)
             && !(contextKey in state.agentActivityLabels)
           ) {
             return; // already absent — no-op
           }
           delete state.agentStatus[contextKey];
           delete state.activeAgentRunIds[contextKey];
+          delete state.activeAgentRunHarnesses[contextKey];
           delete state.agentActivityLabels[contextKey];
         } else {
           if (state.agentStatus[contextKey] === status) {
@@ -370,12 +386,14 @@ export const useChatStore = create<ChatState & ChatActions>()(
           if (
             !(contextKey in state.agentStatus)
             && !(contextKey in state.activeAgentRunIds)
+            && !(contextKey in state.activeAgentRunHarnesses)
             && !(contextKey in state.agentActivityLabels)
           ) {
             return; // already absent — no-op
           }
           delete state.agentStatus[contextKey];
           delete state.activeAgentRunIds[contextKey];
+          delete state.activeAgentRunHarnesses[contextKey];
           delete state.agentActivityLabels[contextKey];
         }
       }),
@@ -403,6 +421,12 @@ export const useChatStore = create<ChatState & ChatActions>()(
         Object.keys(state.activeAgentRunIds).forEach((key) => {
           if (key.endsWith(`:${taskId}`)) {
             delete state.activeAgentRunIds[key];
+            delete state.activeAgentRunHarnesses[key];
+          }
+        });
+        Object.keys(state.activeAgentRunHarnesses).forEach((key) => {
+          if (key.endsWith(`:${taskId}`)) {
+            delete state.activeAgentRunHarnesses[key];
           }
         });
         Object.keys(state.agentActivityLabels).forEach((key) => {
@@ -771,6 +795,14 @@ export const selectActiveAgentRunId =
   (storeKey: string) =>
   (state: ChatState): string | undefined =>
     state.activeAgentRunIds[storeKey];
+
+/**
+ * Select the harness paired with the active agent run ID for a specific context key.
+ */
+export const selectActiveAgentRunHarness =
+  (storeKey: string) =>
+  (state: ChatState): string | null | undefined =>
+    state.activeAgentRunHarnesses[storeKey];
 
 export const selectComposerDraft =
   (draftKey: string | null) =>

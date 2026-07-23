@@ -32,6 +32,7 @@ import {
   selectAgentActivityLabel,
   selectAgentStatus,
   selectActiveAgentRunId,
+  selectActiveAgentRunHarness,
   selectIsAgentRunning,
   selectIsSending,
   selectToolCallStartTimes,
@@ -118,6 +119,7 @@ import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailab
 import { extractErrorMessage } from "@/lib/errors";
 import { PERSONA_UNAVAILABLE_PREFIX } from "@/lib/personaErrors";
 import { getModelLabel } from "@/lib/model-utils";
+import { resolveChatInputDelivery } from "@/lib/chat-input-delivery";
 import { selectEffectiveModel } from "@/stores/chatStore";
 import { TimeoutWarning } from "./TimeoutWarning";
 import { ChildSessionNavigationContext } from "./tool-widgets/ChildSessionNavigationContext";
@@ -129,6 +131,7 @@ import { toast } from "sonner";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
+const EMPTY_PRESENTED_QUEUED_MESSAGES: never[] = [];
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 
@@ -608,6 +611,11 @@ export function IntegratedChatPanel({
     [storeContextKey],
   );
   const activeAgentRunId = useChatStore(activeAgentRunIdSelector);
+  const activeAgentRunHarnessSelector = useMemo(
+    () => selectActiveAgentRunHarness(storeContextKey),
+    [storeContextKey],
+  );
+  const activeAgentRunHarness = useChatStore(activeAgentRunHarnessSelector);
   const agentActivityLabelSelector = useMemo(
     () => selectAgentActivityLabel(storeContextKey),
     [storeContextKey],
@@ -945,6 +953,31 @@ export function IntegratedChatPanel({
     conversationsData,
     effectiveConversationId,
   ]);
+  const activeConversationListMeta = useMemo(
+    () =>
+      conversationsData?.find(
+        (conversation) => conversation.id === effectiveConversationId,
+      ) ?? null,
+    [conversationsData, effectiveConversationId],
+  );
+  const activeRunDelivery = resolveChatInputDelivery(activeAgentRunHarness);
+  const recoveryDelivery = resolveChatInputDelivery(
+    activeConversationListMeta?.providerHarness,
+  );
+  const shouldHideQueuedMessages =
+    (!isHistoryMode &&
+      activeAgentRunId !== undefined &&
+      isAgentRunning &&
+      activeRunDelivery === "interactive") ||
+    (!isHistoryMode &&
+      activeAgentRunId === undefined &&
+      activeAgentRunHarness === undefined &&
+      agentRunQuery.data?.status === "running" &&
+      recoveryDelivery === "interactive");
+  const presentedQueuedMessages = shouldHideQueuedMessages
+    ? EMPTY_PRESENTED_QUEUED_MESSAGES
+    : queuedMessages;
+  const hasPresentedQueuedMessages = presentedQueuedMessages.length > 0;
   const personaChipProjectName = useProjectStore(
     (state) => state.projects[currentContextId]?.name,
   );
@@ -1083,9 +1116,9 @@ export function IntegratedChatPanel({
     ],
   );
 
-  // Wrapper for handleEditLastQueued that provides the queued messages
+  // Wrapper for handleEditLastQueued that uses the same queue projection as the UI.
   const handleEditLastQueuedWrapper = () => {
-    handleEditLastQueued(queuedMessages);
+    handleEditLastQueued(presentedQueuedMessages);
   };
 
   const handleRemovePersonaAndRetry = useCallback(async () => {
@@ -1797,10 +1830,10 @@ export function IntegratedChatPanel({
                   className={conversationContentShellClassName}
                 >
                   {/* Queued Messages - unified queue with context-aware keys */}
-                  {queuedMessages.length > 0 && (
+                  {hasPresentedQueuedMessages && (
                     <div className="p-3 pb-0">
                       <QueuedMessageList
-                        messages={queuedMessages}
+                        messages={presentedQueuedMessages}
                         onEdit={handleEditQueuedMessage}
                         onDelete={handleDeleteQueuedMessage}
                         onSendNow={handleSendQueuedMessageNow}
@@ -1852,7 +1885,7 @@ export function IntegratedChatPanel({
                         onStop: handleStopAgentWrapper,
                         agentStatus,
                         isSending: isSending || isSubmittingAnswer,
-                        hasQueuedMessages: queuedMessages.length > 0,
+                        hasQueuedMessages: hasPresentedQueuedMessages,
                         onEditLastQueued: handleEditLastQueuedWrapper,
                         isReadOnly: isHistoryMode,
                         placeholder:
@@ -1901,7 +1934,7 @@ export function IntegratedChatPanel({
                         onStop={handleStopAgentWrapper}
                         agentStatus={agentStatus}
                         isSending={isSending || isSubmittingAnswer}
-                        hasQueuedMessages={queuedMessages.length > 0}
+                        hasQueuedMessages={hasPresentedQueuedMessages}
                         onEditLastQueued={handleEditLastQueuedWrapper}
                         isReadOnly={isHistoryMode}
                         placeholder={

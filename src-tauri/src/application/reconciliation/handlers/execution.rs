@@ -513,38 +513,13 @@ impl ReconciliationRunner {
             Arc::clone(&self.running_agent_registry),
             Arc::clone(&self.agent_run_repo),
             Arc::clone(&self.task_repo),
+            Arc::clone(&self.project_repo),
             self.interactive_process_registry.clone(),
         );
 
         let mut removed = 0u32;
 
         for (key, info) in &entries {
-            // Skip in-flight registrations: try_register inserts pid=0/empty agent_run_id as
-            // placeholder; update_agent_process fills real values ~40ms later.
-            if info.agent_run_id.is_empty() {
-                tracing::debug!(
-                    context_type = key.context_type,
-                    context_id = key.context_id,
-                    "Skipping in-flight registry entry (no agent_run_id yet)"
-                );
-                continue;
-            }
-
-            // Age guard: pid=0 entries younger than 30s are in the try_register →
-            // update_agent_process window. The pruner must not race against the spawn.
-            if info.pid == 0 {
-                let age = chrono::Utc::now() - info.started_at;
-                if age < chrono::Duration::seconds(30) {
-                    tracing::debug!(
-                        context_type = key.context_type,
-                        context_id = key.context_id,
-                        age_secs = age.num_seconds(),
-                        "Skipping young pid=0 registry entry (age < 30s)"
-                    );
-                    continue;
-                }
-            }
-
             // Compute pid liveness once; both the IPR check and staleness evaluation use it.
             let pid_alive = crate::domain::services::is_process_alive(info.pid);
 
@@ -2121,7 +2096,15 @@ impl ReconciliationRunner {
 
         let registry_running = self.running_agent_registry.is_running(&key).await;
         if registry_running {
-            match self.running_agent_registry.cleanup_stale_entry(&key).await {
+            let cleanup = match self.running_agent_registry.get(&key).await {
+                Some(info) => {
+                    self.running_agent_registry
+                        .cleanup_stale_entry(&key, &info.agent_run_id)
+                        .await
+                }
+                None => Ok(None),
+            };
+            match cleanup {
                 Ok(Some(_info)) => {
                     info!(
                         task_id = task_id.as_str(),
@@ -2469,11 +2452,15 @@ impl ReconciliationRunner {
                 }
 
                 if self.running_agent_registry.is_running(&registry_key).await {
-                    match self
-                        .running_agent_registry
-                        .cleanup_stale_entry(&registry_key)
-                        .await
-                    {
+                    let cleanup = match self.running_agent_registry.get(&registry_key).await {
+                        Some(info) => {
+                            self.running_agent_registry
+                                .cleanup_stale_entry(&registry_key, &info.agent_run_id)
+                                .await
+                        }
+                        None => Ok(None),
+                    };
+                    match cleanup {
                         Ok(Some(_)) => {
                             tracing::info!(
                                 task_id = task.id.as_str(),

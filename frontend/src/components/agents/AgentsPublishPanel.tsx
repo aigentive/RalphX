@@ -85,6 +85,7 @@ import {
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
   hasPublishedWorkspacePr,
+  isAgentWorkspacePublishActive,
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
@@ -316,7 +317,8 @@ export function AgentPublishPanel({
       };
     });
   }, [activeSubTab, conversationId]);
-  const isPublishingWorkspace = publishAttempt !== null;
+  const isPublishingWorkspace =
+    publishAttempt !== null || isAgentWorkspacePublishActive(workspace);
   const publishStartedAtMs = publishAttempt?.startedAtMs ?? null;
   const currentPublishDialogState =
     publishDialogState?.conversationId === conversationId ? publishDialogState : null;
@@ -824,6 +826,7 @@ export function AgentPublishPanel({
     (hasNoDetectedChanges && !isPipelinePrAutomationWorkspace) ||
     workspace.status === "missing";
   const publishButtonLabel = (() => {
+    if (isPublishingThisWorkspace) return "Publishing";
     if (terminalPublicationLabel) return terminalPublicationLabel;
     if (isManagedByTaskPipeline) return "Managed by Tasks";
     if (reviewBlocksPublish && reviewIsRunning) return "Reviewing";
@@ -906,6 +909,13 @@ export function AgentPublishPanel({
           "RalphX routed this workspace to the agent for repair. Publishing will resume after the repair completes.",
       };
     }
+    if (isPublishingThisWorkspace) {
+      return {
+        title: "Publishing workspace",
+        summary:
+          "Follow the publish pipeline below while RalphX commits and publishes this workspace.",
+      };
+    }
     if (hasPrConflict) {
       return {
         title: "Pull request conflicts",
@@ -955,13 +965,6 @@ export function AgentPublishPanel({
         title: "Publishing failed",
         summary:
           "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event.",
-      };
-    }
-    if (isPublishingThisWorkspace) {
-      return {
-        title: "Publishing workspace",
-        summary:
-          "Follow the publish pipeline below while RalphX commits and publishes this workspace.",
       };
     }
     if (hasPublishedPr && !autoPublishEnabled) {
@@ -1197,6 +1200,16 @@ export function AgentPublishPanel({
                 >
                   <AlertTriangle className="h-3.5 w-3.5" />
                   Repair pending
+                </Button>
+              ) : isPublishingThisWorkspace ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  disabled
+                  data-testid="agents-publish-confirm"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {publishButtonLabel}
                 </Button>
               ) : hasPrConflict ? (
                 <Button

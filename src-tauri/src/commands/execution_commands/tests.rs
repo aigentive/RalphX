@@ -2324,22 +2324,19 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
     let workspace_key = RunningAgentKey::new("project", conversation.id.as_str());
     app_state
         .running_agent_registry
-        .register(
+        .try_register(
             workspace_key.clone(),
-            pid,
             conversation.id.as_str().to_string(),
             "workspace-run".to_string(),
-            None,
-            None,
         )
-        .await;
+        .await
+        .unwrap();
     app_state
         .running_agent_registry
-        .update_agent_process(
+        .attach_process(
             &workspace_key,
-            pid,
-            &conversation.id.as_str(),
             "workspace-run",
+            pid,
             None,
             None,
             Some("gpt-5.5".to_string()),
