@@ -25,6 +25,9 @@ pub(crate) async fn resume_automation_smart(
         .await
 }
 
+// Test-only injection seam: exercised by resume_orchestrator_tests, so it reads as
+// dead code in the `--no-default-features --lib` clippy lane (no test cfg).
+#[allow(dead_code)]
 pub(crate) async fn resume_automation_smart_with_redriver(
     state: &AppState,
     automation_id: &AutomationId,
@@ -40,6 +43,8 @@ pub(crate) async fn resume_automation_smart_with_redriver(
 
 enum SmartResumeReopener<'a> {
     Production,
+    // Constructed only by the test-only `resume_automation_smart_with_redriver` seam above.
+    #[allow(dead_code)]
     Redriver(&'a dyn AutomationRunRedriver),
 }
 

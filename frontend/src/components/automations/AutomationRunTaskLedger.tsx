@@ -79,7 +79,7 @@ function TaskRow({
 }) {
   return (
     <div
-      className="flex items-center gap-2.5 px-2.5 py-1.5 text-sm"
+      className="grid grid-cols-[1.75rem_0.5rem_minmax(0,1fr)_auto] items-center gap-x-2.5 px-3 py-2 text-sm"
       style={
         isFirst
           ? undefined
@@ -92,17 +92,24 @@ function TaskRow({
       data-testid="automation-run-task-ledger-row"
     >
       <span
-        className="w-7 shrink-0 text-right font-mono text-xs font-semibold"
+        className="text-right font-mono text-xs font-semibold tabular-nums"
         style={{ color: "var(--text-muted)" }}
       >
         #{task.taskNumber}
       </span>
       <TaskStateDot state={state} />
       <span
-        className="min-w-0 flex-1 truncate"
+        className="min-w-0 truncate"
         style={{ color: "var(--text-secondary)" }}
       >
         {task.title}
+      </span>
+      <span
+        className="shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wide"
+        style={{ color: stateDotColor(state) }}
+        data-testid="automation-run-task-ledger-row-state"
+      >
+        {STATE_LABELS[state]}
       </span>
     </div>
   );
@@ -229,7 +236,8 @@ export function AutomationRunTaskLedger({
           <div
             className="overflow-hidden rounded-md"
             style={{
-              borderColor: "var(--border-subtle, #2e2e36)",
+              backgroundColor: "var(--bg-elevated, #232329)",
+              borderColor: "var(--border-default, #393940)",
               borderStyle: "solid",
               borderWidth: "1px",
             }}
