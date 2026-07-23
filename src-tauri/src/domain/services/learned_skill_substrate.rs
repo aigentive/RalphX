@@ -180,6 +180,7 @@ impl ProjectSkillService {
                     matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
                 },
                 evidence_markdown: None,
+                staging_policy: None,
             })
             .await
     }
@@ -264,6 +265,7 @@ impl ProjectSkillService {
                     matched_mutation,
                 },
                 evidence_markdown,
+                staging_policy: None,
             })
             .await
     }
@@ -325,6 +327,7 @@ impl ProjectSkillService {
                     target_id: input.project_skill_id,
                 },
                 evidence_markdown: None,
+                staging_policy: None,
             })
             .await
         {
@@ -357,6 +360,7 @@ impl ProjectSkillService {
                 candidate: skill,
                 intent: ProjectSkillResolutionIntent::SourceSync { identity },
                 evidence_markdown: None,
+                staging_policy: None,
             })
             .await
         {

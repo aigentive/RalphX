@@ -473,6 +473,7 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         lead_session_id: Some("lead-456".to_string()),
         parent_conversation_id: Some("conversation-789".to_string()),
         agent_run_id: Some("run-123".to_string()),
+        pipeline_role: Some("memory_capture".to_string()),
     };
 
     let json = build_mcp_config_with_runtime_context(
@@ -542,6 +543,14 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         "args: {args:?}"
     );
     assert!(args.contains(&"run-123".to_string()), "args: {args:?}");
+    assert!(
+        args.contains(&"--pipeline-role".to_string()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&"memory_capture".to_string()),
+        "args: {args:?}"
+    );
 }
 
 #[test]
@@ -1658,6 +1667,7 @@ role: project_chat
         parent_conversation_id: Some("conversation-1".to_string()),
         agent_run_id: None,
         task_state: None,
+        pipeline_role: None,
     };
 
     let spawnable = build_spawnable_command_with_mcp_runtime_context_for_test(

@@ -933,6 +933,7 @@ fn memory_launch_context_propagates_parent_through_env_and_explicit_mcp_args() {
         "task-1",
         &project_id,
         PathBuf::from("/trusted/workspace").as_path(),
+        Some("memory_capture"),
     )
     .expect("memory launch context");
 
@@ -951,6 +952,14 @@ fn memory_launch_context_propagates_parent_through_env_and_explicit_mcp_args() {
         launch.runtime_context.conversation_id.as_deref(),
         Some(parent_conversation_id)
     );
+    assert_eq!(
+        launch.runtime_context.pipeline_role.as_deref(),
+        Some("memory_capture")
+    );
+    assert_eq!(
+        launch.env.get("RALPHX_PIPELINE_ROLE").map(String::as_str),
+        Some("memory_capture")
+    );
 
     let mut args = Vec::new();
     append_mcp_runtime_args(&mut args, Some(&launch.runtime_context));
@@ -960,6 +969,9 @@ fn memory_launch_context_propagates_parent_through_env_and_explicit_mcp_args() {
     assert!(args
         .windows(2)
         .any(|pair| { pair == ["--conversation-id", parent_conversation_id] }));
+    assert!(args
+        .windows(2)
+        .any(|pair| { pair == ["--pipeline-role", "memory_capture"] }));
     assert!(
         !launch.env.contains_key("RALPHX_TASK_ID"),
         "memory context IDs must not be reclassified as task identity"
@@ -1006,6 +1018,10 @@ fn memory_runtime_configs_propagate_parent_for_maintainer_and_capture() {
                 .get("RALPHX_PARENT_CONVERSATION_ID")
                 .map(String::as_str),
             Some(parent_conversation_id)
+        );
+        assert_eq!(
+            config.env.get("RALPHX_PIPELINE_ROLE").map(String::as_str),
+            Some(kind.pipeline_role())
         );
     }
 }

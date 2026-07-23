@@ -67,6 +67,8 @@ import {
   WORKER,
   MERGER,
   CHAT_PROJECT,
+  MEMORY_CAPTURE,
+  MEMORY_MAINTAINER,
 } from '../agentNames.js';
 
 function toolsByAgent(): Record<string, string[]> {
@@ -77,6 +79,7 @@ type SchemaProperty = {
   type?: string;
   description?: string;
   enum?: string[];
+  maxLength?: number;
   items?: { type?: string };
 };
 
@@ -648,7 +651,18 @@ describe('getFilteredTools', () => {
 
 describe('learned project skill tools', () => {
   const allTools = getAllTools();
-  const learnedSkillTools = ['list_project_skills', 'get_project_skill'];
+  const learnedSkillTools = [
+    'list_project_skills',
+    'get_project_skill',
+    'upsert_project_skill',
+    'patch_project_skill',
+    'retire_project_skill',
+  ];
+  const writeTools = [
+    'upsert_project_skill',
+    'patch_project_skill',
+    'retire_project_skill',
+  ];
 
   it.each(learnedSkillTools)('%s should exist in ALL_TOOLS', (toolName) => {
     expect(allTools.some((tool) => tool.name === toolName)).toBe(true);
@@ -659,8 +673,11 @@ describe('learned project skill tools', () => {
     (agent) => {
       setAgentType(agent);
       const toolNames = getFilteredTools().map((tool) => tool.name);
-      for (const toolName of learnedSkillTools) {
+      for (const toolName of ['list_project_skills', 'get_project_skill']) {
         expect(toolNames).toContain(toolName);
+      }
+      for (const toolName of writeTools) {
+        expect(toolNames).not.toContain(toolName);
       }
     }
   );
@@ -671,6 +688,77 @@ describe('learned project skill tools', () => {
     for (const toolName of learnedSkillTools) {
       expect(toolNames).not.toContain(toolName);
     }
+  });
+
+  it.each([MEMORY_CAPTURE, MEMORY_MAINTAINER])(
+    '%s retains memory tools and receives all project-skill reads and writes',
+    (agent) => {
+      setAgentType(agent);
+      const toolNames = getFilteredTools().map((tool) => tool.name);
+      for (const toolName of learnedSkillTools) {
+        expect(toolNames).toContain(toolName);
+      }
+      expect(toolNames).toContain('upsert_memories');
+      expect(toolNames).toContain('search_memories');
+    }
+  );
+
+  it('keeps project-skill writes off unknown and unrelated agents', () => {
+    for (const agent of ['unknown-agent-type', CHAT_PROJECT, GENERAL_WORKER, WORKER]) {
+      setAgentType(agent);
+      const toolNames = getFilteredTools().map((tool) => tool.name);
+      for (const toolName of writeTools) {
+        expect(toolNames).not.toContain(toolName);
+      }
+    }
+  });
+
+  it('requires project scope for get and all writes', () => {
+    for (const toolName of ['get_project_skill', ...writeTools]) {
+      const tool = allTools.find((candidate) => candidate.name === toolName)!;
+      expect(tool.inputSchema.required).toContain('project_id');
+    }
+  });
+
+  it('keeps runtime attribution and orchestration IDs out of write schemas', () => {
+    const hidden = [
+      'pipeline_role',
+      'created_by',
+      'provenance_json',
+      'agent_name',
+      'agent_run_id',
+      'conversation_id',
+      'context_id',
+      'task_id',
+    ];
+    for (const toolName of writeTools) {
+      const properties = inputSchemaProperties(toolName);
+      for (const field of hidden) {
+        expect(properties).not.toHaveProperty(field);
+      }
+    }
+  });
+
+  it('declares exact pipeline authoring limits and enums', () => {
+    for (const toolName of ['upsert_project_skill', 'patch_project_skill']) {
+      const properties = inputSchemaProperties(toolName);
+      expect(properties.title.maxLength).toBe(120);
+      expect(properties.compact_guidance.maxLength).toBe(400);
+      expect(properties.body_markdown.maxLength).toBe(32000);
+      expect(properties.predicted_effect.maxLength).toBe(600);
+      expect(properties.bucket.enum).toEqual([
+        'planning',
+        'verification',
+        'review',
+        'execution',
+        'merge',
+      ]);
+      expect(properties.stage.enum).toEqual(properties.bucket.enum);
+    }
+  });
+
+  it('does not register a project-skill delete tool', () => {
+    expect(allTools.some((tool) => tool.name === 'delete_project_skill')).toBe(false);
   });
 });
 

@@ -14,7 +14,9 @@ use crate::domain::repositories::{
     SkillUsageEventRepository, SkillUsageListOptions, TaskOutcomeListOptions,
     TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
-use crate::domain::services::project_skill_resolution::evaluate_project_skill_resolution;
+use crate::domain::services::project_skill_resolution::{
+    enforce_project_skill_staging_policy, evaluate_project_skill_resolution,
+};
 use crate::error::{AppError, AppResult};
 
 #[derive(Default)]
@@ -138,6 +140,7 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
             .filter(|skill| skill.project_id == command.candidate.project_id)
             .cloned()
             .collect::<Vec<_>>();
+        let staging_policy = command.staging_policy.clone();
         let plan = evaluate_project_skill_resolution(command, &candidates)?;
         if plan.outcome == ProjectSkillResolutionOutcome::Duplicate {
             return Ok(ProjectSkillResolutionResult {
@@ -146,6 +149,7 @@ impl ProjectSkillRepository for MemoryProjectSkillRepository {
                 version: None,
             });
         }
+        enforce_project_skill_staging_policy(staging_policy.as_ref(), &candidates, &plan)?;
         validate_memory_companion(&state, &plan.skill)?;
         match plan.outcome {
             ProjectSkillResolutionOutcome::CreateNew => {

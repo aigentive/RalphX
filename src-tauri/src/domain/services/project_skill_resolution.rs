@@ -4,19 +4,24 @@ use chrono::Utc;
 use serde_json::{Map, Value};
 
 use crate::domain::entities::{
-    prepare_new_project_skill, refresh_project_skill_metadata, ProjectSkill, ProjectSkillId,
+    prepare_new_project_skill, refresh_project_skill_metadata,
+    validate_project_skill_pipeline_role, ProjectSkill, ProjectSkillId,
     ProjectSkillLifecycleStatus,
 };
 use crate::domain::repositories::{
     ProjectSkillMatchedMutation, ProjectSkillRepository, ProjectSkillResolutionCommand,
     ProjectSkillResolutionIdentity, ProjectSkillResolutionIdentityKind,
     ProjectSkillResolutionIntent, ProjectSkillResolutionOutcome, ProjectSkillResolutionResult,
+    ProjectSkillStagingPolicy,
 };
 use crate::error::{AppError, AppResult};
 
 pub struct ProjectSkillResolutionService {
     repo: Arc<dyn ProjectSkillRepository>,
 }
+
+pub const PROJECT_SKILL_STAGING_CAP_ERROR: &str =
+    "project skill staging limit reached for this project, bucket, and pipeline role";
 
 impl ProjectSkillResolutionService {
     pub fn new(repo: Arc<dyn ProjectSkillRepository>) -> Self {
@@ -65,6 +70,54 @@ pub(crate) fn evaluate_project_skill_resolution(
             matched_mutation,
         } => resolve_upsert(&command, candidates, identities, *matched_mutation),
     }
+}
+
+pub(crate) fn enforce_project_skill_staging_policy(
+    policy: Option<&ProjectSkillStagingPolicy>,
+    candidates: &[ProjectSkill],
+    plan: &ProjectSkillResolutionPlan,
+) -> AppResult<()> {
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+    validate_staging_policy(policy)?;
+    if plan.outcome != ProjectSkillResolutionOutcome::CreateNew {
+        return Ok(());
+    }
+    if plan.skill.pipeline_role.as_deref() != Some(policy.pipeline_role.as_str()) {
+        return Err(AppError::Validation(
+            "project skill staging policy role must match trusted candidate attribution"
+                .to_string(),
+        ));
+    }
+
+    let mut staged_count = 0usize;
+    for candidate in candidates.iter().filter(|candidate| {
+        candidate.status == ProjectSkillLifecycleStatus::Staged
+            && candidate.bucket == plan.skill.bucket
+            && candidate.created_at >= policy.window_start
+    }) {
+        validate_project_skill_pipeline_role(candidate.pipeline_role.as_deref()).map_err(
+            |error| {
+                AppError::Database(format!(
+                    "invalid persisted project skill pipeline role: {error}"
+                ))
+            },
+        )?;
+        if candidate.pipeline_role.is_none()
+            || candidate.pipeline_role.as_deref() == Some(policy.pipeline_role.as_str())
+        {
+            staged_count = staged_count.checked_add(1).ok_or_else(|| {
+                AppError::Conflict("project skill staging count overflow".to_string())
+            })?;
+        }
+    }
+    if staged_count >= policy.max_staged {
+        return Err(AppError::Conflict(
+            PROJECT_SKILL_STAGING_CAP_ERROR.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn project_skill_resolution_identities(
@@ -420,6 +473,9 @@ fn validate_resolution_command(command: &ProjectSkillResolutionCommand) -> AppRe
             "project skill resolution candidate is incomplete".to_string(),
         ));
     }
+    if let Some(policy) = command.staging_policy.as_ref() {
+        validate_staging_policy(policy)?;
+    }
     match &command.intent {
         ProjectSkillResolutionIntent::Upsert { identities, .. } if identities.is_empty() => {
             Err(AppError::Validation(
@@ -442,6 +498,21 @@ fn validate_resolution_command(command: &ProjectSkillResolutionCommand) -> AppRe
         }
         ProjectSkillResolutionIntent::ExplicitPatch { .. } => Ok(()),
     }
+}
+
+fn validate_staging_policy(policy: &ProjectSkillStagingPolicy) -> AppResult<()> {
+    if policy.pipeline_role.trim().is_empty() || policy.pipeline_role != policy.pipeline_role.trim()
+    {
+        return Err(AppError::Validation(
+            "project skill staging policy requires a trimmed pipeline role".to_string(),
+        ));
+    }
+    if policy.max_staged == 0 {
+        return Err(AppError::Validation(
+            "project skill staging policy limit must be positive".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_identity(identity: &ProjectSkillResolutionIdentity) -> AppResult<()> {

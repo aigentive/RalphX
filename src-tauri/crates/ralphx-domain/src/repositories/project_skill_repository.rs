@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
@@ -58,6 +59,14 @@ pub struct ProjectSkillResolutionCommand {
     pub candidate: ProjectSkill,
     pub intent: ProjectSkillResolutionIntent,
     pub evidence_markdown: Option<String>,
+    pub staging_policy: Option<ProjectSkillStagingPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectSkillStagingPolicy {
+    pub pipeline_role: String,
+    pub max_staged: usize,
+    pub window_start: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

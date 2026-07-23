@@ -314,6 +314,8 @@ pub async fn get_project_skill(
     scope: ProjectScope,
     Json(req): Json<GetProjectSkillRequest>,
 ) -> Result<Json<GetProjectSkillResponse>, HttpError> {
+    let project_id = ProjectId::from_string(req.project_id);
+    assert_project_id_scope(&project_id, &scope)?;
     let skill_id = ProjectSkillId::from_string(req.project_skill_id);
     let skill = state
         .app_state
@@ -329,7 +331,12 @@ pub async fn get_project_skill(
         })?;
 
     if let Some(skill) = skill {
-        skill.assert_project_scope(&scope)?;
+        if skill.project_id != project_id {
+            return Err(HttpError {
+                status: StatusCode::FORBIDDEN,
+                message: Some("project skill does not belong to the requested project".to_string()),
+            });
+        }
         return Ok(Json(GetProjectSkillResponse {
             skill: Some(ProjectSkillResponse::from(skill)),
         }));

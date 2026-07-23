@@ -2571,6 +2571,7 @@ pub(super) fn build_mcp_runtime_context(
         lead_session_id: lead_session_id.map(str::to_string),
         parent_conversation_id,
         task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
+        pipeline_role: None,
     }
 }
 

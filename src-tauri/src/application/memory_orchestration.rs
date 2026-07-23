@@ -614,6 +614,13 @@ impl MemoryAgentKind {
         }
     }
 
+    pub(crate) fn pipeline_role(self) -> &'static str {
+        match self {
+            Self::Maintainer => "memory_maintainer",
+            Self::Capture => "memory_capture",
+        }
+    }
+
     fn short_name(self) -> &'static str {
         match self {
             Self::Maintainer => "ralphx-memory-maintainer",
@@ -633,9 +640,10 @@ pub(crate) fn prepare_memory_agent_launch(
     context_id: &str,
     project_id: &ProjectId,
     working_directory: &Path,
+    pipeline_role: Option<&str>,
 ) -> Result<MemoryAgentLaunchContext, String> {
     let conversation_id = conversation_id.as_str().to_string();
-    let env = HashMap::from([
+    let mut env = HashMap::from([
         (
             "RALPHX_CONVERSATION_ID".to_string(),
             conversation_id.clone(),
@@ -648,6 +656,16 @@ pub(crate) fn prepare_memory_agent_launch(
         ),
         ("RALPHX_PARENT_CONVERSATION_ID".to_string(), conversation_id),
     ]);
+    if let Some(pipeline_role) = pipeline_role {
+        let pipeline_role = pipeline_role.trim();
+        if pipeline_role.is_empty() {
+            return Err("Memory agent launch requires a non-blank pipeline role".to_string());
+        }
+        env.insert(
+            "RALPHX_PIPELINE_ROLE".to_string(),
+            pipeline_role.to_string(),
+        );
+    }
     let runtime_context = McpRuntimeContext::from_agent_env(&env, working_directory)
         .ok_or_else(|| "Memory agent launch requires a non-blank project ID".to_string())?;
 
@@ -675,6 +693,7 @@ fn build_memory_agent_direct_command(
         context_id,
         project_id,
         working_directory,
+        Some(kind.pipeline_role()),
     )?;
     let mut command = build_spawnable_command_with_mcp_runtime_context(
         cli_path,
@@ -754,6 +773,7 @@ pub(crate) fn build_memory_agent_config(
         context_id,
         project_id,
         working_directory,
+        Some(kind.pipeline_role()),
     )?;
     let mut env = runtime.env_with_overrides(bootstrap.env);
     env.extend(launch.env);

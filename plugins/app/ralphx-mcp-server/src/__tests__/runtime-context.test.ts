@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildArtifactMutationTransportHeaders,
+  buildProjectSkillPipelineTransportHeaders,
   buildRuntimeTransportHeaders,
   hydrateRalphxRuntimeEnvFromCli,
   parseCliOptionFromArgs,
@@ -62,6 +63,8 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         "conversation-789",
         "--agent-run-id",
         "run-current",
+        "--pipeline-role",
+        "memory_capture",
         "--task-state",
         "re_executing",
         "--project-id",
@@ -87,6 +90,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
     expect(runtimeContext.coordinationMode).toBe("rx_native_workflow");
     expect(runtimeContext.parentConversationId).toBe("conversation-789");
     expect(runtimeContext.agentRunId).toBe("run-current");
+    expect(runtimeContext.pipelineRole).toBe("memory_capture");
     expect(runtimeContext.taskState).toBe("re_executing");
     expect(runtimeContext.projectId).toBe("project-456");
     expect(runtimeContext.workingDirectory).toBe("/tmp/workspace");
@@ -103,6 +107,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
     expect(env.RALPHX_COORDINATION_MODE).toBe("rx_native_workflow");
     expect(env.RALPHX_PARENT_CONVERSATION_ID).toBe("conversation-789");
     expect(env.RALPHX_AGENT_RUN_ID).toBe("run-current");
+    expect(env.RALPHX_PIPELINE_ROLE).toBe("memory_capture");
     expect(env.RALPHX_TASK_STATE).toBe("re_executing");
     expect(env.RALPHX_PROJECT_ID).toBe("project-456");
     expect(env.RALPHX_WORKING_DIRECTORY).toBe("/tmp/workspace");
@@ -211,6 +216,41 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
 
     expect(runtimeContext.filesystemReadRoots).toBe(ambient);
     expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(ambient);
+  });
+});
+
+describe("buildProjectSkillPipelineTransportHeaders", () => {
+  it("carries hidden backend-owned authoring context", () => {
+    expect(
+      buildProjectSkillPipelineTransportHeaders({
+        filesystemEnforced: false,
+        agentType: "ralphx-memory-capture",
+        pipelineRole: "memory_capture",
+        projectId: "project-1",
+        contextType: "project",
+        contextId: "project-1",
+        conversationId: "conversation-1",
+        agentRunId: "run-1",
+      })
+    ).toEqual({
+      "x-ralphx-agent-name": "ralphx-memory-capture",
+      "x-ralphx-pipeline-role": "memory_capture",
+      "x-ralphx-project-id": "project-1",
+      "x-ralphx-context-type": "project",
+      "x-ralphx-context-id": "project-1",
+      "x-ralphx-conversation-id": "conversation-1",
+      "x-ralphx-agent-run-id": "run-1",
+    });
+  });
+
+  it("omits incomplete authority instead of sending partial headers", () => {
+    expect(
+      buildProjectSkillPipelineTransportHeaders({
+        filesystemEnforced: false,
+        agentType: "ralphx-memory-capture",
+        projectId: "project-1",
+      })
+    ).toBeUndefined();
   });
 });
 

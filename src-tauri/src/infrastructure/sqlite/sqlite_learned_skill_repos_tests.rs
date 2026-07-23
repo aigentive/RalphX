@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use rusqlite::Connection;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -18,9 +18,10 @@ use crate::domain::repositories::{
     ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
     ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
     ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
-    ProjectSkillResolutionOutcome, SkillUsageEventRepository, SkillUsageListOptions,
-    TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
+    ProjectSkillResolutionOutcome, ProjectSkillStagingPolicy, SkillUsageEventRepository,
+    SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
+use crate::domain::services::project_skill_resolution::import_title_resolution_identity;
 use crate::infrastructure::sqlite::run_migrations;
 
 fn shared_test_connection() -> Arc<Mutex<Connection>> {
@@ -111,6 +112,35 @@ fn outcome_resolution_command(
             matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
         },
         evidence_markdown: None,
+        staging_policy: None,
+    }
+}
+
+fn pipeline_resolution_command(
+    mut skill: ProjectSkill,
+    _identity: &str,
+    role: &str,
+) -> ProjectSkillResolutionCommand {
+    skill.created_by = ProjectSkillCreatedBy::Agent;
+    skill.pipeline_role = Some(role.to_string());
+    skill.provenance_json = json!({
+        "source": "skill_pipeline_mcp",
+        "additional": {"pipeline_role": role},
+    });
+    let resolution_identity =
+        import_title_resolution_identity(&skill.title, &skill.bucket, &skill.stage);
+    ProjectSkillResolutionCommand {
+        candidate: skill,
+        intent: ProjectSkillResolutionIntent::Upsert {
+            identities: vec![resolution_identity],
+            matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
+        },
+        evidence_markdown: None,
+        staging_policy: Some(ProjectSkillStagingPolicy {
+            pipeline_role: role.to_string(),
+            max_staged: 2,
+            window_start: Utc::now() - Duration::hours(24),
+        }),
     }
 }
 
@@ -173,6 +203,133 @@ async fn concurrent_sqlite_resolution_converges_to_one_skill_and_snapshot() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn sqlite_pipeline_cap_runs_after_duplicate_and_isolated_by_role_and_bucket() {
+    let repo = SqliteProjectSkillRepository::from_shared(shared_test_connection());
+    let first = pipeline_resolution_command(
+        project_skill(
+            "Pipeline one",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-1",
+        "memory_capture",
+    );
+    let second = pipeline_resolution_command(
+        project_skill(
+            "Pipeline two",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-2",
+        "memory_capture",
+    );
+    repo.resolve(first.clone()).await.expect("first create");
+    repo.resolve(second).await.expect("second create");
+
+    let duplicate = repo.resolve(first).await.expect("duplicate at cap");
+    assert_eq!(duplicate.outcome, ProjectSkillResolutionOutcome::Duplicate);
+    assert!(duplicate.version.is_none());
+
+    let third = pipeline_resolution_command(
+        project_skill(
+            "Pipeline three",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-3",
+        "memory_capture",
+    );
+    assert!(matches!(
+        repo.resolve(third).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    let other_role = pipeline_resolution_command(
+        project_skill(
+            "Maintainer role",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-maintainer",
+        "memory_maintainer",
+    );
+    assert_eq!(
+        repo.resolve(other_role).await.expect("other role").outcome,
+        ProjectSkillResolutionOutcome::CreateNew
+    );
+
+    let other_bucket = pipeline_resolution_command(
+        project_skill(
+            "Planning bucket",
+            "planning",
+            "planning",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-planning",
+        "memory_capture",
+    );
+    assert_eq!(
+        repo.resolve(other_bucket)
+            .await
+            .expect("other bucket")
+            .outcome,
+        ProjectSkillResolutionOutcome::CreateNew
+    );
+}
+
+#[tokio::test]
+async fn sqlite_pipeline_cap_counts_recent_null_role_rows_for_every_role() {
+    let repo = SqliteProjectSkillRepository::from_shared(shared_test_connection());
+    repo.seed_for_test(project_skill(
+        "Legacy NULL role",
+        "review",
+        "review",
+        ProjectSkillLifecycleStatus::Staged,
+        Vec::new(),
+    ))
+    .await
+    .expect("seed null role");
+
+    let first = pipeline_resolution_command(
+        project_skill(
+            "Role-specific row",
+            "review",
+            "review",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-review-1",
+        "memory_capture",
+    );
+    repo.resolve(first).await.expect("one role row after null");
+
+    let blocked = pipeline_resolution_command(
+        project_skill(
+            "Blocked by NULL",
+            "review",
+            "review",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-review-2",
+        "memory_capture",
+    );
+    assert!(matches!(
+        repo.resolve(blocked).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
 }
 
 #[tokio::test]

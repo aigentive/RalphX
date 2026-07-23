@@ -157,7 +157,7 @@ pub use project_skill_repository::{
     ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
     ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
     ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
-    ProjectSkillResolutionOutcome, ProjectSkillResolutionResult,
+    ProjectSkillResolutionOutcome, ProjectSkillResolutionResult, ProjectSkillStagingPolicy,
 };
 pub use project_repository::ProjectRepository;
 pub use proposal_dependency_repository::ProposalDependencyRepository;
