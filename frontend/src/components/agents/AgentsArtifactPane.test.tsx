@@ -9767,8 +9767,10 @@ describe("AgentsArtifactPane", () => {
       ),
     ).toHaveTextContent("Base branch retargeted to Project default (main).");
     expect(
-      screen.getAllByText("Project default (main)").length,
-    ).toBeGreaterThan(0);
+      screen.getByLabelText(
+        "ralphx/demo/agent-conversation-1 merges into Project default (main)",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-confirm")).toBeEnabled();
   });
 
@@ -10059,14 +10061,11 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
       "feature/agent-screen",
     );
-    expect(screen.getByTestId("agents-workspace-mode-status")).toHaveAttribute(
-      "style",
-      expect.stringContaining("border-color: var(--border-subtle)"),
-    );
-    expect(screen.getByTestId("agents-workspace-mode-status")).toHaveAttribute(
-      "style",
-      expect.stringContaining("color: var(--text-secondary)"),
-    );
+    const modeStatus = screen.getByTestId("agents-workspace-mode-status");
+    expect(modeStatus).toHaveTextContent("Edit");
+    expect(screen.getByLabelText("Workspace mode: Edit")).toBe(modeStatus);
+    expect(modeStatus).not.toHaveAttribute("style");
+    expect(modeStatus.style.borderWidth).toBe("");
     expect(screen.getByTestId("agents-base-stale")).toHaveAttribute(
       "style",
       expect.stringContaining("border-color: var(--border-subtle)"),
