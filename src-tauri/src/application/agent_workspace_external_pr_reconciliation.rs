@@ -206,34 +206,24 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         .get_by_conversation_id(&conversation_id)
         .await?
         .unwrap_or(workspace.clone());
-    let adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&deps.task_outcome_repo));
-    let record_result = if matches!(pr.status, PrStatus::Open) {
-        adapter
+    if matches!(pr.status, PrStatus::Open) {
+        let adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&deps.task_outcome_repo));
+        if let Err(error) = adapter
             .record_publish_succeeded(
                 &linked_workspace,
                 Some(&event),
                 "External pull request linked",
             )
             .await
-    } else {
-        adapter
-            .record_pr_terminal(
-                &linked_workspace,
-                Some(&event),
-                pr.number,
+        {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number = pr.number,
                 pr_status,
-                terminal_linked_pr_summary(pr_status),
-            )
-            .await
-    };
-    if let Err(error) = record_result {
-        tracing::warn!(
-            conversation_id = conversation_id.as_str(),
-            pr_number = pr.number,
-            pr_status,
-            error = %error,
-            "Failed to record external direct agent workspace PR outcome"
-        );
+                error = %error,
+                "Failed to record external direct agent workspace PR outcome"
+            );
+        }
     }
     emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
     reconcile_clickup_ticket_for_workspace_pr(
@@ -268,11 +258,14 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),
             Some(Arc::clone(&deps.task_outcome_repo)),
-            Some(TerminalPrObservation::new(
-                pr.number,
-                pr_status,
-                terminal_linked_pr_summary(pr_status),
-            )),
+            Some(
+                TerminalPrObservation::new(
+                    pr.number,
+                    pr_status,
+                    terminal_linked_pr_summary(pr_status),
+                )
+                .with_publication_event(event),
+            ),
             &conversation_id,
             &project,
             TerminalAgentWorkspaceCause::from_pr_status(pr_status),
@@ -343,36 +336,15 @@ async fn reconcile_linked_agent_workspace_pr(
             Some("pushed"),
         )
         .await?;
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        workspace.conversation_id.clone(),
+        format!("pr_{pr_status}"),
+        "succeeded",
+        terminal_linked_pr_summary(pr_status),
+        None,
+    );
     deps.workspace_repo
-        .append_publication_event({
-            let event = AgentConversationWorkspacePublicationEvent::new(
-                workspace.conversation_id.clone(),
-                format!("pr_{pr_status}"),
-                "succeeded",
-                terminal_linked_pr_summary(pr_status),
-                None,
-            );
-            let adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&deps.task_outcome_repo));
-            if let Err(error) = adapter
-                .record_pr_terminal(
-                    workspace,
-                    Some(&event),
-                    pr_number,
-                    pr_status,
-                    terminal_linked_pr_summary(pr_status),
-                )
-                .await
-            {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    pr_number,
-                    pr_status,
-                    error = %error,
-                    "Failed to record linked direct agent workspace terminal PR outcome"
-                );
-            }
-            event
-        })
+        .append_publication_event(event.clone())
         .await?;
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
     let terminalized = terminalize_agent_workspace_after_pr_with_observation(
@@ -381,11 +353,10 @@ async fn reconcile_linked_agent_workspace_pr(
         Some(Arc::clone(&deps.plan_branch_repo)),
         deps.chat_service.as_ref().map(Arc::clone),
         Some(Arc::clone(&deps.task_outcome_repo)),
-        Some(TerminalPrObservation::new(
-            pr_number,
-            pr_status,
-            terminal_linked_pr_summary(pr_status),
-        )),
+        Some(
+            TerminalPrObservation::new(pr_number, pr_status, terminal_linked_pr_summary(pr_status))
+                .with_publication_event(event),
+        ),
         &workspace.conversation_id,
         project,
         TerminalAgentWorkspaceCause::from_pr_status(pr_status),

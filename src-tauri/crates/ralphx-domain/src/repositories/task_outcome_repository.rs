@@ -12,6 +12,8 @@ pub const WORKSPACE_PR_FAILED_CLASS: &str = "workspace_pr_failed";
 pub const WORKSPACE_PR_MERGED_CLASS: &str = "workspace_pr_merged";
 pub const WORKSPACE_PR_MERGED_CLEAN_CLASS: &str = "workspace_pr_merged_clean";
 pub const WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS: &str = "workspace_pr_merged_with_followups";
+pub const WORKSPACE_SESSION_ABANDONED_CLASS: &str = "workspace_session_abandoned";
+pub const WORKSPACE_PUBLISH_FAILED_CLASS: &str = "workspace_publish_failed";
 
 #[derive(Debug, Clone)]
 pub struct ResolvedTaskOutcomeUpsert {
@@ -94,6 +96,21 @@ fn merge_missing_terminal_context(existing: &TaskOutcome, incoming: &mut TaskOut
         .or_else(|| existing.provider_session_id.clone());
 }
 
+fn preserve_existing_terminal_reason(existing: &TaskOutcome, incoming: &mut TaskOutcome) {
+    if incoming.outcome_class != existing.outcome_class
+        || incoming.evidence_json.get("reason").is_some()
+    {
+        return;
+    }
+    let Some(reason) = existing.evidence_json.get("reason").cloned() else {
+        return;
+    };
+    let Some(evidence) = incoming.evidence_json.as_object_mut() else {
+        return;
+    };
+    evidence.insert("reason".to_string(), reason);
+}
+
 pub fn resolve_task_outcome_upsert(
     existing: Option<&TaskOutcome>,
     mut incoming: TaskOutcome,
@@ -120,6 +137,7 @@ pub fn resolve_task_outcome_upsert(
             };
         }
         merge_missing_terminal_context(existing, &mut incoming);
+        preserve_existing_terminal_reason(existing, &mut incoming);
     }
 
     preserve_row_identity(existing, &mut incoming);

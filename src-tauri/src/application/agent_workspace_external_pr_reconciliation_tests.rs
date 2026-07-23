@@ -27,6 +27,7 @@ use crate::domain::integrations::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+    TaskOutcomeListOptions,
 };
 use crate::domain::services::github_service::PrDetail;
 use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus, SecretStore};
@@ -702,6 +703,40 @@ async fn reconciliation_marks_linked_merged_pr_terminal_even_when_workspace_miss
         .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].step, "pr_merged");
+}
+
+#[tokio::test]
+async fn linked_terminal_reconciliation_does_not_claim_an_unappended_event() {
+    let project = test_project();
+    let project_id = project.id.clone();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(264);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/264".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
+    });
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github).await;
+    let outcome_repo = Arc::clone(&deps.task_outcome_repo);
+    workspace_repo.fail_next_publication_event("publication event unavailable");
+
+    let error = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::Startup,
+    )
+    .await
+    .expect_err("event persistence failure must keep reconciliation retryable");
+
+    assert!(error.to_string().contains("publication event unavailable"));
+    assert!(outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("outcomes should be readable")
+        .is_empty());
 }
 
 #[tokio::test]

@@ -1362,7 +1362,6 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     loop {
         match mark_agent_workspace_pr_terminal(
             Arc::clone(workspace_repo),
-            Arc::clone(task_outcome_repo),
             conversation_id,
             status,
             summary,
@@ -1560,7 +1559,6 @@ async fn mark_agent_workspace_pr_open(
 
 async fn mark_agent_workspace_pr_terminal(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
-    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     conversation_id: &ChatConversationId,
     status: &str,
     summary: &str,
@@ -1605,21 +1603,6 @@ async fn mark_agent_workspace_pr_terminal(
         summary,
         None,
     );
-    let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
-    if let Some(pr_number) = workspace.publication_pr_number {
-        if let Err(error) = adapter
-            .record_pr_terminal(&workspace, Some(&event), pr_number, status, summary)
-            .await
-        {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                pr_number,
-                status,
-                error = %error,
-                "Failed to record direct agent workspace terminal PR outcome"
-            );
-        }
-    }
     workspace_repo.append_publication_event(event).await?;
     Ok(Vec::new())
 }

@@ -14,11 +14,17 @@ use crate::domain::repositories::{
     UpsertTaskOutcomeInput, TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS,
     WORKSPACE_PR_FAILED_CLASS, WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
     WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS, WORKSPACE_PR_TERMINAL_CLASS,
+    WORKSPACE_PUBLISH_FAILED_CLASS, WORKSPACE_SESSION_ABANDONED_CLASS,
 };
 use crate::error::AppResult;
 
 pub const AGENT_WORKSPACE_OUTCOME_SOURCE: &str = "agent_workspace";
 pub const GITHUB_PR_REVIEW_OUTCOME_SOURCE: &str = "github_pr_review";
+pub const WORKSPACE_TERMINAL_REASON_USER_CLOSED: &str = "user_closed";
+pub const WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED: &str = "restart_superseded";
+pub const WORKSPACE_TERMINAL_REASON_ARCHIVE_CLOSED: &str = "archive_closed";
+pub const WORKSPACE_TERMINAL_REASON_ARCHIVE_ABANDONED: &str = "archive_abandoned";
+pub const WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED: &str = "publish_failed";
 
 pub struct AgentWorkspaceOutcomeAdapter {
     outcome_repo: Arc<dyn TaskOutcomeRepository>,
@@ -130,6 +136,7 @@ impl AgentWorkspaceOutcomeAdapter {
         event: Option<&AgentConversationWorkspacePublicationEvent>,
         pr_number: i64,
         terminal_status: &str,
+        reason: Option<&str>,
         summary: &str,
     ) -> AppResult<TaskOutcome> {
         let outcome_class = match terminal_status {
@@ -150,6 +157,7 @@ impl AgentWorkspaceOutcomeAdapter {
                 "terminal_status": terminal_status,
             }),
         );
+        add_terminal_reason(&mut evidence, reason);
 
         self.record(WorkspaceOutcomeRecord {
             project_id: workspace.project_id.clone(),
@@ -164,6 +172,39 @@ impl AgentWorkspaceOutcomeAdapter {
             evidence_json: evidence,
             provider_harness: None,
             provider_session_id: None,
+        })
+        .await
+    }
+
+    pub async fn record_no_pr_terminal(
+        &self,
+        workspace: &AgentConversationWorkspace,
+        agent_run: Option<&AgentRun>,
+        reason: &str,
+        summary: &str,
+    ) -> AppResult<TaskOutcome> {
+        let outcome_class = if reason == WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED {
+            WORKSPACE_PUBLISH_FAILED_CLASS
+        } else {
+            WORKSPACE_SESSION_ABANDONED_CLASS
+        };
+        let mut evidence = workspace_publication_evidence(workspace, None, summary);
+        add_terminal_reason(&mut evidence, Some(reason));
+        add_agent_run_evidence(&mut evidence, agent_run);
+
+        self.record(WorkspaceOutcomeRecord {
+            project_id: workspace.project_id.clone(),
+            source: AGENT_WORKSPACE_OUTCOME_SOURCE,
+            source_ref_kind: "conversation",
+            source_ref_id: workspace.conversation_id.as_str().to_string(),
+            conversation_id: Some(workspace.conversation_id.as_str().to_string()),
+            agent_run_id: agent_run.map(|run| run.id.as_str().to_string()),
+            pull_request_id: None,
+            outcome_class,
+            status: TaskOutcomeStatus::Failed,
+            evidence_json: evidence,
+            provider_harness: agent_run.and_then(|run| run.harness).map(|h| h.to_string()),
+            provider_session_id: agent_run.and_then(|run| run.provider_session_id.clone()),
         })
         .await
     }
@@ -291,6 +332,13 @@ fn add_agent_run_evidence(evidence: &mut Value, agent_run: Option<&AgentRun>) {
             "provider_session_id": agent_run.provider_session_id,
         }),
     );
+}
+
+fn add_terminal_reason(evidence: &mut Value, reason: Option<&str>) {
+    let Some(reason) = reason else {
+        return;
+    };
+    merge_object(evidence, json!({ "reason": reason }));
 }
 
 fn merge_object(target: &mut Value, additional: Value) {
