@@ -585,26 +585,100 @@ fn silent_completion_recovery_does_not_trigger_after_final_text() {
 
 #[test]
 fn silent_completion_recovery_ignores_terminal_completion_tools() {
-    let tool_calls = vec![test_tool_call("mcp__ralphx__execution_complete")];
-    let content_blocks = vec![ContentBlockItem::ToolUse {
-        id: Some("complete-1".to_string()),
-        name: "mcp__ralphx__execution_complete".to_string(),
-        arguments: serde_json::json!({}),
-        result: Some(serde_json::json!({ "ok": true })),
-        parent_tool_use_id: None,
-        diff_context: None,
-    }];
+    for tool_name in [
+        "mcp__ralphx__execution_complete",
+        "mcp__ralphx__complete_workspace_review_run",
+    ] {
+        let tool_calls = vec![ToolCall {
+            result: Some(serde_json::json!({ "ok": true })),
+            ..test_tool_call(tool_name)
+        }];
+        let content_blocks = vec![ContentBlockItem::ToolUse {
+            id: Some("complete-1".to_string()),
+            name: tool_name.to_string(),
+            arguments: serde_json::json!({}),
+            result: Some(serde_json::json!({ "ok": true })),
+            parent_tool_use_id: None,
+            diff_context: None,
+        }];
 
-    assert!(!should_recover_silent_completion(
-        ChatContextType::Project,
-        "",
-        &tool_calls,
-        &content_blocks,
-        0,
-        false,
-        false,
-        true,
-    ));
+        assert!(
+            !should_recover_silent_completion(
+                ChatContextType::Project,
+                "",
+                &tool_calls,
+                &content_blocks,
+                0,
+                false,
+                false,
+                true,
+            ),
+            "{tool_name} must suppress silent-completion recovery"
+        );
+    }
+}
+
+#[test]
+fn silent_completion_recovery_requires_an_accepted_recorded_completion_result() {
+    for (result, expected_recovery, expectation) in [
+        (
+            Some(serde_json::json!({ "success": true })),
+            false,
+            "an accepted Workspace Review result must suppress recovery",
+        ),
+        (
+            Some(serde_json::json!({ "is_error": true })),
+            true,
+            "a rejected Workspace Review result must request recovery",
+        ),
+        (
+            None,
+            true,
+            "a Workspace Review completion without a recorded result must request recovery",
+        ),
+    ] {
+        let tool_calls = vec![ToolCall {
+            result: result.clone(),
+            ..test_tool_call("mcp__ralphx__complete_workspace_review_run")
+        }];
+        assert_eq!(
+            should_recover_silent_completion(
+                ChatContextType::Project,
+                "",
+                &tool_calls,
+                &[],
+                0,
+                false,
+                false,
+                true,
+            ),
+            expected_recovery,
+            "legacy tool-call path: {expectation}",
+        );
+
+        let content_blocks = vec![ContentBlockItem::ToolUse {
+            id: Some("complete-1".to_string()),
+            name: "mcp__ralphx__complete_workspace_review_run".to_string(),
+            arguments: serde_json::json!({}),
+            result,
+            parent_tool_use_id: None,
+            diff_context: None,
+        }];
+        assert_eq!(
+            should_recover_silent_completion(
+                ChatContextType::Project,
+                "",
+                &tool_calls,
+                &content_blocks,
+                0,
+                false,
+                false,
+                true,
+            ),
+            expected_recovery,
+            "content-block path: {expectation}",
+        );
+    }
 }
 
 #[test]
