@@ -45,7 +45,8 @@ use crate::domain::repositories::{
     QueuedMessageRepository, TaskRepository,
 };
 use crate::domain::services::{
-    MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    AttachProcessResult, MessageQueue, QueueKey, QueuedMessage, RunningAgentKey,
+    RunningAgentRegistry, TryRegisterError,
 };
 use crate::utils::secret_redactor::redact;
 use tokio_util::sync::CancellationToken;
@@ -1605,26 +1606,70 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             );
             let queued_run_id = queued_run.id.as_str().to_string();
             if let Err(error) = agent_run_repo.create(queued_run).await {
+                let error_string =
+                    format!("Failed to persist queued continuation agent run: {error}");
                 tracing::warn!(
                     error = %error,
                     queued_run_id,
                     conversation_id = %conversation_id,
                     "[QUEUE] Failed to persist queued continuation agent run"
                 );
+                emit_queued_preflight_error(
+                    app_handle.as_ref(),
+                    &conversation_id,
+                    context_type,
+                    context_id,
+                    Some(queued_run_id.clone()),
+                    error_string,
+                );
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id: Some(queued_run_id),
+                };
             }
             let queue_registry_key =
                 RunningAgentKey::new(context_type.to_string(), queue_context_id);
             let queue_conversation_id = conversation_id.as_str().to_string();
-            running_agent_registry
-                .register(
+            if let Err(error) = running_agent_registry
+                .try_register(
                     queue_registry_key.clone(),
-                    0,
                     queue_conversation_id.clone(),
                     queued_run_id.clone(),
-                    Some(working_directory.to_string_lossy().to_string()),
-                    Some(cancellation_token.clone()),
+                )
+                .await
+            {
+                let error_string = match error {
+                    TryRegisterError::Occupied(existing) => format!(
+                        "queued continuation launch slot is owned by agent run {}",
+                        existing.agent_run_id
+                    ),
+                    TryRegisterError::Storage(error) => {
+                        format!("failed to reserve queued continuation launch slot: {error}")
+                    }
+                };
+                fail_queued_agent_run(
+                    agent_run_repo,
+                    running_agent_registry,
+                    &queue_registry_key,
+                    app_handle.as_ref(),
+                    &queued_run_id,
+                    &error_string,
                 )
                 .await;
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id: Some(queued_run_id),
+                };
+            }
+            let launch_reservation_guard = super::launch_reservation::LaunchReservationGuard::new(
+                Arc::clone(running_agent_registry),
+                queue_registry_key.clone(),
+                queued_run_id.clone(),
+                std::time::Duration::from_secs(
+                    crate::infrastructure::agents::claude::stream_timeouts()
+                        .launch_reservation_lease_secs,
+                ),
+            );
             last_run_id = Some(queued_run_id.clone());
             tracing::info!(
                 queued_run_id = %queued_run_id,
@@ -2291,7 +2336,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");
             match spawnable.spawn().await {
-                Ok(child) => {
+                Ok(mut child) => {
                     super::record_persona_run_attribution(
                         agent_run_repo,
                         app_handle.as_ref(),
@@ -2303,25 +2348,54 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         persona_injection_skipped_reason,
                     )
                     .await;
-                    if let Some(pid) = child.id() {
-                        if let Err(error) = running_agent_registry
-                            .update_agent_process(
+                    let Some(pid) = child.id() else {
+                        launch_reservation_guard.stop();
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            app_handle.as_ref(),
+                            &queued_run_id,
+                            "spawned queued continuation has no process id",
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id: Some(queued_run_id),
+                        };
+                    };
+                    launch_reservation_guard.stop();
+                    match running_agent_registry
+                        .attach_process(
+                            &queue_registry_key,
+                            &queued_run_id,
+                            pid,
+                            Some(working_directory.to_string_lossy().to_string()),
+                            Some(cancellation_token.clone()),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(AttachProcessResult::Attached) => {}
+                        Ok(AttachProcessResult::ClaimLost) | Err(_) => {
+                            let error_string = "queued continuation lost its launch reservation";
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            fail_queued_agent_run(
+                                agent_run_repo,
+                                running_agent_registry,
                                 &queue_registry_key,
-                                pid,
-                                &queue_conversation_id,
+                                app_handle.as_ref(),
                                 &queued_run_id,
-                                Some(working_directory.to_string_lossy().to_string()),
-                                Some(cancellation_token.clone()),
-                                None,
+                                error_string,
                             )
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %error,
-                                queued_run_id,
-                                pid,
-                                "[QUEUE] Failed to update queued continuation process registry"
-                            );
+                            .await;
+                            return QueueProcessingOutcome {
+                                total_processed,
+                                last_run_id: Some(queued_run_id),
+                            };
                         }
                     }
                     let split_verification_transcript =

@@ -445,6 +445,42 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
 }
 
 #[tokio::test]
+async fn conversation_release_skips_edit_workspace_before_verification_settlement() {
+    let state = AppState::new_test();
+    let (session, conversation) = planning_session_with_workspace(&state).await;
+    seed_deferred_marker(&state, &session, "plan-current").await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    let mut verifier = AgentRun::new(conversation.id);
+    verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    verifier.action_context_id = Some(session.id.as_str().to_string());
+    verifier.action_target_id = Some("plan-current".to_string());
+    state.agent_run_repo.create(verifier).await.unwrap();
+
+    assert_eq!(
+        release_deferred_plan_approval_for_conversation(&state, &conversation.id)
+            .await
+            .unwrap(),
+        PlanApprovalNotificationDisposition::Skipped
+    );
+    assert!(
+        has_deferred_plan_approval(&state, &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
     let state = AppState::new_test();
     let (session, conversation) = planning_session_with_workspace(&state).await;
@@ -688,6 +724,62 @@ async fn exact_typed_verifier_authority_can_defer_its_own_artifact() {
             .await
             .unwrap()
     );
+    assert!(state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications
+        .is_empty());
+}
+
+#[tokio::test]
+async fn coverage_regression_pr_autofix_authority_cannot_defer_plan_approval() {
+    let state = AppState::new_test();
+    let (session, conversation) = planning_session_with_workspace(&state).await;
+    let mut fixer = AgentRun::new(conversation.id);
+    fixer.action_kind = Some(AgentRunActionKind::PrAutofix);
+    fixer.action_context_id = Some("851".to_string());
+    fixer.action_target_id = Some("failing-check".to_string());
+    let fixer = state.agent_run_repo.create(fixer).await.unwrap();
+    let authority = PlanApprovalPublishAuthority::new(fixer.id, conversation.id);
+
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "plan-current",
+        std::slice::from_ref(&session),
+        Some(&authority),
+    )
+    .await;
+
+    assert!(
+        !has_deferred_plan_approval(&state, &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        state
+            .notification_repo
+            .list(None, None, 20)
+            .await
+            .unwrap()
+            .notifications
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn coverage_regression_conversation_release_skips_when_no_marker_exists() {
+    let state = AppState::new_test();
+    let (_, conversation) = planning_session_with_workspace(&state).await;
+
+    let disposition = release_deferred_plan_approval_for_conversation(&state, &conversation.id)
+        .await
+        .unwrap();
+
+    assert_eq!(disposition, PlanApprovalNotificationDisposition::Skipped);
     assert!(state
         .notification_repo
         .list(None, None, 20)

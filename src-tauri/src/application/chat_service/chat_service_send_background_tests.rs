@@ -24,7 +24,9 @@ use crate::domain::entities::{
     VerificationStatus,
 };
 use crate::domain::repositories::PersonaRepository;
-use crate::domain::repositories::{AgentProviderSettingsRepository, QueuedMessageRepository};
+use crate::domain::repositories::{
+    AgentProviderSettingsRepository, AgentRunRepository, QueuedMessageRepository,
+};
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use crate::infrastructure::memory::{
@@ -32,6 +34,7 @@ use crate::infrastructure::memory::{
 };
 use chrono::Utc;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Listener, Manager};
 use tokio::io::AsyncWriteExt;
@@ -79,6 +82,149 @@ async fn seed_completed_continuation_runtime(
         .create(run)
         .await
         .expect("seed completed continuation runtime");
+}
+
+struct CreateFailingAgentRunRepository {
+    inner: Arc<dyn AgentRunRepository>,
+    fail_create: AtomicBool,
+}
+
+impl CreateFailingAgentRunRepository {
+    fn new(inner: Arc<dyn AgentRunRepository>) -> Self {
+        Self {
+            inner,
+            fail_create: AtomicBool::new(false),
+        }
+    }
+
+    fn fail_creates(&self) {
+        self.fail_create.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentRunRepository for CreateFailingAgentRunRepository {
+    async fn create(&self, run: AgentRun) -> crate::AppResult<AgentRun> {
+        if self.fail_create.load(Ordering::SeqCst) {
+            return Err(crate::AppError::Database(
+                "forced queued run create failure".to_string(),
+            ));
+        }
+        self.inner.create(run).await
+    }
+
+    async fn get_by_id(&self, id: &AgentRunId) -> crate::AppResult<Option<AgentRun>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_by_ids(&self, ids: &[AgentRunId]) -> crate::AppResult<Vec<AgentRun>> {
+        self.inner.get_by_ids(ids).await
+    }
+
+    async fn get_latest_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<Option<AgentRun>> {
+        self.inner
+            .get_latest_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_active_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<Option<AgentRun>> {
+        self.inner
+            .get_active_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<Vec<AgentRun>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn update_status(&self, id: &AgentRunId, status: AgentRunStatus) -> crate::AppResult<()> {
+        self.inner.update_status(id, status).await
+    }
+
+    async fn update_usage(
+        &self,
+        id: &AgentRunId,
+        usage: &crate::domain::entities::AgentRunUsage,
+    ) -> crate::AppResult<()> {
+        self.inner.update_usage(id, usage).await
+    }
+
+    async fn update_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: &crate::domain::entities::AgentRunAttribution,
+    ) -> crate::AppResult<()> {
+        self.inner.update_attribution(id, attribution).await
+    }
+
+    async fn set_persona_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: crate::domain::entities::agent_run::PersonaRunAttribution,
+    ) -> crate::AppResult<()> {
+        self.inner.set_persona_attribution(id, attribution).await
+    }
+
+    async fn complete(&self, id: &AgentRunId) -> crate::AppResult<()> {
+        self.inner.complete(id).await
+    }
+
+    async fn complete_if_running(&self, id: &AgentRunId) -> crate::AppResult<bool> {
+        self.inner.complete_if_running(id).await
+    }
+
+    async fn fail(&self, id: &AgentRunId, error_message: &str) -> crate::AppResult<()> {
+        self.inner.fail(id, error_message).await
+    }
+
+    async fn cancel(&self, id: &AgentRunId) -> crate::AppResult<()> {
+        self.inner.cancel(id).await
+    }
+
+    async fn delete(&self, id: &AgentRunId) -> crate::AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn delete_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<()> {
+        self.inner.delete_by_conversation(conversation_id).await
+    }
+
+    async fn count_by_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: AgentRunStatus,
+    ) -> crate::AppResult<u32> {
+        self.inner.count_by_status(conversation_id, status).await
+    }
+
+    async fn cancel_all_running(&self) -> crate::AppResult<u32> {
+        self.inner.cancel_all_running().await
+    }
+
+    async fn cancel_running_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> crate::AppResult<u32> {
+        self.inner.cancel_running_started_before(cutoff).await
+    }
+
+    async fn get_interrupted_conversations(
+        &self,
+    ) -> crate::AppResult<Vec<crate::domain::entities::InterruptedConversation>> {
+        self.inner.get_interrupted_conversations().await
+    }
 }
 
 struct EnvVarGuard {
@@ -1288,6 +1434,113 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             .await
             .is_none(),
         "spawn failure should not leave queued continuation marked running"
+    );
+}
+
+#[tokio::test]
+async fn queue_processing_stops_before_launch_when_run_persistence_fails() {
+    let app_state = AppState::new_test();
+    let message_queue = Arc::clone(&app_state.message_queue);
+    let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
+    let inner_agent_run_repo = Arc::clone(&app_state.agent_run_repo);
+    let failing_agent_run_repo = Arc::new(CreateFailingAgentRunRepository::new(Arc::clone(
+        &inner_agent_run_repo,
+    )));
+    let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
+    let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&app_state.artifact_repo);
+    let activity_event_repo = Arc::clone(&app_state.activity_event_repo);
+    let task_repo = Arc::clone(&app_state.task_repo);
+    let ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
+    let app = tauri::test::mock_builder()
+        .manage(app_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let run_started = Arc::new(AtomicBool::new(false));
+    let run_started_for_listener = Arc::clone(&run_started);
+    app_handle.listen("agent:run_started", move |_| {
+        run_started_for_listener.store(true, Ordering::SeqCst);
+    });
+
+    message_queue.queue(
+        ChatContextType::Ideation,
+        "session-create-fails",
+        "Queued message".to_string(),
+    );
+    let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &inner_agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
+    failing_agent_run_repo.fail_creates();
+    let failing_agent_run_repo: Arc<dyn AgentRunRepository> = failing_agent_run_repo;
+    let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
+    let unused_path = Path::new(".");
+
+    let outcome =
+        super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Ideation,
+            AgentHarnessKind::Claude,
+            "session-create-fails",
+            "session-create-fails",
+            conversation_id.clone(),
+            "session-cli",
+            false,
+            &message_queue,
+            None,
+            None,
+            &running_agent_registry,
+            &failing_agent_run_repo,
+            &chat_message_repo,
+            None,
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            invalid_cli_path,
+            unused_path,
+            unused_path,
+            None,
+            None,
+            Some(app_handle),
+            None,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            super::StreamingStateCache::new(),
+        )
+        .await;
+
+    assert_eq!(outcome.total_processed, 1);
+    assert!(outcome.last_run_id.is_some());
+    assert!(
+        !run_started.load(Ordering::SeqCst),
+        "a queued continuation without a durable AgentRun must not emit run_started"
+    );
+    assert!(
+        running_agent_registry
+            .get(&RunningAgentKey::new(
+                ChatContextType::Ideation.to_string(),
+                "session-create-fails"
+            ))
+            .await
+            .is_none(),
+        "a queued continuation without a durable AgentRun must not reserve a launch slot"
+    );
+    assert_eq!(
+        inner_agent_run_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("runs should list")
+            .len(),
+        1,
+        "only the seeded completed run should exist"
     );
 }
 

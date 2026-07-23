@@ -1,5 +1,6 @@
 use super::*;
 use crate::application::agent_conversation_workspace::resolve_linked_plan_branch_agent_worktree_path;
+use crate::application::chat_service::{MockChatService, SendQueuePolicy};
 use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
 use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::AppState;
@@ -1456,6 +1457,7 @@ async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_
     workspace.publication_pr_url = None;
     workspace.publication_pr_status = None;
     workspace.publication_push_status = None;
+    workspace.auto_publish_enabled = true;
     workspace.pr_autofix_enabled = true;
     app_state
         .agent_conversation_workspace_repo
@@ -1470,13 +1472,16 @@ async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_
     )));
     let github_trait: Arc<dyn GithubServiceTrait> = github;
     let execution_state = Arc::new(ExecutionState::new());
-    execution_state.pause();
-    let service = build_test_service_with_execution_state(&app_state, execution_state)
+    let chat_service = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &app_state.agent_run_repo,
+    )));
+    let mut service = build_test_service_with_execution_state(&app_state, execution_state)
         .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
         .with_agent_conversation_workspace_repo(Arc::clone(
             &app_state.agent_conversation_workspace_repo,
         ))
         .with_github_service(github_trait);
+    service.chat_service = chat_service.clone();
 
     let routed = service
         .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
@@ -1484,6 +1489,13 @@ async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_
         .expect("linked plan PR autofix routing should succeed");
 
     assert!(routed);
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0].queue_policy,
+        SendQueuePolicy::RequireImmediateStart
+    );
+    assert!(sent_options[0].preallocated_agent_run_id.is_some());
     let updated = app_state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
