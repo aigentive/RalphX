@@ -1942,6 +1942,14 @@ pub struct ActiveStreamingTask {
     pub estimated_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStreamingTask {
@@ -1976,6 +1984,10 @@ impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStrea
             cache_read_tokens: cached.cache_read_tokens,
             estimated_usd: cached.estimated_usd,
             text_output: cached.text_output,
+            started_at: cached.started_at,
+            completed_at: cached.completed_at,
+            timestamp_provenance: cached.timestamp_provenance,
+            seq: cached.seq,
         }
     }
 }
