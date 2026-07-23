@@ -5,6 +5,7 @@ import {
   GitPullRequestArrow,
   GitBranch,
   History,
+  ListChecks,
   Loader2,
   MoreVertical,
   ShieldCheck,
@@ -60,10 +61,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import {
+  prKeys,
+  usePullRequestDetail,
+} from "@/hooks/usePullRequestDetail";
 import { useReviewSettings } from "@/hooks/useReviewSettings";
+import {
+  pullRequestSelectorFromShell,
+  pullRequestShellFromWorkspace,
+} from "@/components/pr/PullRequestDetailShell";
+import { summarizeChecks } from "@/components/pr/pullRequestChecksSummary";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { AgentsPublishActionBar } from "./AgentsPublishActionBar";
+import { AgentsPublishChecksTab } from "./AgentsPublishChecksTab";
 import {
   AgentsPublishAutomationTab,
   deriveAgentsPublishAutomationSnapshot,
@@ -247,12 +258,14 @@ export function AgentPublishPanel({
   const [mountedSubTabs, setMountedSubTabs] = useState<{
     automation: boolean;
     changes: boolean;
+    checks: boolean;
     conversationId: string | null;
     history: boolean;
     review: boolean;
   }>(() => ({
     automation: activeSubTab === "automation",
     changes: activeSubTab === "changes",
+    checks: activeSubTab === "checks",
     conversationId,
     history: activeSubTab === "history",
     review: activeSubTab === "review",
@@ -263,6 +276,7 @@ export function AgentPublishPanel({
       : {
           automation: activeSubTab === "automation",
           changes: activeSubTab === "changes",
+          checks: activeSubTab === "checks",
           conversationId,
           history: activeSubTab === "history",
           review: activeSubTab === "review",
@@ -276,6 +290,8 @@ export function AgentPublishPanel({
           activeSubTab === "automation",
         changes:
           (sameConversation && current.changes) || activeSubTab === "changes",
+        checks:
+          (sameConversation && current.checks) || activeSubTab === "checks",
         conversationId,
         history:
           (sameConversation && current.history) || activeSubTab === "history",
@@ -303,6 +319,30 @@ export function AgentPublishPanel({
     workspace?.publicationPushStatus === "needs_agent" &&
     !getAgentWorkspaceTerminalPublicationStatus(workspace);
   const hasPublishedPr = hasPublishedWorkspacePr(workspace);
+  const checksShell = hasPublishedPr
+    ? pullRequestShellFromWorkspace(workspace)
+    : null;
+  const checksSelector = pullRequestSelectorFromShell(checksShell);
+  const checksHydrationKey =
+    activeSubTab === "checks" && conversationId && checksSelector
+      ? `${conversationId}:${prKeys.detail(checksSelector).join(":")}`
+      : null;
+  const canHydrateChecks = useDeferredAgentHydration(checksHydrationKey);
+  const checksDetailQuery = usePullRequestDetail(checksSelector, {
+    enabled: activeSubTab === "checks" && canHydrateChecks,
+  });
+  const checksDetail = checksDetailQuery.data ?? null;
+  const checksSummary = useMemo(
+    () => summarizeChecks(checksDetail?.checks ?? []),
+    [checksDetail?.checks],
+  );
+  const checksAvailable =
+    checksDetail?.state === "loaded" &&
+    !checksDetail.sourcesUnavailable.includes("checks") &&
+    !checksDetailQuery.isError;
+  const checksAttentionCount = checksAvailable
+    ? checksSummary.failed + checksSummary.pending
+    : 0;
   const terminalPublicationStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
   // Workspace-only flag computed early so reviewQuery can decide whether the
@@ -382,6 +422,11 @@ export function AgentPublishPanel({
       onSubTabChange("changes");
     }
   }, [activeSubTab, onSubTabChange, shouldShowPrSupervisionControls]);
+  useEffect(() => {
+    if (activeSubTab === "checks" && !checksHydrationKey) {
+      onSubTabChange("changes");
+    }
+  }, [activeSubTab, checksHydrationKey, onSubTabChange]);
   const canInspectBaseFreshness =
     canInspectAgentWorkspaceBaseFreshness(workspace);
   const freshnessQuery = useAgentWorkspaceFullFreshness(conversationId, {
@@ -1010,6 +1055,7 @@ export function AgentPublishPanel({
     if (
       value !== "changes" &&
       value !== "review" &&
+      value !== "checks" &&
       value !== "history" &&
       value !== "automation"
     ) {
@@ -1299,6 +1345,28 @@ export function AgentPublishPanel({
                 )}
               </TabsTrigger>
             )}
+            {hasPublishedPr && checksSelector && (
+              <TabsTrigger
+                value="checks"
+                className="relative h-full gap-2 rounded-none border-0 bg-transparent px-1 text-xs font-medium text-[var(--text-muted)] shadow-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--accent-primary)] after:transition-transform focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-0 data-[state=active]:bg-transparent data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none data-[state=active]:after:scale-x-100"
+                data-testid="agents-publish-tab-checks"
+              >
+                <ListChecks className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Checks</span>
+                {checksAttentionCount > 0 && (
+                  <span
+                    aria-label={`${checksSummary.failed} failed and ${checksSummary.pending} pending checks`}
+                    className="rounded-full px-1.5 py-0.5 text-[0.625rem] font-semibold"
+                    style={{
+                      backgroundColor: "var(--status-error-muted)",
+                      color: "var(--status-error)",
+                    }}
+                  >
+                    {checksAttentionCount}
+                  </span>
+                )}
+              </TabsTrigger>
+            )}
             <TabsTrigger
               value="history"
               className="relative h-full gap-2 rounded-none border-0 bg-transparent px-1 text-xs font-medium text-[var(--text-muted)] shadow-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:scale-x-0 after:bg-[var(--accent-primary)] after:transition-transform focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-0 data-[state=active]:bg-transparent data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-none data-[state=active]:after:scale-x-100"
@@ -1533,6 +1601,28 @@ export function AgentPublishPanel({
             {reviewContent}
           </TabsContent>
         )}
+        {hasPublishedPr &&
+          checksSelector &&
+          mountedSubTabsForConversation.checks && (
+            <TabsContent
+              value="checks"
+              forceMount
+              className="m-0 min-h-0 flex-1 overflow-y-auto pt-4 data-[state=inactive]:hidden"
+              data-testid="agents-publish-content-checks"
+            >
+              <AgentsPublishChecksTab
+                detail={checksDetail}
+                isError={checksDetailQuery.isError}
+                isLoading={Boolean(
+                  canHydrateChecks &&
+                    !checksDetail &&
+                    (checksDetailQuery.isLoading ||
+                      checksDetailQuery.fetchStatus !== "idle"),
+                )}
+                isReady={canHydrateChecks}
+              />
+            </TabsContent>
+          )}
         {mountedSubTabsForConversation.history && (
           <TabsContent
             value="history"

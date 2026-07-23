@@ -246,6 +246,38 @@ describe("AgentWorkspaceToolbar", () => {
     expect(screen.queryByText("Approved")).not.toBeInTheDocument();
   });
 
+  it("uses the workspace branch for URL-only published PR health", async () => {
+    renderToolbar(
+      <AgentWorkspaceToolbar
+        workspace={workspace({
+          publicationPrUrl: "https://github.com/acme/app/pull/42",
+          publicationPrStatus: "open",
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Open pull request in GitHub" }),
+    ).toHaveTextContent("Pull request");
+    expect(usePullRequestDetail).toHaveBeenCalledWith(
+      {
+        projectId: "project-1",
+        branch: "ralphx/demo/agent-conversation-1",
+      },
+      { enabled: false },
+    );
+
+    await waitFor(() =>
+      expect(usePullRequestDetail).toHaveBeenCalledWith(
+        {
+          projectId: "project-1",
+          branch: "ralphx/demo/agent-conversation-1",
+        },
+        { enabled: true },
+      ),
+    );
+  });
+
   it("clears old PR health immediately when selector identity changes", async () => {
     vi.mocked(usePullRequestDetail).mockImplementation(
       (selector, options) =>
