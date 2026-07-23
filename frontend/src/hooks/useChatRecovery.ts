@@ -44,6 +44,8 @@ interface UseChatRecoveryProps {
   isConversationInCurrentContext: boolean;
   /** Backend agent run status */
   agentRunStatus: string | undefined;
+  /** Current parent run; active-state snapshots from any other run are non-authoritative. */
+  activeAgentRunId?: string;
   /** Whether the containing panel is currently visible. */
   isVisible: boolean;
   setStreamingTasks?: (
@@ -78,6 +80,7 @@ export function useChatRecovery({
   isGenerating,
   isConversationInCurrentContext,
   agentRunStatus,
+  activeAgentRunId,
   isVisible,
   setStreamingTasks,
   setStreamingToolCalls,
@@ -89,7 +92,8 @@ export function useChatRecovery({
   effectiveStatus,
 }: UseChatRecoveryProps) {
   const queryClient = useQueryClient();
-  const hydratedConversationIdRef = useRef<string | null>(null);
+  const hydratedConversationKeyRef = useRef<string | null>(null);
+  const hydrationGenerationRef = useRef(0);
 
   const [hydrationKeyId, setHydrationKeyId] = useState(activeConversationId);
   const [isStreamingHydrated, setIsStreamingHydrated] = useState(false);
@@ -101,7 +105,7 @@ export function useChatRecovery({
 
   useEffect(() => {
     if (!activeConversationId) {
-      hydratedConversationIdRef.current = null;
+      hydratedConversationKeyRef.current = null;
       setIsStreamingHydrated(true);
       return;
     }
@@ -113,18 +117,21 @@ export function useChatRecovery({
       setIsStreamingHydrated(true);
       return;
     }
-    if (hydratedConversationIdRef.current === activeConversationId) {
+    const hydrationKey = `${activeConversationId}:${activeAgentRunId ?? "unknown"}:${isVisible ? "visible" : "hidden"}`;
+    if (hydratedConversationKeyRef.current === hydrationKey) {
       setIsStreamingHydrated(true);
       return;
     }
 
-    hydratedConversationIdRef.current = activeConversationId;
+    hydratedConversationKeyRef.current = hydrationKey;
+    const generation = ++hydrationGenerationRef.current;
     let cancelled = false;
 
     void chatApi
       .getConversationActiveState(activeConversationId)
       .then((activeState) => {
-        if (cancelled) return;
+        if (cancelled || !isVisible || generation !== hydrationGenerationRef.current) return;
+        if (activeAgentRunId && activeState.runId !== activeAgentRunId) return;
         const hasStreamingTasks = activeState.streaming_tasks.length > 0;
         const hasToolCalls = activeState.tool_calls.length > 0;
         const hasPartialText = activeState.partial_text.trim().length > 0;
@@ -166,11 +173,13 @@ export function useChatRecovery({
     };
   }, [
     activeConversationId,
+    activeAgentRunId,
     isHistoryMode,
     isConversationInCurrentContext,
     setStreamingTasks,
     setStreamingToolCalls,
     setStreamingContentBlocks,
+    isVisible,
   ]);
 
   // Switching away and back to a live conversation must hydrate from persisted

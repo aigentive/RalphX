@@ -1844,7 +1844,20 @@ describe("useChatEvents", () => {
     });
 
     it("should enrich delegated streaming tasks from backend-native agent:task_started payloads", () => {
-      const props = makeProps();
+      const prevMap = new Map<string, StreamingTask>([
+        ["toolu_delegate_live_001", {
+          toolUseId: "toolu_delegate_live_001",
+          toolName: "delegate_start",
+          description: "Delegated specialist",
+          subagentType: "delegated",
+          model: "unknown",
+          status: "running",
+          startedAt: 12345,
+          delegatedJobId: "job-live-123",
+          childToolCalls: [],
+        }],
+      ]);
+      const props = makeProps({ streamingTasks: prevMap });
       renderAndClear(props);
 
       act(() => {
@@ -1870,19 +1883,6 @@ describe("useChatEvents", () => {
 
       expect(props.setStreamingTasks).toHaveBeenCalledTimes(1);
 
-      const prevMap = new Map<string, StreamingTask>([
-        ["toolu_delegate_live_001", {
-          toolUseId: "toolu_delegate_live_001",
-          toolName: "delegate_start",
-          description: "Delegated specialist",
-          subagentType: "delegated",
-          model: "unknown",
-          status: "running",
-          startedAt: 12345,
-          delegatedJobId: "job-live-123",
-          childToolCalls: [],
-        }],
-      ]);
       const nextMap = executeUpdater<Map<string, StreamingTask>>(
         props.setStreamingTasks,
         prevMap,
