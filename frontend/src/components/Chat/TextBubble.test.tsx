@@ -268,6 +268,28 @@ describe("TextBubble", () => {
       const bubble = container.firstChild as HTMLElement;
       expect(bubble).toHaveStyle({ maxWidth: "min(85%, 620px)" });
     });
+
+    it("disables the inner prose max-width inside user bubbles so short messages don't wrap mid-word", () => {
+      // Regression: markdown <p> re-applied maxWidth 85% against the shrink-to-fit
+      // bubble width, collapsing "I switched" into "I / switche / d".
+      const { container } = render(<TextBubble text="I switched" isUser={true} />);
+      const bubble = container.firstChild as HTMLElement;
+      expect(bubble.getAttribute("style")).toContain("--chat-prose-max-width: none");
+    });
+
+    it("keeps the prose max-width fallback active for assistant text", () => {
+      const { container } = render(<TextBubble text="Hello" isUser={false} />);
+      const bubble = container.firstChild as HTMLElement;
+      expect(bubble.getAttribute("style")).not.toContain("--chat-prose-max-width");
+    });
+
+    it("caps markdown blocks through the overridable prose max-width variable", async () => {
+      render(<TextBubble text="# Prose heading" isUser={false} />);
+      const heading = await screen.findByRole("heading", { name: "Prose heading" });
+      expect(heading.getAttribute("style")).toContain(
+        "max-width: var(--chat-prose-max-width, min(85%, 620px))",
+      );
+    });
   });
 
   describe("copy control ownership", () => {
