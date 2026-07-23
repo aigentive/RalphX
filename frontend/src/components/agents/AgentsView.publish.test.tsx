@@ -20,6 +20,10 @@ import {
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
 import { getAgentConversationStoreKey } from "./agentConversations";
+import {
+  DEFAULT_AGENT_ARTIFACT_UI_STATE,
+  useAgentArtifactUiStore,
+} from "./agentArtifactUiStore";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
@@ -510,6 +514,69 @@ describe("AgentsView publish", () => {
         prNumber: 78,
         prUrl: "https://github.com/mock/project/pull/78",
       }),
+    );
+  });
+
+  it("locks publish controls from persisted background publish state without a manual attempt", async () => {
+    configurePublishPane({
+      workspace: { publicationPushStatus: "pushing" },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          ...DEFAULT_AGENT_ARTIFACT_UI_STATE,
+          isOpen: true,
+          activeTab: "publish",
+        },
+      },
+    });
+
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+
+    const headerShortcut = await screen.findByRole("button", {
+      name: "Publishing",
+    });
+    expect(headerShortcut).toBeDisabled();
+
+    const actionbar = await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Publishing workspace" }),
+      ).toBeInTheDocument(),
+    );
+    const publishButton = within(actionbar).getByRole("button", {
+      name: "Publishing",
+    });
+    expect(publishButton).toBeDisabled();
+
+    fireEvent.click(publishButton);
+
+    expect(publishAgentConversationWorkspaceMock).not.toHaveBeenCalled();
+
+    act(() => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace("conversation-1"),
+        conversationWorkspace({
+          mode: "edit",
+          publicationPushStatus: "pushed",
+          publicationPrNumber: 78,
+        }),
+      );
+      queryClient.setQueryData(
+        agentWorkspaceKeys.scopedFreshness("conversation-1", "full"),
+        fullFreshness({ unpublishedCommitCount: 0 }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("button", { name: "PR is up to date" }),
+      ).toBeInTheDocument(),
     );
   });
 

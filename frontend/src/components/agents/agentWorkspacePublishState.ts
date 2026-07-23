@@ -5,6 +5,13 @@ import type {
 } from "@/api/chat";
 
 const PUBLISH_EVENT_START_SKEW_MS = 5_000;
+const AGENT_WORKSPACE_ACTIVE_PUBLISH_STATUSES = new Set([
+  "checking",
+  "committing",
+  "refreshing",
+  "describing",
+  "pushing",
+]);
 
 export type AgentWorkspacePublishTerminalEvent = {
   event: AgentConversationWorkspacePublicationEvent;
@@ -46,6 +53,18 @@ export function getAgentWorkspaceTerminalPublicationLabel(
     return "Closed";
   }
   return null;
+}
+
+export function isAgentWorkspacePublishActive(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  if (!workspace || getAgentWorkspaceTerminalPublicationStatus(workspace)) {
+    return false;
+  }
+  const pushStatus = normalizePublicationStatus(workspace.publicationPushStatus);
+  return (
+    pushStatus !== null && AGENT_WORKSPACE_ACTIVE_PUBLISH_STATUSES.has(pushStatus)
+  );
 }
 
 export function isPipelineOwnedAgentWorkspace(
