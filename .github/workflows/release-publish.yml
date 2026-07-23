@@ -211,8 +211,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          # shellcheck disable=SC2153
           version="${VERSION}"
           tag="${TAG}"
+          # shellcheck disable=SC2153
           release_name="${RELEASE_NAME}"
           if [[ ! -f release-metadata/release-notes.md ]]; then
             echo "Release notes artifact missing from build run ${SOURCE_RUN_ID}" >&2
@@ -314,7 +316,9 @@ jobs:
           set -euo pipefail
 
           tag="${TAG}"
+          # shellcheck disable=SC2153
           release_name="${RELEASE_NAME}"
+          # shellcheck disable=SC2153
           version="${VERSION}"
           source_asset_dir="publication-assets"
           asset_files=(
