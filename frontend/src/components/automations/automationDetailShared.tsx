@@ -21,10 +21,11 @@ function statusTone(status: string): StatusPillTone {
   return "neutral";
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- shared automation status helper
 export function statusDotColor(status: string): string {
   const tone = statusTone(status);
   if (tone === "accent") {
-    return "var(--accent-primary, #ff6b35)";
+    return "var(--accent-primary)";
   }
   if (tone === "success") {
     return "var(--status-success, #2eb867)";
