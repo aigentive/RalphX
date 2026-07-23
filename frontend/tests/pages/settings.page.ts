@@ -9,6 +9,10 @@ export class SettingsPage extends BasePage {
   readonly savingIndicator: Locator;
   readonly errorBanner: Locator;
   readonly agentRuntimePicker: Locator;
+  readonly updateChannelGroup: Locator;
+  readonly stableUpdateChannel: Locator;
+  readonly nightlyUpdateChannel: Locator;
+  readonly updateChannelSaveError: Locator;
 
   // Execution Section
   readonly executionSection: Locator;
@@ -43,6 +47,18 @@ export class SettingsPage extends BasePage {
     this.savingIndicator = page.locator("text=Saving...");
     this.errorBanner = page.locator('[role="alert"]');
     this.agentRuntimePicker = this.settingsDialog.getByTestId("agent-composer-runtime-pill");
+    this.updateChannelGroup = this.settingsDialog.getByRole("radiogroup", {
+      name: "Update channel",
+    });
+    this.stableUpdateChannel = this.updateChannelGroup.getByRole("radio", {
+      name: "Stable — Recommended",
+    });
+    this.nightlyUpdateChannel = this.updateChannelGroup.getByRole("radio", {
+      name: "Nightly — Early access",
+    });
+    this.updateChannelSaveError = this.settingsDialog.getByRole("alert").filter({
+      hasText: "Unable to save update channel",
+    });
 
     // Execution Section
     this.executionSection = page.locator("text=Control task execution behavior and concurrency").locator("..");
@@ -116,6 +132,13 @@ export class SettingsPage extends BasePage {
     await expect(
       this.settingsDialog.getByRole("heading", { name: heading, exact: true }),
     ).toBeVisible({ timeout: 10000 });
+  }
+
+  async selectUpdateChannel(channel: "stable" | "nightly") {
+    await (channel === "stable"
+      ? this.stableUpdateChannel
+      : this.nightlyUpdateChannel
+    ).click();
   }
 
   /** Close the settings dialog via the close button */
