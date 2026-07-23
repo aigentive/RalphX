@@ -19,14 +19,16 @@ use crate::application::chat_service::{
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    AgentRunStatus, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
-    ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAction,
+    AgentRunActionKind, AgentRunId, AgentRunStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
+    Artifact, ArtifactContent, ArtifactId, ChatContextType, ChatConversation, ChatConversationId,
+    MessageRole, Project,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
+    AgentConversationWorkspaceRepository, AgentRunRepository, QueuedMessageRepository,
+    ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -52,12 +54,17 @@ const WORKSPACE_REVIEW_GOAL_POLICY: &str =
     "Goal Wins: explicit parent workspace requests and linked/approved plan artifacts are authoritative unless the diff introduces a concrete security, data-loss, build, or correctness blocker.";
 const WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR: &str =
     "Workspace reviewer completion did not match the current Review target";
+#[cfg(test)]
 pub(crate) const WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR: &str =
     "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review.";
 const WORKSPACE_REVIEW_INTERRUPTED_ON_STARTUP_ERROR: &str =
     "Workspace reviewer was interrupted when the app restarted";
 const WORKSPACE_REVIEW_COMPLETED_WITHOUT_CURRENT_REVIEW_ERROR: &str =
     "Workspace reviewer completed without writing a current Review";
+const WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR: &str =
+    "Workspace Review fixer routing was interrupted when the app restarted";
+const WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR: &str =
+    "Workspace Review fixer recovery found invalid attempt authority";
 const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
 const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
 const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
@@ -288,6 +295,20 @@ pub struct AgentWorkspaceReviewFixerStart {
     pub skipped_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceReviewFixerConfirmation {
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub blocking_fingerprint: String,
+}
+
+struct WorkspaceReviewFixerPreparedLaunch {
+    message: String,
+    inherited_references: WorkspaceReviewInheritedReferences,
+}
+
 pub async fn reconcile_interrupted_agent_workspace_reviews_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -325,6 +346,97 @@ pub async fn reconcile_interrupted_agent_workspace_reviews_on_startup(
             reconciled,
             "Reconciled interrupted workspace Review monitors on startup"
         );
+    }
+    Ok(reconciled)
+}
+
+pub async fn reconcile_interrupted_workspace_review_fixers_on_startup(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    queued_message_repo: Arc<dyn QueuedMessageRepository>,
+) -> AppResult<usize> {
+    let monitors = workspace_repo.list_active_workspace_review_fixers().await?;
+    let queue_keys = queued_message_repo.list_keys().await?;
+    let mut queued_messages = Vec::new();
+    for key in queue_keys {
+        queued_messages.extend(queued_message_repo.list(&key).await?);
+    }
+
+    let mut reconciled = 0usize;
+    for claimed in monitors {
+        let attempt_id = claimed.review_fixer_attempt_id.as_deref();
+        let snapshot = AgentWorkspaceReviewFixerSnapshot::from_monitor(&claimed);
+        if attempt_id.is_none() || snapshot.is_none() {
+            if workspace_repo
+                .fail_invalid_workspace_review_fixer_attempt(
+                    &claimed.conversation_id,
+                    attempt_id,
+                    WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR,
+                )
+                .await?
+                .is_some()
+            {
+                reconciled += 1;
+            }
+            continue;
+        }
+        let attempt_id = attempt_id.expect("validated fixer attempt id");
+        let snapshot = snapshot.expect("validated fixer authority snapshot");
+        let conversation_id = claimed.conversation_id.clone();
+        let action_context_id = conversation_id.as_str();
+        let action_run = agent_run_repo
+            .get_latest_action(
+                &conversation_id,
+                AgentRunActionKind::WorkspaceReviewFixer,
+                &action_context_id,
+                attempt_id,
+            )
+            .await?;
+        let queued = queued_messages.iter().any(|message| {
+            AgentRunAction::from_metadata_json(message.metadata_override.as_deref()).is_some_and(
+                |action| {
+                    action.kind == AgentRunActionKind::WorkspaceReviewFixer
+                        && action.context_id == action_context_id
+                        && action.target_id == attempt_id
+                },
+            )
+        });
+
+        let mut next = claimed.clone();
+        match action_run {
+            Some(run) if run.status == AgentRunStatus::Running => {
+                next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING.to_string());
+                next.review_fixer_run_id = Some(run.id.as_str().to_string());
+                next.review_fixer_conversation_id = Some(run.conversation_id);
+                next.last_error = None;
+            }
+            _ if queued => {
+                next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_QUEUED.to_string());
+                next.last_error = None;
+            }
+            Some(run) => {
+                next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
+                next.review_fixer_run_id = Some(run.id.as_str().to_string());
+                next.review_fixer_conversation_id = Some(run.conversation_id);
+                next.last_error = Some(format!(
+                    "Workspace Review fixer routing recovered a terminal {} run",
+                    run.status
+                ));
+            }
+            None => {
+                next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
+                next.last_error =
+                    Some(WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR.to_string());
+            }
+        }
+
+        if workspace_repo
+            .settle_workspace_review_fixer_attempt(next, attempt_id, &snapshot)
+            .await?
+            .is_some()
+        {
+            reconciled += 1;
+        }
     }
     Ok(reconciled)
 }
@@ -634,23 +746,47 @@ pub async fn start_agent_workspace_review(
     force: bool,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
-    let chat_service = state.build_chat_service();
-    start_agent_workspace_review_with_chat_service(state, workspace, force, &chat_service).await
+    start_agent_workspace_review_unlocked_with_runtime_override(state, workspace, force, None).await
 }
 
-pub(crate) async fn start_agent_workspace_review_unlocked(
+pub async fn start_agent_workspace_review_with_runtime_override(
     state: Arc<AppState>,
     workspace: &AgentConversationWorkspace,
     force: bool,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+) -> AppResult<AgentWorkspaceReviewStart> {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    start_agent_workspace_review_unlocked_with_runtime_override(
+        state,
+        workspace,
+        force,
+        runtime_override,
+    )
+    .await
+}
+
+pub(crate) async fn start_agent_workspace_review_unlocked_with_runtime_override(
+    state: Arc<AppState>,
+    workspace: &AgentConversationWorkspace,
+    force: bool,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let chat_service = state.build_chat_service();
-    start_agent_workspace_review_with_chat_service(state, workspace, force, &chat_service).await
+    start_agent_workspace_review_with_chat_service(
+        state,
+        workspace,
+        force,
+        runtime_override,
+        &chat_service,
+    )
+    .await
 }
 
 async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>(
     state: Arc<AppState>,
     workspace: &AgentConversationWorkspace,
     force: bool,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let workspace = load_current_workspace_review_eligible(&state, workspace).await?;
@@ -803,10 +939,25 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
         .get_latest_for_conversation(&workspace.conversation_id)
         .await?;
     let message = build_review_request_message(workspace, &target, &goal_context);
-    let runtime = match state
-        .resolve_workspace_reviewer_runtime_for_project(workspace.project_id.as_str())
-        .await
-    {
+    let runtime_result = match runtime_override {
+        Some(runtime_override) => {
+            state
+                .resolve_workspace_role_runtime_for_project_with_override(
+                    workspace.project_id.as_str(),
+                    crate::domain::agents::RoutingRole::WorkspaceReviewer,
+                    Some(runtime_override),
+                    agent_names::AGENT_WORKSPACE_REVIEWER,
+                    "workspace reviewer provider",
+                )
+                .await
+        }
+        None => {
+            state
+                .resolve_workspace_reviewer_runtime_for_project(workspace.project_id.as_str())
+                .await
+        }
+    };
+    let runtime = match runtime_result {
         Ok(runtime) => runtime,
         Err(error) => {
             let error = format!("failed to resolve workspace reviewer provider: {error}");
@@ -1719,6 +1870,47 @@ fn spawn_workspace_review_waiter(
                 "Workspace Review child chat reached a terminal state"
             );
 
+            let durable_monitor = match state
+                .agent_conversation_workspace_repo
+                .get_workspace_review_monitor(&workspace.conversation_id)
+                .await
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    warn!(
+                        target: WORKSPACE_REVIEW_LOG_TARGET,
+                        operation = "child_chat_verify_retry",
+                        conversation_id = %workspace.conversation_id,
+                        run_id = %run_id,
+                        error = %error,
+                        elapsed_ms = wait_started.elapsed().as_millis(),
+                        "Failed to load durable workspace Review completion; retrying"
+                    );
+                    sleep(Duration::from_millis(WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS)).await;
+                    continue;
+                }
+            };
+
+            if let Some(monitor) = durable_monitor.as_ref().filter(|monitor| {
+                workspace_review_monitor_has_typed_completion_for_target(monitor, &target, &run_id)
+            }) {
+                info!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "child_chat_typed_completion_preserved",
+                    conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
+                    run_id = %run_id,
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    run_status = %run.status,
+                    monitor_status = %monitor.status,
+                    review_outcome = %monitor.review_outcome,
+                    review_gate_status = %monitor.review_gate_status,
+                    "Preserved typed workspace Review completion after provider settlement"
+                );
+                return;
+            }
+
             if run.status != AgentRunStatus::Completed {
                 let error = run.error_message.unwrap_or_else(|| {
                     format!("Workspace reviewer ended with status {}", run.status)
@@ -1727,12 +1919,8 @@ fn spawn_workspace_review_waiter(
                 return;
             }
 
-            match state
-                .agent_conversation_workspace_repo
-                .get_workspace_review_monitor(&workspace.conversation_id)
-                .await
-            {
-                Ok(Some(monitor))
+            match durable_monitor {
+                Some(monitor)
                     if monitor.is_current_for_target(
                         target.scope,
                         target.head_sha.as_deref(),
@@ -1762,7 +1950,7 @@ fn spawn_workspace_review_waiter(
                         "Verified workspace Review after child chat completion"
                     );
                 }
-                Ok(Some(monitor))
+                Some(monitor)
                     if workspace_review_monitor_has_terminal_run_failure_for_target(
                         &monitor, &target, &run_id,
                     ) =>
@@ -1784,7 +1972,7 @@ fn spawn_workspace_review_waiter(
                         "Preserved workspace Review run_failed completion from child chat"
                     );
                 }
-                Ok(_) => {
+                _ => {
                     warn!(
                         target: WORKSPACE_REVIEW_LOG_TARGET,
                         operation = "child_chat_missing_review",
@@ -1805,21 +1993,6 @@ fn spawn_workspace_review_waiter(
                         "Workspace reviewer completed without writing a current Review".to_string(),
                     )
                     .await;
-                }
-                Err(error) => {
-                    error!(
-                        target: WORKSPACE_REVIEW_LOG_TARGET,
-                        operation = "child_chat_verify_failed",
-                        conversation_id = %workspace.conversation_id,
-                        project_id = %workspace.project_id,
-                        branch = %workspace.branch_name,
-                        run_id = %run_id,
-                        error = %error,
-                        elapsed_ms = wait_started.elapsed().as_millis(),
-                        target_scope = %target.scope,
-                        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
-                        "Failed to verify workspace Review child chat completion"
-                    );
                 }
             }
             return;
@@ -1956,7 +2129,25 @@ fn workspace_review_block_matches_active_monitor(
         }
         _ => true,
     };
-    run_matches && target_matches
+    monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing && run_matches && target_matches
+}
+
+fn workspace_review_monitor_has_typed_completion_for_target(
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+) -> bool {
+    monitor.last_run_id.as_deref() == Some(run_id)
+        && monitor.review_artifact_id.is_some()
+        && matches!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
+        )
+        && matches!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed | AgentWorkspaceReviewGateStatus::Blocking
+        )
+        && workspace_review_monitor_current_target_matches(monitor, target)
 }
 
 fn workspace_review_monitor_current_target_matches(
@@ -2125,6 +2316,7 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
             if should_route_fixer {
                 monitor.review_fixer_status =
                     Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
+                monitor.review_fixer_attempt_id = Some(uuid::Uuid::new_v4().to_string());
                 clear_review_fixer_linkage(&mut monitor);
             }
         }
@@ -2379,9 +2571,41 @@ pub async fn start_agent_workspace_review_blocking_fixer(
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewFixerStart> {
     let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
-    let chat_service = state.build_chat_service();
-    start_agent_workspace_review_blocking_fixer_with_chat_service(state, workspace, &chat_service)
+    start_agent_workspace_review_blocking_fixer_with_override_unlocked(state, workspace, None, None)
         .await
+}
+
+pub async fn start_agent_workspace_review_blocking_fixer_with_override(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    confirmation: Option<&WorkspaceReviewFixerConfirmation>,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+) -> AppResult<AgentWorkspaceReviewFixerStart> {
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    start_agent_workspace_review_blocking_fixer_with_override_unlocked(
+        state,
+        workspace,
+        confirmation,
+        runtime_override,
+    )
+    .await
+}
+
+async fn start_agent_workspace_review_blocking_fixer_with_override_unlocked(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    confirmation: Option<&WorkspaceReviewFixerConfirmation>,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+) -> AppResult<AgentWorkspaceReviewFixerStart> {
+    let chat_service = state.build_chat_service();
+    start_agent_workspace_review_blocking_fixer_with_chat_service(
+        state,
+        workspace,
+        confirmation,
+        runtime_override,
+        &chat_service,
+    )
+    .await
 }
 
 pub(crate) async fn cleanup_workspace_review_for_plan_boundary(
@@ -2463,6 +2687,8 @@ pub(crate) async fn cleanup_workspace_review_for_plan_boundary(
 async fn start_agent_workspace_review_blocking_fixer_with_chat_service<S: ChatService + ?Sized>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
+    confirmation: Option<&WorkspaceReviewFixerConfirmation>,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewFixerStart> {
     let workspace = load_current_workspace_review_eligible(state, workspace).await?;
@@ -2513,18 +2739,82 @@ async fn start_agent_workspace_review_blocking_fixer_with_chat_service<S: ChatSe
         });
     }
 
-    let mut monitor = context.monitor.clone();
-    monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
-    clear_review_fixer_linkage(&mut monitor);
-    let monitor = state
-        .agent_conversation_workspace_repo
-        .upsert_workspace_review_monitor(monitor)
-        .await?;
+    let mut claimed_monitor = context.monitor.clone();
+    let mut pre_resolved_runtime = None;
+    let mut prepared_launch = None;
+    if let Some(confirmation) = confirmation {
+        let receipt_matches = context.target.as_ref().is_some_and(|target| {
+            target.scope == confirmation.target_scope
+                && target.diff_fingerprint == confirmation.diff_fingerprint
+        }) && context
+            .monitor
+            .review_artifact_id
+            .as_ref()
+            .is_some_and(|artifact_id| artifact_id.as_str() == confirmation.artifact_id)
+            && context.monitor.review_artifact_version == Some(confirmation.artifact_version)
+            && context.monitor.review_blocking_fingerprint.as_deref()
+                == Some(confirmation.blocking_fingerprint.as_str());
+        if !receipt_matches {
+            return Err(AppError::Conflict(
+                "workspace Review blocker changed; refresh and confirm again".to_string(),
+            ));
+        }
+        prepared_launch = Some(
+            prepare_workspace_review_fixer_launch(state, workspace, &context.monitor, target)
+                .await?,
+        );
+        pre_resolved_runtime = Some(
+            state
+                .resolve_workspace_role_runtime_for_project_with_override(
+                    workspace.project_id.as_str(),
+                    crate::domain::agents::RoutingRole::WorkspaceRepair,
+                    runtime_override,
+                    agent_names::AGENT_WORKSPACE_REPAIR,
+                    "workspace Review fixer provider",
+                )
+                .await?,
+        );
+        let snapshot = AgentWorkspaceReviewFixerSnapshot {
+            target_scope: confirmation.target_scope,
+            diff_fingerprint: confirmation.diff_fingerprint.clone(),
+            artifact_id: ArtifactId::from_string(confirmation.artifact_id.clone()),
+            artifact_version: confirmation.artifact_version,
+            blocking_fingerprint: confirmation.blocking_fingerprint.clone(),
+        };
+        let attempt_id = uuid::Uuid::new_v4().to_string();
+        claimed_monitor = state
+            .agent_conversation_workspace_repo
+            .claim_workspace_review_fixer(
+                &workspace.conversation_id,
+                &snapshot,
+                &attempt_id,
+                Utc::now(),
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "workspace Review blocker changed or is already being repaired; refresh and confirm again"
+                        .to_string(),
+                )
+            })?;
+    } else {
+        claimed_monitor.review_fixer_status =
+            Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
+        claimed_monitor.review_fixer_attempt_id = Some(uuid::Uuid::new_v4().to_string());
+        clear_review_fixer_linkage(&mut claimed_monitor);
+        claimed_monitor = state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(claimed_monitor)
+            .await?;
+    }
     let routed = route_workspace_review_blocking_fixer_with_chat_service(
         state,
         workspace,
-        &monitor,
+        &claimed_monitor,
         Some(target),
+        runtime_override,
+        pre_resolved_runtime,
+        prepared_launch,
         chat_service,
     )
     .await?;
@@ -2549,6 +2839,9 @@ async fn route_workspace_review_blocking_fixer(
         workspace,
         monitor,
         target,
+        None,
+        None,
+        None,
         &chat_service,
     )
     .await
@@ -2559,6 +2852,9 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
     target: Option<&AgentWorkspaceReviewTarget>,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+    pre_resolved_runtime: Option<crate::application::app_state::ResolvedBackgroundAgentRuntime>,
+    prepared_launch: Option<WorkspaceReviewFixerPreparedLaunch>,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
     let Some(target) = target else {
@@ -2567,33 +2863,36 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
     let Some(blocking_summary) = monitor.review_blocking_summary.as_deref() else {
         return Ok(monitor.clone());
     };
-    let inherited_references =
-        collect_workspace_review_inherited_references(state, workspace).await?;
-    let goal_context = build_workspace_review_goal_context(&inherited_references);
-    let review_artifact_context =
-        load_workspace_review_artifact_context(state, monitor, "review").await?;
-    let message = build_workspace_review_blocking_repair_message(
-        workspace,
-        monitor,
-        target,
-        &goal_context,
-        review_artifact_context.as_ref(),
-    );
-    let conversation = state
-        .chat_conversation_repo
-        .get_by_id(&workspace.conversation_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Conversation not found".to_string()))?;
     let mut next = monitor.clone();
-    let runtime = match state
-        .resolve_workspace_role_runtime_for_project(
-            workspace.project_id.as_str(),
-            crate::domain::agents::RoutingRole::WorkspaceRepair,
-            agent_names::AGENT_WORKSPACE_REPAIR,
-            "workspace Review fixer provider",
-        )
-        .await
-    {
+    let prepared_launch = match prepared_launch {
+        Some(prepared) => prepared,
+        None => {
+            match prepare_workspace_review_fixer_launch(state, workspace, monitor, target).await {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    next.review_fixer_status =
+                        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
+                    next.last_error = Some(format!("Failed to prepare Review fixer: {error}"));
+                    return settle_workspace_review_fixer_attempt(state, next, monitor).await;
+                }
+            }
+        }
+    };
+    let runtime_result = match pre_resolved_runtime {
+        Some(runtime) => Ok(runtime),
+        None => {
+            state
+                .resolve_workspace_role_runtime_for_project_with_override(
+                    workspace.project_id.as_str(),
+                    crate::domain::agents::RoutingRole::WorkspaceRepair,
+                    runtime_override,
+                    agent_names::AGENT_WORKSPACE_REPAIR,
+                    "workspace Review fixer provider",
+                )
+                .await
+        }
+    };
+    let runtime = match runtime_result {
         Ok(runtime) => runtime,
         Err(error) => {
             next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
@@ -2610,20 +2909,15 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
                 error = %error,
                 "Failed to resolve an enabled provider for workspace Review fixer"
             );
-            return state
-                .agent_conversation_workspace_repo
-                .upsert_workspace_review_monitor(next)
-                .await;
+            return settle_workspace_review_fixer_attempt(state, next, monitor).await;
         }
     };
-    let preserve_conversation_provider_session_ref = conversation
-        .provider_session_ref()
-        .is_some_and(|session_ref| Some(session_ref.harness) == runtime.harness);
+    let preserve_conversation_provider_session_ref = true;
     match chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
-            &message,
+            &prepared_launch.message,
             SendMessageOptions {
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(agent_names::AGENT_WORKSPACE_REPAIR.to_string()),
@@ -2634,13 +2928,21 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
                 sandbox_mode_override: runtime.sandbox_mode,
                 service_tier_override: runtime.service_tier,
                 working_directory_override: Some(target.working_directory.clone()),
-                composer_project_references: inherited_references.project_references,
-                composer_integration_references: inherited_references.integration_references,
-                composer_artifact_references: inherited_references.artifact_references,
+                composer_project_references: prepared_launch
+                    .inherited_references
+                    .project_references,
+                composer_integration_references: prepared_launch
+                    .inherited_references
+                    .integration_references,
+                composer_artifact_references: prepared_launch
+                    .inherited_references
+                    .artifact_references,
                 force_new_provider_session: true,
                 preserve_conversation_provider_session_ref,
                 metadata: Some(workspace_review_fixer_request_metadata(
+                    &workspace.conversation_id,
                     monitor.review_blocking_fingerprint.as_deref(),
+                    monitor.review_fixer_attempt_id.as_deref(),
                 )),
                 caller_context: SendCallerContext::UserInitiated,
                 ..Default::default()
@@ -2694,17 +2996,77 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
             );
         }
     }
-    state
-        .agent_conversation_workspace_repo
-        .upsert_workspace_review_monitor(next)
-        .await
+    settle_workspace_review_fixer_attempt(state, next, monitor).await
 }
 
-fn workspace_review_fixer_request_metadata(blocking_fingerprint: Option<&str>) -> String {
+async fn prepare_workspace_review_fixer_launch(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+) -> AppResult<WorkspaceReviewFixerPreparedLaunch> {
+    let _conversation = state
+        .chat_conversation_repo
+        .get_by_id(&workspace.conversation_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".to_string()))?;
+    let inherited_references =
+        collect_workspace_review_inherited_references(state, workspace).await?;
+    let goal_context = build_workspace_review_goal_context(&inherited_references);
+    let review_artifact_context =
+        load_workspace_review_artifact_context(state, monitor, "review").await?;
+    let message = build_workspace_review_blocking_repair_message(
+        workspace,
+        monitor,
+        target,
+        &goal_context,
+        review_artifact_context.as_ref(),
+    );
+    Ok(WorkspaceReviewFixerPreparedLaunch {
+        message,
+        inherited_references,
+    })
+}
+
+async fn settle_workspace_review_fixer_attempt(
+    state: &AppState,
+    next: AgentWorkspaceReviewMonitor,
+    claimed: &AgentWorkspaceReviewMonitor,
+) -> AppResult<AgentWorkspaceReviewMonitor> {
+    let Some(attempt_id) = claimed.review_fixer_attempt_id.as_deref() else {
+        return Err(AppError::Infrastructure(
+            "workspace Review fixer routing is missing attempt identity".to_string(),
+        ));
+    };
+    let snapshot = AgentWorkspaceReviewFixerSnapshot::from_monitor(claimed).ok_or_else(|| {
+        AppError::Infrastructure(
+            "workspace Review fixer routing is missing target authority".to_string(),
+        )
+    })?;
+    state
+        .agent_conversation_workspace_repo
+        .settle_workspace_review_fixer_attempt(next, attempt_id, &snapshot)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "workspace Review fixer attempt was superseded before settlement".to_string(),
+            )
+        })
+}
+
+fn workspace_review_fixer_request_metadata(
+    conversation_id: &ChatConversationId,
+    blocking_fingerprint: Option<&str>,
+    attempt_id: Option<&str>,
+) -> String {
     serde_json::json!({
         "hidden_from_ui": true,
         "source": "workspace_review_blocking_fixer",
         "blocking_fingerprint": blocking_fingerprint,
+        "fixer_attempt_id": attempt_id,
+        "ralphx_action_kind": "workspace_review_fixer",
+        "ralphx_action_context_id": attempt_id.map(|_| conversation_id.as_str()),
+        "ralphx_action_target_id": attempt_id,
     })
     .to_string()
 }
@@ -3054,6 +3416,7 @@ fn apply_review_gate_to_monitor(
             monitor.review_fixer_run_id = None;
             monitor.review_fixer_conversation_id = None;
             monitor.review_fixer_status = None;
+            monitor.review_fixer_attempt_id = None;
         }
         return;
     };
@@ -3101,6 +3464,7 @@ fn clear_review_blocking_state(monitor: &mut AgentWorkspaceReviewMonitor) {
 fn clear_review_fixer_state(monitor: &mut AgentWorkspaceReviewMonitor) {
     clear_review_fixer_linkage(monitor);
     monitor.review_fixer_status = None;
+    monitor.review_fixer_attempt_id = None;
 }
 
 fn clear_review_fixer_linkage(monitor: &mut AgentWorkspaceReviewMonitor) {
@@ -3114,6 +3478,19 @@ pub(crate) fn apply_current_target_to_monitor(
 ) {
     let now = Utc::now();
     monitor.updated_at = now;
+    let target_changed = match target {
+        Some(target) => {
+            monitor.current_target_scope != Some(target.scope)
+                || monitor.current_diff_fingerprint.as_deref()
+                    != Some(target.diff_fingerprint.as_str())
+        }
+        None => {
+            monitor.current_target_scope.is_some() || monitor.current_diff_fingerprint.is_some()
+        }
+    };
+    if target_changed {
+        clear_review_blocking_state(monitor);
+    }
     let bypass_remains_current = target.is_some_and(|target| {
         monitor.has_current_review_bypass_for_target(
             target.scope,
@@ -3656,9 +4033,7 @@ async fn ensure_workspace_review_git_is_settled(repo: &Path) -> AppResult<()> {
     let unfinished_operation = GitService::unfinished_operation_state(repo)?;
     let conflict_files = GitService::get_conflict_files(repo).await?;
     if unfinished_operation.is_unfinished() || !conflict_files.is_empty() {
-        return Err(AppError::Conflict(
-            WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR.to_string(),
-        ));
+        return Err(AppError::WorkspaceReviewUnfinishedGitOperation);
     }
     Ok(())
 }

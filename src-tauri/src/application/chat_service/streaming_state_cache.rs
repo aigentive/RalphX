@@ -53,9 +53,6 @@ pub struct CachedStreamingTask {
     /// Agent ID if available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    /// Teammate name if this is a team member task
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub teammate_name: Option<String>,
     /// RalphX native delegation job id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_job_id: Option<String>,
@@ -125,6 +122,18 @@ pub struct CachedStreamingTask {
     /// Final delegated output when available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_output: Option<String>,
+    /// Backend-owned lifecycle start timestamp (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// Backend-owned lifecycle completion timestamp (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    /// Origin of the lifecycle timestamp pair (delegated run or job snapshot).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
+    /// Lifecycle-event freshness evidence. This never owns timeline placement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 /// Complete streaming state for a single conversation.
@@ -268,18 +277,20 @@ impl StreamingStateCache {
         conversation_id: &str,
         task: CachedStreamingTask,
     ) {
-        if let Some(existing) = state
-            .streaming_tasks
-            .iter_mut()
-            .find(|existing| existing.tool_use_id == task.tool_use_id)
-        {
+        if let Some(existing) = state.streaming_tasks.iter_mut().find(|existing| {
+            existing.tool_use_id == task.tool_use_id
+                || matches!(
+                    (&existing.delegated_job_id, &task.delegated_job_id),
+                    (Some(existing_job_id), Some(task_job_id)) if existing_job_id == task_job_id
+                )
+        }) {
             tracing::debug!(
                 conversation_id,
                 tool_use_id = %existing.tool_use_id,
                 subagent_type = ?task.subagent_type,
                 "StreamingStateCache: updated existing streaming task"
             );
-            *existing = task;
+            Self::merge_task(existing, task);
         } else {
             tracing::debug!(
                 conversation_id,
@@ -290,6 +301,111 @@ impl StreamingStateCache {
             state.streaming_tasks.push(task);
         }
         state.updated_at = Utc::now();
+    }
+
+    fn merge_task(existing: &mut CachedStreamingTask, incoming: CachedStreamingTask) {
+        if Self::has_conflicting_delegated_identity(existing, &incoming)
+            || Self::incoming_is_stale(existing, &incoming)
+            || (existing.status != "running"
+                && incoming.status == "running"
+                && existing.seq == incoming.seq)
+        {
+            return;
+        }
+
+        let mut merged = incoming;
+        macro_rules! preserve_non_null {
+            ($($field:ident),+ $(,)?) => {
+                $(if merged.$field.is_none() { merged.$field = existing.$field.clone(); })+
+            };
+        }
+        preserve_non_null!(
+            description,
+            subagent_type,
+            model,
+            agent_id,
+            delegated_job_id,
+            delegated_session_id,
+            delegated_conversation_id,
+            delegated_agent_run_id,
+            provider_harness,
+            provider_session_id,
+            upstream_provider,
+            provider_profile,
+            logical_model,
+            effective_model_id,
+            logical_effort,
+            effective_effort,
+            approval_policy,
+            sandbox_mode,
+            total_tokens,
+            total_tool_uses,
+            duration_ms,
+            input_tokens,
+            output_tokens,
+            cache_creation_tokens,
+            cache_read_tokens,
+            estimated_usd,
+            text_output,
+            timestamp_provenance
+        );
+        merged.tool_use_id = existing.tool_use_id.clone();
+        merged.started_at = Self::earliest_started_at(&existing.started_at, &merged.started_at);
+        if merged.completed_at.is_none() {
+            merged.completed_at = existing.completed_at.clone();
+        }
+        merged.seq = match (existing.seq, merged.seq) {
+            (Some(existing), Some(incoming)) => Some(existing.max(incoming)),
+            (Some(existing), None) => Some(existing),
+            (None, Some(incoming)) => Some(incoming),
+            (None, None) => None,
+        };
+        *existing = merged;
+    }
+
+    fn has_conflicting_delegated_identity(
+        existing: &CachedStreamingTask,
+        incoming: &CachedStreamingTask,
+    ) -> bool {
+        matches!(
+            (&existing.delegated_job_id, &incoming.delegated_job_id),
+            (Some(existing), Some(incoming)) if existing != incoming
+        ) || matches!(
+            (&existing.delegated_agent_run_id, &incoming.delegated_agent_run_id),
+            (Some(existing), Some(incoming)) if existing != incoming
+        )
+    }
+
+    fn incoming_is_stale(existing: &CachedStreamingTask, incoming: &CachedStreamingTask) -> bool {
+        match (existing.seq, incoming.seq) {
+            (Some(existing), Some(incoming)) => incoming < existing,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    fn earliest_started_at(existing: &Option<String>, incoming: &Option<String>) -> Option<String> {
+        match (existing, incoming) {
+            (Some(existing), Some(incoming)) => {
+                let existing_timestamp = DateTime::parse_from_rfc3339(existing).ok();
+                let incoming_timestamp = DateTime::parse_from_rfc3339(incoming).ok();
+                match (existing_timestamp, incoming_timestamp) {
+                    (Some(existing_timestamp), Some(incoming_timestamp)) => {
+                        if existing_timestamp <= incoming_timestamp {
+                            Some(existing.clone())
+                        } else {
+                            Some(incoming.clone())
+                        }
+                    }
+                    (Some(_), None) => Some(existing.clone()),
+                    (None, Some(_)) => Some(incoming.clone()),
+                    (None, None) => Some(std::cmp::min(existing, incoming).clone()),
+                }
+            }
+            (Some(existing), None) => Some(existing.clone()),
+            (None, Some(incoming)) => Some(incoming.clone()),
+            (None, None) => None,
+        }
     }
 
     /// Mark a streaming task as completed.

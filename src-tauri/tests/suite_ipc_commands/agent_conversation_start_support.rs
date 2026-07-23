@@ -22,7 +22,7 @@ pub(super) use ralphx_lib::application::standalone_workspace::{
     sweep_orphaned_standalone_workspaces,
 };
 pub(super) use ralphx_lib::application::startup_background::AgentConversationAutomationRunStarter;
-pub(super) use ralphx_lib::application::{AppPaths, AppState, TeamService, TeamStateTracker};
+pub(super) use ralphx_lib::application::{AppPaths, AppState};
 pub(super) use ralphx_lib::commands::conversation_folder_reference_commands::{
     add_conversation_folder_reference_for_state, AddConversationFolderReferenceInput,
 };
@@ -109,9 +109,6 @@ pub(super) fn build_app(
     mock_builder()
         .manage(state)
         .manage(execution_state)
-        .manage(Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        ))))
         .build(mock_context(noop_assets()))
         .expect("mock app should build")
 }
@@ -384,11 +381,9 @@ pub(super) async fn start_with_app(
 ) -> Result<AgentConversationStartResult, String> {
     let state = app.state::<AppState>();
     let execution_state = app.state::<Arc<ExecutionState>>();
-    let team_service = app.state::<Arc<TeamService>>();
     AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
-        team_service: Some(team_service.inner().clone()),
         app_handle: app.handle().clone(),
     })
     .start(input)

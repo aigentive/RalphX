@@ -61,7 +61,11 @@ const entry: ManualRoleCatalogEntry = {
   },
 };
 
-function renderEditor(onUpdate = vi.fn(), forcePersonaAccessOpen = false) {
+function renderEditor(
+  onUpdate = vi.fn(),
+  forcePersonaAccessOpen = false,
+  onManagePersonas = vi.fn(),
+) {
   render(
     <AgentRoleDefaultEditor
       entry={entry}
@@ -73,7 +77,7 @@ function renderEditor(onUpdate = vi.fn(), forcePersonaAccessOpen = false) {
       personas={[]}
       forcePersonaAccessOpen={forcePersonaAccessOpen}
       onUpdate={onUpdate}
-      onManagePersonas={vi.fn()}
+      onManagePersonas={onManagePersonas}
     />,
   );
   return onUpdate;
@@ -84,11 +88,11 @@ describe("AgentRoleDefaultEditor", () => {
     const user = userEvent.setup();
     const onUpdate = renderEditor();
 
-    fireEvent.keyDown(screen.getByRole("combobox", { name: "Edit provider" }), {
-      key: "ArrowDown",
-      code: "ArrowDown",
-    });
-    await user.click(screen.getByRole("option", { name: "Codex" }));
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await user.click(
+      screen.getByTestId("agent-composer-runtime-provider-menu-trigger"),
+    );
+    await user.click(screen.getByTestId("agent-composer-runtime-provider-codex"));
 
     expect(onUpdate).toHaveBeenCalledWith({
       ...value,
@@ -102,31 +106,44 @@ describe("AgentRoleDefaultEditor", () => {
     const user = userEvent.setup();
     renderEditor();
 
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Capabilities,/ }));
     expect(screen.getByText("Team is currently unavailable")).toBeInTheDocument();
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Speed,/ }));
     expect(screen.getByText("Fast is unavailable for this model")).toBeInTheDocument();
-    const speedDescription = screen.getByRole("combobox", { name: "Edit speed" })
-      .getAttribute("aria-describedby");
-    expect(speedDescription).not.toBeNull();
-    expect(document.getElementById(speedDescription ?? ""))
-      .toHaveTextContent("Fast is unavailable for this model");
-    expect(screen.queryByRole("combobox", { name: "Edit persona" })).not.toBeInTheDocument();
+    const personaTrigger = screen.getByTestId(
+      "agent-composer-runtime-persona-menu-trigger",
+    );
+    fireEvent.pointerMove(personaTrigger);
+    expect(
+      screen.getByText("Personas are unavailable for this role"),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Persona & access" }));
-
-    expect(screen.getByText("Personas are unavailable for this role")).toBeInTheDocument();
-    const persona = screen.getByRole("combobox", { name: "Edit persona" });
-    expect(persona).toBeDisabled();
-    expect(document.getElementById(persona.getAttribute("aria-describedby") ?? ""))
-      .toHaveTextContent("Personas are unavailable for this role");
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Permissions" }));
     expect(screen.getByRole("combobox", { name: "Edit approval policy" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Edit sandbox mode" })).toBeInTheDocument();
+  });
+
+  it("keeps persona management reachable when the backend disables selection", async () => {
+    const user = userEvent.setup();
+    const onManagePersonas = vi.fn();
+    renderEditor(vi.fn(), false, onManagePersonas);
+
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.pointerMove(
+      screen.getByTestId("agent-composer-runtime-persona-menu-trigger"),
+    );
+    await user.click(screen.getByRole("button", { name: "Manage personas" }));
+
+    expect(onManagePersonas).toHaveBeenCalledTimes(1);
   });
 
   it("keeps diagnostic-forced persona and access controls visibly open", async () => {
     const user = userEvent.setup();
     renderEditor(vi.fn(), true);
 
-    const disclosure = screen.getByRole("button", { name: "Persona & access" });
+    const disclosure = screen.getByRole("button", { name: "Permissions" });
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
     expect(disclosure).toHaveAttribute("aria-disabled", "true");
 

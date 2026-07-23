@@ -633,6 +633,14 @@ jobs:
         run: npm run build
         working-directory: ${{ matrix.package_dir }}
 
+      - name: Verify generated plugin output is committed
+        run: |
+          if [[ -n "$(git status --short -- build)" ]]; then
+            git status --short -- build
+            exit 1
+          fi
+        working-directory: ${{ matrix.package_dir }}
+
       - name: Run plugin tests
         run: npm test
         working-directory: ${{ matrix.package_dir }}

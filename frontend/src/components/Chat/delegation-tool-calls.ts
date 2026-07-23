@@ -36,6 +36,9 @@ export interface DelegationMetadata {
   totalTokens?: number;
   estimatedUsd?: number;
   durationMs?: number;
+  startedAt?: number;
+  completedAt?: number;
+  clockSource?: "delegated-run" | "delegation-job";
   textOutput?: string;
 }
 
@@ -93,6 +96,9 @@ export interface DelegationLifecycleTaskPayload {
   estimated_usd?: number;
   text_output?: string;
   error?: string;
+  started_at?: string;
+  completed_at?: string;
+  timestamp_provenance?: "delegated_run" | "delegation_job";
   seq?: number;
 }
 
@@ -189,6 +195,12 @@ function deriveDurationMs(startedAt?: string, completedAt?: string): number | un
   return completed - started;
 }
 
+export function parseDelegationTimestamp(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function normalizeStatus(status: string | undefined): string | undefined {
   switch (status) {
     case "running":
@@ -277,6 +289,11 @@ export function buildDelegationLifecycleTask(
 ): StreamingTask {
   const delegated = payload.delegated_job_id != null || payload.subagent_type === "delegated";
   const status = lifecycleStatus(payload.status) ?? existing?.status ?? "running";
+  const startedAt = parseDelegationTimestamp(payload.started_at) ?? existing?.startedAt ?? now;
+  const parsedCompletedAt = parseDelegationTimestamp(payload.completed_at) ?? existing?.completedAt;
+  const completedAt = parsedCompletedAt != null && parsedCompletedAt >= startedAt
+    ? parsedCompletedAt
+    : undefined;
   return {
     ...(existing ?? {
       toolUseId: payload.tool_use_id,
@@ -285,10 +302,11 @@ export function buildDelegationLifecycleTask(
       subagentType: payload.subagent_type ?? (delegated ? "delegated" : "unknown"),
       model: payload.model ?? payload.effective_model_id ?? payload.logical_model ?? "unknown",
       status: "running",
-      startedAt: now,
+      startedAt,
       childToolCalls: [],
     }),
     status,
+    startedAt,
     ...(payload.tool_name != null ? { toolName: payload.tool_name } : {}),
     ...(payload.description != null ? { description: payload.description } : {}),
     ...(payload.subagent_type != null ? { subagentType: payload.subagent_type } : {}),
@@ -334,7 +352,14 @@ export function buildDelegationLifecycleTask(
         ? { textOutput: payload.error }
         : {}),
     ...(payload.seq != null ? { seq: payload.seq } : {}),
-    ...(isTerminalStatus(status) ? { completedAt: existing?.completedAt ?? now } : {}),
+    ...(payload.timestamp_provenance === "delegated_run"
+      ? { clockSource: "delegated-run" as const }
+      : payload.timestamp_provenance === "delegation_job"
+        ? { clockSource: "delegation-job" as const }
+        : existing?.clockSource
+          ? { clockSource: existing.clockSource }
+          : { clockSource: "local-fallback" as const }),
+    ...(isTerminalStatus(status) ? { completedAt: completedAt ?? now } : {}),
   };
 }
 
@@ -483,6 +508,9 @@ function mergeDelegationTasks(
     ?? candidates.map((task) => task.toolName).find((name) => isDelegationStartToolCall(name))
     ?? merged.toolName;
   const startedAt = Math.min(...candidates.map((task) => task.startedAt));
+  const clockSource = candidates.find((task) => task.clockSource === "delegated-run")?.clockSource
+    ?? candidates.find((task) => task.clockSource === "delegation-job")?.clockSource
+    ?? candidates.find((task) => task.clockSource)?.clockSource;
   const seq = terminal?.seq
     ?? candidates.reduce<number | undefined>(
       (latest, task) => task.seq == null ? latest : Math.max(latest ?? task.seq, task.seq),
@@ -514,6 +542,7 @@ function mergeDelegationTasks(
     toolName: providerToolName,
     description,
     startedAt,
+    ...(clockSource ? { clockSource } : {}),
     childToolCalls: [...childCalls.values()],
     status: terminal?.status ?? merged.status,
     ...(seq != null ? { seq } : {}),
@@ -638,6 +667,9 @@ export function mergeDelegationTaskMetadata(
     ...(metadata.totalTokens != null ? { totalTokens: metadata.totalTokens } : {}),
     ...(metadata.estimatedUsd != null ? { estimatedUsd: metadata.estimatedUsd } : {}),
     ...(metadata.durationMs != null ? { totalDurationMs: metadata.durationMs } : {}),
+    ...(metadata.startedAt != null ? { startedAt: metadata.startedAt } : {}),
+    ...(metadata.completedAt != null ? { completedAt: metadata.completedAt } : {}),
+    ...(metadata.clockSource != null ? { clockSource: metadata.clockSource } : {}),
     ...(metadata.textOutput ? { textOutput: metadata.textOutput } : {}),
     ...(terminal ? { completedAt: task.completedAt ?? completedAt } : {}),
   };
@@ -653,6 +685,11 @@ export function extractDelegationMetadata(
     getFirstRecord(resultRecord, "delegated_status", "delegatedStatus");
   const latestRun = getFirstRecord(delegatedStatus, "latest_run", "latestRun");
   const session = getFirstRecord(delegatedStatus, "session");
+  const providerHarness =
+    getFirstString(latestRun, "harness")
+    ?? getFirstString(resultRecord, "harness")
+    ?? getFirstString(session, "harness")
+    ?? getFirstString(argRecord, "harness", "harness_override", "harnessOverride");
 
   const inputTokens = getFirstNumber(latestRun, "input_tokens", "inputTokens")
     ?? getFirstNumber(resultRecord, "input_tokens", "inputTokens");
@@ -669,16 +706,25 @@ export function extractDelegationMetadata(
     "cacheReadTokens",
   ) ?? getFirstNumber(resultRecord, "cache_read_tokens", "cacheReadTokens");
 
-  const totalTokens =
-    inputTokens != null ||
-    outputTokens != null ||
-    cacheCreationTokens != null ||
-    cacheReadTokens != null
-      ? (inputTokens ?? 0)
-        + (outputTokens ?? 0)
-        + (cacheCreationTokens ?? 0)
-        + (cacheReadTokens ?? 0)
-      : undefined;
+  const authoritativeTotalTokens =
+    getFirstNumber(latestRun, "processed_tokens", "processedTokens")
+    ?? getFirstNumber(
+      resultRecord,
+      "total_tokens",
+      "totalTokens",
+      "processed_tokens",
+      "processedTokens",
+    );
+  const hasDetailedTokens = inputTokens != null || outputTokens != null;
+  const totalTokens = authoritativeTotalTokens
+    ?? (hasDetailedTokens && providerHarness === "codex"
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : hasDetailedTokens && providerHarness === "claude"
+        ? (inputTokens ?? 0)
+          + (outputTokens ?? 0)
+          + (cacheCreationTokens ?? 0)
+          + (cacheReadTokens ?? 0)
+        : undefined);
 
   const textOutput =
     getFirstString(resultRecord, "content")
@@ -699,11 +745,6 @@ export function extractDelegationMetadata(
     ?? getFirstString(argRecord, "agent_name", "agentName");
   const prompt = getFirstString(argRecord, "prompt");
   const title = getFirstString(argRecord, "title");
-  const providerHarness =
-    getFirstString(latestRun, "harness")
-    ?? getFirstString(resultRecord, "harness")
-    ?? getFirstString(session, "harness")
-    ?? getFirstString(argRecord, "harness", "harness_override", "harnessOverride");
   const providerSessionId =
     getFirstString(latestRun, "provider_session_id", "providerSessionId")
     ?? getFirstString(resultRecord, "provider_session_id", "providerSessionId")
@@ -753,6 +794,14 @@ export function extractDelegationMetadata(
     getFirstString(latestRun, "completed_at", "completedAt")
       ?? getFirstString(resultRecord, "completed_at", "completedAt"),
   );
+  const startedAt = parseDelegationTimestamp(
+    getFirstString(latestRun, "started_at", "startedAt")
+      ?? getFirstString(resultRecord, "started_at", "startedAt"),
+  );
+  const completedAt = parseDelegationTimestamp(
+    getFirstString(latestRun, "completed_at", "completedAt")
+      ?? getFirstString(resultRecord, "completed_at", "completedAt"),
+  );
 
   return {
     ...(jobId ? { jobId } : {}),
@@ -780,6 +829,9 @@ export function extractDelegationMetadata(
     ...(totalTokens != null ? { totalTokens } : {}),
     ...(estimatedUsd != null ? { estimatedUsd } : {}),
     ...(durationMs != null ? { durationMs } : {}),
+    ...(startedAt != null ? { startedAt } : {}),
+    ...(completedAt != null ? { completedAt } : {}),
+    ...(startedAt != null ? { clockSource: latestRun ? "delegated-run" as const : "delegation-job" as const } : {}),
     ...(textOutput ? { textOutput } : {}),
   };
 }

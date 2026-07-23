@@ -130,9 +130,7 @@ test.describe("Settings Dialog", () => {
     await settingsPage.settingsDialog
       .getByRole("button", { name: "Edit Edit" })
       .click();
-    await expect(
-      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
-    ).toBeVisible();
+    await expect(settingsPage.agentRuntimePicker).toBeVisible();
     await settingsPage.waitForAnimations();
 
     await expect(settingsPage.settingsDialog).toHaveScreenshot(
@@ -158,9 +156,7 @@ test.describe("Settings Dialog", () => {
     await settingsPage.settingsDialog
       .getByRole("button", { name: "Edit Edit" })
       .click();
-    await expect(
-      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
-    ).toBeVisible();
+    await expect(settingsPage.agentRuntimePicker).toBeVisible();
     await settingsPage.waitForAnimations();
     await expect(
       settingsPage.settingsDialog
@@ -169,12 +165,8 @@ test.describe("Settings Dialog", () => {
         .getByRole("button")
         .first(),
     ).toHaveAttribute("aria-expanded", "true");
-    await expect(
-      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
-    ).toBeVisible();
-    await settingsPage.settingsDialog
-      .getByRole("combobox", { name: "Edit provider" })
-      .scrollIntoViewIfNeeded();
+    await expect(settingsPage.agentRuntimePicker).toBeVisible();
+    await settingsPage.agentRuntimePicker.scrollIntoViewIfNeeded();
 
     await expect(settingsPage.settingsDialog).toHaveScreenshot(
       "settings-dialog-section-agents-narrow.png",

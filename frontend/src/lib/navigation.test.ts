@@ -84,8 +84,6 @@ function makeSession(id: string, projectId: string): IdeationSession {
     archivedAt: null,
     convertedAt: null,
     verificationStatus: "unverified",
-    teamMode: null,
-    teamConfig: null,
   };
 }
 

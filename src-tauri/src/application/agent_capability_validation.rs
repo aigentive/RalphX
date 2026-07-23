@@ -9,7 +9,6 @@ use crate::domain::entities::CoordinationMode;
 pub enum AgentCapabilityError {
     TeamDisabled,
     WorkflowsDisabled,
-    LegacyReadOnly,
     UltraRequiresCodex,
     UltraUnavailable,
 }
@@ -24,10 +23,6 @@ impl fmt::Display for AgentCapabilityError {
             Self::WorkflowsDisabled => write!(
                 f,
                 "Workflows are disabled. Enable them in Settings > Capabilities or switch this conversation to Defaults."
-            ),
-            Self::LegacyReadOnly => write!(
-                f,
-                "Legacy Claude team mode is read-only; switch this conversation to Defaults or Team."
             ),
             Self::UltraRequiresCodex => {
                 write!(f, "Codex Ultra is available only with the Codex provider.")
@@ -50,7 +45,6 @@ pub fn validate_agent_capability(
 ) -> Result<(), AgentCapabilityError> {
     match mode {
         CoordinationMode::Solo => Ok(()),
-        CoordinationMode::LegacyClaudeTeam => Err(AgentCapabilityError::LegacyReadOnly),
         CoordinationMode::RxNativeTeam if !gate.team_enabled() => {
             Err(AgentCapabilityError::TeamDisabled)
         }

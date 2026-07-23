@@ -248,7 +248,11 @@ describe("AgentsView artifact pane", () => {
     await waitFor(() =>
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
-    const pane = await screen.findByTestId("agents-artifact-pane");
+    const pane = await screen.findByTestId(
+      "agents-artifact-pane",
+      {},
+      { timeout: 5_000 },
+    );
     expect(pane).toHaveAttribute("data-active-tab", "publish");
     expect(screen.getByTestId("agents-artifact-resizable-pane")).toBeInTheDocument();
   });

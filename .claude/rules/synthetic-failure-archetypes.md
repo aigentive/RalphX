@@ -8,7 +8,6 @@ paths:
   - "src-tauri/src/http_server/**"
   - "frontend/frontend/src/hooks/useAgentEvents.ts"
   - "frontend/src/components/Chat/**"
-  - "agents/ralphx-ideation-team-lead/**"
   - "agents/ralphx-ideation/**"
   - "agents/ralphx-ideation-specialist-*/**"
   - "agents/ralphx-general-explorer/**"

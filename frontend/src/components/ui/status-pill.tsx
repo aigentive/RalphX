@@ -44,7 +44,7 @@ const TONE_STYLES: Record<StatusPillTone, StatusPillToneStyle> = {
     borderColor: "var(--border-default, #33333b)",
   },
   accent: {
-    color: "var(--accent-primary, #ff6b35)",
+    color: "var(--accent-primary)",
     backgroundColor: "var(--accent-muted, #3a2a22)",
     borderColor: "var(--accent-border, #59392a)",
   },

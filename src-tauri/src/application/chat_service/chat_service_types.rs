@@ -49,21 +49,6 @@ pub mod events {
     /// Agent hook event (started/completed/block)
     pub const AGENT_HOOK: &str = "agent:hook";
 
-    // Team events (agent teams collaboration)
-    /// Team created event
-    pub const TEAM_CREATED: &str = "team:created";
-    /// Teammate spawned event
-    pub const TEAM_TEAMMATE_SPAWNED: &str = "team:teammate_spawned";
-    /// Teammate idle event
-    pub const TEAM_TEAMMATE_IDLE: &str = "team:teammate_idle";
-    /// Teammate shutdown event
-    pub const TEAM_TEAMMATE_SHUTDOWN: &str = "team:teammate_shutdown";
-    /// Team message event (teammate → teammate or user → team)
-    pub const TEAM_MESSAGE: &str = "team:message";
-    /// Team disbanded event
-    pub const TEAM_DISBANDED: &str = "team:disbanded";
-    /// Team cost update event
-    pub const TEAM_COST_UPDATE: &str = "team:cost_update";
     /// Team artifact created event
     pub const TEAM_ARTIFACT_CREATED: &str = "team:artifact_created";
 }
@@ -724,6 +709,12 @@ pub struct AgentTaskStartedPayload {
     pub approval_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,
@@ -776,6 +767,12 @@ pub struct AgentTaskCompletedPayload {
     pub approval_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -856,81 +853,6 @@ pub struct AgentHookPayload {
 // ============================================================================
 // Team Event Payloads
 // ============================================================================
-
-/// Payload for team:created event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamCreatedPayload {
-    pub team_name: String,
-    pub context_id: String,
-    pub context_type: String,
-}
-
-/// Payload for team:teammate_spawned event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamTeammateSpawnedPayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub color: String,
-    pub model: String,
-    pub role: String,
-    pub context_type: String,
-    pub context_id: String,
-    /// Conversation ID for this teammate's persisted chat history
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conversation_id: Option<String>,
-}
-
-/// Payload for team:teammate_idle event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamTeammateIdlePayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:teammate_shutdown event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamTeammateShutdownPayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:message event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamMessagePayload {
-    pub team_name: String,
-    pub message_id: String,
-    pub sender: String,
-    pub recipient: Option<String>,
-    pub content: String,
-    pub message_type: String,
-    pub timestamp: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:disbanded event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamDisbandedPayload {
-    pub team_name: String,
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// Payload for team:cost_update event
-#[derive(Debug, Clone, Serialize)]
-pub struct TeamCostUpdatePayload {
-    pub team_name: String,
-    pub teammate_name: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub estimated_usd: f64,
-    pub context_type: String,
-    pub context_id: String,
-}
 
 /// Payload for team:artifact_created event
 #[derive(Debug, Clone, Serialize)]

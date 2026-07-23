@@ -151,16 +151,11 @@ pub fn run() {
     let execution_state = Arc::new(commands::ExecutionState::new());
     // Create active project state for per-project execution scoping (Phase 82)
     let active_project_state = Arc::new(commands::ActiveProjectState::new());
-    // Create team state tracker for agent teams (must be managed early for HTTP server)
-    let team_tracker = application::TeamStateTracker::new();
-
     // Clone for usage inside setup closure before closure borrows them
     let init_execution_state = Arc::clone(&execution_state);
     let startup_execution_state = Arc::clone(&execution_state);
     let startup_active_project_state = Arc::clone(&active_project_state);
     let http_execution_state = Arc::clone(&execution_state);
-    let http_team_tracker = team_tracker.clone();
-    let service_team_tracker = team_tracker.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -188,7 +183,6 @@ pub fn run() {
                         commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
                             app_state: app_state.clone(),
                             execution_state,
-                            team_service: None,
                         },
                     )
                         as Arc<
@@ -196,13 +190,10 @@ pub fn run() {
                         >)
                 }),
                 Arc::clone(&http_execution_state),
-                http_team_tracker.clone(),
-                service_team_tracker.clone(),
             )
         })
         .manage(execution_state)
         .manage(active_project_state)
-        .manage(team_tracker)
         .invoke_handler(crate::register_tauri_commands!())
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

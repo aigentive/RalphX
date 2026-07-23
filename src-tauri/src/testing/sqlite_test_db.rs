@@ -144,8 +144,8 @@ impl SqliteTestDb {
     pub fn insert_ideation_session(&self, session: IdeationSession) -> IdeationSession {
         self.with_connection(|conn| {
             conn.execute(
-                "INSERT INTO ideation_sessions (id, project_id, title, title_source, status, plan_artifact_id, inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, updated_at, archived_at, converted_at, team_mode, team_config_json, verification_status, source_project_id, source_session_id, session_purpose)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                "INSERT INTO ideation_sessions (id, project_id, title, title_source, status, plan_artifact_id, inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, updated_at, archived_at, converted_at, verification_status, source_project_id, source_session_id, session_purpose)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 rusqlite::params![
                     session.id.as_str(),
                     session.project_id.as_str(),
@@ -160,8 +160,6 @@ impl SqliteTestDb {
                     session.updated_at.to_rfc3339(),
                     session.archived_at.as_ref().map(|dt| dt.to_rfc3339()),
                     session.converted_at.as_ref().map(|dt| dt.to_rfc3339()),
-                    session.team_mode.as_deref(),
-                    session.team_config_json.as_deref(),
                     session.verification_status.to_string(),
                     session.source_project_id.as_deref(),
                     session.source_session_id.as_deref(),

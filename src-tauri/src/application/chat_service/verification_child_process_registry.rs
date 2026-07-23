@@ -10,10 +10,6 @@ use std::sync::Mutex;
 
 use crate::domain::services::kill_process;
 
-#[cfg(test)]
-#[path = "verification_child_process_registry_tests.rs"]
-mod tests;
-
 /// Registry that stores the OS PID of each active verification child process.
 ///
 /// Registration: at spawn time, if `session_purpose == SessionPurpose::Verification`.
@@ -39,6 +35,17 @@ impl VerificationChildProcessRegistry {
             "VerificationChildProcessRegistry: registered"
         );
         pids.insert(context_id.to_string(), pid);
+    }
+
+    /// Remove an entry only if it still points at the process being cleaned up.
+    pub fn remove_if_pid(&self, context_id: &str, expected_pid: u32) -> bool {
+        let mut pids = self.pids.lock().unwrap();
+        if pids.get(context_id) == Some(&expected_pid) {
+            pids.remove(context_id);
+            true
+        } else {
+            false
+        }
     }
 
     /// Remove the registry entry for `context_id` and send SIGTERM to the stored PID.

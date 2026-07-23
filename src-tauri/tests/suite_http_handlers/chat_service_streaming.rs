@@ -5,7 +5,6 @@ use ralphx_lib::application::chat_service::{
     StreamOutcome, StreamTimeoutConfig,
 };
 use ralphx_lib::domain::entities::{AgentRunUsage, ChatContextType};
-use ralphx_lib::infrastructure::agents::claude::stream_timeouts;
 use ralphx_lib::utils::secret_redactor::redact;
 use std::time::Duration;
 
@@ -387,23 +386,6 @@ fn test_timeout_config_project_uses_defaults() {
 }
 
 #[test]
-fn test_timeout_config_with_teammate() {
-    let config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation)
-        .with_teammate("researcher".to_string(), "#ff6b35".to_string());
-    assert_eq!(config.teammate_name, Some("researcher".to_string()));
-    assert_eq!(config.teammate_color, Some("#ff6b35".to_string()));
-    // Timeouts should be unchanged
-    assert_eq!(config.line_read_timeout, Duration::from_secs(600));
-}
-
-#[test]
-fn test_timeout_config_default_no_teammate() {
-    let config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation);
-    assert!(config.teammate_name.is_none());
-    assert!(config.teammate_color.is_none());
-}
-
-#[test]
 fn test_timeout_config_ordering() {
     // Both review and merge match default line_read_timeout (600s) to prevent false kills
     // during long cargo test runs. Review parse_stall is still tighter than default.
@@ -465,11 +447,11 @@ fn test_payloads_serialize_with_seq() {
         description: Some("test".to_string()),
         subagent_type: Some("bash".to_string()),
         model: Some("sonnet".to_string()),
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,
         delegated_agent_run_id: None,
+        teammate_name: None,
         provider_harness: None,
         provider_session_id: None,
         upstream_provider: None,
@@ -480,6 +462,9 @@ fn test_payloads_serialize_with_seq() {
         effective_effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
         context_id: "task-1".to_string(),
@@ -500,11 +485,11 @@ fn test_payloads_serialize_with_seq() {
         total_duration_ms: Some(1000),
         total_tokens: Some(100),
         total_tool_use_count: Some(5),
-        teammate_name: None,
         delegated_job_id: None,
         delegated_session_id: None,
         delegated_conversation_id: None,
         delegated_agent_run_id: None,
+        teammate_name: None,
         provider_harness: None,
         provider_session_id: None,
         upstream_provider: None,
@@ -515,6 +500,9 @@ fn test_payloads_serialize_with_seq() {
         effective_effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
         input_tokens: None,
         output_tokens: None,
         cache_creation_tokens: None,
@@ -558,57 +546,6 @@ fn test_seq_values_are_monotonic() {
     assert!(seq3 > seq2, "seq must be strictly increasing");
     assert!(seq4 > seq3, "seq must be strictly increasing");
 }
-
-// --- Dynamic team_mode upgrade tests ---
-
-#[test]
-fn test_timeout_config_dynamic_team_upgrade() {
-    // Scenario: lead spawned with team_mode=false (default), then TeamCreated is detected.
-    // The timeout should upgrade from default (600s) to team (3600s).
-    let mut config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation);
-    assert_eq!(
-        config.line_read_timeout,
-        Duration::from_secs(600),
-        "Before upgrade: should use default timeout"
-    );
-
-    // Simulate the dynamic upgrade that happens in process_stream_background
-    // when StreamEvent::TeamCreated is detected and team_mode was false
-    let cfg = stream_timeouts();
-    config.line_read_timeout = Duration::from_secs(cfg.team_line_read_secs);
-    config.parse_stall_timeout = Duration::from_secs(cfg.team_parse_stall_secs);
-
-    assert_eq!(
-        config.line_read_timeout,
-        Duration::from_secs(3600),
-        "After upgrade: should use team timeout"
-    );
-    assert_eq!(
-        config.parse_stall_timeout,
-        Duration::from_secs(3600),
-        "After upgrade: parse stall should also use team timeout"
-    );
-}
-
-#[test]
-fn test_timeout_config_team_mode_true_already_upgraded() {
-    // When team_mode=true at spawn time, timeout is already set correctly.
-    // The dynamic upgrade should be a no-op (guarded by `if !team_mode`).
-    let mut config = StreamTimeoutConfig::for_context(&ChatContextType::Ideation);
-    let cfg = stream_timeouts();
-
-    // Simulate team_mode=true at spawn time
-    config.line_read_timeout = Duration::from_secs(cfg.team_line_read_secs);
-    config.parse_stall_timeout = Duration::from_secs(cfg.team_parse_stall_secs);
-
-    let before = config.line_read_timeout;
-
-    // Even if we re-apply, the value stays the same
-    config.line_read_timeout = Duration::from_secs(cfg.team_line_read_secs);
-    assert_eq!(config.line_read_timeout, before, "Should be idempotent");
-}
-
-// --- ActiveTaskTracker tests ---
 
 #[test]
 fn test_active_task_tracker_empty_by_default() {
@@ -838,6 +775,7 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         content_blocks: vec![],
         session_id: Some("session-1".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 2,
         completion_applied: false,
@@ -863,6 +801,7 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         content_blocks: vec![],
         session_id: Some("session-2".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 0,
         completion_applied: false,
@@ -896,6 +835,7 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
         completion_applied: false,
@@ -915,6 +855,7 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 0,
         completion_applied: false,
@@ -981,6 +922,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         content_blocks: vec![],
         session_id: Some("session-abc".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
         completion_applied: false,
@@ -1001,6 +943,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         content_blocks: vec![],
         session_id: Some("session-abc".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
         completion_applied: false,
@@ -1028,6 +971,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
         completion_applied: false,
@@ -1284,6 +1228,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         content_blocks: vec![],
         session_id: Some("sess-1".to_string()),
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 1,
         completion_applied: false,
@@ -1307,6 +1252,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: String::new(),
         turns_finalized: 0,
         completion_applied: false,
@@ -1328,6 +1274,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         content_blocks: vec![],
         session_id: None,
         usage: AgentRunUsage::default(),
+        usage_provenance: None,
         stderr_text: "error: session expired".to_string(),
         turns_finalized: 1,
         completion_applied: false,

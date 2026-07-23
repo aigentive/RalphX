@@ -1706,30 +1706,6 @@ describe("useChatEvents", () => {
     });
   });
 
-  describe("agent:usage_updated", () => {
-    it("invalidates conversation stats without refetching the transcript during a live turn", () => {
-      const props = makeProps();
-      renderAndClear(props);
-
-      act(() => {
-        fireEvent("agent:usage_updated", {
-          conversation_id: CONV_ID,
-          context_id: CTX_ID,
-        });
-      });
-
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["chat", "conversation-stats", CONV_ID],
-      });
-      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
-        queryKey: ["chat", "conversations", CONV_ID],
-      });
-      expect(mockInvalidateQueries).not.toHaveBeenCalledWith({
-        queryKey: ["chat", "conversations", CONV_ID, "history"],
-      });
-    });
-  });
-
   // --------------------------------------------------------------------------
   // 6. Error clears streaming tool calls
   // --------------------------------------------------------------------------
@@ -1868,7 +1844,20 @@ describe("useChatEvents", () => {
     });
 
     it("should enrich delegated streaming tasks from backend-native agent:task_started payloads", () => {
-      const props = makeProps();
+      const prevMap = new Map<string, StreamingTask>([
+        ["toolu_delegate_live_001", {
+          toolUseId: "toolu_delegate_live_001",
+          toolName: "delegate_start",
+          description: "Delegated specialist",
+          subagentType: "delegated",
+          model: "unknown",
+          status: "running",
+          startedAt: 12345,
+          delegatedJobId: "job-live-123",
+          childToolCalls: [],
+        }],
+      ]);
+      const props = makeProps({ streamingTasks: prevMap });
       renderAndClear(props);
 
       act(() => {
@@ -1894,19 +1883,6 @@ describe("useChatEvents", () => {
 
       expect(props.setStreamingTasks).toHaveBeenCalledTimes(1);
 
-      const prevMap = new Map<string, StreamingTask>([
-        ["toolu_delegate_live_001", {
-          toolUseId: "toolu_delegate_live_001",
-          toolName: "delegate_start",
-          description: "Delegated specialist",
-          subagentType: "delegated",
-          model: "unknown",
-          status: "running",
-          startedAt: 12345,
-          delegatedJobId: "job-live-123",
-          childToolCalls: [],
-        }],
-      ]);
       const nextMap = executeUpdater<Map<string, StreamingTask>>(
         props.setStreamingTasks,
         prevMap,

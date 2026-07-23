@@ -34,7 +34,7 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
 };
 use crate::domain::services::github_service::{
-    PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
+    PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
 };
 use crate::domain::services::GithubServiceTrait;
 use crate::infrastructure::memory::{
@@ -120,6 +120,16 @@ fn open_sync_state(branch_name: &str, head_sha: &str) -> PrSyncState {
         base_ref_name: "main".to_string(),
         head_ref_oid: Some(head_sha.to_string()),
         base_ref_oid: None,
+    }
+}
+
+fn healthy_pr_health(branch_name: &str, head_sha: &str) -> PrHealth {
+    PrHealth {
+        sync_state: open_sync_state(branch_name, head_sha),
+        review_decision: None,
+        checks: Vec::new(),
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
     }
 }
 
@@ -320,6 +330,13 @@ fn schedule_skip_reason_covers_recoverable_and_terminal_workspace_shapes() {
         None
     );
 
+    workspace.publication_push_status = Some("refreshed".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&workspace),
+        None
+    );
+
     workspace.publication_push_status = Some("pushed".to_string());
     assert_eq!(
         pr_supervision_recovery_schedule_skip_reason(&workspace),
@@ -390,6 +407,8 @@ async fn scheduled_recovery_claims_conversation_once_until_background_task_finis
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
     github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
     let deps = recovery_deps(
         workspace_repo,
         project_repo,
@@ -475,6 +494,79 @@ async fn recovers_blocked_pr_supervision_when_remote_head_matches_local_workspac
         .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].step, "pr_supervision_recovered");
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn matching_remote_head_with_failing_health_stays_blocked_and_never_reports_recovered() {
+    let (_temp_dir, project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-unresolved-health").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    let sync_state = open_sync_state(&workspace.branch_name, &head_sha);
+    github.will_return_sync_state(sync_state.clone());
+    github.state().fetch_pr_health_result = Some(Ok(PrHealth {
+        sync_state,
+        review_decision: None,
+        checks: vec![PrHealthCheck {
+            name: "Rust Tests".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: None,
+        }],
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }));
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&workspace_repo)
+                as Arc<dyn AgentConversationWorkspaceRepository>,
+            project_repo,
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new())
+                as Arc<dyn PlanBranchRepository>,
+            github,
+            pr_poller_registry: Some(Arc::clone(&registry)),
+            transition_service: None,
+            chat_service: Some(Arc::new(MockChatService::new())),
+            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            app_handle: None,
+            pr_fix_review_publish_resumer: None,
+        },
+        conversation_id,
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("inspect unresolved PR health");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("pr_issue_unresolved")
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .all(|event| event.step != "pr_supervision_recovered"));
     assert!(registry.is_agent_workspace_polling(&conversation_id));
     registry.stop_agent_workspace_polling(&conversation_id);
 }
@@ -761,7 +853,7 @@ async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
 }
 
 #[tokio::test]
-async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
+async fn recovers_stale_needs_agent_repair_without_rearming_pr_supervision() {
     let (_temp_dir, project, mut workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-needs-agent").await;
     let conversation_id = workspace.conversation_id.clone();
@@ -802,19 +894,16 @@ async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
-            pr_number: 257,
-            head_sha,
-        }
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
     );
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
         .unwrap()
         .expect("workspace should still exist");
-    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
-    assert_eq!(updated.publication_pr_status.as_deref(), Some("open"));
-    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("failed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
     let events = workspace_repo
         .list_publication_events(&conversation_id)
         .await
@@ -822,7 +911,7 @@ async fn recovers_stale_needs_agent_repair_before_rearming_pr_supervision() {
     assert!(events
         .iter()
         .any(|event| event.step == "stale_repair_recovered"));
-    assert!(events
+    assert!(!events
         .iter()
         .any(|event| event.step == "pr_supervision_recovered"));
     assert!(!events.iter().any(|event| {
@@ -1495,6 +1584,8 @@ async fn startup_recovery_processes_candidates_and_skips_blocked_projects() {
     ));
     let github = Arc::new(MockGithubService::new());
     github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
 
     recover_recent_agent_workspace_pr_supervision_on_startup(
         recovery_deps(
@@ -1560,14 +1651,15 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
     workspace.publication_pr_number = Some(681);
     workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/681".to_string());
     workspace.publication_pr_status = Some("open".to_string());
-    workspace.publication_push_status = Some("failed".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
     workspace.auto_publish_enabled = true;
     workspace.pr_autofix_enabled = true;
     workspace.pr_auto_merge_desired = true;
     workspace.pr_auto_merge_current = Some(true);
-    workspace.pr_supervision_status = Some("blocked".to_string());
-    workspace.pr_supervision_summary =
-        Some("Recovered stale PR autofix state; no active fixer run is running.".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR fix verified; Workspace Review must finish before publishing resumes.".to_string(),
+    );
 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
@@ -1602,6 +1694,13 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
 
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut terminal_repair_run = AgentRun::new(conversation_id.clone());
+    terminal_repair_run.complete();
+    agent_run_repo
+        .create(terminal_repair_run)
+        .await
+        .expect("terminal repair run should persist");
     let publish_resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
         &workspace_repo,
     )));
@@ -1617,7 +1716,7 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
             pr_poller_registry: None,
             transition_service: None,
             chat_service: None,
-            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_run_repo,
             app_handle: None,
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -1667,14 +1766,15 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
     workspace.publication_pr_number = Some(681);
     workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/681".to_string());
     workspace.publication_pr_status = Some("open".to_string());
-    workspace.publication_push_status = Some("failed".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
     workspace.auto_publish_enabled = true;
     workspace.pr_autofix_enabled = true;
     workspace.pr_auto_merge_desired = true;
     workspace.pr_auto_merge_current = Some(true);
-    workspace.pr_supervision_status = Some("blocked".to_string());
-    workspace.pr_supervision_summary =
-        Some("Recovered stale PR autofix state; no active fixer run is running.".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR fix verified; Workspace Review must finish before publishing resumes.".to_string(),
+    );
 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
@@ -1708,6 +1808,13 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
         .expect("seed stale passed review monitor");
 
     let github = Arc::new(MockGithubService::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut terminal_repair_run = AgentRun::new(conversation_id.clone());
+    terminal_repair_run.complete();
+    agent_run_repo
+        .create(terminal_repair_run)
+        .await
+        .expect("terminal repair run should persist");
     let publish_resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
         &workspace_repo,
     )));
@@ -1722,7 +1829,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
             pr_poller_registry: None,
             transition_service: None,
             chat_service: None,
-            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_run_repo,
             app_handle: None,
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -1736,7 +1843,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("worktree_dirty")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
     );
     assert_eq!(
         publish_resumer.calls(),
@@ -1752,8 +1859,18 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
         !events
             .iter()
             .any(|event| event.step == "pr_autofix_workspace_review_passed"),
-        "stale review handoff must remain unclosed until a current review passes"
+        "stale review handoff must not authorize publication"
     );
+    assert!(events
+        .iter()
+        .any(|event| event.step == "pr_autofix_workspace_review_aborted"));
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(workspace.pr_supervision_status.as_deref(), Some("blocked"));
 }
 
 #[tokio::test]
@@ -1775,6 +1892,8 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
     github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
 
     recover_recent_agent_workspace_pr_supervision_on_startup(
         AgentWorkspacePrSupervisionRecoveryDeps {
@@ -1809,4 +1928,89 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
         .expect("plan branch should exist");
     assert_eq!(updated_plan.pr_push_status, PlanPrPushStatus::Pushed);
     assert_eq!(github.state().check_pr_sync_state_calls, 1);
+}
+
+#[tokio::test]
+async fn pending_review_handoff_without_monitor_aborts_fail_closed_without_publishing() {
+    // Falsification coverage for the crash window between the PR-fix completion
+    // CAS (which persists `refreshed`/`reviewing` plus the pending
+    // `pr_autofix_workspace_review` event atomically) and the Workspace Review
+    // start that would create the review monitor. Recovery must not publish and
+    // must not invoke the review-publish resumer; it aborts the orphaned
+    // handoff to `failed`/`blocked` so a fresh repair attempt stays possible.
+    let (_temp_dir, project, mut workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-review-pending-no-monitor").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha.clone());
+    workspace.publication_push_status = Some("refreshed".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR fix verified; Workspace Review must finish before publishing resumes.".to_string(),
+    );
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_workspace_review",
+            "pending",
+            "PR fix verified; Workspace Review handoff is pending.",
+            Some("workspace_review_pending".to_string()),
+        ))
+        .await
+        .expect("seed pending review handoff event");
+
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    let resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
+        &workspace_repo,
+    )));
+
+    let mut deps = recovery_deps(
+        Arc::clone(&workspace_repo),
+        project_repo,
+        Arc::clone(&github),
+        agent_run_repo,
+    );
+    deps.pr_fix_review_publish_resumer =
+        Some(Arc::clone(&resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>);
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("recovery should settle without error");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
+    );
+    assert_eq!(resumer.calls(), 0);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.step == "pr_autofix_workspace_review_aborted"));
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event.step.as_str(),
+            "published" | "pr_autofix_workspace_review_passed" | "pr_supervision_recovered"
+        )
+    }));
 }

@@ -15,8 +15,8 @@ You work in the original agent conversation workspace and report completion back
 5. Keep changes focused on the PR blocker. Do not broaden the work into unrelated cleanup.
 6. Stay on the current workspace branch unless `update_agent_workspace_from_base` tells you that RalphX has routed base-update repair elsewhere.
 7. Stage only files involved in the PR fix. Do not use blanket staging such as `git add .`.
-8. Commit completed fixes before calling `complete_agent_workspace_pr_fix`.
-9. If the fix cannot be completed safely, call `complete_agent_workspace_pr_fix` with a concise `blocker` instead of leaving the supervision flow ambiguous.
+8. Commit completed fixes, finish or abort any merge/rebase, verify the worktree is clean, and read the exact full HEAD with `git rev-parse HEAD` before reporting success.
+9. Call `complete_agent_workspace_pr_fix` with that exact HEAD as `fix_commit_sha`. If the fix cannot be completed safely, call it with a concise `blocker` and no fabricated SHA instead of leaving the supervision flow ambiguous.
 </rules>
 
 <workflow>
@@ -27,8 +27,8 @@ You work in the original agent conversation workspace and report completion back
 3. If the PR is behind its base or mergeability indicates stale-base risk, call `update_agent_workspace_from_base(conversation_id)` before editing. If RalphX reports that repair was routed, stop and summarize that status.
 4. Reproduce or inspect the failing check/review concern with the narrowest practical local validation.
 5. Make the smallest safe fix, then run focused validation for the touched area.
-6. Commit the fix when the worktree is clean enough to publish.
-7. Call `complete_agent_workspace_pr_fix(conversation_id, summary)` so RalphX can publish the branch and resume supervision.
+6. Commit the fix, then verify `git status --porcelain=v1` is empty and no merge or rebase remains in progress.
+7. Call `complete_agent_workspace_pr_fix(conversation_id, summary, fix_commit_sha)` with the exact full committed HEAD so RalphX can verify the repair, run required Workspace Review, and resume publication.
 8. If completion reports `publish_failed` for an agent-fixable issue, continue repairing and call it again after committing the new fix. If it reports an operational blocker, report that blocker.
 </workflow>
 

@@ -57,7 +57,6 @@ import {
   AskUserQuestionArgs,
   ProposePlanModeArgs,
 } from "./question-handler.js";
-import { handleRequestTeamPlan, RequestTeamPlanArgs } from "./team-plan-handler.js";
 import {
   buildArtifactMutationTransportHeaders,
   hydrateRalphxRuntimeEnvFromCli,
@@ -474,47 +473,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // Special handling for request_team_plan (two-phase: register POST + long-poll GET)
-  if (name === "request_team_plan") {
-    // Still check authorization (must be in agent's allowlist)
-    if (!isToolAllowed(name)) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `ERROR: Tool "${name}" is not available for agent type "${AGENT_TYPE}".`,
-          },
-        ],
-        isError: true,
-      };
-    }
-    const leadSessionId = globalThis.process.env.RALPHX_LEAD_SESSION_ID;
-    try {
-      const result = await handleRequestTeamPlan(
-        args as unknown as RequestTeamPlanArgs,
-        RALPHX_CONTEXT_TYPE ?? "ideation",
-        RALPHX_CONTEXT_ID ?? "",
-        leadSessionId,
-        runtimeContext
-      );
-      safeTrace("tool.success", {
-        name,
-        result: summarizeResult(result),
-      });
-      return result;
-    } catch (error) {
-      safeTrace("tool.error", {
-        name,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        content: [{ type: "text", text: `ERROR: Unexpected error: ${message}` }],
-        isError: true,
-      };
-    }
-  }
-
   // Authorization check (defense in depth)
   if (!isToolAllowed(name)) {
     const allowedNames = getAllowedToolNames();
@@ -792,26 +750,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callTauri("mark_issue_addressed", { issue_id, resolution_notes, attempt_number });
     } else if (name === "create_child_session") {
       // POST /api/create_child_session
-      const { parent_session_id, title, description, inherit_context, initial_prompt, team_mode, team_config, purpose } = args as {
+      const { parent_session_id, title, description, inherit_context, initial_prompt, purpose } = args as {
         parent_session_id: string;
         title?: string;
         description?: string;
         inherit_context?: boolean;
         initial_prompt?: string;
-        team_mode?: string;
-        team_config?: {
-          max_teammates?: number;
-          model_ceiling?: string;
-          budget_limit?: number;
-          composition_mode?: string;
-        };
         purpose?: string;
       };
       // Propagate external trigger context from the spawning process env var.
       // RALPHX_IS_EXTERNAL_TRIGGER=1 is set by the backend when the agent was spawned
       // in response to an external MCP message (is_external_mcp=true).
       const is_external_trigger = process.env.RALPHX_IS_EXTERNAL_TRIGGER === "1";
-      result = await callTauri("create_child_session", { parent_session_id, title, description, inherit_context, initial_prompt, team_mode, team_config, purpose, is_external_trigger });
+      result = await callTauri("create_child_session", { parent_session_id, title, description, inherit_context, initial_prompt, purpose, is_external_trigger });
     } else if (name === "create_followup_session") {
       // POST /api/create_child_session with first-class execution/review provenance
       const {
@@ -1062,17 +1013,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // POST /api/projects/:project_id/analysis
       const { project_id, entries } = args as { project_id: string; entries: unknown[] };
       result = await callTauri(`projects/${project_id}/analysis`, { entries });
-    } else if (name === "request_teammate_spawn") {
-      // POST /api/team/spawn
-      const { role, prompt, model, tools, mcp_tools, preset } = args as {
-        role: string;
-        prompt: string;
-        model: string;
-        tools: string[];
-        mcp_tools: string[];
-        preset?: string;
-      };
-      result = await callTauri("team/spawn", { role, prompt, model, tools, mcp_tools, preset });
     } else if (name === "create_team_artifact") {
       // POST /api/team/artifact
       const { session_id, title, content, artifact_type, related_artifact_id } = args as {
@@ -1088,29 +1028,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content,
         artifact_type,
         related_artifact_id,
+      }, {
+        headers: {
+          ...(buildArtifactMutationTransportHeaders(runtimeContext) ?? {}),
+          "x-ralphx-agent-type": AGENT_TYPE,
+        },
       });
     } else if (name === "get_team_artifacts") {
       // GET /api/team/artifacts/:session_id
       const { session_id } = args as { session_id: string };
       result = await callTauriGet(`team/artifacts/${session_id}`);
-    } else if (name === "get_team_session_state") {
-      // GET /api/team/session_state/:session_id
-      const { session_id } = args as { session_id: string };
-      result = await callTauriGet(`team/session_state/${session_id}`);
-    } else if (name === "save_team_session_state") {
-      // POST /api/team/session_state
-      const { session_id, team_composition, phase, artifact_ids } = args as {
-        session_id: string;
-        team_composition: unknown[];
-        phase: string;
-        artifact_ids?: string[];
-      };
-      result = await callTauri("team/session_state", {
-        session_id,
-        team_composition,
-        phase,
-        artifact_ids,
-      });
     } else if (name === "execution_complete") {
       // POST /api/execution/tasks/:task_id/complete
       const { task_id, summary, test_result } = args as {

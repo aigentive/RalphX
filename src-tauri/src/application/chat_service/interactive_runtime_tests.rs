@@ -410,54 +410,47 @@ fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
     let edit_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         None,
         Some(AgentConversationWorkspaceMode::Edit),
     );
     let chat_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         None,
         Some(AgentConversationWorkspaceMode::Chat),
     );
     let ideation_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         None,
         Some(AgentConversationWorkspaceMode::Ideation),
     );
     let plan_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         None,
         Some(AgentConversationWorkspaceMode::Plan),
     );
     let review_pr_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         None,
         Some(AgentConversationWorkspaceMode::ReviewPr),
     );
     let automation_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         None,
         Some(AgentConversationWorkspaceMode::Automation),
     );
     let persona_builder_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         None,
         Some(AgentConversationWorkspaceMode::PersonaBuilder),
     );
     let default_project_agent =
-        resolve_agent_name_for_send(&ChatContextType::Project, None, false, None, None);
+        resolve_agent_name_for_send(&ChatContextType::Project, None, None, None);
 
     assert_eq!(edit_agent, AGENT_GENERAL_WORKER);
     assert_eq!(chat_agent, AGENT_GENERAL_EXPLORER);
@@ -489,8 +482,7 @@ fn ideation_session_send_ignores_linked_workspace_mode_for_agent_selection() {
             "ideation session must not inherit {workspace_mode:?} from a linked workspace"
         );
 
-        let agent =
-            resolve_agent_name_for_send(&ChatContextType::Ideation, None, false, None, mode);
+        let agent = resolve_agent_name_for_send(&ChatContextType::Ideation, None, None, mode);
         assert_eq!(
             agent, AGENT_ORCHESTRATOR_IDEATION,
             "ideation session linked to a {workspace_mode:?} workspace must use the orchestrator"
@@ -509,7 +501,7 @@ fn ideation_session_send_preserves_plan_mode_profile() {
     );
     assert_eq!(mode, Some(AgentConversationWorkspaceMode::Plan));
 
-    let agent = resolve_agent_name_for_send(&ChatContextType::Ideation, None, false, None, mode);
+    let agent = resolve_agent_name_for_send(&ChatContextType::Ideation, None, None, mode);
     assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION);
 }
 
@@ -527,7 +519,7 @@ fn project_workspace_conversation_send_keeps_mode_agent() {
         Some(AgentConversationWorkspaceMode::Ideation)
     );
     let project_agent =
-        resolve_agent_name_for_send(&ChatContextType::Project, None, false, None, ideation_mode);
+        resolve_agent_name_for_send(&ChatContextType::Project, None, None, ideation_mode);
     assert_eq!(project_agent, AGENT_CHAT_PROJECT);
 
     // A conversation-level agent_mode override still wins for Project context.
@@ -768,7 +760,6 @@ fn explicit_agent_override_wins_over_workspace_mode() {
     let agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
         None,
-        false,
         Some("custom-agent"),
         Some(AgentConversationWorkspaceMode::Edit),
     );

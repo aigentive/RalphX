@@ -10,7 +10,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ideation_commands::{
     migrate_proposals_impl, CreateCrossProjectSessionInput, MigrateProposalsInput,
 };
@@ -35,13 +35,9 @@ use tower_http::cors::{Any, CorsLayer};
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -49,13 +45,9 @@ async fn setup_test_state() -> HttpServerState {
 async fn setup_sqlite_apply_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_for_apply_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

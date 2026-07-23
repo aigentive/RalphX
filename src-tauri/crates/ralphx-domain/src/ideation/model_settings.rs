@@ -60,8 +60,7 @@ impl FromStr for ModelLevel {
 /// Used to select the correct model setting column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelBucket {
-    /// Primary ideation agents: ralphx-ideation, ralphx-ideation-team-lead,
-    /// ideation-team-member, ralphx-ideation-readonly
+    /// Primary ideation agents: ralphx-ideation and ralphx-ideation-readonly.
     Primary,
     /// Verification agents: ralphx-plan-verifier
     Verifier,
@@ -69,7 +68,7 @@ pub enum ModelBucket {
     /// Not mapped by model_bucket_for_agent() — resolved separately at runtime.
     VerifierSubagent,
     /// Cap-resolution bucket for subagents spawned by the main ideation path
-    /// (ralphx-ideation, ralphx-ideation-team-lead).
+    /// (`ralphx-ideation`).
     /// Not mapped by model_bucket_for_agent() — resolved separately at runtime.
     IdeationSubagent,
 }
@@ -83,7 +82,7 @@ pub struct IdeationModelSettings {
     pub primary_model: ModelLevel,
     pub verifier_model: ModelLevel,
     pub verifier_subagent_model: ModelLevel,
-    /// Cap for subagents spawned by the main ideation path (ralphx-ideation, ralphx-ideation-team-lead).
+    /// Cap for subagents spawned by the main ideation path (`ralphx-ideation`).
     /// Defaults to `Inherit` (fall through to next resolution level).
     pub ideation_subagent_model: ModelLevel,
     pub updated_at: DateTime<Utc>,
@@ -107,9 +106,6 @@ pub fn model_bucket_for_agent(agent_name: &str) -> Option<ModelBucket> {
     match normalized {
         "ralphx-ideation"
         | "orchestrator-ideation"
-        | "ralphx-ideation-team-lead"
-        | "ideation-team-lead"
-        | "ideation-team-member"
         | "ralphx-ideation-readonly"
         | "orchestrator-ideation-readonly" => Some(ModelBucket::Primary),
         "ralphx-plan-verifier" | "plan-verifier" => Some(ModelBucket::Verifier),

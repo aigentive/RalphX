@@ -14,7 +14,6 @@ function createMockSession(
     sessionId: "session-abc",
     title: "Test Ideation",
     elapsedSeconds: 120,
-    teamMode: null,
     isGenerating: true,
     ...overrides,
   };
@@ -127,22 +126,4 @@ describe("IdeationSessionCard", () => {
     });
   });
 
-  describe("team mode", () => {
-    it("displays team mode badge when teamMode provided", () => {
-      render(
-        <IdeationSessionCard
-          session={createMockSession({ teamMode: "team" })}
-        />
-      );
-      expect(screen.getByText("team")).toBeInTheDocument();
-    });
-
-    it("does not display team mode badge when teamMode is null", () => {
-      render(
-        <IdeationSessionCard session={createMockSession({ teamMode: null })} />
-      );
-      // No team mode badge text beyond the existing "Ideation" badge
-      expect(screen.queryByText("team")).not.toBeInTheDocument();
-    });
-  });
 });

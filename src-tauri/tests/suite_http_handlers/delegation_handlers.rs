@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
     AgentHarnessKind, AgentProviderSettings, LogicalEffort, ManualRoleDefault, ManualServiceTier,
@@ -109,7 +109,7 @@ if [ -n "$RALPHX_TEST_CODEX_CWD_PATH" ]; then
 fi
 printf '%s\n' '{"type":"thread.started","thread_id":"delegation-thread-1"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"MOCK_COMPLETION"}}'
-printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7},"last_token_usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}}'
 exit 0
 fi
 
@@ -249,13 +249,9 @@ async fn seed_bound_active_project_persona(
 
 fn build_state(app_state: Arc<AppState>) -> HttpServerState {
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -2384,6 +2380,12 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
     assert_eq!(payload.logical_effort.as_deref(), Some("high"));
     assert_eq!(payload.approval_policy.as_deref(), Some("never"));
     assert_eq!(payload.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(payload.started_at.as_deref(), Some("2026-04-12T10:00:00Z"));
+    assert_eq!(payload.completed_at, None);
+    assert_eq!(
+        payload.timestamp_provenance.as_deref(),
+        Some("delegation_job")
+    );
     assert_eq!(payload.conversation_id, "parent-conv-1");
     assert_eq!(payload.context_type, "ideation");
     assert_eq!(payload.context_id, "parent-session-1");
@@ -2443,10 +2445,11 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
         effective_effort: Some("high".to_string()),
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
-        input_tokens: Some(100),
-        output_tokens: Some(40),
-        cache_creation_tokens: Some(6),
-        cache_read_tokens: Some(2),
+        input_tokens: Some(9_116_803),
+        output_tokens: Some(25_881),
+        cache_creation_tokens: Some(0),
+        cache_read_tokens: Some(8_837_504),
+        processed_tokens: Some(9_142_684),
         estimated_usd: Some(0.12),
     };
 
@@ -2465,7 +2468,7 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     assert_eq!(payload.agent_id.as_deref(), Some("run-2"));
     assert_eq!(payload.status.as_deref(), Some("failed"));
     assert_eq!(payload.total_duration_ms, Some(5000));
-    assert_eq!(payload.total_tokens, Some(148));
+    assert_eq!(payload.total_tokens, Some(9_142_684));
     assert_eq!(payload.delegated_job_id.as_deref(), Some("job-456"));
     assert_eq!(
         payload.delegated_session_id.as_deref(),
@@ -2489,11 +2492,20 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     assert_eq!(payload.effective_effort.as_deref(), Some("high"));
     assert_eq!(payload.approval_policy.as_deref(), Some("never"));
     assert_eq!(payload.sandbox_mode.as_deref(), Some("danger-full-access"));
-    assert_eq!(payload.input_tokens, Some(100));
-    assert_eq!(payload.output_tokens, Some(40));
-    assert_eq!(payload.cache_creation_tokens, Some(6));
-    assert_eq!(payload.cache_read_tokens, Some(2));
+    assert_eq!(payload.input_tokens, Some(9_116_803));
+    assert_eq!(payload.output_tokens, Some(25_881));
+    assert_eq!(payload.cache_creation_tokens, Some(0));
+    assert_eq!(payload.cache_read_tokens, Some(8_837_504));
     assert_eq!(payload.estimated_usd, Some(0.12));
+    assert_eq!(payload.started_at.as_deref(), Some("2026-04-12T10:00:00Z"));
+    assert_eq!(
+        payload.completed_at.as_deref(),
+        Some("2026-04-12T10:00:05Z")
+    );
+    assert_eq!(
+        payload.timestamp_provenance.as_deref(),
+        Some("delegated_run")
+    );
     assert_eq!(
         payload.text_output.as_deref(),
         Some("Delegated reviewer found a blocking issue")

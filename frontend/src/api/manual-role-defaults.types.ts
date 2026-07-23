@@ -11,6 +11,16 @@ export interface ManualRoleDefault {
   sandboxMode: string | null;
 }
 
+export type ManualRoleRuntimeSelection = Pick<
+  ManualRoleDefault,
+  | "provider"
+  | "model"
+  | "effort"
+  | "serviceTier"
+  | "coordinationMode"
+  | "personaId"
+>;
+
 export interface ManualRoleControlOption {
   value: string;
   enabled: boolean;

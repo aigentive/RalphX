@@ -28,8 +28,6 @@ pub struct IdeationRecoveryMetadata {
     pub proposal_count: u32,
     /// Parent session ID for linked sessions (follow-on work)
     pub parent_session_id: Option<String>,
-    /// Team mode: "solo", "research", or "debate"
-    pub team_mode: Option<String>,
     /// Human-readable session title
     pub session_title: Option<String>,
     /// Verification status before recovery (e.g., "unverified", "reviewing", "verified")
@@ -184,11 +182,6 @@ pub fn build_rehydration_prompt(
             .as_ref()
             .map(|id| format!("\n  <parent_session_id>{}</parent_session_id>", id))
             .unwrap_or_default();
-        let team_mode = meta
-            .team_mode
-            .as_ref()
-            .map(|tm| format!("\n  <team_mode>{}</team_mode>", tm))
-            .unwrap_or_default();
         let session_title = meta
             .session_title
             .as_ref()
@@ -212,14 +205,13 @@ pub fn build_rehydration_prompt(
         format!(
             "<ideation_state>\n\
              <session_status>{}</session_status>\n\
-             <proposal_count>{}</proposal_count>{}{}{}{}{}\n\
+             <proposal_count>{}</proposal_count>{}{}{}{}\n\
              </ideation_state>\n\
              <recovery_note>Session recovered from local storage. Phase 0 may call get_session_messages for additional context if needed.</recovery_note>\n",
             meta.session_status,
             meta.proposal_count,
             plan_artifact,
             parent_session,
-            team_mode,
             session_title,
             verification_note
         )

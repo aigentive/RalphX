@@ -3,6 +3,7 @@ use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef}
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRunActionKind, AgentRunAttribution, AgentRunUsage, IdeationSessionId,
+    ProviderUsageSnapshot, UsageCapture, UsageProvenance,
 };
 use crate::testing::SqliteTestDb;
 use std::collections::HashSet;
@@ -520,6 +521,95 @@ async fn test_update_usage_persists_fields() {
     assert_eq!(retrieved.cache_creation_tokens, Some(9));
     assert_eq!(retrieved.cache_read_tokens, Some(18));
     assert_eq!(retrieved.estimated_usd, Some(0.0042));
+}
+
+#[tokio::test]
+async fn replace_usage_capture_round_trips_raw_snapshot_and_clears_stale_normalized_fields() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.replace_usage_capture(
+        &run_id,
+        &UsageCapture::normalized(
+            AgentRunUsage {
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                cache_creation_tokens: None,
+                cache_read_tokens: Some(80),
+                estimated_usd: Some(0.01),
+            },
+            UsageProvenance::ProviderTurnDelta,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let raw = ProviderUsageSnapshot::from_usage(AgentRunUsage {
+        input_tokens: Some(500),
+        output_tokens: Some(40),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(450),
+        estimated_usd: Some(0.03),
+    });
+    repo.replace_usage_capture(&run_id, &UsageCapture::cumulative_baseline(raw.clone()))
+        .await
+        .unwrap();
+
+    let retrieved = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(retrieved.input_tokens, None);
+    assert_eq!(retrieved.output_tokens, None);
+    assert_eq!(retrieved.cache_read_tokens, None);
+    assert_eq!(retrieved.estimated_usd, None);
+    assert_eq!(
+        retrieved.usage_provenance,
+        Some(UsageProvenance::CumulativeBaselineOnly)
+    );
+    assert_eq!(retrieved.raw_usage_snapshot, Some(raw));
+}
+
+#[tokio::test]
+async fn replace_usage_capture_rejects_missing_sqlite_run() {
+    let (_db, repo) = setup_repo();
+    let missing_id = AgentRunId::new();
+
+    let error = repo
+        .replace_usage_capture(
+            &missing_id,
+            &UsageCapture::normalized(
+                AgentRunUsage {
+                    input_tokens: Some(10),
+                    ..AgentRunUsage::default()
+                },
+                UsageProvenance::ProviderTurnDelta,
+            ),
+        )
+        .await
+        .expect_err("a missing canonical run must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn get_by_id_rejects_unknown_non_null_usage_provenance() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_runs SET usage_provenance = 'future_capture_kind' WHERE id = ?1",
+            [run_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    repo.get_by_id(&run_id)
+        .await
+        .expect_err("unknown provenance must not be reclassified as legacy data");
 }
 
 // ─── get_latest / get_active ─────────────────────────────────────────────────

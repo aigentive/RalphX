@@ -13,7 +13,7 @@ use ralphx_lib::application::{
     agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
     },
-    AppState, InteractiveProcessKey, TeamService, TeamStateTracker,
+    AppState, InteractiveProcessKey,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
@@ -51,26 +51,18 @@ use tempfile::TempDir;
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
 
 fn setup_test_state_with_app_state(app_state: Arc<AppState>) -> HttpServerState {
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -3791,13 +3783,9 @@ async fn test_list_sessions_response_includes_updated_at() {
 async fn setup_sqlite_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

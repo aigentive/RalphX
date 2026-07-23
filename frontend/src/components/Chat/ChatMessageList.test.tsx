@@ -946,6 +946,57 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getAllByText("Delegated task card")).toHaveLength(1);
   });
 
+  it("keeps the persisted delegate card visible when suppressing the current-turn snapshot", () => {
+    const delegatedTask = {
+      toolUseId: "delegate-live",
+      toolName: "delegate_start",
+      description: "Inspect the chat pipeline",
+      subagentType: "delegated",
+      model: "gpt-5.6",
+      status: "running" as const,
+      startedAt: 1,
+      childToolCalls: [],
+      delegatedJobId: "job-live",
+    };
+
+    renderList({
+      messages: [
+        {
+          id: "parent-request",
+          role: "user",
+          content: "Inspect the chat pipeline",
+          createdAt: "2026-07-15T10:00:00Z",
+        },
+        {
+          id: "provider-snapshot",
+          role: "assistant",
+          content: "",
+          createdAt: "2026-07-15T10:00:01Z",
+        },
+        {
+          id: "persisted-delegate-lifecycle",
+          role: "assistant",
+          content: "Persisted delegate lifecycle",
+          createdAt: "2026-07-15T10:00:02Z",
+          timelineSequence: 20,
+          contentBlocks: [{
+            type: "tool_use",
+            id: "delegate-live",
+            name: "delegate_start",
+            arguments: { prompt: "Inspect the chat pipeline" },
+            result: { job_id: "job-live", status: "running" },
+          }],
+        },
+      ],
+      isAgentRunning: true,
+      streamingContentBlocks: [{ type: "task", toolUseId: delegatedTask.toolUseId }],
+      streamingTasks: new Map([[delegatedTask.toolUseId, delegatedTask]]),
+    });
+
+    expect(screen.queryByText("provider-snapshot")).not.toBeInTheDocument();
+    expect(screen.getByText("Persisted delegate lifecycle")).toBeInTheDocument();
+  });
+
   it("folds non-adjacent terminal delegation rows into the original start row", () => {
     const messages: ChatMessageData[] = [
       {

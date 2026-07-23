@@ -53,13 +53,6 @@ export const IdeationSessionSchema = z.object({
   updatedAt: z.string().datetime(),
   archivedAt: z.string().datetime().nullable(),
   convertedAt: z.string().datetime().nullable(),
-  teamMode: z.enum(["solo", "research", "debate"]).nullable().optional(),
-  teamConfig: z.object({
-    maxTeammates: z.number().min(2).max(8),
-    modelCeiling: z.string(),
-    budgetLimit: z.number().nullable().optional(),
-    compositionMode: z.enum(["dynamic", "constrained"]),
-  }).nullable().optional(),
   verificationStatus: VerificationStatusSchema.optional().default("unverified"),
   verificationInProgress: z.boolean().optional().default(false),
   gapScore: z.number().int().nullable().optional(),
@@ -420,27 +413,6 @@ export type TaskProposalList = z.infer<typeof TaskProposalListSchema>;
 
 export const ChatMessageListSchema = z.array(ChatMessageSchema);
 export type ChatMessageList = z.infer<typeof ChatMessageListSchema>;
-
-// ============================================================================
-// Team Mode (for agent team ideation sessions)
-// ============================================================================
-
-export const TEAM_MODE_VALUES = ["solo", "research", "debate"] as const;
-export const TeamModeSchema = z.enum(TEAM_MODE_VALUES);
-export type TeamMode = z.infer<typeof TeamModeSchema>;
-
-export const COMPOSITION_MODE_VALUES = ["dynamic", "constrained"] as const;
-export const CompositionModeSchema = z.enum(COMPOSITION_MODE_VALUES);
-export type CompositionMode = z.infer<typeof CompositionModeSchema>;
-
-export const TeamConfigSchema = z.object({
-  maxTeammates: z.number().min(2).max(8).default(5),
-  modelCeiling: z.string().default("sonnet"),
-  budgetLimit: z.number().optional(),
-  compositionMode: CompositionModeSchema.default("dynamic"),
-});
-
-export type TeamConfig = z.infer<typeof TeamConfigSchema>;
 
 // ============================================================================
 // Paginated Session Group Types (server-side grouping and pagination)

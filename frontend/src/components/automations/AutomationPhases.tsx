@@ -125,7 +125,7 @@ export function AutomationPhaseProgress({
             className="h-full rounded-full transition-[width] duration-300"
             style={{
               width: `${percent}%`,
-              backgroundColor: "var(--accent-primary, #ff6a35)",
+              backgroundColor: "var(--accent-primary)",
             }}
           />
         </div>

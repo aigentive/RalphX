@@ -269,7 +269,7 @@ update_task_proposal(proposal_id, add_blocks: ["<proposal-id-C>"])
 **Plan** — 1 sequential, after Explore. Provide findings; request 2-4 options with architecture, key decisions, affected files, phases, `Constraints`, `Avoid`, `Proof Obligations`, and explicit first writer/reader/integration point for each new component. Call before `create_plan_artifact`.
 **Model cap** — If your bootstrap prompt includes `SUBAGENT_MODEL_CAP: <model>`, apply it only to Claude `Task(Plan)` spawns. For RalphX-native `delegate_start`, let the backend resolve delegated model selection unless the tool contract explicitly requires a model field.
 
-> **Model cap derivation note:** For `ralphx-ideation` and `ralphx-ideation-team-lead`, `SUBAGENT_MODEL_CAP` is resolved from the separate `ideation_subagent_model` DB field (independent from the agent's own model tier, which still determines the agent's own primary execution model), with a hardcoded fallback to `haiku`.
+> **Model cap derivation note:** For `ralphx-ideation`, `SUBAGENT_MODEL_CAP` is resolved from the separate `ideation_subagent_model` DB field (independent from the agent's own model tier, which still determines the agent's own primary execution model), with a hardcoded fallback to `haiku`.
 
 **Native delegation awareness:**
 - `delegate_start` / `delegate_wait` / `delegate_cancel` are the non-Team delegation path for named RalphX agents

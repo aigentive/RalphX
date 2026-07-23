@@ -719,6 +719,7 @@ pub async fn spawn_project_analyzer(
             Some(project_id),
             Some(working_directory.as_path()),
             RoutingRole::UtilityProjectAnalyzer,
+            None,
             agent_names::AGENT_PROJECT_ANALYZER,
             "project analyzer",
             None,
@@ -1247,7 +1248,6 @@ pub async fn resume_deferred_git_startup(
         crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
             app_state: state.inner().clone(),
             execution_state: Arc::clone(&execution_state),
-            team_service: None,
         },
     )
         as Arc<

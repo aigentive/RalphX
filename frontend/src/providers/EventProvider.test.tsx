@@ -56,6 +56,10 @@ vi.mock("@/hooks/useNotificationToasts", () => ({
   useNotificationToasts: vi.fn(),
 }));
 
+vi.mock("@/hooks/useUsageStatsEvents", () => ({
+  useUsageStatsEvents: vi.fn(),
+}));
+
 // Mock the event bus module
 vi.mock("@/lib/event-bus", () => ({
   createEventBus: vi.fn(() => ({
@@ -72,6 +76,7 @@ import {
 } from "@/hooks/useEvents";
 import { useNotificationEvents } from "@/hooks/useNotificationEvents";
 import { useNotificationToasts } from "@/hooks/useNotificationToasts";
+import { useUsageStatsEvents } from "@/hooks/useUsageStatsEvents";
 
 describe("EventProvider", () => {
   beforeEach(() => {
@@ -136,6 +141,11 @@ describe("EventProvider", () => {
   it("should call useNotificationToasts hook", () => {
     render(<EventProvider><div>Test</div></EventProvider>);
     expect(useNotificationToasts).toHaveBeenCalled();
+  });
+
+  it("should call useUsageStatsEvents hook", () => {
+    render(<EventProvider><div>Test</div></EventProvider>);
+    expect(useUsageStatsEvents).toHaveBeenCalled();
   });
 
   it("should render multiple children", () => {

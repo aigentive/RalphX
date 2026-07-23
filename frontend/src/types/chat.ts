@@ -25,7 +25,6 @@ export const VIEW_TYPE_VALUES = [
   "activity",
   "insights",
   "task_detail",
-  "team",
 ] as const;
 
 export const ViewTypeSchema = z.enum(VIEW_TYPE_VALUES);

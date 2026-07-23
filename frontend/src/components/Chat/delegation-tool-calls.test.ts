@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractDelegationMetadata,
+  buildDelegationLifecycleTask,
   mergeDelegationContentBlocks,
   mergeDelegationToolCalls,
   normalizeDelegationTranscriptPayload,
@@ -208,6 +209,30 @@ describe("delegation-tool-calls", () => {
     ]);
   });
 
+  it("uses backend clocks for recovered lifecycle cards and clamps invalid terminal pairs", () => {
+    const recovered = buildDelegationLifecycleTask({
+      tool_use_id: "delegate-job:job-1",
+      delegated_job_id: "job-1",
+      status: "running",
+      started_at: "2026-07-23T00:00:00Z",
+      timestamp_provenance: "delegated_run",
+    }, undefined, 999_999);
+    const invalidTerminal = buildDelegationLifecycleTask({
+      tool_use_id: "delegate-job:job-1",
+      delegated_job_id: "job-1",
+      status: "completed",
+      started_at: "invalid",
+      completed_at: "also-invalid",
+    }, recovered, 1_000_000);
+
+    expect(recovered).toMatchObject({
+      startedAt: Date.parse("2026-07-23T00:00:00Z"),
+      clockSource: "delegated-run",
+    });
+    expect(invalidTerminal.completedAt).toBe(1_000_000);
+    expect(invalidTerminal.startedAt).toBe(recovered.startedAt);
+  });
+
   it("folds delegate_wait into the original delegate_start tool call", () => {
     const startToolCall = makeToolCall("delegate_start", {
       id: "toolu-delegate-start",
@@ -256,6 +281,28 @@ describe("delegation-tool-calls", () => {
     expect(mergedMetadata.textOutput).toBe("Delegated review finished");
     expect(mergedMetadata.providerHarness).toBe("codex");
     expect(mergedMetadata.totalTokens).toBe(165);
+  });
+
+  it("uses the backend processed total for delegated Codex runs", () => {
+    const metadata = extractDelegationMetadata(
+      { job_id: "job-codex-usage" },
+      makeDelegationResult({
+        job_id: "job-codex-usage",
+        status: "completed",
+        total_tokens: 9_142_684,
+        delegated_status: {
+          latest_run: {
+            harness: "codex",
+            input_tokens: 9_116_803,
+            output_tokens: 25_881,
+            cache_read_tokens: 8_837_504,
+            processed_tokens: 9_142_684,
+          },
+        },
+      }),
+    );
+
+    expect(metadata.totalTokens).toBe(9_142_684);
   });
 
   it("folds namespaced delegate_wait into the original namespaced delegate_start tool call", () => {

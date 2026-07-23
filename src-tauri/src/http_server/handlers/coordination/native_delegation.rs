@@ -5,20 +5,7 @@ fn delegated_event_seq() -> u64 {
 }
 
 fn delegated_total_tokens(latest_run: &DelegatedRunSummary) -> Option<u64> {
-    let total = latest_run.input_tokens.unwrap_or(0)
-        + latest_run.output_tokens.unwrap_or(0)
-        + latest_run.cache_creation_tokens.unwrap_or(0)
-        + latest_run.cache_read_tokens.unwrap_or(0);
-    if total == 0
-        && latest_run.input_tokens.is_none()
-        && latest_run.output_tokens.is_none()
-        && latest_run.cache_creation_tokens.is_none()
-        && latest_run.cache_read_tokens.is_none()
-    {
-        None
-    } else {
-        Some(total)
-    }
+    latest_run.processed_tokens
 }
 
 fn delegated_duration_ms(latest_run: &DelegatedRunSummary) -> Option<u64> {
@@ -47,7 +34,6 @@ fn cached_streaming_task_from_started_payload(
             .or_else(|| payload.logical_model.clone()),
         status: "running".to_string(),
         agent_id: payload.delegated_agent_run_id.clone(),
-        teammate_name: payload.teammate_name.clone(),
         delegated_job_id: payload.delegated_job_id.clone(),
         delegated_session_id: payload.delegated_session_id.clone(),
         delegated_conversation_id: payload.delegated_conversation_id.clone(),
@@ -71,6 +57,10 @@ fn cached_streaming_task_from_started_payload(
         cache_read_tokens: None,
         estimated_usd: None,
         text_output: None,
+        started_at: payload.started_at.clone(),
+        completed_at: payload.completed_at.clone(),
+        timestamp_provenance: payload.timestamp_provenance.clone(),
+        seq: Some(payload.seq),
     }
 }
 
@@ -93,7 +83,6 @@ fn cached_streaming_task_from_completed_payload(
             .agent_id
             .clone()
             .or_else(|| payload.delegated_agent_run_id.clone()),
-        teammate_name: payload.teammate_name.clone(),
         delegated_job_id: payload.delegated_job_id.clone(),
         delegated_session_id: payload.delegated_session_id.clone(),
         delegated_conversation_id: payload.delegated_conversation_id.clone(),
@@ -117,6 +106,10 @@ fn cached_streaming_task_from_completed_payload(
         cache_read_tokens: payload.cache_read_tokens,
         estimated_usd: payload.estimated_usd,
         text_output: payload.text_output.clone(),
+        started_at: payload.started_at.clone(),
+        completed_at: payload.completed_at.clone(),
+        timestamp_provenance: payload.timestamp_provenance.clone(),
+        seq: Some(payload.seq),
     }
 }
 
@@ -187,6 +180,9 @@ pub fn build_delegated_task_started_payload(
             .sandbox_mode
             .clone()
             .or_else(|| sandbox_mode.map(str::to_string)),
+        started_at: Some(snapshot.started_at.clone()),
+        completed_at: snapshot.completed_at.clone(),
+        timestamp_provenance: Some("delegation_job".to_string()),
         conversation_id: parent_conversation_id.clone(),
         context_type: snapshot.parent_context_type.clone(),
         context_id: snapshot.parent_context_id.clone(),
@@ -209,6 +205,19 @@ pub fn build_delegated_task_completed_payload(
         .clone()
         .unwrap_or_else(|| format!("delegate-job:{}", snapshot.job_id));
     let latest_run_id = latest_run.map(|run| run.agent_run_id.clone());
+    let (started_at, completed_at, timestamp_provenance) = if let Some(run) = latest_run {
+        (
+            Some(run.started_at.clone()),
+            run.completed_at.clone(),
+            Some("delegated_run".to_string()),
+        )
+    } else {
+        (
+            Some(snapshot.started_at.clone()),
+            snapshot.completed_at.clone(),
+            Some("delegation_job".to_string()),
+        )
+    };
     Some(AgentTaskCompletedPayload {
         tool_use_id,
         run_id: snapshot.parent_agent_run_id.clone(),
@@ -254,6 +263,9 @@ pub fn build_delegated_task_completed_payload(
         sandbox_mode: latest_run
             .and_then(|run| run.sandbox_mode.clone())
             .or_else(|| snapshot.sandbox_mode.clone()),
+        started_at,
+        completed_at,
+        timestamp_provenance,
         input_tokens: latest_run.and_then(|run| run.input_tokens),
         output_tokens: latest_run.and_then(|run| run.output_tokens),
         cache_creation_tokens: latest_run.and_then(|run| run.cache_creation_tokens),
@@ -269,6 +281,7 @@ pub fn build_delegated_task_completed_payload(
 }
 
 fn delegated_run_summary(run: AgentRun) -> DelegatedRunSummary {
+    let processed_tokens = run.processed_tokens();
     DelegatedRunSummary {
         agent_run_id: run.id.as_str(),
         status: run.status.to_string(),
@@ -289,6 +302,7 @@ fn delegated_run_summary(run: AgentRun) -> DelegatedRunSummary {
         output_tokens: run.output_tokens,
         cache_creation_tokens: run.cache_creation_tokens,
         cache_read_tokens: run.cache_read_tokens,
+        processed_tokens,
         estimated_usd: run.estimated_usd,
     }
 }
@@ -734,6 +748,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
         Some(parent.project_id.as_str()),
         Some(std::path::Path::new(&project.working_directory)),
         role,
+        None,
         requested_harness,
         req.model.as_deref(),
         &state.app_state.manual_role_default_service(),

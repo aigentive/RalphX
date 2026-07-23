@@ -919,6 +919,7 @@ async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "chat".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -963,6 +964,7 @@ async fn user_mode_switch_rejects_automation_run_conversation() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -991,6 +993,7 @@ async fn switch_mode_rejects_persona_builder_target() {
         SwitchAgentConversationModeInput {
             conversation_id: "persona-builder-target".to_string(),
             mode: "persona_builder".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1209,6 +1212,7 @@ async fn mode_switch_rejected_from_persona_builder_keyed_on_conversation_agent_m
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1250,6 +1254,7 @@ async fn mode_switch_rejected_from_automation_conversation_backend() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1281,6 +1286,7 @@ async fn system_mode_switch_allows_automation_run_conversation() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1320,6 +1326,7 @@ async fn user_mode_switch_still_allows_non_automation_conversation() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1362,6 +1369,7 @@ async fn plan_to_edit_mode_switch_clears_the_planning_provider_session() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1415,6 +1423,7 @@ async fn active_linked_ideation_session_blocks_mode_switch() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1463,6 +1472,7 @@ async fn mode_switch_stopping_running_agent_stops_current_run_and_switches() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1520,6 +1530,7 @@ async fn mode_switch_stopping_running_agent_applies_to_other_valid_mode_switches
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "plan".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1583,6 +1594,7 @@ async fn abandoned_pipeline_link_can_switch_to_edit_and_detaches_links() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1658,6 +1670,7 @@ async fn superseded_execution_plan_link_can_switch_to_edit_and_detaches_links() 
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -1714,6 +1727,7 @@ async fn active_pipeline_link_blocks_mode_switch() {
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
+            runtime_override: None,
             base_ref_kind: None,
             base_branch_mode: None,
             base_ref: None,
@@ -2641,7 +2655,7 @@ mod ipc_contract {
         wake_agent_workspace_for_bridge_events_with_service_factory,
     };
     use ralphx_lib::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
-    use ralphx_lib::application::{AppState, MockChatService, TeamService, TeamStateTracker};
+    use ralphx_lib::application::{AppState, MockChatService};
     use ralphx_lib::commands::agent_model_commands::{
         delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
         UpsertCustomAgentModelInput,
@@ -3106,7 +3120,6 @@ mod ipc_contract {
         let error = publish_agent_conversation_workspace_for_app_state(
             &state,
             &execution_state,
-            None,
             conversation_id,
             false,
         )
@@ -3450,23 +3463,13 @@ mod ipc_contract {
 
     #[test]
     fn send_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh","target":null}"#;
+        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh"}"#;
         let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task_execution");
         assert_eq!(input.context_id, "task-123");
         assert_eq!(input.content, "Hello agent");
         assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
-        assert!(input.target.is_none());
-    }
-
-    #[test]
-    fn send_agent_message_input_with_target() {
-        let json = r#"{"contextType":"ideation","contextId":"session-456","content":"Plan this","target":"orchestrator"}"#;
-        let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.context_type, "ideation");
-        assert_eq!(input.context_id, "session-456");
-        assert_eq!(input.target, Some("orchestrator".to_string()));
     }
 
     #[test]
@@ -3484,13 +3487,12 @@ mod ipc_contract {
 
     #[test]
     fn queue_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task","contextId":"task-789","content":"Queued msg","clientId":"client-abc","target":null}"#;
+        let json = r#"{"contextType":"task","contextId":"task-789","content":"Queued msg","clientId":"client-abc"}"#;
         let input: QueueAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task");
         assert_eq!(input.context_id, "task-789");
         assert_eq!(input.content, "Queued msg");
         assert_eq!(input.client_id, Some("client-abc".to_string()));
-        assert!(input.target.is_none());
     }
 
     #[test]
@@ -3499,7 +3501,6 @@ mod ipc_contract {
         let input: QueueAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "project");
         assert!(input.client_id.is_none());
-        assert!(input.target.is_none());
     }
 
     // ── CreateAgentConversationInput ────────────────────────────────────────
@@ -3578,13 +3579,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -3615,7 +3612,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -3673,13 +3669,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -3717,7 +3709,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -3782,6 +3773,7 @@ mod ipc_contract {
             SwitchAgentConversationModeInput {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
+                runtime_override: None,
                 base_ref_kind: None,
                 base_branch_mode: None,
                 base_ref: None,
@@ -3836,13 +3828,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -3873,7 +3861,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -3968,13 +3955,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4033,7 +4016,6 @@ mod ipc_contract {
                 },
                 state.clone(),
                 fix.app.state::<Arc<ExecutionState>>(),
-                fix.app.state::<Arc<TeamService>>(),
                 fix.app.handle().clone(),
             )
             .await
@@ -4185,7 +4167,6 @@ mod ipc_contract {
             },
             state.clone(),
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.state::<Arc<TeamService>>(),
             fix.app.handle().clone(),
         )
         .await
@@ -4261,7 +4242,6 @@ mod ipc_contract {
             },
             state,
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.state::<Arc<TeamService>>(),
             fix.app.handle().clone(),
         )
         .await
@@ -4328,13 +4308,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4365,7 +4341,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -4431,13 +4406,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4468,7 +4439,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -4528,13 +4498,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4565,7 +4531,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -4624,13 +4589,9 @@ mod ipc_contract {
 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        )));
         let app = mock_builder()
             .manage(state)
             .manage(Arc::clone(&execution_state))
-            .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
@@ -4661,7 +4622,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.state::<Arc<TeamService>>(),
             app.handle().clone(),
         )
         .await
@@ -4719,6 +4679,7 @@ mod ipc_contract {
             SwitchAgentConversationModeInput {
                 conversation_id: response.conversation.id.clone(),
                 mode: "ideation".to_string(),
+                runtime_override: None,
                 base_ref_kind: None,
                 base_branch_mode: None,
                 base_ref: None,

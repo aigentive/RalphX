@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use axum::{extract::State, http::HeaderMap, Json};
 use ralphx_lib::application::services::PrPollerRegistry;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AcceptanceStatus, Artifact, ArtifactType, IdeationSession, IdeationSessionId, Priority,
@@ -37,15 +37,11 @@ fn setup_http_state_with_pr_mode() -> (HttpServerState, Arc<MockGithubService>) 
 
     let app_state = Arc::new(app_state);
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
 
     (
         HttpServerState {
             app_state,
             execution_state,
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         },
         mock_github,

@@ -37,7 +37,11 @@ import {
 } from "@/lib/workspace-open-targets";
 import { useMessageFileLinkContext } from "./MessageFileLinkContext";
 
-const PROSE_MAX_WIDTH = "min(85%, 620px)";
+// Percentage max-widths resolve against the nearest block container. Inside the
+// shrink-to-fit user bubble (w-fit) that container is the bubble itself, which
+// collapses short messages into mid-word wraps — so the bubble overrides this
+// cap via --chat-prose-max-width (see TextBubble).
+const PROSE_MAX_WIDTH = "var(--chat-prose-max-width, min(85%, 620px))";
 
 const BOX_DRAWING_RE = /[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║░▓█▒╮╰╯╭]/g;
 const ASCII_DRAWING_SEQUENCE_RE = /[+\-|=]{3,}/;

@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -27,14 +27,6 @@ import type {
   StreamingContentBlock,
   StreamingTask,
 } from "@/types/streaming-task";
-
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-    isAvailableForContext: () => true,
-  }),
-}));
 
 // ============================================================================
 // Hoisted mutable state for useChat mock (vi.hoisted runs before vi.mock)
@@ -112,6 +104,7 @@ const { mockChatActions, mockSwitchConversationPersona } = vi.hoisted(() => ({
   mockChatActions: {
     lastOptions: null as { onPersonaUnavailable?: (message: string) => void } | null,
     handleSend: vi.fn().mockResolvedValue(undefined),
+    handleEditLastQueued: vi.fn(),
   },
   mockSwitchConversationPersona: vi.fn().mockResolvedValue(undefined),
 }));
@@ -131,8 +124,10 @@ vi.mock("@/hooks/useFeatureFlags", () => ({
 }));
 
 vi.mock("@/hooks/usePersonas", () => ({
+  usePersonas: () => ({ data: [] }),
   useSwitchConversationPersona: () => ({
     mutateAsync: mockSwitchConversationPersona,
+    isPending: false,
   }),
 }));
 
@@ -288,7 +283,7 @@ vi.mock("@/hooks/useChatActions", () => ({
     mockChatActions.lastOptions = options;
     return {
     handleSend: mockChatActions.handleSend,
-    handleEditLastQueued: vi.fn(),
+    handleEditLastQueued: mockChatActions.handleEditLastQueued,
     handleDeleteQueuedMessage: vi.fn(),
     handleEditQueuedMessage: vi.fn(),
     handleStopAgent: vi.fn(),
@@ -398,10 +393,12 @@ describe("IntegratedChatPanel", () => {
     vi.clearAllMocks();
     mockChatActions.lastOptions = null;
     mockChatActions.handleSend.mockResolvedValue(undefined);
+    mockChatActions.handleEditLastQueued.mockReset();
     mockSwitchConversationPersona.mockResolvedValue(undefined);
     mockFeatureFlags.agentPersonas = false;
     mockFeatureFlags.activityPage = false;
     mockTasks = [];
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue(null);
     // Reset useChat mock state to defaults (empty messages, no conversation context)
     useChatMockState.messages = [];
     useChatMockState.conversation = null;
@@ -426,7 +423,7 @@ describe("IntegratedChatPanel", () => {
         isSending: {},
         activeConversationIds: {},
         activeAgentRunIds: {},
-        isTeamActive: {},
+        activeAgentRunHarnesses: {},
         lastAgentEventTimestamp: {},
         toolCallStartTimes: {},
         lastToolCallCompletionTimestamp: {},
@@ -452,6 +449,246 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.streamingContentBlocks = [];
     mockChatPanelContext.streamingTasks = new Map();
     mockChatPanelContext.isFinalizing = false;
+  });
+
+  it("hides Claude queues, restores Codex queues, and rejects an old clear", () => {
+    const queuedMessage = {
+      id: "queued-1",
+      content: "Follow up",
+      createdAt: "2026-07-23T00:00:00Z",
+      isEditing: false,
+      attachmentIds: [],
+    };
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div
+        data-testid="queue-aware-host-composer"
+        data-has-queued={String(props.hasQueuedMessages)}
+      />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: { "task:task-1": [queuedMessage] },
+        agentStatus: { "task:task-1": "generating" },
+        activeAgentRunIds: { "task:task-1": "run-claude" },
+        activeAgentRunHarnesses: { "task:task-1": "claude" },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          renderComposer={hostComposer}
+        />
+      </TestWrapper>,
+    );
+
+    expect(screen.queryByTestId("queued-message-list")).not.toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "false",
+    );
+
+    act(() => {
+      useChatStore.getState().setActiveAgentRun(
+        "task:task-1",
+        "run-codex",
+        "codex",
+      );
+    });
+
+    expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "true",
+    );
+
+    act(() => {
+      useChatStore.getState().clearActiveAgentRun("task:task-1", "run-claude");
+    });
+
+    expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "true",
+    );
+  });
+
+  it.each([
+    ["idle Claude", "run-claude", "claude", "idle"],
+    ["a null harness", "run-unknown", null, "generating"],
+    ["a future harness", "run-future", "future-harness", "generating"],
+  ] as const)(
+    "keeps queued messages visible for %s",
+    (_caseName, runId, harness, status) => {
+      const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+        <div data-testid="queue-aware-host-composer" data-has-queued={String(props.hasQueuedMessages)} />
+      );
+
+      act(() => {
+        useChatStore.setState({
+          queuedMessages: {
+            "task:task-1": [{
+              id: "queued-1",
+              content: "Follow up",
+              createdAt: "2026-07-23T00:00:00Z",
+              isEditing: false,
+              attachmentIds: [],
+            }],
+          },
+          activeAgentRunIds: runId ? { "task:task-1": runId } : {},
+          activeAgentRunHarnesses: runId ? { "task:task-1": harness } : {},
+          agentStatus: status === "idle" ? {} : { "task:task-1": status },
+        });
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+      expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+        "data-has-queued",
+        "true",
+      );
+    },
+  );
+
+  it("hides recovery-only Claude queues from current conversation metadata", async () => {
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversations = [{
+      id: "conv-1",
+      contextType: "task",
+      contextId: "task-1",
+      providerHarness: "claude",
+    }] as unknown as typeof useChatMockState.conversations;
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-recovery",
+      status: "running",
+    } as never);
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div data-testid="queue-aware-host-composer" data-has-queued={String(props.hasQueuedMessages)} />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [{
+            id: "queued-1",
+            content: "Follow up",
+            createdAt: "2026-07-23T00:00:00Z",
+            isEditing: false,
+            attachmentIds: [],
+          }],
+        },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+      </TestWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("queued-message-list")).not.toBeInTheDocument();
+      expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+        "data-has-queued",
+        "false",
+      );
+    });
+  });
+
+  it("does not suppress from a Claude transcript when current metadata is not Claude", async () => {
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversations = [{
+      id: "conv-1",
+      contextType: "task",
+      contextId: "task-1",
+      providerHarness: "codex",
+    }] as unknown as typeof useChatMockState.conversations;
+    useChatMockState.timelineData = {
+      conversation: {
+        id: "conv-1",
+        contextType: "task",
+        contextId: "task-1",
+        providerHarness: "claude",
+        providerSessionId: "claude-history-only",
+      },
+      messages: [],
+    };
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue({
+      id: "run-recovery",
+      status: "running",
+    } as never);
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div data-testid="queue-aware-host-composer" data-has-queued={String(props.hasQueuedMessages)} />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [{
+            id: "queued-1",
+            content: "Follow up",
+            createdAt: "2026-07-23T00:00:00Z",
+            isEditing: false,
+            attachmentIds: [],
+          }],
+        },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+      </TestWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+      expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+        "data-has-queued",
+        "true",
+      );
+    });
+  });
+
+  it("uses the same hidden queue projection for the default helper and ArrowUp edit", () => {
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [
+            {
+              id: "queued-1",
+              content: "Follow up",
+              createdAt: "2026-07-23T00:00:00Z",
+              isEditing: false,
+              attachmentIds: [],
+            },
+          ],
+        },
+        agentStatus: { "task:task-1": "generating" },
+        activeAgentRunIds: { "task:task-1": "run-claude" },
+        activeAgentRunHarnesses: { "task:task-1": "claude" },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" showHelperTextAlways />
+      </TestWrapper>,
+    );
+
+    expect(screen.queryByTestId("queued-message-list")).not.toBeInTheDocument();
+    expect(screen.queryByText(/edit queued/)).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByTestId("chat-input-textarea"), {
+      key: "ArrowUp",
+    });
+    expect(mockChatActions.handleEditLastQueued).not.toHaveBeenCalled();
   });
 
   it("renders the persona chip only for flagged project conversations outside persona-builder mode", () => {
@@ -572,10 +809,7 @@ describe("IntegratedChatPanel", () => {
     expect(chips[1]).toHaveTextContent("design-voice");
   });
 
-  it("supplies personaControl to a host-owned composer (Agents workspace surface)", () => {
-    // Regression: the Agents workspace renders its own composer via renderComposer
-    // and hides the session toolbar, so the ONLY way the persona can be visible
-    // there is if the panel hands personaControl to the render prop.
+  it("supplies the native persona runtime field to a host-owned Agent composer", () => {
     mockFeatureFlags.agentPersonas = true;
     mockChatPanelContext.storeContextKey = "project:project-1";
     mockChatPanelContext.currentContextType = "project";
@@ -590,11 +824,11 @@ describe("IntegratedChatPanel", () => {
       providerSessionId: null,
     } as typeof useChatMockState.conversation;
 
-    let receivedPersonaControl: React.ReactNode | undefined;
+    let receivedPersona: IntegratedChatComposerRenderProps["persona"];
     const hostComposer = (props: IntegratedChatComposerRenderProps) => {
-      receivedPersonaControl = props.personaControl;
+      receivedPersona = props.persona;
       return (
-        <div data-testid="host-composer">{props.personaControl}</div>
+        <div data-testid="host-composer" data-persona={props.persona?.value} />
       );
     };
 
@@ -609,12 +843,10 @@ describe("IntegratedChatPanel", () => {
       </TestWrapper>,
     );
 
-    expect(receivedPersonaControl).toBeDefined();
+    expect(receivedPersona).toBeDefined();
+    expect(receivedPersona?.testId).toBe("agent-composer-persona");
     const host = screen.getByTestId("host-composer");
-    expect(within(host).getByTestId("persona-chip")).toHaveAttribute(
-      "data-conversation-id",
-      "conv-1",
-    );
+    expect(host).toHaveAttribute("data-persona", "__no_persona__");
     panel.unmount();
   });
 
@@ -685,7 +917,6 @@ describe("IntegratedChatPanel", () => {
     await waitFor(() => {
       expect(mockChatActions.handleSend).toHaveBeenCalledWith(
         "retry this",
-        undefined,
         undefined,
         undefined,
       );
@@ -1372,6 +1603,7 @@ describe("IntegratedChatPanel", () => {
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: 0.42,
         },
         runUsageTotals: {
@@ -1379,6 +1611,7 @@ describe("IntegratedChatPanel", () => {
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: 0.42,
         },
         effectiveUsageTotals: {
@@ -1386,6 +1619,7 @@ describe("IntegratedChatPanel", () => {
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: 0.42,
         },
         usageCoverage: {
@@ -1393,6 +1627,11 @@ describe("IntegratedChatPanel", () => {
           providerMessagesWithUsage: 1,
           runCount: 1,
           runsWithUsage: 1,
+          effectiveRunConversationCount: 0,
+          effectiveMessageConversationCount: 1,
+          legacyEstimatedSampleCount: 0,
+          fallbackEstimatedSampleCount: 0,
+          uncountedSampleCount: 0,
           effectiveTotalsSource: "messages",
         },
         attributionCoverage: {
@@ -1410,6 +1649,7 @@ describe("IntegratedChatPanel", () => {
               outputTokens: 40,
               cacheCreationTokens: 5,
               cacheReadTokens: 8,
+              processedTokens: 160,
               estimatedUsd: 0.42,
             },
           },
@@ -1423,6 +1663,7 @@ describe("IntegratedChatPanel", () => {
               outputTokens: 40,
               cacheCreationTokens: 5,
               cacheReadTokens: 8,
+              processedTokens: 160,
               estimatedUsd: 0.42,
             },
           },
@@ -1436,6 +1677,7 @@ describe("IntegratedChatPanel", () => {
               outputTokens: 40,
               cacheCreationTokens: 5,
               cacheReadTokens: 8,
+              processedTokens: 160,
               estimatedUsd: 0.42,
             },
           },
@@ -1449,6 +1691,7 @@ describe("IntegratedChatPanel", () => {
               outputTokens: 40,
               cacheCreationTokens: 5,
               cacheReadTokens: 8,
+              processedTokens: 160,
               estimatedUsd: 0.42,
             },
           },
@@ -2466,8 +2709,6 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
               updatedAt: "2026-01-01T00:00:00Z",
               archivedAt: null,
               convertedAt: null,
-              teamMode: null,
-              teamConfig: null,
               verificationStatus: "unverified",
               verificationInProgress: false,
               gapScore: null,
@@ -2514,8 +2755,6 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
               updatedAt: "2026-01-01T00:00:00Z",
               archivedAt: null,
               convertedAt: null,
-              teamMode: null,
-              teamConfig: null,
               verificationStatus: "unverified",
               verificationInProgress: false,
               gapScore: null,

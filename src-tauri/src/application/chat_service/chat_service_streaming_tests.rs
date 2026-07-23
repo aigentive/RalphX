@@ -3,11 +3,11 @@ use super::{
     completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
     is_user_attended_turn_completion, normalize_codex_cumulative_usage_for_persistence,
     normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
-    persist_message_text_timeline_item, persist_timeline_snapshot, process_codex_stream_background,
-    process_exit_details, process_stream_background, provider_session_ref_for_harness,
-    record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
-    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
-    StreamingStateCache,
+    persist_message_text_timeline_item, persist_timeline_snapshot, persist_usage_capture_run_first,
+    process_codex_stream_background, process_exit_details, process_stream_background,
+    provider_session_ref_for_harness, record_agent_waiting_if_user_attended,
+    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
+    upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
@@ -16,9 +16,12 @@ use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
     AgentRun, AgentRunActionKind, AgentRunId, AgentRunUsage, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
-    ChatTimelineItemStatus, ChatTimelinePage, IdeationSessionId, MessageRole, ProjectId, TaskId,
+    ChatTimelineItemStatus, ChatTimelinePage, IdeationSessionId, MessageRole, ProjectId,
+    ProviderUsageSnapshot, TaskId, UsageCapture, UsageProvenance,
 };
-use crate::domain::repositories::{AgentRunRepository, ChatTimelineRepository};
+use crate::domain::repositories::{
+    AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
@@ -27,6 +30,9 @@ use crate::infrastructure::agents::{
     CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase, CodexUsage, CodexUsageSource,
 };
 use crate::infrastructure::memory::MemoryAgentRunRepository;
+use crate::infrastructure::memory::MemoryChatMessageRepository;
+use crate::infrastructure::sqlite::SqliteAgentRunRepository;
+use crate::testing::SqliteTestDb;
 use chrono::{Duration, Utc};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
@@ -366,6 +372,27 @@ async fn spawn_jsonl_process_with_exit_status(
         .expect("spawn codex jsonl fixture with exit status")
 }
 
+async fn spawn_jsonl_process_with_delayed_exit(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s' \"$RALPHX_STREAM_LINES\"; exec 1>&-; sleep 1; exit 1")
+        .env("RALPHX_STREAM_LINES", payload)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command
+        .spawn()
+        .expect("spawn Codex fixture with delayed terminal exit")
+}
+
 async fn spawn_jsonl_process_with_stderr(
     lines: &[&str],
     stderr: &str,
@@ -450,8 +477,6 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         None,
         None,
         CancellationToken::new(),
-        None,
-        false,
         StreamingStateCache::new(),
         None,
         None,
@@ -465,6 +490,59 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         None,
     )
     .await
+}
+
+#[tokio::test]
+async fn claude_task_events_cache_lifecycle_defaults_and_stream_sequence() {
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-task","name":"Task","input":{"description":"Inspect cache","subagent_type":"Explore","model":"sonnet"}}]},"session_id":"sess-task"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-task","type":"tool_result","content":{"tool_use_result":{"agentId":"agent-1","totalDurationMs":100,"totalTokens":12,"totalToolUseCount":2}},"is_error":false}]}}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let cache = StreamingStateCache::new();
+
+    let outcome = process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        cache.clone(),
+        None,
+        None,
+        Some("stream-run-id".to_string()),
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert!(
+        outcome.is_ok(),
+        "task-only stream should finish cleanly: {outcome:?}"
+    );
+    let state = cache.get(&conversation_id.as_str()).await.unwrap();
+    let task = &state.streaming_tasks[0];
+    assert_eq!(task.status, "completed");
+    assert_eq!(task.seq, Some(0));
+    assert_eq!(task.started_at, None);
+    assert_eq!(task.completed_at, None);
+    assert_eq!(task.timestamp_provenance, None);
+    assert_eq!(task.total_tokens, Some(12));
 }
 
 #[tokio::test]
@@ -492,8 +570,6 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
             None,
             None,
             CancellationToken::new(),
-            None,
-            false,
             StreamingStateCache::new(),
             None,
             None,
@@ -737,6 +813,48 @@ async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
 }
 
 #[tokio::test]
+async fn codex_owned_cancellation_outranks_empty_terminal_exit() {
+    let child = spawn_jsonl_process_with_delayed_exit(&[
+        r#"{"type":"thread.started","thread_id":"cancelled-empty-thread"}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let cancellation_token = CancellationToken::new();
+    let terminal_cancellation = cancellation_token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        terminal_cancellation.cancel();
+    });
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        cancellation_token,
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(matches!(result, Err(StreamError::Cancelled { .. })));
+}
+
+#[tokio::test]
 async fn codex_stdin_notice_only_exit_is_typed_as_no_output_with_details() {
     let child = spawn_jsonl_process_with_stderr(
         &[r#"{"type":"thread.started","thread_id":"stdin-notice-thread"}"#],
@@ -940,8 +1058,6 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
         Some(pre_assistant_id.clone()),
         None,
         CancellationToken::new(),
-        None,
-        false,
         StreamingStateCache::new(),
         None,
         None,
@@ -993,6 +1109,90 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
         text_concat.contains("Tauri desktop app called RalphX"),
         "Persisted timeline text must carry the assistant response"
     );
+}
+
+#[tokio::test]
+async fn claude_multi_turn_stream_persists_combined_usage_to_canonical_run() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed first assistant message");
+
+    let run_repo_impl = Arc::new(MemoryAgentRunRepository::new());
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.harness = Some(AgentHarnessKind::Claude);
+    let run = run_repo_impl.create(run).await.expect("seed canonical run");
+    let run_id = run.id.as_str();
+    let run_repo: Arc<dyn AgentRunRepository> = run_repo_impl.clone();
+
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"turn one"}]},"session_id":"session-1"}"#,
+        r#"{"type":"result","session_id":"session-1","is_error":false,"result":"turn one","usage":{"input_tokens":100,"output_tokens":25}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"turn two"}]},"session_id":"session-1"}"#,
+        r#"{"type":"result","session_id":"session-1","is_error":false,"result":"turn two","usage":{"input_tokens":50,"output_tokens":10}}"#,
+    ])
+    .await;
+
+    process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None,
+        None,
+        None,
+        Some(state.chat_message_repo.clone()),
+        Some(state.chat_timeline_repo.clone()),
+        Some(pre_assistant_id),
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        Some(run_repo),
+        Some(run_id.clone()),
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("multi-turn stream should complete");
+
+    let persisted_run = run_repo_impl
+        .get_by_id(&AgentRunId::from_string(run_id))
+        .await
+        .expect("load canonical run")
+        .expect("canonical run should exist");
+    assert_eq!(persisted_run.input_tokens, Some(150));
+    assert_eq!(persisted_run.output_tokens, Some(35));
+
+    let mut per_turn_inputs = state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load per-turn messages")
+        .into_iter()
+        .filter_map(|message| message.input_tokens)
+        .collect::<Vec<_>>();
+    per_turn_inputs.sort_unstable();
+    assert_eq!(per_turn_inputs, vec![50, 100]);
 }
 
 #[tokio::test]
@@ -1108,7 +1308,7 @@ async fn persist_timeline_snapshot_returns_empty_when_any_item_write_fails() {
     }];
 
     let persisted = persist_timeline_snapshot(
-        &Some(repo),
+        &Some(repo.clone()),
         &conversation_id.as_str(),
         &message_id,
         &blocks,
@@ -1283,99 +1483,148 @@ fn agent_run_usage_from_codex_usage_maps_cached_input_as_cache_read() {
     assert_eq!(usage.estimated_usd, None);
 }
 
-#[test]
-fn normalize_codex_cumulative_usage_subtracts_per_turn_prior_runs() {
-    let conversation_id = ChatConversationId::new();
-    let prior_runs = vec![
-        codex_usage_run(&conversation_id, "thread-1", 120, 30, 80, 0),
-        codex_usage_run(&conversation_id, "thread-1", 200, 40, 150, 1),
-    ];
-    let current = AgentRunUsage {
-        input_tokens: Some(500),
-        output_tokens: Some(90),
-        cache_creation_tokens: None,
-        cache_read_tokens: Some(300),
-        estimated_usd: None,
-    };
-
-    let normalized = normalize_codex_cumulative_usage_for_persistence(
-        current,
-        &prior_runs,
-        None,
-        Some("thread-1"),
+#[tokio::test]
+async fn canonical_run_capture_failure_suppresses_message_mirror() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection
+        .execute("CREATE TABLE agent_runs (id TEXT PRIMARY KEY)", [])
+        .unwrap();
+    connection
+        .execute("INSERT INTO agent_runs (id) VALUES ('run-1')", [])
+        .unwrap();
+    let run_repo: Arc<dyn AgentRunRepository> = Arc::new(SqliteAgentRunRepository::new(connection));
+    let message_repo_impl = Arc::new(MemoryChatMessageRepository::new());
+    let message = ChatMessage::orchestrator_in_session(IdeationSessionId::new(), "pending");
+    let message_id = message.id.as_str().to_string();
+    message_repo_impl.create(message).await.unwrap();
+    let message_repo: Arc<dyn ChatMessageRepository> = message_repo_impl.clone();
+    let capture = UsageCapture::normalized(
+        AgentRunUsage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            ..AgentRunUsage::default()
+        },
+        UsageProvenance::ProviderTurnDelta,
     );
 
-    assert_eq!(normalized.input_tokens, Some(180));
-    assert_eq!(normalized.output_tokens, Some(20));
-    assert_eq!(normalized.cache_read_tokens, Some(70));
+    let persisted = persist_usage_capture_run_first(
+        &Some(run_repo),
+        &Some("run-1".to_string()),
+        &Some(message_repo),
+        &Some(message_id.clone()),
+        &capture,
+    )
+    .await;
+
+    assert!(!persisted);
+    let mirrored = message_repo_impl
+        .get_by_id(&ChatMessageId::from_string(message_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(mirrored.input_tokens, None);
+    assert_eq!(mirrored.usage_provenance, None);
+}
+
+#[tokio::test]
+async fn codex_cumulative_capture_requires_persisted_session_attribution() {
+    let db = SqliteTestDb::new("codex-session-attribution-capture");
+    let conversation = db.seed_ideation_conversation();
+    let repo_impl = Arc::new(SqliteAgentRunRepository::from_shared(db.shared_conn()));
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id.as_str();
+    repo_impl.create(run).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER fail_codex_session_attribution
+             BEFORE UPDATE OF provider_session_id ON agent_runs
+             BEGIN
+               SELECT RAISE(ABORT, 'session attribution failed');
+             END;",
+        )
+        .unwrap();
+    });
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"thread.started","thread_id":"thread-attribution-failure"}"#,
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}"#,
+        r#"{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10}}}"#,
+    ])
+    .await;
+    let repo: Arc<dyn AgentRunRepository> = repo_impl.clone();
+
+    process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        conversation.context_id.as_str(),
+        &conversation.id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        Some(repo),
+        Some(run_id.clone()),
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .expect("the provider turn can finish even when usage attribution fails");
+
+    let persisted = repo_impl
+        .get_by_id(&AgentRunId::from_string(run_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.provider_session_id, None);
+    assert_eq!(persisted.usage_provenance, None);
+    assert_eq!(persisted.raw_usage_snapshot, None);
 }
 
 #[test]
-fn normalize_codex_cumulative_usage_uses_latest_prior_when_existing_rows_are_cumulative() {
-    let conversation_id = ChatConversationId::new();
-    let prior_runs = vec![
-        codex_usage_run(
-            &conversation_id,
-            "thread-1",
-            10_000_000,
-            10_000,
-            9_000_000,
-            0,
-        ),
-        codex_usage_run(
-            &conversation_id,
-            "thread-1",
-            30_000_000,
-            40_000,
-            29_000_000,
-            1,
-        ),
-        codex_usage_run(
-            &conversation_id,
-            "thread-1",
-            65_000_000,
-            100_000,
-            63_000_000,
-            2,
-        ),
-    ];
-    let current = AgentRunUsage {
-        input_tokens: Some(67_362_753),
-        output_tokens: Some(109_831),
+fn normalize_codex_first_cumulative_snapshot_is_baseline_only() {
+    let raw = AgentRunUsage {
+        input_tokens: Some(120),
+        output_tokens: Some(30),
         cache_creation_tokens: None,
-        cache_read_tokens: Some(65_914_240),
-        estimated_usd: None,
+        cache_read_tokens: Some(80),
+        estimated_usd: Some(0.5),
     };
 
-    let normalized = normalize_codex_cumulative_usage_for_persistence(
-        current,
-        &prior_runs,
-        None,
-        Some("thread-1"),
-    );
+    let capture =
+        normalize_codex_cumulative_usage_for_persistence(raw.clone(), &[], None, Some("thread-1"))
+            .expect("baseline capture");
 
-    assert_eq!(normalized.input_tokens, Some(2_362_753));
-    assert_eq!(normalized.output_tokens, Some(9_831));
-    assert_eq!(normalized.cache_read_tokens, Some(2_914_240));
+    assert_eq!(capture.provenance, UsageProvenance::CumulativeBaselineOnly);
+    assert!(capture.normalized.is_empty());
+    assert_eq!(
+        capture.raw_snapshot,
+        Some(ProviderUsageSnapshot::from_usage(raw))
+    );
 }
 
 #[test]
-fn normalize_codex_cumulative_usage_filters_current_run_and_other_sessions() {
+fn normalize_codex_cumulative_usage_diffs_latest_same_session_raw_snapshot() {
     let conversation_id = ChatConversationId::new();
-    let mut prior_same_session = codex_usage_run(&conversation_id, "thread-1", 100, 30, 80, 0);
-    prior_same_session.cache_creation_tokens = Some(7);
-    prior_same_session.estimated_usd = Some(0.50);
+    let mut prior = codex_usage_run(&conversation_id, "thread-1", 0, 0, 0, 0);
+    prior.raw_usage_snapshot = Some(ProviderUsageSnapshot {
+        input_tokens: Some(120),
+        output_tokens: Some(30),
+        cache_creation_tokens: Some(7),
+        cache_read_tokens: Some(80),
+        estimated_usd: Some(0.5),
+    });
+    let mut later_without_raw =
+        codex_usage_run(&conversation_id, "thread-1", 9_999, 9_999, 9_999, 1);
+    later_without_raw.usage_provenance = Some(UsageProvenance::ProviderTurnDelta);
 
-    let mut prior_other_session = codex_usage_run(&conversation_id, "thread-2", 900, 900, 900, 1);
-    prior_other_session.cache_creation_tokens = Some(900);
-    prior_other_session.estimated_usd = Some(9.00);
-
-    let mut current_run = codex_usage_run(&conversation_id, "thread-1", 300, 100, 200, 2);
-    let current_run_id = current_run.id.as_str();
-    current_run.cache_creation_tokens = Some(20);
-    current_run.estimated_usd = Some(1.25);
-
-    let normalized = normalize_codex_cumulative_usage_for_persistence(
+    let capture = normalize_codex_cumulative_usage_for_persistence(
         AgentRunUsage {
             input_tokens: Some(300),
             output_tokens: Some(100),
@@ -1383,16 +1632,53 @@ fn normalize_codex_cumulative_usage_filters_current_run_and_other_sessions() {
             cache_read_tokens: Some(200),
             estimated_usd: Some(1.25),
         },
-        &[prior_same_session, prior_other_session, current_run],
-        Some(current_run_id.as_str()),
+        &[prior, later_without_raw],
+        None,
         Some("thread-1"),
-    );
+    )
+    .expect("derived capture");
 
-    assert_eq!(normalized.input_tokens, Some(200));
-    assert_eq!(normalized.output_tokens, Some(70));
-    assert_eq!(normalized.cache_creation_tokens, Some(13));
-    assert_eq!(normalized.cache_read_tokens, Some(120));
-    assert_eq!(normalized.estimated_usd, Some(0.75));
+    assert_eq!(capture.provenance, UsageProvenance::DerivedCumulativeDelta);
+    assert_eq!(capture.normalized.input_tokens, Some(180));
+    assert_eq!(capture.normalized.output_tokens, Some(70));
+    assert_eq!(capture.normalized.cache_creation_tokens, Some(13));
+    assert_eq!(capture.normalized.cache_read_tokens, Some(120));
+    assert_eq!(capture.normalized.estimated_usd, Some(0.75));
+}
+
+#[test]
+fn normalize_codex_cumulative_reset_starts_new_baseline_segment() {
+    let conversation_id = ChatConversationId::new();
+    let mut prior = codex_usage_run(&conversation_id, "thread-1", 0, 0, 0, 0);
+    prior.raw_usage_snapshot = Some(ProviderUsageSnapshot::from_usage(AgentRunUsage {
+        input_tokens: Some(500),
+        output_tokens: Some(100),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(450),
+        estimated_usd: None,
+    }));
+    let reset = AgentRunUsage {
+        input_tokens: Some(20),
+        output_tokens: Some(5),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(10),
+        estimated_usd: None,
+    };
+
+    let capture = normalize_codex_cumulative_usage_for_persistence(
+        reset.clone(),
+        &[prior],
+        None,
+        Some("thread-1"),
+    )
+    .expect("reset baseline");
+
+    assert_eq!(capture.provenance, UsageProvenance::CumulativeBaselineOnly);
+    assert!(capture.normalized.is_empty());
+    assert_eq!(
+        capture.raw_snapshot,
+        Some(ProviderUsageSnapshot::from_usage(reset))
+    );
 }
 
 #[tokio::test]
@@ -1406,7 +1692,7 @@ async fn normalize_codex_stream_usage_keeps_turn_delta_without_repo_lookup() {
         estimated_usd: None,
     };
 
-    let normalized = normalize_codex_stream_usage_for_persistence(
+    let capture = normalize_codex_stream_usage_for_persistence(
         raw.clone(),
         CodexUsageSource::TurnDelta,
         &None,
@@ -1416,14 +1702,27 @@ async fn normalize_codex_stream_usage_keeps_turn_delta_without_repo_lookup() {
     )
     .await;
 
-    assert_eq!(normalized, raw);
+    assert_eq!(
+        capture,
+        Some(UsageCapture::normalized(
+            raw,
+            UsageProvenance::ProviderTurnDelta
+        ))
+    );
 }
 
 #[tokio::test]
-async fn normalize_codex_stream_usage_uses_prior_repo_runs_for_cumulative_snapshots() {
+async fn normalize_codex_stream_usage_requires_session_and_raw_baseline_for_cumulative_snapshots() {
     let conversation_id = ChatConversationId::new();
     let repo_impl = Arc::new(MemoryAgentRunRepository::new());
-    let prior = codex_usage_run(&conversation_id, "thread-1", 120, 30, 80, 0);
+    let mut prior = codex_usage_run(&conversation_id, "thread-1", 0, 0, 0, 0);
+    prior.raw_usage_snapshot = Some(ProviderUsageSnapshot::from_usage(AgentRunUsage {
+        input_tokens: Some(120),
+        output_tokens: Some(30),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(80),
+        estimated_usd: None,
+    }));
     repo_impl.create(prior).await.expect("seed prior run");
     let other_session = codex_usage_run(&conversation_id, "thread-2", 900, 900, 900, 1);
     repo_impl
@@ -1438,7 +1737,7 @@ async fn normalize_codex_stream_usage_uses_prior_repo_runs_for_cumulative_snapsh
         .expect("seed current run");
 
     let repo: Arc<dyn AgentRunRepository> = repo_impl;
-    let normalized = normalize_codex_stream_usage_for_persistence(
+    let capture = normalize_codex_stream_usage_for_persistence(
         AgentRunUsage {
             input_tokens: Some(500),
             output_tokens: Some(90),
@@ -1447,16 +1746,31 @@ async fn normalize_codex_stream_usage_uses_prior_repo_runs_for_cumulative_snapsh
             estimated_usd: None,
         },
         CodexUsageSource::CumulativeTotal,
-        &Some(repo),
+        &Some(repo.clone()),
         &conversation_id,
         Some(current_run_id.as_str()),
         Some("thread-1"),
     )
     .await;
 
-    assert_eq!(normalized.input_tokens, Some(380));
-    assert_eq!(normalized.output_tokens, Some(60));
-    assert_eq!(normalized.cache_read_tokens, Some(220));
+    let capture = capture.expect("derived capture");
+    assert_eq!(capture.normalized.input_tokens, Some(380));
+    assert_eq!(capture.normalized.output_tokens, Some(60));
+    assert_eq!(capture.normalized.cache_read_tokens, Some(220));
+
+    let missing_session = normalize_codex_stream_usage_for_persistence(
+        AgentRunUsage {
+            input_tokens: Some(600),
+            ..AgentRunUsage::default()
+        },
+        CodexUsageSource::CumulativeTotal,
+        &Some(repo),
+        &conversation_id,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(missing_session, None);
 }
 
 fn codex_usage_run(

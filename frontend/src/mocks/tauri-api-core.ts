@@ -785,15 +785,6 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
     plan_artifact_id: session.planArtifactId,
     seed_task_id: session.seedTaskId,
     parent_session_id: session.parentSessionId,
-    team_mode: session.teamMode,
-    team_config: session.teamConfig
-      ? {
-          max_teammates: session.teamConfig.maxTeammates,
-          model_ceiling: session.teamConfig.modelCeiling,
-          budget_limit: session.teamConfig.budgetLimit ?? null,
-          composition_mode: session.teamConfig.compositionMode ?? null,
-        }
-      : null,
     created_at: session.createdAt,
     updated_at: session.updatedAt,
     archived_at: session.archivedAt,
@@ -1301,7 +1292,6 @@ const commandHandlers: Record<
       ideationPage: false,
       automationsPage: true,
       battleMode: true,
-      teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
       ...overrides,
@@ -2819,12 +2809,14 @@ const commandHandlers: Record<
       outputTokens: number;
       cacheCreationTokens: number;
       cacheReadTokens: number;
+      processedTokens: number | null;
       estimatedUsd: number | null;
     }) => ({
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       cache_creation_tokens: usage.cacheCreationTokens,
       cache_read_tokens: usage.cacheReadTokens,
+      processed_tokens: usage.processedTokens,
       estimated_usd: usage.estimatedUsd,
     });
 
@@ -2844,6 +2836,15 @@ const commandHandlers: Record<
           stats.usageCoverage.providerMessagesWithUsage,
         run_count: stats.usageCoverage.runCount,
         runs_with_usage: stats.usageCoverage.runsWithUsage,
+        effective_run_conversation_count:
+          stats.usageCoverage.effectiveRunConversationCount,
+        effective_message_conversation_count:
+          stats.usageCoverage.effectiveMessageConversationCount,
+        legacy_estimated_sample_count:
+          stats.usageCoverage.legacyEstimatedSampleCount,
+        fallback_estimated_sample_count:
+          stats.usageCoverage.fallbackEstimatedSampleCount,
+        uncounted_sample_count: stats.usageCoverage.uncountedSampleCount,
         effective_totals_source: stats.usageCoverage.effectiveTotalsSource,
       },
       attribution_coverage: {

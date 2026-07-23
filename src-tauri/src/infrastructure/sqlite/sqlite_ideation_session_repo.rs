@@ -31,7 +31,7 @@ const _IDLE_STATUSES: &[&str] = &["backlog", "ready", "blocked"];
 const SESSION_COLUMNS: &str = "id, project_id, title, title_source, status, plan_artifact_id, \
     verified_plan_artifact_id, verified_plan_agent_run_id, \
     inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, \
-    updated_at, archived_at, converted_at, team_mode, team_config_json, \
+    updated_at, archived_at, converted_at, \
     verification_status, verification_in_progress, verification_generation, \
     verification_current_round, verification_max_rounds, \
     verification_gap_count, verification_gap_score, verification_convergence_reason, \
@@ -137,7 +137,7 @@ impl SqliteIdeationSessionRepository {
             "INSERT INTO ideation_sessions \
              (id, project_id, title, title_source, status, plan_artifact_id, \
               inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, \
-             updated_at, archived_at, converted_at, team_mode, team_config_json, \
+             updated_at, archived_at, converted_at, \
               verification_status, verification_in_progress, verification_generation, \
               verification_current_round, verification_max_rounds, verification_gap_count, \
               verification_gap_score, verification_convergence_reason, \
@@ -147,7 +147,7 @@ impl SqliteIdeationSessionRepository {
               pending_initial_prompt, source_task_id, source_context_type, source_context_id, spawn_reason, blocker_fingerprint, \
               analysis_base_ref_kind, analysis_base_ref, analysis_base_display_name, analysis_workspace_kind, \
               analysis_workspace_path, analysis_base_commit, analysis_base_locked_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)",
             rusqlite::params![
                 session.id.as_str(),
                 session.project_id.as_str(),
@@ -162,8 +162,6 @@ impl SqliteIdeationSessionRepository {
                 session.updated_at.to_rfc3339(),
                 session.archived_at.map(|dt| dt.to_rfc3339()),
                 session.converted_at.map(|dt| dt.to_rfc3339()),
-                session.team_mode,
-                session.team_config_json,
                 session.verification_status.to_string(),
                 if session.verification_in_progress { 1i32 } else { 0i32 },
                 session.verification_generation,
@@ -1736,7 +1734,7 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                     format!(
                         "SELECT s.id, s.project_id, s.title, s.title_source, s.status, s.plan_artifact_id, \
                          s.inherited_plan_artifact_id, s.seed_task_id, s.parent_session_id, s.created_at, \
-                         s.updated_at, s.archived_at, s.converted_at, s.team_mode, s.team_config_json, \
+                         s.updated_at, s.archived_at, s.converted_at, \
                          s.verification_status, s.verification_in_progress, s.verification_generation, \
                          s.verification_current_round, s.verification_max_rounds, s.verification_gap_count, \
                          s.verification_gap_score, s.verification_convergence_reason, \
@@ -1766,7 +1764,7 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                     format!(
                         "SELECT s.id, s.project_id, s.title, s.title_source, s.status, s.plan_artifact_id, \
                          s.inherited_plan_artifact_id, s.seed_task_id, s.parent_session_id, s.created_at, \
-                         s.updated_at, s.archived_at, s.converted_at, s.team_mode, s.team_config_json, \
+                         s.updated_at, s.archived_at, s.converted_at, \
                          s.verification_status, s.verification_in_progress, s.verification_generation, \
                          s.verification_current_round, s.verification_max_rounds, s.verification_gap_count, \
                          s.verification_gap_score, s.verification_convergence_reason, \

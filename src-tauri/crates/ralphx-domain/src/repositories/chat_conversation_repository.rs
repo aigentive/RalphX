@@ -186,6 +186,16 @@ pub trait ChatConversationRepository: Send + Sync {
         clear_provider_session: bool,
     ) -> AppResult<()>;
 
+    /// Atomically updates destination mode with the role-owned persona/capability bindings.
+    async fn update_agent_mode_and_role_default_bindings(
+        &self,
+        id: &ChatConversationId,
+        agent_mode: AgentConversationWorkspaceMode,
+        coordination_mode: CoordinationMode,
+        persona_id: Option<&str>,
+        clear_provider_session: bool,
+    ) -> AppResult<()>;
+
     /// Compatibility helper for legacy Claude-specific callers.
     async fn update_claude_session_id(
         &self,

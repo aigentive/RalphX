@@ -38,78 +38,9 @@ fn test_legacy_verification_purpose_uses_normal_ideation_agent() {
 }
 
 #[test]
-fn test_legacy_verification_purpose_does_not_override_team_mode() {
-    let agent =
-        resolve_agent_with_team_mode(&ChatContextType::Ideation, Some("verification"), true);
-    assert_eq!(agent, AGENT_IDEATION_TEAM_LEAD);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_ideation_returns_team_lead() {
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Ideation, None, true);
-    assert_eq!(agent, AGENT_IDEATION_TEAM_LEAD);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_execution_returns_worker_team() {
-    let agent = resolve_agent_with_team_mode(&ChatContextType::TaskExecution, None, true);
-    assert_eq!(agent, AGENT_WORKER_TEAM);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_project_falls_back_to_default() {
-    // Contexts without team variants fall back to defaults
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Project, None, true);
-    assert_eq!(agent, AGENT_CHAT_PROJECT);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_false_returns_default() {
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Ideation, None, false);
-    assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION);
-}
-
-#[test]
-fn test_resolve_agent_team_mode_status_overrides_team() {
-    // Status-specific rules take priority over team_mode
-    let agent = resolve_agent_with_team_mode(&ChatContextType::Ideation, Some("accepted"), true);
-    assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION_READONLY);
-}
-
-#[test]
-fn test_effective_team_mode_for_harness_keeps_claude_team_mode() {
-    assert!(effective_team_mode_for_harness(
-        true,
-        AgentHarnessKind::Claude
-    ));
-}
-
-#[test]
-fn test_effective_team_mode_for_harness_disables_codex_team_mode() {
-    assert!(!effective_team_mode_for_harness(
-        true,
-        AgentHarnessKind::Codex
-    ));
-}
-
-#[test]
-fn test_harness_supports_team_mode_only_for_claude() {
-    assert!(harness_supports_team_mode(AgentHarnessKind::Claude));
-    assert!(!harness_supports_team_mode(AgentHarnessKind::Codex));
-}
-
-#[test]
 fn test_rx_native_team_is_supported_by_standard_harnesses() {
     assert!(harness_supports_rx_native_team(AgentHarnessKind::Claude));
     assert!(harness_supports_rx_native_team(AgentHarnessKind::Codex));
-}
-
-#[test]
-fn test_effective_team_mode_for_harness_respects_requested_false() {
-    assert!(!effective_team_mode_for_harness(
-        false,
-        AgentHarnessKind::Claude
-    ));
 }
 
 #[test]
