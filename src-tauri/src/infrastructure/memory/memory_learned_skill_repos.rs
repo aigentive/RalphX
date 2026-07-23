@@ -3,10 +3,13 @@ use std::sync::RwLock;
 use async_trait::async_trait;
 use chrono::Utc;
 
+use crate::domain::entities::learned_skill::{
+    is_valid_recurrence_key, task_outcome_recurrence_metadata, TaskOutcomeRecurrenceCorpus,
+};
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, ProjectSkillVersion,
-    SkillUsageEvent, TaskOutcome, TaskOutcomeId, TaskOutcomeSource,
+    SkillUsageEvent, TaskOutcome, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     resolve_task_outcome_upsert, ProjectSkillListOptions, ProjectSkillRepository,
@@ -102,6 +105,50 @@ impl TaskOutcomeRepository for MemoryTaskOutcomeRepository {
             .collect::<Vec<_>>();
         rows.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
         Ok(rows)
+    }
+
+    async fn recurrence_corpus(
+        &self,
+        project_id: &ProjectId,
+        recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus> {
+        if !is_valid_recurrence_key(recurrence_key) {
+            return Err(AppError::Validation(
+                "task outcome recurrence key is invalid".to_string(),
+            ));
+        }
+        let rows = self.rows.read().unwrap();
+        let eligible_sessions = rows
+            .iter()
+            .filter(|row| &row.project_id == project_id)
+            .filter(|row| {
+                matches!(
+                    row.source,
+                    TaskOutcomeSource::Review
+                        | TaskOutcomeSource::Merge
+                        | TaskOutcomeSource::MergeValidation
+                        | TaskOutcomeSource::AgentConversation
+                )
+            })
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    TaskOutcomeStatus::Failed | TaskOutcomeStatus::Eligible
+                )
+            })
+            .filter_map(task_outcome_recurrence_metadata)
+            .filter(|(key, _)| *key == recurrence_key)
+            .map(|(_, session)| session)
+            .collect::<Vec<_>>();
+        let distinct_sessions = eligible_sessions
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        Ok(TaskOutcomeRecurrenceCorpus {
+            eligible_observations: eligible_sessions.len() as u64,
+            distinct_sessions: distinct_sessions as u64,
+        })
     }
 }
 

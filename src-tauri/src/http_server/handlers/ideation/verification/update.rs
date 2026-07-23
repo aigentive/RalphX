@@ -6,87 +6,101 @@ async fn record_verification_gap_recurrence_outcomes(
     session: &crate::domain::entities::IdeationSession,
     session_id: &str,
     run_snapshot: &crate::domain::entities::ideation::VerificationRunSnapshot,
-) {
+) -> crate::error::AppResult<()> {
     use crate::application::memory_orchestration::{
         schedule_explicit_project_skill_distillation, ProjectSkillDistillationScheduleStatus,
     };
     use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
-    use crate::domain::services::learned_skill_adapters::{
-        verification_gap_recurrence_candidates, VerificationGapRecurrenceGate,
+    use crate::domain::entities::learned_skill::{
+        RECURRENCE_KEY_FIELD, RECURRENCE_KEY_PREFIX, RECURRENCE_SESSION_FIELD,
     };
+    use crate::domain::entities::ProjectSkillSettings;
+    use crate::domain::services::failure_fingerprint::recurrence_key;
     use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
+    use std::collections::BTreeMap;
 
-    let report = verification_gap_recurrence_candidates(
-        &run_snapshot.rounds,
-        VerificationGapRecurrenceGate {
-            min_occurrences: 2,
-            min_rounds: 2,
-            min_corpus_size: 2,
-        },
-    );
+    let settings = state
+        .app_state
+        .project_skill_settings_repo
+        .get_for_project(&session.project_id)
+        .await?
+        .unwrap_or_else(|| ProjectSkillSettings::default_for_project(session.project_id.clone()));
+    if settings.verification_corpus_gate == 0 {
+        return Ok(());
+    }
+    let required_observations = u64::try_from(settings.verification_corpus_gate).map_err(|_| {
+        crate::error::AppError::Validation(
+            "verification corpus gate must be non-negative".to_string(),
+        )
+    })?;
 
-    if report.recurring_gaps.is_empty() {
-        return;
+    let mut candidates = BTreeMap::<String, Vec<String>>::new();
+    for gap in &run_snapshot.current_gaps {
+        if let Some(key) = recurrence_key(&gap.description) {
+            candidates
+                .entry(key)
+                .or_default()
+                .push(gap.description.clone());
+        }
     }
 
     let service = OutcomeLedgerService::new(Arc::clone(&state.app_state.task_outcome_repo));
-    for recurring in report.recurring_gaps {
+    for (key, descriptions) in candidates {
+        let corpus = state
+            .app_state
+            .task_outcome_repo
+            .recurrence_corpus(&session.project_id, &key)
+            .await?;
+        if corpus.eligible_observations < required_observations || corpus.distinct_sessions < 2 {
+            continue;
+        }
         let mut outcome = new_empty_task_outcome(
             session.project_id.clone(),
             TaskOutcomeSource::Verification,
             "gap_recurrence",
-            format!(
-                "{}:{}:{}",
-                session_id, run_snapshot.generation, recurring.fingerprint
-            ),
+            format!("{session_id}:{}:{key}", run_snapshot.generation),
         );
         outcome.verification_id = Some(session_id.to_string());
         outcome.outcome_class = Some(TaskOutcomeClass::VerificationGapRecurring);
         outcome.status = crate::domain::entities::TaskOutcomeStatus::Eligible;
+        let fingerprint = key.strip_prefix(RECURRENCE_KEY_PREFIX).unwrap_or_default();
         outcome.evidence_json = serde_json::json!({
             "session_id": session_id,
             "generation": run_snapshot.generation,
-            "fingerprint": recurring.fingerprint,
-            "occurrences": recurring.occurrences,
-            "distinct_rounds": recurring.distinct_rounds,
-            "corpus_size": report.corpus_size,
-            "descriptions": recurring.descriptions.into_iter().take(5).collect::<Vec<_>>(),
+            "fingerprint": fingerprint,
+            (RECURRENCE_KEY_FIELD): key,
+            (RECURRENCE_SESSION_FIELD): session_id,
+            "eligible_observations": corpus.eligible_observations,
+            "distinct_sessions": corpus.distinct_sessions,
+            "configured_corpus_gate": required_observations,
+            "descriptions": descriptions.into_iter().take(5).collect::<Vec<_>>(),
         });
 
-        match service.record_outcome(outcome).await {
-            Ok(recorded_outcome) => {
-                let outcome_id = recorded_outcome.id.clone();
-                let schedule = schedule_explicit_project_skill_distillation(
-                    &state.app_state,
-                    &session.project_id,
-                    ProjectSkillDistillationSelection::ExactOutcomes(vec![outcome_id.clone()]),
-                    None,
-                    crate::domain::entities::ChatContextType::Ideation,
-                    session_id,
-                )
-                .await;
-                if matches!(
-                    schedule.status,
-                    ProjectSkillDistillationScheduleStatus::Failed
-                        | ProjectSkillDistillationScheduleStatus::Unavailable
-                ) {
-                    tracing::warn!(
-                        session_id,
-                        outcome_id = %outcome_id.as_str(),
-                        status = schedule.status.as_str(),
-                        "Recurring verification gap evidence was queued but the distiller did not start"
-                    );
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    session_id,
-                    error = %error,
-                    "Failed to record recurring verification gap outcome"
-                );
-            }
+        let recorded_outcome = service.record_outcome(outcome).await?;
+        let outcome_id = recorded_outcome.id.clone();
+        let schedule = schedule_explicit_project_skill_distillation(
+            &state.app_state,
+            &session.project_id,
+            ProjectSkillDistillationSelection::ExactOutcomes(vec![outcome_id.clone()]),
+            None,
+            crate::domain::entities::ChatContextType::Ideation,
+            session_id,
+        )
+        .await;
+        if matches!(
+            schedule.status,
+            ProjectSkillDistillationScheduleStatus::Failed
+                | ProjectSkillDistillationScheduleStatus::Unavailable
+        ) {
+            tracing::warn!(
+                session_id,
+                outcome_id = %outcome_id.as_str(),
+                status = schedule.status.as_str(),
+                "Recurring verification gap evidence was queued but the distiller did not start"
+            );
         }
     }
+    Ok(())
 }
 
 /// POST /api/ideation/sessions/:id/verification
@@ -664,7 +678,16 @@ pub async fn post_verification_status(
             )
         })?;
 
-    record_verification_gap_recurrence_outcomes(&state, &session, &session_id, &run_snapshot).await;
+    if let Err(error) =
+        record_verification_gap_recurrence_outcomes(&state, &session, &session_id, &run_snapshot)
+            .await
+    {
+        tracing::warn!(
+            session_id,
+            error = %error,
+            "Verification recurrence corpus gate failed closed"
+        );
+    }
 
     // Emit plan_verification:status_changed event (B1: includes current_gaps + last 5 rounds)
     emit_verification_status_changed(

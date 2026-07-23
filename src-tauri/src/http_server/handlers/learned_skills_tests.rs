@@ -11,7 +11,9 @@ use crate::domain::entities::{
     ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
     SkillUsageInjectionKind, TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
 };
-use crate::domain::repositories::{ProjectSkillListOptions, UpsertTaskOutcomeInput};
+use crate::domain::repositories::{
+    ProjectSkillListOptions, TaskOutcomeListOptions, UpsertTaskOutcomeInput,
+};
 use crate::domain::services::{
     new_empty_task_outcome, new_skill_usage_event, ProjectSkillImportCandidate,
 };
@@ -972,6 +974,19 @@ async fn process_conversation_project_skills_queues_existing_chat_evidence() {
             .unwrap()
             .len(),
         1
+    );
+    let outcomes = app_state
+        .task_outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes[0].evidence_json["recurrence_key"]
+        .as_str()
+        .is_some_and(|key| key.starts_with("token-set-v1:")));
+    assert_eq!(
+        outcomes[0].evidence_json["recurrence_session"],
+        conversation_id.as_str()
     );
     assert!(app_state
         .project_skill_repo

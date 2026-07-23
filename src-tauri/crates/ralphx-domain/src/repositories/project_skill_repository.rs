@@ -26,6 +26,7 @@ pub enum ProjectSkillMatchedMutation {
 pub enum ProjectSkillResolutionIdentityKind {
     Content,
     Outcome,
+    Recurrence,
     VerificationGap,
     PullRequest,
     ImportExternal,

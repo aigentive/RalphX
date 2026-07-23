@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::entities::{ProjectId, Task, TaskOutcomeClass};
+use crate::domain::entities::{IdeationSessionId, ProjectId, Task, TaskOutcomeClass};
 use crate::domain::repositories::{TaskOutcomeListOptions, TaskOutcomeRepository};
 use crate::infrastructure::memory::MemoryTaskOutcomeRepository;
 
@@ -9,10 +9,11 @@ use super::merge_failure_outcomes::record_merge_failure_outcome;
 #[tokio::test]
 async fn merge_failure_outcomes_are_idempotent_per_attempt_and_comparable_across_attempts() {
     let repo = Arc::new(MemoryTaskOutcomeRepository::new());
-    let task = Task::new(
+    let mut task = Task::new(
         ProjectId::from_string("project-1".to_string()),
         "Merge task".to_string(),
     );
+    task.ideation_session_id = Some(IdeationSessionId::from_string("session-1"));
 
     let first = record_merge_failure_outcome(
         repo.clone(),
@@ -52,6 +53,10 @@ async fn merge_failure_outcomes_are_idempotent_per_attempt_and_comparable_across
     assert_eq!(later.evidence_json["attempt"], 2);
     assert_eq!(later.outcome_class, Some(TaskOutcomeClass::MergeConflict));
     assert_eq!(later.task_id.as_deref(), Some(task.id.as_str()));
+    assert_eq!(later.evidence_json["recurrence_session"], "session-1");
+    assert!(later.evidence_json["recurrence_key"]
+        .as_str()
+        .is_some_and(|key| key.starts_with("token-set-v1:")));
 
     let outcomes = repo
         .list_by_project(&task.project_id, TaskOutcomeListOptions::default())

@@ -8,6 +8,10 @@ use serde_json::Value;
 use crate::entities::types::ProjectId;
 use crate::error::AppError;
 
+pub const RECURRENCE_KEY_FIELD: &str = "recurrence_key";
+pub const RECURRENCE_SESSION_FIELD: &str = "recurrence_session";
+pub const RECURRENCE_KEY_PREFIX: &str = "token-set-v1:";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TaskOutcomeId(pub String);
 
@@ -435,6 +439,36 @@ pub struct TaskOutcome {
     pub provider_session_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskOutcomeRecurrenceCorpus {
+    pub eligible_observations: u64,
+    pub distinct_sessions: u64,
+}
+
+pub fn is_valid_recurrence_key(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix(RECURRENCE_KEY_PREFIX) else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+pub fn task_outcome_recurrence_metadata(outcome: &TaskOutcome) -> Option<(&str, &str)> {
+    let key = outcome
+        .evidence_json
+        .get(RECURRENCE_KEY_FIELD)?
+        .as_str()?
+        .trim();
+    let session = outcome
+        .evidence_json
+        .get(RECURRENCE_SESSION_FIELD)?
+        .as_str()?
+        .trim();
+    (is_valid_recurrence_key(key) && !session.is_empty()).then_some((key, session))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

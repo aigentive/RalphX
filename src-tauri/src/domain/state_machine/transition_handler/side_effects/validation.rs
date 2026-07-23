@@ -49,6 +49,12 @@ async fn record_merge_validation_failure_outcomes(
         })).collect::<Vec<_>>(),
         "validation_log": log,
     });
+    let recurrence_text = outcome.evidence_json.to_string();
+    crate::domain::services::failure_fingerprint::attach_recurrence_evidence(
+        &mut outcome.evidence_json,
+        &recurrence_text,
+        task.ideation_session_id.as_ref().map(|id| id.as_str()),
+    );
 
     let service = OutcomeLedgerService::new(Arc::clone(repo));
     if let Err(error) = service.record_outcome(outcome).await {

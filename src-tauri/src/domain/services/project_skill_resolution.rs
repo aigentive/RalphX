@@ -133,6 +133,12 @@ pub fn project_skill_resolution_identities(
     push_provenance_identity(
         &mut identities,
         skill,
+        ProjectSkillResolutionIdentityKind::Recurrence,
+        &["additional", "recurrence_key"],
+    );
+    push_provenance_identity(
+        &mut identities,
+        skill,
         ProjectSkillResolutionIdentityKind::VerificationGap,
         &["additional", "verification_gap_fingerprint"],
     );
@@ -549,6 +555,9 @@ fn skill_identity_values(
             ));
             values
         }
+        ProjectSkillResolutionIdentityKind::Recurrence => {
+            provenance_string_values(&skill.provenance_json, &["additional", "recurrence_key"])
+        }
         ProjectSkillResolutionIdentityKind::VerificationGap => provenance_string_values(
             &skill.provenance_json,
             &["additional", "verification_gap_fingerprint"],
@@ -741,13 +750,14 @@ fn normalized_import_title(title: &str, bucket: &str, stage: &str) -> String {
 
 fn identity_kind_rank(kind: ProjectSkillResolutionIdentityKind) -> u8 {
     match kind {
-        ProjectSkillResolutionIdentityKind::VerificationGap => 0,
-        ProjectSkillResolutionIdentityKind::Outcome => 1,
-        ProjectSkillResolutionIdentityKind::PullRequest => 2,
-        ProjectSkillResolutionIdentityKind::ImportExternal => 3,
-        ProjectSkillResolutionIdentityKind::Memory => 4,
-        ProjectSkillResolutionIdentityKind::SourcePath => 5,
-        ProjectSkillResolutionIdentityKind::ImportTitle => 6,
-        ProjectSkillResolutionIdentityKind::Content => 7,
+        ProjectSkillResolutionIdentityKind::Recurrence => 0,
+        ProjectSkillResolutionIdentityKind::VerificationGap => 1,
+        ProjectSkillResolutionIdentityKind::Outcome => 2,
+        ProjectSkillResolutionIdentityKind::PullRequest => 3,
+        ProjectSkillResolutionIdentityKind::ImportExternal => 4,
+        ProjectSkillResolutionIdentityKind::Memory => 5,
+        ProjectSkillResolutionIdentityKind::SourcePath => 6,
+        ProjectSkillResolutionIdentityKind::ImportTitle => 7,
+        ProjectSkillResolutionIdentityKind::Content => 8,
     }
 }

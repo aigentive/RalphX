@@ -15,7 +15,7 @@ use crate::error::{AppError, AppResult};
 use chrono::{DateTime, Duration, Utc};
 
 use super::project_skill_distillation_batching::{
-    bucket_for_outcome_source, build_batch, verification_gap_fingerprint,
+    bucket_for_outcome_source, build_batch, recurrence_key, verification_gap_fingerprint,
 };
 
 pub const SKILL_DISTILLER_PROFILE: &str = "skill_distiller";
@@ -337,8 +337,13 @@ impl ProjectSkillDistillationService {
                 .then_with(|| left.id.as_str().cmp(right.id.as_str()))
         });
 
+        let mut by_recurrence = BTreeMap::<String, Vec<TaskOutcome>>::new();
         let mut by_bucket = BTreeMap::<String, Vec<TaskOutcome>>::new();
         for outcome in outcomes {
+            if let Some(key) = recurrence_key(&outcome).map(str::to_string) {
+                by_recurrence.entry(key).or_default().push(outcome);
+                continue;
+            }
             if verification_gap_fingerprint(&outcome).is_some() {
                 self.batch_repo
                     .insert_if_absent(build_batch(
@@ -353,6 +358,18 @@ impl ProjectSkillDistillationService {
                 .entry(bucket_for_outcome_source(outcome.source).to_string())
                 .or_default()
                 .push(outcome);
+        }
+
+        for outcomes in by_recurrence.into_values() {
+            for chunk in outcomes.chunks(PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS) {
+                let bucket = chunk
+                    .first()
+                    .map(|outcome| bucket_for_outcome_source(outcome.source))
+                    .unwrap_or("execution");
+                self.batch_repo
+                    .insert_if_absent(build_batch(project_id, bucket, chunk))
+                    .await?;
+            }
         }
 
         for (bucket, outcomes) in by_bucket {

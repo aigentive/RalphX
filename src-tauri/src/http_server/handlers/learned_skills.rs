@@ -255,7 +255,23 @@ pub async fn process_conversation_project_skills(
             message: Some("No conversation evidence was available to queue.".to_string()),
         }));
     }
-    let evidence = build_conversation_skill_evidence(&conversation_id, &messages);
+    let mut evidence = build_conversation_skill_evidence(&conversation_id, &messages);
+    let recurrence_text = messages
+        .iter()
+        .filter(|message| !message.content.trim().is_empty())
+        .map(|message| message.content.trim())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let recurrence_session = conversation
+        .provider_session_id
+        .as_deref()
+        .unwrap_or(conversation_id.as_str())
+        .to_string();
+    crate::domain::services::failure_fingerprint::attach_recurrence_evidence(
+        &mut evidence,
+        &recurrence_text,
+        Some(&recurrence_session),
+    );
     let mut outcome = new_empty_task_outcome(
         project_id.clone(),
         TaskOutcomeSource::AgentConversation,

@@ -10,6 +10,7 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::chat_service::MockChatService;
 use crate::domain::entities::agent_run::PersonaRunAttribution;
+use crate::domain::entities::learned_skill::TaskOutcomeRecurrenceCorpus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
@@ -64,6 +65,14 @@ impl TaskOutcomeRepository for FailingTaskOutcomeRepository {
         _project_id: &ProjectId,
         _options: TaskOutcomeListOptions,
     ) -> AppResult<Vec<TaskOutcome>> {
+        Err(AppError::Database("outcome ledger unavailable".to_string()))
+    }
+
+    async fn recurrence_corpus(
+        &self,
+        _project_id: &ProjectId,
+        _recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus> {
         Err(AppError::Database("outcome ledger unavailable".to_string()))
     }
 }

@@ -447,6 +447,9 @@ fn build_candidate(
             provenance_json["additional"]["verification_gap_fingerprint"] =
                 serde_json::Value::String(fingerprint);
         }
+        if let Some(key) = trusted_recurrence_key(batch) {
+            provenance_json["additional"]["recurrence_key"] = serde_json::Value::String(key);
+        }
     }
     ProjectSkill {
         id: ProjectSkillId::new(),
@@ -478,6 +481,15 @@ fn distillation_resolution(
     Vec<ProjectSkillResolutionIdentity>,
     ProjectSkillMatchedMutation,
 ) {
+    if let Some(key) = trusted_recurrence_key(batch) {
+        return (
+            vec![ProjectSkillResolutionIdentity {
+                kind: ProjectSkillResolutionIdentityKind::Recurrence,
+                value: key,
+            }],
+            ProjectSkillMatchedMutation::AppendEvidence,
+        );
+    }
     if let Some(fingerprint) = trusted_verification_gap_fingerprint(batch) {
         return (
             vec![ProjectSkillResolutionIdentity {
@@ -498,6 +510,19 @@ fn distillation_resolution(
             .collect(),
         ProjectSkillMatchedMutation::PatchExisting,
     )
+}
+
+fn trusted_recurrence_key(batch: &ProjectSkillEvidenceBatch) -> Option<String> {
+    let mut keys = batch.items.iter().map(|item| {
+        item.digest
+            .strip_prefix("recurrence_key=")
+            .and_then(|rest| rest.lines().next())
+            .map(str::trim)
+            .filter(|key| crate::domain::entities::learned_skill::is_valid_recurrence_key(key))
+    });
+    let first = keys.next()??;
+    keys.all(|key| key == Some(first))
+        .then(|| first.to_string())
 }
 
 fn trusted_verification_gap_fingerprint(batch: &ProjectSkillEvidenceBatch) -> Option<String> {

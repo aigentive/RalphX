@@ -373,3 +373,54 @@ async fn verification_gap_batch_uses_the_trusted_gap_fingerprint() {
         .digest
         .starts_with(&format!("verification_gap_fingerprint={fingerprint}\n")));
 }
+
+#[tokio::test]
+async fn recurrence_batch_groups_equivalent_cross_source_evidence() {
+    let project_id = ProjectId::from_string("project-recurrence".to_string());
+    let (service, outcomes, batches, _settings, _events) = service_fixture(&project_id).await;
+    let key = format!("token-set-v1:{}", "c".repeat(64));
+    let mut review = eligible_outcome(&project_id, 1, 0, 20);
+    review.source = TaskOutcomeSource::Review;
+    review.evidence_json = serde_json::json!({
+        "summary": "Missing widget",
+        "recurrence_key": key,
+        "recurrence_session": "session-1",
+    });
+    let mut merge = eligible_outcome(&project_id, 2, 0, 20);
+    merge.source = TaskOutcomeSource::MergeValidation;
+    merge.evidence_json = serde_json::json!({
+        "summary": "widget missing",
+        "recurrence_key": key,
+        "recurrence_session": "session-2",
+    });
+    for outcome in [review.clone(), merge.clone()] {
+        outcomes
+            .upsert(UpsertTaskOutcomeInput { outcome })
+            .await
+            .expect("seed recurrence outcome");
+    }
+
+    let preparation = service
+        .prepare_explicit_claims(
+            &project_id,
+            ProjectSkillDistillationSelection::ExactOutcomes(vec![
+                review.id.clone(),
+                merge.id.clone(),
+            ]),
+            1_800,
+        )
+        .await
+        .expect("prepare recurrence claim");
+
+    assert_eq!(preparation.prepared.len(), 1);
+    let batch = batches
+        .get_by_outcome_id(&project_id, &review.id)
+        .await
+        .expect("read recurrence batch")
+        .expect("recurrence batch");
+    assert_eq!(batch.items.len(), 2);
+    assert!(batch
+        .items
+        .iter()
+        .all(|item| item.digest.starts_with(&format!("recurrence_key={key}\n"))));
+}

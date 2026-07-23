@@ -53,6 +53,13 @@ fn outcome_identity(value: &str) -> ProjectSkillResolutionIdentity {
     }
 }
 
+fn recurrence_identity(value: &str) -> ProjectSkillResolutionIdentity {
+    ProjectSkillResolutionIdentity {
+        kind: ProjectSkillResolutionIdentityKind::Recurrence,
+        value: value.to_string(),
+    }
+}
+
 fn upsert_command(
     candidate: ProjectSkill,
     mutation: ProjectSkillMatchedMutation,
@@ -106,6 +113,105 @@ async fn create_and_duplicate_share_one_versioned_resolution_path() {
     assert_eq!(
         repo.list_versions(&created.skill.id).await.unwrap().len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn recurrence_identity_appends_evidence_through_the_existing_resolution_path() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let key = format!("token-set-v1:{}", "d".repeat(64));
+    let repo: Arc<dyn ProjectSkillRepository> = Arc::new(MemoryProjectSkillRepository::new());
+    let service = ProjectSkillResolutionService::new(Arc::clone(&repo));
+    let existing = skill(
+        &project_id,
+        "recurrence-skill",
+        ProjectSkillLifecycleStatus::Staged,
+        "Existing body",
+        serde_json::json!({ "additional": { "recurrence_key": key } }),
+    );
+    repo.seed_for_test(existing.clone()).await.unwrap();
+    let candidate = skill(
+        &project_id,
+        "candidate",
+        ProjectSkillLifecycleStatus::Staged,
+        "Ignored replacement",
+        serde_json::json!({
+            "additional": { "recurrence_key": key },
+            "outcome_id": "outcome-2",
+        }),
+    );
+
+    let result = service
+        .resolve(ProjectSkillResolutionCommand {
+            candidate,
+            intent: ProjectSkillResolutionIntent::Upsert {
+                identities: vec![recurrence_identity(&key)],
+                matched_mutation: ProjectSkillMatchedMutation::AppendEvidence,
+            },
+            evidence_markdown: Some("## Additional evidence\n\n- session two".to_string()),
+            staging_policy: None,
+        })
+        .await
+        .expect("append recurrence evidence");
+
+    assert_eq!(
+        result.outcome,
+        ProjectSkillResolutionOutcome::AppendEvidence
+    );
+    assert_eq!(result.skill.id, existing.id);
+    assert!(result.skill.body_markdown.contains("session two"));
+}
+
+#[tokio::test]
+async fn recurrence_identity_keeps_approved_guidance_immutable_and_creates_a_companion() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let key = format!("token-set-v1:{}", "e".repeat(64));
+    let repo: Arc<dyn ProjectSkillRepository> = Arc::new(MemoryProjectSkillRepository::new());
+    let service = ProjectSkillResolutionService::new(Arc::clone(&repo));
+    let approved = skill(
+        &project_id,
+        "approved-recurrence",
+        ProjectSkillLifecycleStatus::Approved,
+        "Approved body",
+        serde_json::json!({ "additional": { "recurrence_key": key } }),
+    );
+    repo.seed_for_test(approved.clone()).await.unwrap();
+    let candidate = skill(
+        &project_id,
+        "candidate",
+        ProjectSkillLifecycleStatus::Staged,
+        "Agent-authored recurrence revision",
+        serde_json::json!({
+            "additional": { "recurrence_key": key },
+            "outcome_id": "outcome-2",
+        }),
+    );
+
+    let result = service
+        .resolve(ProjectSkillResolutionCommand {
+            candidate,
+            intent: ProjectSkillResolutionIntent::Upsert {
+                identities: vec![recurrence_identity(&key)],
+                matched_mutation: ProjectSkillMatchedMutation::AppendEvidence,
+            },
+            evidence_markdown: Some("## Additional evidence\n\n- second session".to_string()),
+            staging_policy: None,
+        })
+        .await
+        .expect("create recurrence companion");
+
+    assert_eq!(result.outcome, ProjectSkillResolutionOutcome::CreateNew);
+    assert_eq!(
+        result.skill.companion_of_skill_id,
+        Some(approved.id.clone())
+    );
+    assert_eq!(
+        repo.get_by_id(&approved.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .body_markdown,
+        "Approved body"
     );
 }
 

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use crate::domain::entities::learned_skill::TaskOutcomeRecurrenceCorpus;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
@@ -185,4 +186,10 @@ pub trait TaskOutcomeRepository: Send + Sync {
         project_id: &ProjectId,
         options: TaskOutcomeListOptions,
     ) -> AppResult<Vec<TaskOutcome>>;
+
+    async fn recurrence_corpus(
+        &self,
+        project_id: &ProjectId,
+        recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus>;
 }
