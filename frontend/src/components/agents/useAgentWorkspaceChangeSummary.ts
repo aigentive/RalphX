@@ -374,11 +374,13 @@ export function useAgentWorkspaceChangeSummary({
     supportsWorktreeModes,
     workspaceChangeCount: !enabled
       ? 0
-      : liveSummary != null
+      : review != null
+        ? review.changes.length
+        : liveSummary != null
         ? liveSummary.staged.fileCount +
           liveSummary.unstaged.fileCount +
           (liveSummary.conflicted?.fileCount ?? 0)
-        : review?.changes.length ?? 0,
+        : 0,
     currentFileCount,
     conflictedCount,
     stagedCount,
