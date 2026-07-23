@@ -840,10 +840,10 @@ describe("AutomationDetailView", () => {
     await openRunsTab();
 
     const successCard = screen.getByTestId("automation-run-run-success-card");
-    expect(successCard.style.backgroundColor).toContain("--bg-elevated");
-    expect(successCard.style.borderColor).toContain("--border-subtle");
+    expect(successCard.style.backgroundColor).toContain("--status-success-muted");
+    expect(successCard.style.borderColor).toContain("--status-success-border");
     expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toEqual(
-      expect.stringContaining("--text-subtle"),
+      expect.stringContaining("--status-success"),
     );
 
     const progressCard = screen.getByTestId("automation-run-run-progress-card");
@@ -951,7 +951,7 @@ describe("AutomationDetailView", () => {
     const timestamps = within(configPanel).getByTestId("automation-config-timestamps");
     expect(timestamps).toHaveTextContent("Created");
     expect(timestamps).toHaveTextContent("Updated");
-    expect(configPanel).toHaveTextContent("Paused: release freeze. Waiting on base branch");
+    expect(configPanel).toHaveTextContent("Paused: Release freeze. Waiting on base branch");
     expect(within(card).queryByText("No spec linked yet.")).not.toBeInTheDocument();
 
     await user.click(within(card).getByRole("tab", { name: "Spec" }));
@@ -1061,7 +1061,7 @@ describe("AutomationDetailView", () => {
       {
         automation: automation({
           status: "paused",
-          pausedReasonCode: "release_freeze",
+          pausedReasonCode: "workspace_review_blocked",
           pausedReasonDetail: "Waiting on base branch",
           baseSourcePullRequestJson: null,
           goalItemsJson: "not-json",
@@ -1074,7 +1074,7 @@ describe("AutomationDetailView", () => {
 
     await screen.findByTestId("automation-detail-view");
     const pauseNotice = screen.getByTestId("automation-paused-reason");
-    expect(pauseNotice).toHaveTextContent("Paused: release freeze.");
+    expect(pauseNotice).toHaveTextContent("Paused: Workspace review blocked.");
     expect(pauseNotice).toHaveTextContent("Waiting on base branch");
     expect(pauseNotice).toHaveAttribute("data-tone", "warning");
     // estimatedUsd is null → the Estimated cost row is omitted instead of

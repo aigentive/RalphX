@@ -21,9 +21,41 @@ function statusTone(status: string): StatusPillTone {
   return "neutral";
 }
 
+export function statusDotColor(status: string): string {
+  const tone = statusTone(status);
+  if (tone === "accent") {
+    return "var(--accent-primary, #ff6b35)";
+  }
+  if (tone === "success") {
+    return "var(--status-success, #2eb867)";
+  }
+  if (tone === "warning") {
+    return "var(--status-warning, #f4c025)";
+  }
+  if (tone === "error") {
+    return "var(--status-error, #dd3c3c)";
+  }
+  return "var(--text-subtle, #6a6a72)";
+}
+
 /** Compatibility shim over the design-system {@link StatusPill}. */
-export function Pill({ label, status }: { label: string; status: string }) {
-  return <StatusPill label={label} size="md" tone={statusTone(status)} />;
+export function Pill({
+  label,
+  status,
+  live = false,
+}: {
+  label: string;
+  status: string;
+  live?: boolean;
+}) {
+  return (
+    <StatusPill
+      label={label}
+      size="md"
+      tone={statusTone(status)}
+      live={live}
+    />
+  );
 }
 
 export function FieldLabel({

@@ -13,6 +13,27 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   agent_failed: "Agent run failed",
 };
 
+export const PAUSED_REASON_LABELS: Record<string, string> = {
+  judge_stopped_unmet: "Judge stopped — goal unmet",
+  workspace_review_blocked: "Workspace review blocked",
+  max_consecutive_failures: "Too many consecutive failures",
+  max_runs_exhausted: "Maximum runs reached",
+  plan_revision_exhausted: "Plan revision limit reached",
+  judge_failed: "Judge failed",
+  plan_judge_failed: "Plan judge failed",
+};
+
+export function describePausedReason(code: string): string {
+  const knownLabel = PAUSED_REASON_LABELS[code];
+  if (knownLabel) {
+    return knownLabel;
+  }
+  const normalized = code.replace(/_/g, " ").trim();
+  return normalized
+    ? `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`
+    : "Paused";
+}
+
 const REAL_SIGNAL_TERMINAL_STATUS_SET = new Set<AutomationRun["status"]>([
   "merged",
   "pr_closed",
@@ -367,7 +388,7 @@ export function describeAutomationStage(
   }
   if (automation.status === "paused") {
     return automation.pausedReasonCode
-      ? `Paused: ${automation.pausedReasonCode}`
+      ? describePausedReason(automation.pausedReasonCode)
       : "Paused";
   }
   if (automation.status === "completed") {

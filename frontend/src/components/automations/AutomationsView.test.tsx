@@ -167,7 +167,9 @@ describe("AutomationsView", () => {
 
     renderView();
 
-    expect(screen.getByTestId("automations-list-skeleton")).toBeInTheDocument();
+    const skeleton = screen.getByTestId("automations-list-skeleton");
+    expect(skeleton).toBeInTheDocument();
+    expect(skeleton.firstElementChild).toHaveClass("min-h-[64px]");
     expect(listAutomationsMock).not.toHaveBeenCalled();
 
     await waitFor(() =>
@@ -197,11 +199,19 @@ describe("AutomationsView", () => {
     const row = await screen.findByTestId("automation-row-automation-1");
     expect(row).toBeInTheDocument();
     expect(within(row).getByText("Ship migration loop")).toBeInTheDocument();
-    expect(within(row).getByText("Demo Project")).toBeInTheDocument();
-    expect(row).toHaveTextContent("edit · codex/gpt-5.4/high");
+    expect(screen.getByText("Demo Project · 1 automations")).toBeInTheDocument();
+    expect(within(row).queryByText("Demo Project")).not.toBeInTheDocument();
+    expect(row).toHaveTextContent("2 phases · edit · gpt-5.4");
+    expect(row).not.toHaveTextContent("codex/");
+    expect(row).not.toHaveTextContent("/high");
     expect(screen.getByTestId("automation-row-automation-1-metadata")).toHaveTextContent(
-      "Goal set · 2 phases · First run ready",
+      "Waiting for first run · 2 phases · edit · gpt-5.4",
     );
+    expect(within(row).getByText("Active").closest("[data-tone]")).toHaveAttribute(
+      "data-tone",
+      "accent",
+    );
+    expect(screen.queryByText("PROJECT")).not.toBeInTheDocument();
   });
 
   it("renders a project selector in the header and reports project changes", async () => {
@@ -272,8 +282,28 @@ describe("AutomationsView", () => {
 
   it("summarizes all automation statuses and next-action branches", async () => {
     const rows = [
-      automation({ id: "draft", name: "Draft automation", status: "draft", logicalEffort: null }),
-      automation({ id: "paused", name: "Paused automation", status: "paused", pausedReasonCode: "review_gate" }),
+      automation({
+        id: "draft",
+        name: "Draft automation",
+        status: "draft",
+        goalPrompt: "",
+        goalItemsJson: null,
+        firstRunPrompt: null,
+        logicalEffort: null,
+      }),
+      automation({
+        id: "paused",
+        name: "Paused automation",
+        status: "paused",
+        pausedReasonCode: "workspace_review_blocked",
+      }),
+      automation({
+        id: "paused-plain",
+        name: "Plain paused automation",
+        status: "paused",
+        pausedReasonCode: null,
+        goalItemsJson: '[{"id":"phase-1"}]',
+      }),
       automation({ id: "completed", name: "Completed automation", status: "completed" }),
       automation({ id: "stopped", name: "Stopped automation", status: "stopped" }),
       automation({ id: "empty-active", name: "Empty active automation", baseDisplayName: null, baseRef: "", baseRefKind: "current_branch" }),
@@ -307,10 +337,30 @@ describe("AutomationsView", () => {
     renderView({ onOpenAutomation: vi.fn() });
 
     expect(await screen.findByText("Draft automation")).toBeInTheDocument();
-    expect(await screen.findByText("Draft setup")).toBeInTheDocument();
-    expect(screen.getByText("Paused: review_gate")).toBeInTheDocument();
-    expect(screen.getByText("Goal completed")).toBeInTheDocument();
-    expect(screen.getAllByText("Stopped").length).toBeGreaterThan(0);
+    expect(
+      screen.getByTestId("automation-row-draft-metadata"),
+    ).toHaveTextContent("Draft setup · No goal · No phases · No first run");
+    await waitFor(() =>
+      expect(screen.getByTestId("automation-row-paused-metadata")).toHaveTextContent(
+        "Workspace review blocked · edit · gpt-5.4",
+      ),
+    );
+    expect(screen.getByTestId("automation-row-paused")).not.toHaveTextContent(
+      "workspace_review_blocked",
+    );
+    expect(screen.getByTestId("automation-row-paused-plain-metadata")).toHaveTextContent(
+      "1 phase · edit · gpt-5.4",
+    );
+    expect(screen.getByTestId("automation-row-paused-plain")).toHaveTextContent("Paused");
+    expect(
+      screen.getByTestId("automation-row-paused-plain").textContent?.match(/Paused/g),
+    ).toHaveLength(1);
+    expect(screen.getByTestId("automation-row-completed-metadata")).toHaveTextContent(
+      "Goal completed",
+    );
+    expect(screen.getByTestId("automation-row-stopped-metadata")).not.toHaveTextContent(
+      "Stopped",
+    );
     expect(
       within(screen.getByTestId("automation-row-paused")).getByText("Paused").closest("[data-tone]"),
     ).toHaveAttribute("data-tone", "warning");
@@ -318,27 +368,82 @@ describe("AutomationsView", () => {
       within(screen.getByTestId("automation-row-completed")).getByText("Completed").closest("[data-tone]"),
     ).toHaveAttribute("data-tone", "success");
     expect(
-      within(screen.getByTestId("automation-row-empty-active")).getByText("Approved").closest("[data-tone]"),
+      within(screen.getByTestId("automation-row-stopped")).getByText("Stopped").closest("[data-tone]"),
+    ).toHaveAttribute("data-tone", "neutral");
+    expect(screen.getByTestId("automation-row-paused-status-dot")).toHaveStyle({
+      backgroundColor: "var(--status-warning, #f4c025)",
+    });
+    expect(screen.getByTestId("automation-row-stopped-status-dot")).toHaveStyle({
+      backgroundColor: "var(--text-subtle, #6a6a72)",
+    });
+    expect(
+      within(screen.getByTestId("automation-row-empty-active")).getByText("Active").closest("[data-tone]"),
     ).toHaveAttribute("data-tone", "accent");
-    expect(screen.getByText("Waiting for first run")).toBeInTheDocument();
-    expect(screen.getByText("Terminal judge running")).toBeInTheDocument();
-    expect(screen.getByText("Terminal judge failed")).toBeInTheDocument();
-    expect(screen.getByText("Run 2 in progress")).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("automation-row-running"))
+        .getByText("Active")
+        .closest("[data-tone]")
+        ?.querySelector(".animate-pulse"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("automation-row-empty-active-metadata")).toHaveTextContent(
+      "Waiting for first run",
+    );
+    expect(screen.getByTestId("automation-row-judging-metadata")).toHaveTextContent(
+      "Terminal judge running",
+    );
+    expect(screen.getByTestId("automation-row-judge-failed-metadata")).toHaveTextContent(
+      "Terminal judge failed",
+    );
+    expect(screen.getByTestId("automation-row-running-metadata")).toHaveTextContent(
+      "Run 2 in progress",
+    );
     expect(
       within(screen.getByTestId("automation-row-awaiting-plan")).getByText(
-        "Run 2 Awaiting plan approval",
+        "Run 2 · Awaiting plan approval",
       ),
     ).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId("automation-row-awaiting-plan")).getByText(
-        "Awaiting plan approval",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Waiting for PR merge")).toBeInTheDocument();
-    expect(screen.getByText("Waiting for PR #593 to merge")).toBeInTheDocument();
-    expect(screen.getByText("Terminal judge pending")).toBeInTheDocument();
-    expect(screen.getByText("Scheduling next run")).toBeInTheDocument();
-    expect(screen.getByText("current_branch")).toBeInTheDocument();
-    expect(screen.getAllByText("0 / 25").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("automation-row-awaiting-plan-metadata")).toHaveTextContent(
+      "Awaiting plan approval",
+    );
+    expect(screen.getByTestId("automation-row-published-no-pr-metadata")).toHaveTextContent(
+      "Waiting for PR merge",
+    );
+    expect(screen.getByTestId("automation-row-published-with-pr-metadata")).toHaveTextContent(
+      "Waiting for PR #593 to merge",
+    );
+    expect(screen.getByTestId("automation-row-waiting-judge-metadata")).toHaveTextContent(
+      "Terminal judge pending",
+    );
+    expect(screen.getByTestId("automation-row-scheduling-metadata")).toHaveTextContent(
+      "Scheduling next run",
+    );
+    expect(screen.queryByText("current_branch")).not.toBeInTheDocument();
+    expect(screen.getAllByText("0/25").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("automation-row-running-runs-progress-fill")).toHaveStyle({
+      backgroundColor: "var(--accent-primary, #ff6b35)",
+      width: "4%",
+    });
+    expect(screen.queryByTestId("automation-row-draft-runs-progress")).not.toBeInTheDocument();
+  });
+
+  it("uses error color only for a failed last-run outcome", async () => {
+    const item = automation({ id: "failed-latest" });
+    const failedRun = run({
+      automationId: item.id,
+      runIndex: 9,
+      status: "agent_failed",
+      judgeState: "none",
+    });
+    listAutomationsMock.mockResolvedValue([item]);
+    getAutomationMock.mockResolvedValue({
+      automation: item,
+      runs: [failedRun],
+      usage: emptyUsage,
+    });
+
+    renderView({ onOpenAutomation: vi.fn() });
+
+    const lastRun = await screen.findByText("Run 9 · Agent failed");
+    expect(lastRun).toHaveStyle({ color: "var(--status-error, #dd3c3c)" });
   });
 });

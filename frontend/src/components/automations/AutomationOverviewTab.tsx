@@ -7,6 +7,7 @@ import type {
   AutomationRun,
   AutomationUsage,
 } from "@/api/automations";
+import { describePausedReason } from "@/components/automations/automationRunView";
 import { isOpenAutomationRun } from "@/components/automations/automationStage";
 import {
   AUTOMATION_PHASES_LABEL,
@@ -418,7 +419,7 @@ export function AutomationOverviewTab({
                 <NoticeBanner
                   tone="warning"
                   icon={<Pause className="h-4 w-4" aria-hidden="true" />}
-                  title={`Paused: ${automation.pausedReasonCode.replace(/_/g, " ")}.`}
+                  title={`Paused: ${describePausedReason(automation.pausedReasonCode)}.`}
                   className="mt-4"
                   testId="automation-paused-reason"
                 >
