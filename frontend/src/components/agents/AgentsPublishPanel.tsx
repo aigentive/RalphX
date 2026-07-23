@@ -67,6 +67,7 @@ import { useConfirmation } from "@/hooks/useConfirmation";
 import { useReviewSettings } from "@/hooks/useReviewSettings";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import { AgentsPublishActionBar } from "./AgentsPublishActionBar";
 import { PublishEventLog } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
 import {
@@ -97,7 +98,10 @@ import {
 } from "./agentWorkspaceQueries";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentPublishSubTab } from "./agentPublishSubTab";
-import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
+import {
+  getAgentWorkspaceChangeFacts,
+  mapReviewCommitsToDiffViewerCommits,
+} from "./useAgentWorkspaceChangeSummary";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
 import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
@@ -894,12 +898,14 @@ export function AgentPublishPanel({
       return {
         title: "Pull Request Merged",
         summary: `${terminalPrLabel} has been merged. By continuing this conversation, a new workspace branch will be created automatically.`,
+        tone: "success" as const,
       };
     }
     if (terminalPublicationStatus === "closed") {
       return {
         title: "Pull Request Closed",
         summary: `${terminalPrLabel} is closed. By continuing this conversation, a new workspace branch will be created automatically.`,
+        tone: "neutral" as const,
       };
     }
     if (isRepairPending) {
@@ -907,6 +913,7 @@ export function AgentPublishPanel({
         title: "Repair in progress",
         summary:
           "RalphX routed this workspace to the agent for repair. Publishing will resume after the repair completes.",
+        tone: "warning" as const,
       };
     }
     if (isPublishingThisWorkspace) {
@@ -914,6 +921,8 @@ export function AgentPublishPanel({
         title: "Publishing workspace",
         summary:
           "Follow the publish pipeline below while RalphX commits and publishes this workspace.",
+        tone: "neutral" as const,
+        busy: true,
       };
     }
     if (hasPrConflict) {
@@ -922,18 +931,22 @@ export function AgentPublishPanel({
         summary: autoPublishEnabled
           ? "Auto Publish is waiting for PR conflicts to be resolved. Resolve conflicts to update the branch from base."
           : "This pull request has conflicts. Resolve conflicts to update the branch from base before publishing can continue.",
+        tone: "warning" as const,
       };
     }
     if (isBranchUpdateNeeded) {
       return {
         title: isUpdatingFromBase ? "Updating branch" : "Update from base required",
         summary: `Base branch ${baseActionLabel} has new commits. Publishing will continue after this branch is updated.`,
+        tone: "warning" as const,
+        ...(isUpdatingFromBase ? { busy: true } : {}),
       };
     }
     if (baseBlocked) {
       return {
         title: "Publishing blocked",
         summary: "Publishing is blocked until the workspace base branch is resolved.",
+        tone: "warning" as const,
       };
     }
     if (reviewGateSummary && reviewGateStatus) {
@@ -948,7 +961,17 @@ export function AgentPublishPanel({
                 ? "Workspace Review required"
                 : null;
       if (title) {
-        return { title, summary: reviewGateSummary };
+        return {
+          title,
+          summary: reviewGateSummary,
+          tone:
+            reviewGateStatus === "failed"
+              ? ("error" as const)
+              : reviewGateStatus === "reviewing"
+                ? ("neutral" as const)
+                : ("warning" as const),
+          ...(reviewGateStatus === "reviewing" ? { busy: true } : {}),
+        };
       }
     }
     if (isManagedByTaskPipeline) {
@@ -958,6 +981,7 @@ export function AgentPublishPanel({
           workspace.publicationPrNumber || workspace.publicationPrUrl
             ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
             : "Publishing is managed by this ideation plan's task pipeline.",
+        tone: "neutral" as const,
       };
     }
     if (isDescriptionFailed) {
@@ -965,24 +989,29 @@ export function AgentPublishPanel({
         title: "Publishing failed",
         summary:
           "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event.",
+        tone: "error" as const,
       };
     }
     if (hasPublishedPr && !autoPublishEnabled) {
       return {
         title: "Automatic publishing paused",
         summary: "Automatic publishing is paused. Manual Commit & Publish remains available.",
+        tone: "warning" as const,
       };
     }
     if (!hasPublishedPr && autoPublishEnabled) {
       return {
         title: "Auto Publish enabled",
         summary: "Auto Publish will run Commit & Publish when the agent finishes.",
+        tone: "neutral" as const,
       };
     }
     if (isChangesLoading) {
       return {
         title: "Checking workspace changes",
         summary: "Loading changed files...",
+        tone: "neutral" as const,
+        busy: true,
       };
     }
     if (isPublishCurrent) {
@@ -992,23 +1021,27 @@ export function AgentPublishPanel({
           reviewQuery.isSuccess && changes.length > 0
             ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} published for review.`
             : "Workspace is published and current.",
+        tone: "success" as const,
       };
     }
     if (reviewQuery.isSuccess && changes.length > 0) {
       return {
         title: "Ready to publish",
         summary: `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`,
+        tone: "warning" as const,
       };
     }
     if (reviewQuery.isSuccess) {
       return {
         title: "No changes to publish",
         summary: "No changed files detected yet.",
+        tone: "neutral" as const,
       };
     }
     return {
       title: "Review workspace changes",
       summary: "Review changes before publishing.",
+      tone: "neutral" as const,
     };
   })();
   const confirmUpdateFromBase = () => {
@@ -1165,6 +1198,41 @@ export function AgentPublishPanel({
     onSubTabChange(value);
   };
   const changedFileCount = reviewQuery.isSuccess ? changes.length : null;
+  const publishChangeFacts =
+    terminalPublicationStatus || isRepairPending
+      ? null
+      : getAgentWorkspaceChangeFacts(
+          changeSummaryQuery.data,
+          reviewQuery.data,
+        );
+  const publishAutomationStatus =
+    shouldShowPrSupervisionControls && prSupervisionStatusLabel
+      ? {
+          label: prSupervisionStatusLabel,
+          tone:
+            autoMergeGuardSummary?.status === "error" ||
+            prSupervisionStatus === "blocked"
+              ? ("error" as const)
+              : hasPrConflict ||
+                  !autoPublishEnabled ||
+                  autoMergeGuardSummary?.status === "active"
+                ? ("warning" as const)
+                : isAutoPublishSaving ||
+                    isPrSupervisionSaving ||
+                    prSupervisionStatus === "fixing" ||
+                    prSupervisionStatus === "waiting_for_checks" ||
+                    prAutofixEnabled ||
+                    prAutoMergeDesired
+                  ? ("accent" as const)
+                  : ("neutral" as const),
+          live:
+            isAutoPublishSaving ||
+            isPrSupervisionSaving ||
+            prSupervisionStatus === "fixing" ||
+            prSupervisionStatus === "waiting_for_checks" ||
+            autoMergeGuardSummary?.status === "pending",
+        }
+      : null;
 
   return (
     <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
@@ -1175,22 +1243,19 @@ export function AgentPublishPanel({
       >
         <section
           className="sticky top-0 z-20 -mx-4 border-b px-4 py-4"
-          data-testid="agents-publish-actionbar"
           style={{
             backgroundColor: "var(--bg-surface)",
             borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "0 0 1px",
           }}
         >
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-                {publishPresentation.title}
-              </h2>
-              <div className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
-                {publishPresentation.summary}
-              </div>
-            </div>
-            <div className="col-span-2 flex max-w-full flex-wrap items-center justify-start gap-2">
+          <AgentsPublishActionBar
+            presentation={publishPresentation}
+            changeFacts={publishChangeFacts}
+            automationStatus={publishAutomationStatus}
+            primaryAction={
+              <>
               {isRepairPending ? (
                 <Button
                   type="button"
@@ -1303,24 +1368,33 @@ export function AgentPublishPanel({
                     : publishButtonLabel}
                 </Button>
               )}
+              </>
+            }
+            overflowAction={
+              <>
               {canClosePr && (
                 <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className="h-9 w-7 p-0 border-0 bg-transparent hover:bg-[var(--bg-hover)]"
-                      disabled={isClosingPr || effectivePublishing}
-                      aria-label="Publish actions"
-                      data-testid="agents-publish-actions-menu"
-                    >
-                      {isClosingPr ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <MoreVertical className="h-3.5 w-3.5" />
-                      )}
-                    </Button>
-                  </DropdownMenuTrigger>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-9 w-7 p-0 border-0 bg-transparent hover:bg-[var(--bg-hover)]"
+                          disabled={isClosingPr || effectivePublishing}
+                          aria-label="Publish actions"
+                          data-testid="agents-publish-actions-menu"
+                        >
+                          {isClosingPr ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <MoreVertical className="h-3.5 w-3.5" />
+                          )}
+                        </Button>
+                      </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent>Publish actions</TooltipContent>
+                  </Tooltip>
                   <DropdownMenuContent align="end" className="min-w-[160px]">
                     <DropdownMenuItem
                       data-testid="agents-close-pr"
@@ -1336,8 +1410,9 @@ export function AgentPublishPanel({
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
-            </div>
-          </div>
+              </>
+            }
+          />
           <TabsList
             className="mt-4 flex h-10 w-full justify-start gap-5 rounded-none border-y bg-transparent p-0 text-[var(--text-muted)]"
             style={{
@@ -1485,21 +1560,6 @@ export function AgentPublishPanel({
                   requirements pass.
                 </PublishSwitchInfoTooltip>
               </div>
-              {prSupervisionStatusLabel && (
-                <span
-                  className="rounded-full border px-2 py-1 text-[11px] font-medium"
-                  style={{
-                    backgroundColor: "var(--bg-elevated)",
-                    borderColor: "var(--border-subtle)",
-                    borderStyle: "solid",
-                    borderWidth: "1px",
-                    color: "var(--text-muted)",
-                  }}
-                  data-testid="agents-pr-supervision-status"
-                >
-                  {prSupervisionStatusLabel}
-                </span>
-              )}
             </div>
           )}
           {shouldShowPublishNotices && hasPrConflict && (

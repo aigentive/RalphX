@@ -168,6 +168,42 @@ describe("AgentsView publish", () => {
     });
   });
 
+  it("keeps publishing ahead of conflict presentation and action branches", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushing",
+        publicationPrNumber: 78,
+        prSupervisionStatus: "blocked",
+        prSupervisionSummary: "GitHub reported merge conflicts.",
+      },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          ...DEFAULT_AGENT_ARTIFACT_UI_STATE,
+          isOpen: true,
+          activeTab: "publish",
+        },
+      },
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+    const actionbar = await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    expect(
+      within(actionbar).getByRole("heading", { name: "Publishing workspace" }),
+    ).toBeInTheDocument();
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toBeDisabled();
+    expect(
+      within(actionbar).queryByTestId("agents-resolve-pr-conflicts"),
+    ).not.toBeInTheDocument();
+  });
+
   it.each([
     {
       name: "ready changes",
@@ -801,6 +837,18 @@ describe("AgentsView publish", () => {
     fireEvent.click(screen.getByTestId("agents-publish-workspace"));
 
     const pane = await screen.findByTestId("agents-artifact-pane");
+    const actionbar = within(pane).getByTestId("agents-publish-actionbar");
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByTestId("agents-publish-change-facts"),
+      ).toHaveTextContent("1 file"),
+    );
+    expect(within(actionbar).getByTestId("agents-publish-additions")).toHaveTextContent(
+      "+3",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-deletions")).toHaveTextContent(
+      "−1",
+    );
     await waitFor(() =>
       expect(within(pane).getByTestId("inline-diffs-file-count")).toHaveTextContent(
         "1",
@@ -833,7 +881,72 @@ describe("AgentsView publish", () => {
         "2",
       ),
     );
+    expect(
+      within(actionbar).getByTestId("agents-publish-change-facts"),
+    ).toHaveTextContent("2 files");
+    expect(within(actionbar).getByTestId("agents-publish-additions")).toHaveTextContent(
+      "+8",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-deletions")).toHaveTextContent(
+      "−1",
+    );
     expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to loaded review facts when live worktree totals are unavailable", async () => {
+    configurePublishPane({
+      changes: [
+        reviewFile,
+        {
+          path: "frontend/src/NewPanel.tsx",
+          status: "added",
+          additions: 6,
+          deletions: 0,
+          isGenerated: false,
+        },
+      ],
+    });
+    getWorkspaceChangeSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: false,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+    });
+
+    const actionbar = await openPublishPane();
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByTestId("agents-publish-change-facts"),
+      ).toHaveTextContent("2 files"),
+    );
+    expect(within(actionbar).getByTestId("agents-publish-additions")).toHaveTextContent(
+      "+7",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-deletions")).toHaveTextContent(
+      "−1",
+    );
+  });
+
+  it("keeps the overflow action accessible and disclosed by the app tooltip", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        autoPublishEnabled: false,
+      },
+      freshness: { hasUncommittedChanges: true },
+    });
+
+    const actionbar = await openPublishPane();
+    const overflow = within(actionbar).getByRole("button", {
+      name: "Publish actions",
+    });
+
+    fireEvent.focus(overflow);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Publish actions");
+    expect(within(actionbar).getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+      "Auto Publish paused",
+    );
   });
 
   it("shows a composer workspace changes summary from the compact live path and loads files on expand", async () => {

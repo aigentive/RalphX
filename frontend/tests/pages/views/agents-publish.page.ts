@@ -80,6 +80,10 @@ export class AgentsPublishPage extends BasePage {
     await expectPrimaryActionContained(this.page, this.publishPane, testId);
   }
 
+  async expectCompactPrStatus(label: string) {
+    await expect(this.page.getByLabel(label, { exact: true })).toBeVisible();
+  }
+
   async expectDiffRowsLoaded() {
     await expect(this.pagedDiffContent).toBeVisible();
     await expect(
