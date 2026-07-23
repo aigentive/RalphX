@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { TaskSubagentCard } from "./TaskSubagentCard";
@@ -56,6 +56,7 @@ function renderWithQueryClient(ui: React.ReactElement) {
 
 afterEach(() => {
   listeners.clear();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -126,6 +127,37 @@ describe("TaskSubagentCard", () => {
       "true",
     );
     expect(screen.getByTestId("delegate-runtime-details")).toBeInTheDocument();
+  });
+
+  it("uses backend clocks across remounts and freezes elapsed time at terminal settlement", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-23T00:00:03Z"));
+    const running = makeStreamingTask({
+      toolUseId: "delegate-clock",
+      toolName: "delegate_start",
+      subagentType: "delegated",
+      status: "running",
+      startedAt: Date.parse("2026-07-23T00:00:00Z"),
+      totalDurationMs: undefined,
+    });
+    const { rerender, unmount } = render(<TaskSubagentCard task={running} />);
+
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("3s");
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("4s");
+
+    const terminal = { ...running, status: "completed" as const, completedAt: Date.now(), totalDurationMs: 4_000 };
+    rerender(<TaskSubagentCard task={terminal} />);
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("4s");
+
+    unmount();
+    render(<TaskSubagentCard task={terminal} />);
+    expect(screen.getByRole("button", { name: /inspect repository layout/i })).toHaveTextContent("4s");
   });
 
   it("shows collapsed completed summary metrics", () => {

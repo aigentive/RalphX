@@ -8,6 +8,12 @@ import {
 } from "@/components/Chat/delegation-tool-calls";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 
+function parseBackendTimestamp(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 interface ActiveDelegationAliases {
   providerIdByTaskId: Map<string, string>;
   promotedProviderIds: Set<string>;
@@ -72,6 +78,11 @@ function mapActiveTaskToStreamingTask(
 ): StreamingTask {
   const isDelegated = task.delegated_job_id != null;
   const status = task.status as StreamingTask["status"];
+  const startedAt = parseBackendTimestamp(task.started_at) ?? existing?.startedAt ?? Date.now();
+  const parsedCompletedAt = parseBackendTimestamp(task.completed_at) ?? existing?.completedAt;
+  const completedAt = parsedCompletedAt != null && parsedCompletedAt >= startedAt
+    ? parsedCompletedAt
+    : undefined;
 
   return {
     toolUseId: task.tool_use_id,
@@ -88,9 +99,16 @@ function mapActiveTaskToStreamingTask(
       ?? existing?.model
       ?? "unknown",
     status,
-    startedAt: existing?.startedAt ?? Date.now(),
+    startedAt,
     childToolCalls: existing?.childToolCalls ?? [],
-    ...(existing?.completedAt != null ? { completedAt: existing.completedAt } : {}),
+    ...(completedAt != null ? { completedAt } : {}),
+    ...(task.timestamp_provenance === "delegated_run"
+      ? { clockSource: "delegated-run" as const }
+      : task.timestamp_provenance === "delegation_job"
+        ? { clockSource: "delegation-job" as const }
+        : existing?.clockSource
+          ? { clockSource: existing.clockSource }
+          : {}),
     ...(task.total_tokens != null
       ? { totalTokens: task.total_tokens }
       : existing?.totalTokens != null
@@ -207,7 +225,7 @@ function mapActiveTaskToStreamingTask(
       : existing?.textOutput
         ? { textOutput: existing.textOutput }
         : {}),
-    ...(existing?.seq != null ? { seq: existing.seq } : {}),
+    ...(task.seq != null ? { seq: task.seq } : existing?.seq != null ? { seq: existing.seq } : {}),
   };
 }
 

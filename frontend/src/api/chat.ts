@@ -521,6 +521,10 @@ export interface ActiveStreamingTaskResponse {
   cache_read_tokens?: number;
   estimated_usd?: number;
   text_output?: string;
+  started_at?: string;
+  completed_at?: string;
+  timestamp_provenance?: "delegated_run" | "delegation_job";
+  seq?: number;
 }
 
 /**
@@ -542,7 +546,14 @@ const ConversationActiveStateResponseSchema = z.object({
   streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
     if (value == null || typeof value !== "object") return false;
     const record = value as Record<string, unknown>;
-    return typeof record.tool_use_id === "string" && typeof record.status === "string";
+    return typeof record.tool_use_id === "string"
+      && typeof record.status === "string"
+      && (record.started_at == null || typeof record.started_at === "string")
+      && (record.completed_at == null || typeof record.completed_at === "string")
+      && (record.timestamp_provenance == null
+        || record.timestamp_provenance === "delegated_run"
+        || record.timestamp_provenance === "delegation_job")
+      && (record.seq == null || (typeof record.seq === "number" && Number.isFinite(record.seq)));
   })).default([]),
   partial_text: z.string().default(""),
 });

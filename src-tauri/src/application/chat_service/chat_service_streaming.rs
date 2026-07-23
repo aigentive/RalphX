@@ -2373,6 +2373,10 @@ pub async fn process_stream_background<R: Runtime>(
                             cache_read_tokens: None,
                             estimated_usd: None,
                             text_output: None,
+                            started_at: None,
+                            completed_at: None,
+                            timestamp_provenance: None,
+                            seq: Some(stream_seq),
                         };
                         streaming_state_cache
                             .add_task(&conversation_id_str, cached_task)
@@ -2403,6 +2407,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2462,6 +2469,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     input_tokens: None,
                                     output_tokens: None,
                                     cache_creation_tokens: None,
