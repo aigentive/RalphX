@@ -4,9 +4,10 @@ use serde_json::json;
 use std::process::Command;
 
 use super::automation_commands::{
-    automation_service, create_automation_draft_for_state, parse_automation_id,
-    parse_automation_run_id, parse_project_id, trigger_automation_run_now_for_state, trim_optional,
-    AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationSettingsInput,
+    automation_service, create_automation_draft_for_state, delete_automation_run,
+    parse_automation_id, parse_automation_run_id, parse_project_id, resume_automation_run,
+    trigger_automation_run_now_for_state, trim_optional, AutomationRunScopedInput,
+    CreateAutomationDraftInput, UpdateAutomationSettingsInput,
 };
 use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
 use crate::application::automation::api::{
@@ -27,6 +28,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{PlanArtifactApproval, PlanArtifactApprovalRepository};
 use crate::error::AppError;
+use tauri::Manager;
 
 struct FailingPlanApprovalRepository;
 
@@ -1076,5 +1078,119 @@ async fn run_now_command_applies_stored_verdict_without_deferred_placeholder() {
     assert_eq!(
         runs[1].run_prompt,
         "Implement the next automation item with focused tests and publish the follow-up PR."
+    );
+}
+
+#[tokio::test]
+async fn delete_automation_run_command_deletes_valid_target_and_rejects_empty_run_id() {
+    let state = AppState::new_test();
+    let mut stopped = automation();
+    stopped.status = AutomationStatus::Stopped;
+    let mut failed = automation_run(&stopped.id);
+    failed.status = AutomationRunStatus::AgentFailed;
+    failed.judge_state = AutomationJudgeState::Done;
+    failed.conversation_id = None;
+    failed.branch_name = None;
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    state
+        .automation_run_repo
+        .create_run(failed.clone())
+        .await
+        .unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let empty_error = delete_automation_run(
+        AutomationRunScopedInput {
+            id: stopped.id.to_string(),
+            run_id: "   ".to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(empty_error, "automation run id is required");
+    assert!(app
+        .state::<AppState>()
+        .automation_run_repo
+        .get_by_id(&failed.id)
+        .await
+        .unwrap()
+        .is_some());
+
+    delete_automation_run(
+        AutomationRunScopedInput {
+            id: format!("  {}  ", stopped.id),
+            run_id: format!("  {}  ", failed.id),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("command should delegate valid run deletion");
+
+    assert!(app
+        .state::<AppState>()
+        .automation_run_repo
+        .get_by_id(&failed.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(app
+        .state::<AppState>()
+        .automation_repo
+        .get_by_id(&stopped.id)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn resume_automation_run_command_maps_reopen_rejection_without_mutating_state() {
+    let state = AppState::new_test();
+    let mut paused = automation();
+    paused.status = AutomationStatus::Paused;
+    paused.paused_reason_code = Some("user_paused".to_string());
+    let completed = automation_run(&paused.id);
+    state.automation_repo.create(paused.clone()).await.unwrap();
+    state
+        .automation_run_repo
+        .create_run(completed.clone())
+        .await
+        .unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let error = resume_automation_run(
+        AutomationRunScopedInput {
+            id: paused.id.to_string(),
+            run_id: completed.id.to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("only a failed run can be resumed"));
+    assert_eq!(
+        app.state::<AppState>()
+            .automation_run_repo
+            .get_by_id(&completed.id)
+            .await
+            .unwrap(),
+        Some(completed)
+    );
+    assert_eq!(
+        app.state::<AppState>()
+            .automation_repo
+            .get_by_id(&paused.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Paused
     );
 }
