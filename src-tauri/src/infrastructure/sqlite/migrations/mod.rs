@@ -536,6 +536,9 @@ mod v20260723012559_agent_workspace_pr_metadata_decision_tests;
 mod v20260723065349_pr_autofix_completed_supervision_history;
 #[cfg(test)]
 mod v20260723065349_pr_autofix_completed_supervision_history_tests;
+mod v20260723100604_app_state_update_channel;
+#[cfg(test)]
+mod v20260723100604_app_state_update_channel_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -630,7 +633,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260723065349;
+pub const SCHEMA_VERSION: i64 = 20260723100604;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1734,6 +1737,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260723065349,
         name: "pr_autofix_completed_supervision_history",
         migrate: v20260723065349_pr_autofix_completed_supervision_history::migrate,
+    },
+    Migration {
+        version: 20260723100604,
+        name: "app_state_update_channel",
+        migrate: v20260723100604_app_state_update_channel::migrate,
     },
 ];
 

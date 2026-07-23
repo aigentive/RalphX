@@ -66,6 +66,16 @@ const mockReviewSettings = {
   run_task_validations: true,
 };
 
+let mockUpdateChannel: "stable" | "nightly" = "stable";
+
+type MockUpdateChannelError = "read" | "write";
+
+function getMockUpdateChannelError(): MockUpdateChannelError | undefined {
+  return (
+    window as Window & { __mockUpdateChannelError?: MockUpdateChannelError }
+  ).__mockUpdateChannelError;
+}
+
 const mockExternalMcpConfig = {
   enabled: true,
   port: 3848,
@@ -3157,6 +3167,35 @@ const commandHandlers: Record<
     };
   },
   get_review_settings: async () => ({ ...mockReviewSettings }),
+  get_update_channel: async () => {
+    if (getMockUpdateChannelError() === "read") {
+      throw new Error("Mock update channel read failure");
+    }
+    return mockUpdateChannel;
+  },
+  set_update_channel: async (args) => {
+    if (getMockUpdateChannelError() === "write") {
+      throw new Error("Mock update channel write failure");
+    }
+    const updateChannel = args.updateChannel;
+    if (updateChannel === "stable" || updateChannel === "nightly") {
+      mockUpdateChannel = updateChannel;
+    }
+    return mockUpdateChannel;
+  },
+  list_release_notes_versions: async () => ["0.76.0", "0.75.0", "0.74.0"],
+  get_release_notes_for_version: async (args) => ({
+    version: String(args.version),
+    body: `## RalphX ${String(args.version)}\n\n- Release history improvements\n- Faster agent workflows`,
+    source: "development_checkout",
+  }),
+  get_current_release_notes: async () => ({
+    version: "0.76.0",
+    body: null,
+    source: "development_checkout",
+  }),
+  get_last_seen_release_notes_version: async () => "0.76.0",
+  mark_release_notes_seen: async () => undefined,
   update_review_settings: async (args) => {
     const input = args.input as {
       requireHumanReview?: boolean;
