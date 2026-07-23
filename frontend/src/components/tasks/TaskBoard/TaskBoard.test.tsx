@@ -127,7 +127,6 @@ describe("TaskBoard", () => {
     useUiStore.setState({
       boardSearchQuery: null,
       kanbanCardDisplayMode: "default",
-      selectedTaskId: null,
     });
     // Default mock for archived count
     vi.mocked(api.tasks.getArchivedCount).mockResolvedValue(0);

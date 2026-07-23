@@ -398,8 +398,16 @@ export type { StreamingTask, StreamingTaskStatus } from "./streaming-task";
 
 // Chat context types and schemas
 export {
-  ViewTypeSchema,
-  VIEW_TYPE_VALUES,
+  APP_VIEW_VALUES,
+  AppViewSchema,
+  DEFAULT_APP_VIEW,
+  parsePersistedViewByProject,
+} from "./app-view";
+export type { AppView, ParsedPersistedViewByProject } from "./app-view";
+
+export {
+  CHAT_CONTEXT_VIEW_VALUES,
+  ChatContextViewSchema,
   ChatContextSchema,
   isKanbanContext,
   isIdeationContext,
@@ -412,7 +420,7 @@ export {
   createTaskDetailContext,
   createProjectContext,
 } from "./chat";
-export type { ViewType, ChatContext } from "./chat";
+export type { ChatContext, ChatContextView } from "./chat";
 
 // Artifact types and schemas
 export {

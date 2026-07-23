@@ -419,7 +419,7 @@ describe("MessageReferences", () => {
   it("opens a linear ticket chip into the ticketing view", () => {
     useTicketingStore.getState().setProvider(null);
     useTicketingStore.getState().setSelectedTicketRef(null);
-    useUiStore.getState().setCurrentView("kanban");
+    useUiStore.getState().setCurrentView("agents");
 
     render(
       <MessageReferences

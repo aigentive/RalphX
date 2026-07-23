@@ -55,7 +55,7 @@ Navigate to `http://localhost:5173` in any browser. The app will:
 | **UI Rendering** | All components render with mock data |
 | **Navigation** | All routes and views accessible |
 | **Kanban Board** | Task cards, columns, drag-drop (visual only) |
-| **Ideation View** | Sessions, proposals, chat display |
+| **Agents workspace** | Conversations, Plan/Ideation artifacts, proposals, and chat display |
 | **Activity View** | Activity events with mock data |
 | **Form Submission** | Forms submit without error (no-op) |
 | **Theme Switching** | Light/dark mode works |

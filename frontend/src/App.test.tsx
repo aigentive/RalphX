@@ -17,7 +17,6 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
-import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { useRunningProcesses } from "@/hooks/useRunningProcesses";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
@@ -411,11 +410,8 @@ function resetStores() {
       queuedCount: 0,
       canStartTask: true,
     },
-    selectedTaskId: null,
     graphSelection: null,
     viewByProject: {},
-    sessionByProject: {},
-    selectedTaskByProject: {},
   });
 
   useChatStore.setState({
@@ -472,20 +468,6 @@ function buildCreatedProject(overrides: Partial<Project> = {}): Project {
     updatedAt: "2026-06-15T12:00:00Z",
     ...overrides,
   };
-}
-
-function enableAutomationsPage() {
-  const flags = {
-    activityPage: true,
-    extensibilityPage: true,
-    ideationPage: false,
-    automationsPage: true,
-    battleMode: true,
-    atlassianOauth: false,
-    ticketingDashboard: false,
-  };
-  getQueryClient().setQueryData(FEATURE_FLAGS_QUERY_KEY, flags);
-  useUiStore.getState().setFeatureFlags(flags);
 }
 
 describe("App", () => {
@@ -598,10 +580,7 @@ describe("App", () => {
       .mockResolvedValue(createdProject);
 
     useUiStore.getState().setCurrentView("agents");
-    useUiStore.setState({
-      selectedTaskId: "task-1",
-      graphSelection: { kind: "task", id: "task-1" },
-    });
+    useUiStore.setState({ graphSelection: { kind: "task", id: "task-1" } });
     useAgentSessionStore.setState({
       focusedProjectId: "demo-project-1",
       selectedProjectId: "demo-project-1",
@@ -620,7 +599,6 @@ describe("App", () => {
       expect(useUiStore.getState()).toEqual(
         expect.objectContaining({
           currentView: "agents",
-          selectedTaskId: null,
           graphSelection: null,
         })
       )
@@ -1260,212 +1238,6 @@ describe("App", () => {
     expect(document.body).toBeDefined();
   });
 
-  describe.skip("legacy standalone view navigation", () => {
-    it("should render default navigation buttons with standalone Ideation hidden", () => {
-      render(<App />);
-      expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
-      expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
-      expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
-      expect(screen.queryByTestId("nav-ideation")).toBeNull();
-      expect(screen.getByTestId("nav-automations")).toBeInTheDocument();
-      expect(screen.getByTestId("nav-extensibility")).toBeInTheDocument();
-      expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
-      expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
-    });
-
-    it("should have navigation buttons rendered as accessible elements", () => {
-      render(<App />);
-      // All nav buttons should exist and have proper accessible labels
-      // (Using shadcn Tooltip which provides keyboard shortcut info on hover)
-      const navButtons = [
-        { testId: "nav-agents", label: /Agents/i },
-        { testId: "nav-kanban", label: /Kanban/i },
-        { testId: "nav-graph", label: /Graph/i },
-        { testId: "nav-automations", label: /Automations/i },
-        { testId: "nav-extensibility", label: /Extensibility/i },
-        { testId: "nav-activity", label: /Activity/i },
-        { testId: "nav-settings", label: /Settings/i },
-      ];
-      for (const { testId, label } of navButtons) {
-        const btn = screen.getByTestId(testId);
-        expect(btn).toBeInTheDocument();
-        expect(btn).toHaveTextContent(label);
-      }
-    });
-
-    it("should start with Agents view active", () => {
-      render(<App />);
-      expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
-      expect(screen.getByTestId("agents-view-mock")).toBeInTheDocument();
-    });
-
-    it("does not render the old page chat toggle on Kanban or Graph", async () => {
-      const user = userEvent.setup();
-      render(<App />);
-
-      await user.click(screen.getByTestId("nav-kanban"));
-      expect(screen.getByTestId("task-board-mock")).toBeInTheDocument();
-      expect(screen.queryByTestId("chat-toggle")).not.toBeInTheDocument();
-
-      await user.click(screen.getByTestId("nav-graph"));
-
-      expect(screen.getByTestId("task-graph-view-mock")).toBeInTheDocument();
-      expect(screen.queryByTestId("chat-toggle")).not.toBeInTheDocument();
-    });
-
-    it("should switch to Ideation view when clicked", async () => {
-      const user = userEvent.setup();
-      enableAutomationsPage();
-      render(<App />);
-
-      await user.click(screen.getByTestId("nav-ideation"));
-
-      expect(screen.getByTestId("nav-ideation")).toHaveAttribute("aria-current", "page");
-      expect(screen.getByTestId("ideation-view-mock")).toBeInTheDocument();
-      expect(screen.queryByTestId("task-board-mock")).not.toBeInTheDocument();
-    });
-
-    it("should pass footer with ExecutionControlBar to Ideation view", async () => {
-      const user = userEvent.setup();
-      enableAutomationsPage();
-      render(<App />);
-
-      await user.click(screen.getByTestId("nav-ideation"));
-
-      // Verify footer is rendered in the ideation view mock
-      expect(screen.getByTestId("ideation-footer-mock")).toBeInTheDocument();
-    });
-
-    it("should pass footer with ExecutionControlBar to Agents view", () => {
-      render(<App />);
-
-      expect(screen.getByTestId("agents-footer-mock")).toBeInTheDocument();
-      expect(screen.getByTestId("execution-control-bar")).toBeInTheDocument();
-    });
-
-    it("should switch to Extensibility view when clicked", async () => {
-      const user = userEvent.setup();
-      render(<App />);
-
-      await user.click(screen.getByTestId("nav-extensibility"));
-
-      expect(screen.getByTestId("nav-extensibility")).toHaveAttribute("aria-current", "page");
-      expect(screen.getByTestId("extensibility-view-mock")).toBeInTheDocument();
-      expect(screen.queryByTestId("task-board-mock")).not.toBeInTheDocument();
-    });
-
-    it("should switch to Activity view when clicked", async () => {
-      const user = userEvent.setup();
-      render(<App />);
-
-      await user.click(screen.getByTestId("nav-activity"));
-
-      expect(screen.getByTestId("nav-activity")).toHaveAttribute("aria-current", "page");
-      expect(screen.getByTestId("activity-view-mock")).toBeInTheDocument();
-      expect(screen.queryByTestId("task-board-mock")).not.toBeInTheDocument();
-    });
-
-    it("paints Automations route shell synchronously on first nav click", () => {
-      enableAutomationsPage();
-      render(<App />);
-
-      fireEvent.click(screen.getByTestId("nav-automations"));
-
-      expect(useUiStore.getState().currentView).toBe("automations");
-      expect(screen.getByTestId("automations-view-shell")).toBeInTheDocument();
-      expect(preloadAutomationsViewMock).toHaveBeenCalled();
-    });
-
-    it("opens the Agents start composer with Automation preselected before creating a draft", async () => {
-      const user = userEvent.setup();
-      enableAutomationsPage();
-      useAgentSessionStore.getState().selectConversation("demo-project-1", "existing-conversation");
-      useChatStore
-        .getState()
-        .setActiveConversation("project:demo-project-1", "existing-conversation");
-      render(<App />);
-
-      await user.click(screen.getByTestId("nav-automations"));
-      await user.click(await screen.findByTestId("automations-new-automation"));
-
-      expect(useUiStore.getState().currentView).toBe("agents");
-      expect(useAgentSessionStore.getState().focusedProjectId).toBe("demo-project-1");
-      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
-      expect(
-        useChatStore.getState().activeConversationIds["project:demo-project-1"],
-      ).toBeNull();
-      expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
-        projectId: "demo-project-1",
-        content: "",
-        mode: "automation",
-        automationAuthoringMode: "trusted_auto_finalize",
-      });
-    });
-
-    it("should open Settings modal when clicked", async () => {
-      const user = userEvent.setup();
-      render(<App />);
-
-      await user.click(screen.getByTestId("nav-settings"));
-
-      // Settings is now a modal — activeModal is set, current view stays visible underneath
-      expect(useUiStore.getState().activeModal).toBe("settings");
-      expect(useUiStore.getState().modalContext).toBeUndefined();
-      expect(screen.getByTestId("agents-view-mock")).toBeInTheDocument();
-    });
-
-    it("should switch views correctly multiple times", async () => {
-      const user = userEvent.setup();
-      render(<App />);
-
-      // Start on Agents
-      expect(screen.getByTestId("agents-view-mock")).toBeInTheDocument();
-
-      // Go to Activity
-      await user.click(screen.getByTestId("nav-activity"));
-      expect(screen.getByTestId("activity-view-mock")).toBeInTheDocument();
-
-      // Open Settings modal
-      await user.click(screen.getByTestId("nav-settings"));
-      expect(useUiStore.getState().activeModal).toBe("settings");
-
-      // Go back to Kanban
-      await user.click(screen.getByTestId("nav-kanban"));
-      expect(screen.getByTestId("task-board-mock")).toBeInTheDocument();
-    });
-
-    it("should remove aria-current from previous nav when switching", async () => {
-      const user = userEvent.setup();
-      render(<App />);
-
-      // Agents is active initially
-      expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
-      expect(screen.getByTestId("nav-activity")).not.toHaveAttribute("aria-current");
-
-      // Switch to Activity
-      await user.click(screen.getByTestId("nav-activity"));
-
-      // Activity is now active, Kanban is not
-      expect(screen.getByTestId("nav-activity")).toHaveAttribute("aria-current", "page");
-      expect(screen.getByTestId("nav-agents")).not.toHaveAttribute("aria-current");
-    });
-
-    it("restores saved view and selected task for the active project on initial render", async () => {
-      useUiStore.setState({
-        viewByProject: { "demo-project-1": "graph" },
-        selectedTaskByProject: { "demo-project-1": "task-42" },
-      });
-
-      render(<App />);
-
-      await waitFor(() => {
-        expect(useUiStore.getState().currentView).toBe("graph");
-      });
-      expect(useUiStore.getState().selectedTaskId).toBe("task-42");
-      expect(screen.getByTestId("task-graph-view-mock")).toBeInTheDocument();
-    });
-  });
-
   describe("Ticketing view", () => {
     beforeEach(() => {
       ticketingViewProps.current = null;
@@ -1496,7 +1268,7 @@ describe("App", () => {
       expect(screen.queryByTestId("feature-disabled-ticketing")).not.toBeInTheDocument();
     });
 
-    it("falls back to Agents when a legacy task deep link has no conversation owner", async () => {
+    it("shows Agents without stale task selection when a legacy task has no owner", async () => {
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");
@@ -1511,10 +1283,19 @@ describe("App", () => {
       await waitFor(() => {
         expect(useUiStore.getState().currentView).toBe("agents");
       });
-      expect(useUiStore.getState().selectedTaskId).toBeNull();
+      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+      expect(useAgentSessionStore.getState().focusedProjectId).toBeNull();
+      expect(useAgentSessionStore.getState().artifactByConversationId).toEqual({});
+      expect(useAgentSessionStore.getState().taskArtifactFocusRequestByConversationId).toEqual({});
+      expect(useChatStore.getState().activeConversationIds).toEqual({});
     });
 
     it("opens the linked Agent Tasks graph and selects the legacy task", async () => {
+      resolveTaskAgentWorkspaceMock.mockResolvedValue({
+        conversationId: "conversation-99",
+        projectId: "demo-project-1",
+        title: "Task owner",
+      });
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");
@@ -1528,16 +1309,17 @@ describe("App", () => {
       });
 
       await waitFor(() => {
+        expect(resolveTaskAgentWorkspaceMock).toHaveBeenCalledWith("task-99");
         expect(useUiStore.getState().currentView).toBe("agents");
+        expect(
+          useAgentSessionStore.getState().artifactByConversationId["conversation-99"],
+        ).toMatchObject({ activeTab: "tasks", isOpen: true, taskMode: "graph" });
+        expect(
+          useAgentSessionStore.getState().taskArtifactFocusRequestByConversationId[
+            "conversation-99"
+          ],
+        ).toMatchObject({ taskId: "task-99" });
       });
-      expect(
-        useAgentSessionStore.getState().artifactByConversationId["conversation-99"],
-      ).toMatchObject({ activeTab: "tasks", isOpen: true, taskMode: "graph" });
-      expect(
-        useAgentSessionStore.getState().taskArtifactFocusRequestByConversationId[
-          "conversation-99"
-        ],
-      ).toMatchObject({ taskId: "task-99" });
     });
 
     it("resolves a historical task link to its Agent Tasks graph", async () => {
@@ -1590,7 +1372,7 @@ describe("App", () => {
       ).toBe("conversation-77");
     });
 
-    it("routes legacy ideation deep links through Agents", async () => {
+    it("shows Agents when a legacy ideation link has no owner", async () => {
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");
@@ -1604,81 +1386,6 @@ describe("App", () => {
       await waitFor(() => {
         expect(useUiStore.getState().currentView).toBe("agents");
       });
-    });
-  });
-
-  describe.skip("legacy standalone keyboard shortcuts", () => {
-    it("should switch to Agents with Cmd+1", () => {
-      useUiStore.setState({ viewByProject: { "demo-project-1": "activity" } });
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "1", metaKey: true });
-
-      expect(useUiStore.getState().currentView).toBe("agents");
-    });
-
-    it("should switch to Ideation with Cmd+2", () => {
-      enableAutomationsPage();
-      useUiStore.setState({ viewByProject: { "demo-project-1": "activity" } });
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "2", metaKey: true });
-
-      expect(useUiStore.getState().currentView).toBe("ideation");
-    });
-
-    it("should switch to Graph with Cmd+3", () => {
-      useUiStore.setState({ viewByProject: { "demo-project-1": "ideation" } });
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "3", metaKey: true });
-
-      expect(useUiStore.getState().currentView).toBe("graph");
-    });
-
-    it("should switch to Kanban with Cmd+4", () => {
-      useUiStore.setState({ viewByProject: { "demo-project-1": "ideation" } });
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "4", metaKey: true });
-
-      expect(useUiStore.getState().currentView).toBe("kanban");
-    });
-
-    it("should switch to Insights with Cmd+5", () => {
-      useUiStore.setState({ viewByProject: { "demo-project-1": "ideation" } });
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "5", metaKey: true });
-
-      expect(useUiStore.getState().currentView).toBe("insights");
-    });
-
-    it("should open Settings dialog with Cmd+6", () => {
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "6", metaKey: true });
-
-      expect(useUiStore.getState().activeModal).toBe("settings");
-      expect(useUiStore.getState().modalContext).toBeUndefined();
-    });
-
-    it("should work with Ctrl key (for non-Mac)", () => {
-      useUiStore.setState({ viewByProject: { "demo-project-1": "ideation" } });
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "4", ctrlKey: true });
-
-      expect(useUiStore.getState().currentView).toBe("kanban");
-    });
-
-    it("should not switch views when pressing number without modifier", () => {
-      render(<App />);
-
-      fireEvent.keyDown(window, { key: "4" });
-
-      // Should still be on agents (default)
-      expect(useUiStore.getState().currentView).toBe("agents");
     });
   });
 
@@ -1700,11 +1407,8 @@ describe("App", () => {
       // Welcome screen renders
       expect(screen.getByTestId("welcome-screen")).toBeInTheDocument();
 
-      // View nav items are gone
+      // The project-scoped Agents tab is gone.
       expect(screen.queryByTestId("nav-agents")).toBeNull();
-      expect(screen.queryByTestId("nav-ideation")).toBeNull();
-      expect(screen.queryByTestId("nav-graph")).toBeNull();
-      expect(screen.queryByTestId("nav-kanban")).toBeNull();
 
       // v27 topbar controls stay mounted even when the project-scoped rail collapses.
       expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();
