@@ -362,7 +362,7 @@ async fn stale_passed_review_handoff_does_not_suppress_stale_recovery_cleanup() 
         .expect("list events");
     assert!(events
         .iter()
-        .any(|event| event.step == "stale_repair_recovered"));
+        .any(|event| event.step == "pr_autofix_workspace_review_aborted"));
     assert!(
         !events
             .iter()

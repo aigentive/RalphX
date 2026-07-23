@@ -62,6 +62,11 @@ pub enum AppError {
     #[error("Review worktree contains unresolved conflict markers")]
     ReviewWorktreeConflictMarkers,
 
+    #[error(
+        "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review."
+    )]
+    WorkspaceReviewUnfinishedGitOperation,
+
     #[error("Duplicate pull request: branch already has an open PR")]
     DuplicatePr,
 

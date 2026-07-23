@@ -14,6 +14,7 @@ use super::agent_workspace_review::{
 
 const PR_AUTOFIX_WORKSPACE_REVIEW_STEP: &str = "pr_autofix_workspace_review";
 const PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP: &str = "pr_autofix_workspace_review_passed";
+const PR_AUTOFIX_WORKSPACE_REVIEW_ABORTED_STEP: &str = "pr_autofix_workspace_review_aborted";
 const PR_AUTOFIX_PUBLISH_FAILED_STEP: &str = "pr_autofix_publish_failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,13 +31,19 @@ pub(crate) fn has_pending_pr_fix_workspace_review_publish_handoff(
     for event in events {
         match event.step.as_str() {
             PR_AUTOFIX_WORKSPACE_REVIEW_STEP => {
-                pending = event.status == "reviewing"
+                pending = matches!(event.status.as_str(), "pending" | "reviewing")
                     && matches!(
                         event.classification.as_deref(),
-                        Some("workspace_review_started" | "workspace_reviewing")
+                        Some(
+                            "workspace_review_pending"
+                                | "workspace_review_started"
+                                | "workspace_reviewing"
+                        )
                     );
             }
-            PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP | PR_AUTOFIX_PUBLISH_FAILED_STEP => {
+            PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP
+            | PR_AUTOFIX_WORKSPACE_REVIEW_ABORTED_STEP
+            | PR_AUTOFIX_PUBLISH_FAILED_STEP => {
                 pending = false;
             }
             "published" if event.status == "succeeded" => {
