@@ -966,6 +966,10 @@ describe('agent workspace PR fix tools', () => {
         expect(tool?.inputSchema.properties).toHaveProperty('summary');
         expect(tool?.inputSchema.properties).toHaveProperty('blocker');
         expect(tool?.inputSchema.properties).toHaveProperty('fix_commit_sha');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('created_by_run_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('agent_run_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('run_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('orchestration_id');
         expect(tool?.inputSchema.properties).toMatchObject({
             fix_commit_sha: {
                 description: expect.stringContaining('Required when blocker is absent'),
@@ -1443,6 +1447,40 @@ describe('agent workspace publish tool transport', () => {
             fix_commit_sha: fixCommitSha,
         });
     });
+    it('injects the runtime run identity for PR fix completion and preserves supersession responses', async () => {
+        const superseded = {
+            success: false,
+            code: 'superseded',
+            message: 'A newer PR fix completion superseded this request.',
+        };
+        const callTauri = vi.fn().mockResolvedValue(superseded);
+        await expect(callCompleteAgentWorkspacePrFixTool(callTauri, {
+            conversation_id: 'conversation-1',
+            summary: 'Fixed failing tests',
+            fix_commit_sha: 'c'.repeat(40),
+            created_by_run_id: 'caller-controlled-run-id',
+        }, { agentRunId: 'run-from-runtime' })).resolves.toBe(superseded);
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+            summary: 'Fixed failing tests',
+            blocker: undefined,
+            fix_commit_sha: 'c'.repeat(40),
+            created_by_run_id: 'run-from-runtime',
+        });
+    });
+    it('omits the hidden PR fix run identity when runtime context has no agent run', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await callCompleteAgentWorkspacePrFixTool(callTauri, {
+            conversation_id: 'conversation-1',
+            summary: 'Blocked on maintainer decision',
+            blocker: 'Needs maintainer decision',
+        });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+            summary: 'Blocked on maintainer decision',
+            blocker: 'Needs maintainer decision',
+            fix_commit_sha: undefined,
+            created_by_run_id: undefined,
+        });
+    });
     it.each([
         [
             'get_agent_workspace_publish_status',
@@ -1540,6 +1578,7 @@ describe('agent workspace publish tool transport', () => {
                 summary: 'Resolved conflicts',
                 blocker: 'Needs maintainer decision',
                 fix_commit_sha: 'a'.repeat(40),
+                created_by_run_id: 'run-from-runtime',
             },
         ],
         [

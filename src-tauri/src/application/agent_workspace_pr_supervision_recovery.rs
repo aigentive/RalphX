@@ -13,7 +13,10 @@ use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
 };
 use crate::application::agent_workspace_pr_autofix_attempt::load_pr_autofix_attempt_decision;
-use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_with_project_repo;
+use crate::application::agent_workspace_publish_recovery::{
+    recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
+    StalePublishRepairRecoveryOutcome,
+};
 use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, PrFixReviewPublishResumeOutcome,
@@ -26,6 +29,7 @@ use crate::application::git_service::GitService;
 use crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue;
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::TaskTransitionService;
+use crate::application::AppState;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -78,6 +82,28 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub app_handle: Option<AppHandle>,
     pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
+}
+
+pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
+    state: &AppState,
+    app_handle: Option<AppHandle>,
+    transition_service: Option<Arc<TaskTransitionService>>,
+    chat_service: Option<Arc<dyn ChatService>>,
+    pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
+) -> Option<AgentWorkspacePrSupervisionRecoveryDeps> {
+    let github = state.github_service.as_ref().map(Arc::clone)?;
+    Some(AgentWorkspacePrSupervisionRecoveryDeps {
+        workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        plan_branch_repo: Arc::clone(&state.plan_branch_repo),
+        github,
+        pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
+        transition_service,
+        chat_service,
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        app_handle,
+        pr_fix_review_publish_resumer,
+    })
 }
 
 #[async_trait]
@@ -194,8 +220,8 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             (Some("needs_agent"), _) | (Some("refreshed"), Some("reviewing"))
         )
     {
-        let (recovered_workspace, was_recovered) =
-            recover_stale_publish_repair_for_workspace_with_project_repo(
+        let (recovered_workspace, repair_outcome) =
+            recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
                 Arc::clone(&deps.workspace_repo),
                 Arc::clone(&deps.agent_run_repo),
                 Arc::clone(&deps.project_repo),
@@ -203,10 +229,34 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             )
             .await?;
         workspace = recovered_workspace;
-        if was_recovered {
-            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-                "stale_repair_recovered",
-            ));
+        match repair_outcome {
+            StalePublishRepairRecoveryOutcome::RetryEligible => {}
+            StalePublishRepairRecoveryOutcome::ActiveReplacement => {
+                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                    "active_pr_autofix_replacement",
+                ));
+            }
+            StalePublishRepairRecoveryOutcome::ActiveRepairReconciled => {
+                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                    "active_agent_run",
+                ));
+            }
+            StalePublishRepairRecoveryOutcome::HandoffPreserved => {
+                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                    "workspace_review_handoff_preserved",
+                ));
+            }
+            StalePublishRepairRecoveryOutcome::Manual => {
+                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                    "stale_repair_manual",
+                ));
+            }
+            StalePublishRepairRecoveryOutcome::TerminalRecovered => {
+                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                    "stale_repair_recovered",
+                ));
+            }
+            StalePublishRepairRecoveryOutcome::Noop => {}
         }
     }
 
