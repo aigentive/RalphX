@@ -1,7 +1,7 @@
 /**
  * AgentsPublishDiffFilter tests
  * Popover-based diff mode selector: "Workspace changes (N files)" radio + "Specific Commit" collapsible.
- * "All commits" mode is intentionally omitted in v1.
+ * Includes Workspace changes, worktree buckets, All commits, and specific-commit modes.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

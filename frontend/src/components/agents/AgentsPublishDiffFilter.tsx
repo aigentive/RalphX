@@ -36,7 +36,7 @@ export type DiffFilterMode = "uncommitted" | "staged" | "unstaged" | "cumulative
 export interface AgentsPublishDiffFilterProps {
   mode: DiffFilterMode;
   workspaceChangeCount: number;
-  /** Label for the base-to-HEAD workspace diff represented by the internal "uncommitted" mode. */
+  /** Label for the base-to-working-tree workspace diff represented by the internal "uncommitted" mode. */
   workspaceChangeLabel?: string;
   /** Count-free label for cumulative terminal PR history. */
   cumulativeModeLabel?: string;
