@@ -87,6 +87,30 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         workspace: &AgentConversationWorkspace,
         description: &AgentWorkspacePrDescription,
     ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+        self.publish_draft_pr_inner(working_dir, conversation, workspace, description, true)
+            .await
+    }
+
+    /// Creates a draft PR while preserving duplicate recovery for the caller.
+    pub async fn publish_draft_pr_without_duplicate_recovery(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
+    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+        self.publish_draft_pr_inner(working_dir, conversation, workspace, description, false)
+            .await
+    }
+
+    async fn publish_draft_pr_inner(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
+        recover_duplicate: bool,
+    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
         let mut title = description
             .title
             .as_deref()
@@ -136,7 +160,7 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 created_pr: true,
                 pr_status: "draft",
             }),
-            Err(AppError::DuplicatePr) => {
+            Err(AppError::DuplicatePr) if recover_duplicate => {
                 let Some((pr_number, pr_url)) = self
                     .github
                     .find_pr_by_head_branch(working_dir, &workspace.branch_name)
@@ -154,6 +178,7 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                     pr_status: "open",
                 })
             }
+            Err(AppError::DuplicatePr) => Err(AppError::DuplicatePr),
             Err(error) => Err(error),
         }
     }

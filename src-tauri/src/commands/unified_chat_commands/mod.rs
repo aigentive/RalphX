@@ -7763,7 +7763,12 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             let description =
                 AgentWorkspacePrDescription::new(title.clone(), body_markdown.clone());
             match publisher
-                .publish_draft_pr(&worktree_path, &conversation, &workspace, &description)
+                .publish_draft_pr_without_duplicate_recovery(
+                    &worktree_path,
+                    &conversation,
+                    &workspace,
+                    &description,
+                )
                 .await
             {
                 Err(AppError::DuplicatePr) => {
