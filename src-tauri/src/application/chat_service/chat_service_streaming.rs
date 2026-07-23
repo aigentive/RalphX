@@ -252,6 +252,7 @@ const COMPLETION_TOOL_NAMES: &[&str] = &[
     "mcp__ralphx__complete_review",
     "mcp__ralphx__complete_merge",
     "mcp__ralphx__complete_agent_workspace_repair",
+    "mcp__ralphx__complete_workspace_review_run",
     "mcp__ralphx__finalize_proposals",
 ];
 
@@ -270,6 +271,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -281,6 +283,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -1116,7 +1119,7 @@ impl CompletionSignalTracker {
     }
 }
 
-fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
+pub(super) fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
     let Some(result) = result else {
         return true;
     };

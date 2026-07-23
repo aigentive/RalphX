@@ -249,24 +249,35 @@ fn test_dead_process_killed_despite_short_idle() {
 
 #[test]
 fn test_completion_tool_detection_marks_tracker_and_bypasses_timeout() {
-    let mut tracker = CompletionSignalTracker::default();
+    for tool_name in [
+        "mcp__ralphx__execution_complete",
+        "mcp__ralphx__complete_workspace_review_run",
+    ] {
+        let mut tracker = CompletionSignalTracker::default();
 
-    if is_completion_tool_name("mcp__ralphx__execution_complete") {
-        tracker.mark_completion_called();
+        if is_completion_tool_name(tool_name) {
+            tracker.mark_completion_called();
+        }
+
+        assert!(tracker.was_called(), "{tool_name} should mark completion");
+        assert!(
+            tracker.is_in_grace_period(dur(30)),
+            "{tool_name} should be inside completion grace"
+        );
+        assert!(
+            !should_kill_on_timeout(
+                dur(601),
+                dur(1800),
+                false,
+                false,
+                false,
+                true,
+                false,
+                tracker.is_in_grace_period(dur(30)),
+            ),
+            "{tool_name} completion grace should bypass the timeout"
+        );
     }
-
-    assert!(tracker.was_called());
-    assert!(tracker.is_in_grace_period(dur(30)));
-    assert!(!should_kill_on_timeout(
-        dur(601),
-        dur(1800),
-        false,
-        false,
-        false,
-        true,
-        false,
-        tracker.is_in_grace_period(dur(30)),
-    ));
 }
 
 #[test]
@@ -618,6 +629,7 @@ fn test_completion_tracker_recognizes_all_completion_tools() {
         "mcp__ralphx__execution_complete",
         "mcp__ralphx__complete_review",
         "mcp__ralphx__complete_merge",
+        "mcp__ralphx__complete_workspace_review_run",
         "mcp__ralphx__finalize_proposals",
     ] {
         let mut tracker = CompletionSignalTracker::default();
