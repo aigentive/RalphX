@@ -21,7 +21,7 @@ function statusTone(status: string): StatusPillTone {
   return "neutral";
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- shared with the automation list's status marker.
+// eslint-disable-next-line react-refresh/only-export-components -- shared status mapping for automation detail surfaces.
 export function statusDotColor(status: string): string {
   const tone = statusTone(status);
   if (tone === "accent") {

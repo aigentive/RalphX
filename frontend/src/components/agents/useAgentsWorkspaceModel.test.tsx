@@ -145,7 +145,38 @@ describe("useAgentsWorkspaceModel", () => {
     });
   });
 
-  it("uses persisted child run metadata ahead of the next-launch Reviewer default", () => {
+  it("uses the committed review focus hint before child summary hydration", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          focusedWorkspaceReviewConversationId: "review-conversation-1",
+          focusedWorkspaceReviewRuntimeHint: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "high",
+          },
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "medium",
+          },
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "high",
+    });
+  });
+
+  it("uses directly hydrated child metadata ahead of stale client runtime and the next-launch Reviewer default", () => {
     const { result } = renderHook(
       () =>
         useAgentsWorkspaceModel({
@@ -156,11 +187,23 @@ describe("useAgentsWorkspaceModel", () => {
             providerHarness: "codex",
             logicalModel: "gpt-5.5",
             logicalEffort: "high",
+            serviceTier: "fast",
           }),
           focusedWorkspaceReviewConversationId: "review-conversation-1",
+          focusedWorkspaceReviewRuntimeHint: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "medium",
+          },
           modelRegistry: AGENT_MODEL_CATALOG,
           optimisticWorkspacesByConversationId: {},
-          runtimeByConversationId: {},
+          runtimeByConversationId: {
+            "review-conversation-1": {
+              provider: "claude",
+              modelId: "sonnet",
+              effort: "medium",
+            },
+          },
           selectedConversationId: "conversation-1",
           workspaceReviewerRuntime: {
             provider: "codex",
@@ -176,6 +219,7 @@ describe("useAgentsWorkspaceModel", () => {
       modelId: "gpt-5.5",
       effort: "high",
     });
+    expect(result.current.focusedWorkspaceReviewServiceTier).toBe("fast");
   });
 
   it("normalizes remembered Codex Ultra effort before alias-aware send checks", () => {
