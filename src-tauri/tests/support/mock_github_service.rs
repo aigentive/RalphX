@@ -16,6 +16,8 @@ use ralphx_lib::domain::services::github_service::{
 };
 use ralphx_lib::{AppError, AppResult};
 
+type PrMetadataPatchArgs = (i64, Option<String>, Option<String>);
+
 // ============================================================================
 // MockGithubService
 // ============================================================================
@@ -51,7 +53,7 @@ pub struct MockGithubService {
     mark_pr_ready_result: Arc<Mutex<Option<AppResult<()>>>>,
     update_pr_details_result: Arc<Mutex<Option<AppResult<()>>>>,
     patch_pr_metadata_result: Arc<Mutex<Option<AppResult<()>>>>,
-    pub last_patch_pr_metadata_args: Arc<Mutex<Option<(i64, Option<String>, Option<String>)>>>,
+    pub last_patch_pr_metadata_args: Arc<Mutex<Option<PrMetadataPatchArgs>>>,
     pub last_patch_pr_metadata_body: Arc<Mutex<Option<String>>>,
     update_pr_base_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
