@@ -207,7 +207,6 @@ describe("AgentsTaskDetailOverlay historical runtime focus", () => {
       isRestoring: false,
     });
     useUiStore.setState({
-      selectedTaskId: null,
       taskHistoryState: null,
     });
   });

@@ -10,10 +10,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use ralphx_lib::domain::services::github_service::{
-    GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState, PrReviewFeedback,
-    PrReviewSubmissionEvent, PrReviewThread, PrStatus, PrSubmittedReview, PrSyncState,
+    validate_pr_metadata_patch, GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState,
+    PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrStatus, PrSubmittedReview,
+    PrSyncState,
 };
 use ralphx_lib::{AppError, AppResult};
+
+type PrMetadataPatchArgs = (i64, Option<String>, Option<String>);
 
 // ============================================================================
 // MockGithubService
@@ -36,6 +39,7 @@ pub struct MockGithubService {
     pub create_draft_pr_calls: Arc<Mutex<u32>>,
     pub mark_pr_ready_calls: Arc<Mutex<u32>>,
     pub update_pr_details_calls: Arc<Mutex<u32>>,
+    pub patch_pr_metadata_calls: Arc<Mutex<u32>>,
     pub update_pr_base_calls: Arc<Mutex<u32>>,
     pub close_pr_calls: Arc<Mutex<u32>>,
     pub delete_remote_branch_calls: Arc<Mutex<u32>>,
@@ -48,6 +52,9 @@ pub struct MockGithubService {
     create_draft_pr_result: Arc<Mutex<Option<AppResult<(i64, String)>>>>,
     mark_pr_ready_result: Arc<Mutex<Option<AppResult<()>>>>,
     update_pr_details_result: Arc<Mutex<Option<AppResult<()>>>>,
+    patch_pr_metadata_result: Arc<Mutex<Option<AppResult<()>>>>,
+    pub last_patch_pr_metadata_args: Arc<Mutex<Option<PrMetadataPatchArgs>>>,
+    pub last_patch_pr_metadata_body: Arc<Mutex<Option<String>>>,
     update_pr_base_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     find_pr_by_head_branch_result: Arc<Mutex<Option<AppResult<Option<(i64, String)>>>>>,
@@ -70,6 +77,7 @@ impl MockGithubService {
             create_draft_pr_calls: Arc::new(Mutex::new(0)),
             mark_pr_ready_calls: Arc::new(Mutex::new(0)),
             update_pr_details_calls: Arc::new(Mutex::new(0)),
+            patch_pr_metadata_calls: Arc::new(Mutex::new(0)),
             update_pr_base_calls: Arc::new(Mutex::new(0)),
             close_pr_calls: Arc::new(Mutex::new(0)),
             delete_remote_branch_calls: Arc::new(Mutex::new(0)),
@@ -81,6 +89,9 @@ impl MockGithubService {
             create_draft_pr_result: Arc::new(Mutex::new(None)),
             mark_pr_ready_result: Arc::new(Mutex::new(None)),
             update_pr_details_result: Arc::new(Mutex::new(None)),
+            patch_pr_metadata_result: Arc::new(Mutex::new(None)),
+            last_patch_pr_metadata_args: Arc::new(Mutex::new(None)),
+            last_patch_pr_metadata_body: Arc::new(Mutex::new(None)),
             update_pr_base_result: Arc::new(Mutex::new(None)),
             find_pr_by_head_branch_result: Arc::new(Mutex::new(None)),
             fetch_pr_detail_result: Arc::new(Mutex::new(None)),
@@ -205,6 +216,9 @@ impl MockGithubService {
     pub fn update_pr_details_calls(&self) -> u32 {
         *self.update_pr_details_calls.lock().unwrap()
     }
+    pub fn patch_pr_metadata_calls(&self) -> u32 {
+        *self.patch_pr_metadata_calls.lock().unwrap()
+    }
     pub fn update_pr_base_calls(&self) -> u32 {
         *self.update_pr_base_calls.lock().unwrap()
     }
@@ -315,6 +329,28 @@ impl GithubServiceTrait for MockGithubService {
     ) -> AppResult<()> {
         *self.update_pr_details_calls.lock().unwrap() += 1;
         if let Some(result) = self.update_pr_details_result.lock().unwrap().take() {
+            return result;
+        }
+        Ok(())
+    }
+
+    async fn patch_pr_metadata(
+        &self,
+        _wd: &Path,
+        pr_number: i64,
+        title: Option<&str>,
+        body_file: Option<&Path>,
+    ) -> AppResult<()> {
+        validate_pr_metadata_patch(title, body_file)?;
+        *self.patch_pr_metadata_calls.lock().unwrap() += 1;
+        *self.last_patch_pr_metadata_args.lock().unwrap() = Some((
+            pr_number,
+            title.map(str::to_string),
+            body_file.map(|path| path.to_string_lossy().into_owned()),
+        ));
+        *self.last_patch_pr_metadata_body.lock().unwrap() =
+            body_file.and_then(|path| std::fs::read_to_string(path).ok());
+        if let Some(result) = self.patch_pr_metadata_result.lock().unwrap().take() {
             return result;
         }
         Ok(())

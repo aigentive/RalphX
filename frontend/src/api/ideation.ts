@@ -32,6 +32,11 @@ import {
   transformCreateChildSession,
   transformParentSessionContext,
 } from "./ideation.transforms";
+import {
+  ExecutionTaskAgentWorkspaceSchema,
+  transformExecutionTaskAgentWorkspace,
+} from "./execution-task-agent-workspace";
+import type { ExecutionTaskAgentWorkspace } from "./execution-task-agent-workspace";
 export { toTaskProposal } from "./ideation.transforms";
 import type {
   SessionGroupKey,
@@ -197,6 +202,18 @@ export const ideationApi = {
         z.array(IdeationSessionResponseSchema)
       );
       return raw.map(transformSession);
+    },
+
+    /** Resolve the durable Agent workspace linked to an ideation session. */
+    resolveAgentWorkspace: async (
+      sessionId: string,
+    ): Promise<ExecutionTaskAgentWorkspace | null> => {
+      const raw = await typedInvoke(
+        "get_ideation_agent_workspace",
+        { sessionId },
+        ExecutionTaskAgentWorkspaceSchema.nullable(),
+      );
+      return raw ? transformExecutionTaskAgentWorkspace(raw) : null;
     },
 
     listByGroup: async (

@@ -2,14 +2,15 @@ use super::MemoryAgentConversationWorkspaceRepository;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
+    ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -32,6 +33,71 @@ fn pr_review_action(
         None,
         Some(format!("run-{head_sha}")),
     )
+}
+
+#[tokio::test]
+async fn pr_metadata_decisions_round_trip_legacy_and_clear() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-pr-metadata");
+    let cases = [
+        AgentWorkspacePrMetadataDecision::Preserve,
+        AgentWorkspacePrMetadataDecision::patch(Some("title".to_string()), None).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(None, Some("body".to_string())).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(
+            Some("title".to_string()),
+            Some("body".to_string()),
+        )
+        .unwrap(),
+    ];
+    for decision in cases {
+        repo.save_pr_metadata_decision(&conversation_id, decision.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_pr_metadata_decision(&conversation_id)
+                .await
+                .unwrap(),
+            Some(decision)
+        );
+    }
+
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    repo.save_pr_description(
+        &conversation_id,
+        AgentWorkspacePrDescription::new(
+            Some("legacy title".to_string()),
+            "legacy body".to_string(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        Some(AgentWorkspacePrMetadataDecision::Patch {
+            title: Some("legacy title".to_string()),
+            body_markdown: Some("legacy body".to_string()),
+        })
+    );
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]

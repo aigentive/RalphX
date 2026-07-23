@@ -568,14 +568,19 @@ Alternative: Use **shadcn Separator** component.
 
 ### Navigation Items
 
-Four main navigation items:
+The primary rail exposes the live root views. Task and planning views are
+artifacts inside Agents and do not receive standalone rail entries.
 
 | Key | Label | Icon | Shortcut |
 |-----|-------|------|----------|
-| `kanban` | Kanban | `LayoutGrid` or `Columns` | Cmd+1 |
-| `ideation` | Ideation | `Lightbulb` | Cmd+2 |
-| `activity` | Activity | `Activity` | Cmd+3 |
-| `settings` | Settings | `Settings` | Cmd+4 |
+| `agents` | Agents | `Briefcase` | Cmd+1 |
+| `automations` | Automations | `Workflow` | Cmd+2 |
+| `ticketing` | Ticketing | `Ticket` | — |
+| `github` | GitHub | `GitHubMarkIcon` | — |
+| `granola` | Granola | `GranolaIcon` | — |
+| `insights` | Insights | `TrendingUp` | Cmd+3 |
+| `extensibility` | Extensibility | `Puzzle` | — |
+| `activity` | Activity | `Activity` | — |
 
 ### Nav Item Styling
 
@@ -661,10 +666,10 @@ Similar to project item, the active nav item has a left accent bar:
 
 | Key | Action |
 |-----|--------|
-| `Cmd + 1` | Switch to Kanban view |
-| `Cmd + 2` | Switch to Ideation view |
-| `Cmd + 3` | Switch to Activity view |
-| `Cmd + 4` | Switch to Settings view |
+| `Cmd + 1` | Switch to Agents |
+| `Cmd + 2` | Switch to Automations |
+| `Cmd + 3` | Switch to Insights |
+| `Cmd + Shift + A` | Switch to Agents |
 | `Cmd + N` | Open New Project dialog |
 | `Cmd + \` | Toggle sidebar visibility |
 | `Arrow Up/Down` | Navigate project list |
@@ -684,8 +689,9 @@ Similar to project item, the active nav item has a left accent bar:
 | `FolderGit2` | Project icon (worktree) - optional | 16px |
 | `FolderPlus` | Empty state icon | 24px |
 | `Plus` | New Project button | 16px |
-| `LayoutGrid` | Kanban nav item (alt: `Columns`) | 18px |
-| `Lightbulb` | Ideation nav item | 18px |
+| `Briefcase` | Agents nav item | 18px |
+| `Workflow` | Automations nav item | 18px |
+| `TrendingUp` | Insights nav item | 18px |
 | `Activity` | Activity nav item | 18px |
 | `Settings` | Settings nav item | 18px |
 
@@ -731,7 +737,7 @@ ProjectSidebar
 │   ├── Divider (Separator)
 │   │
 │   └── Navigation
-│       └── NavItem[] (Kanban, Ideation, Activity, Settings)
+│       └── NavItem[] (live AppView roots; planning/task modes stay in Agents)
 │           ├── ActiveIndicator (left bar, conditional)
 │           ├── NavIcon (view-specific)
 │           └── NavLabel
@@ -763,7 +769,7 @@ ProjectSidebar
 16. [ ] Empty state shows folder icon and helpful text
 17. [ ] New Project button triggers onNewProject callback
 18. [ ] New Project button spans full width of sidebar
-19. [ ] Navigation items display: Kanban, Ideation, Activity, Settings
+19. [ ] Navigation items display only live AppView roots; no standalone planning/task entries
 20. [ ] Clicking nav item updates current view (uiStore)
 21. [ ] Active nav item has visual highlighting
 22. [ ] Active nav item has left accent bar indicator

@@ -6,7 +6,7 @@ Use **Plan** for supervised native planning. After approving the exact current
 draft, choose **Create Proposals** to enter **Tasks** and review decomposition.
 No execution begins until you choose **Start Tasks**.
 
-Tasks stays attached to the same conversation, branch, and pull request. After
+The **Tasks** artifact stays attached to the same conversation, branch, and pull request. After
 execution unlocks you can return to it, and you can request a small follow-up on
 the same open PR without creating another plan. Closed or merged work starts
 again in Plan.
@@ -16,9 +16,9 @@ conversations to plan and start orchestration with minimal supervision. It is
 hidden and rejected by native APIs by default; external MCP integrations retain
 their existing autonomous flow.
 
-The remaining sections describe the standalone Ideation Studio flow. Its
-approval and scheduling behavior is unchanged by the native Agent conversation
-controls above.
+Ideation is embedded in the Agents workspace. Plan, proposal, and task
+artifacts stay attached to the conversation that created them; there is no
+separate Ideation root route.
 
 The Ideation Studio is where every feature in RalphX begins. You describe what you want to build, and a team of AI agents researches your codebase, designs an implementation plan, and creates a set of ready-to-execute tasks. Those tasks then flow automatically through execution, review, and the merge pipeline — turning an idea into merged code with minimal manual intervention.
 
@@ -28,14 +28,14 @@ The Ideation Studio is where every feature in RalphX begins. You describe what y
 
 | Question | Answer |
 |----------|--------|
-| How do I start? | Open the Ideation view, click **New Session**, describe what you want to build. |
+| How do I start? | Open **Agents**, start a conversation, and choose **Plan** to describe what you want to build. |
 | Which mode should I choose? | **Solo** for quick fixes and simple features. **Research Team** for anything touching 2+ layers. **Debate Team** for architecture decisions. |
-| What happens after I approve the plan? | RalphX creates tasks automatically and sets the plan as your Active Plan — tasks appear on Kanban and Graph immediately. |
-| Can I edit a proposal before tasks are created? | Yes — proposals are shown in the CONFIRM phase. Reject the plan or ask for changes before approving. |
+| What happens after I approve the plan? | RalphX creates proposals for review in the conversation's **Tasks** artifact; execution begins only after you choose **Start Tasks**. |
+| Can I edit a proposal before tasks are created? | Yes — review and revise proposals in **Tasks** after **Create Proposals**, before choosing **Start Tasks**. |
 | Can I message individual team members? | Yes — use the Team Activity panel to send a message to the lead or any specialist directly. |
-| What is an Active Plan? | A focused filter. Selecting an accepted ideation session as your Active Plan makes Kanban and Graph show only tasks from that plan. |
-| Where do tasks go after the plan is accepted? | Into the execution pipeline: Pending → Executing → QA → Review → Approved → PendingMerge → Merged. |
-| What's the full journey? | Ideation → Plan → Tasks → Execution → Review → **Merge Pipeline** → Done. |
+| What is an Active Plan? | A focused filter. Selecting an accepted plan makes the embedded task views show only tasks from that plan. |
+| Where do tasks go after I choose **Start Tasks**? | Into the execution pipeline: Pending → Executing → QA → Review → Approved → PendingMerge → Merged. |
+| What's the full journey? | Agents → Plan → Tasks → Start Tasks → Execution → Review → **Merge Pipeline** → Done. |
 
 ---
 
@@ -67,14 +67,14 @@ RalphX structures feature development as a gated pipeline. The Ideation Studio i
 You describe a feature
         |
         v
-  Ideation Studio
-  (plan + proposals)
+  Agents workspace
         |
         v
-  Active Plan selected
+  Plan artifact
         |
         v
-  Tasks on Kanban / Graph
+  Tasks artifact
+  (Active Plan; Kanban / Graph modes)
         |
         v
   Execution  →  Review  →  Merge Pipeline  →  Merged Code
@@ -88,11 +88,11 @@ The AI orchestrator does the research and planning work, using bounded explorati
 
 ### How to Start
 
-1. Open the **Ideation** view in the left sidebar
-2. Click **New Session**
-3. Type what you want to build in the text area
-4. Choose an **Ideation Mode** (see below)
-5. Click **Start Session**
+1. Open **Agents** in the left sidebar
+2. Start a new conversation and choose **Plan**
+3. Describe what you want to build in the composer
+4. Review the generated plan in the conversation's **Plan** artifact
+5. Approve the current plan, choose **Create Proposals**, and review the decomposition in its **Tasks** artifact
 
 The orchestrator begins immediately. You will see the session's chat panel fill with activity as it researches your codebase.
 
@@ -182,27 +182,27 @@ If you close the app or navigate away during the CONFIRM phase, the session rema
 
 ## Accepting the Plan and Creating Tasks
 
-When you are satisfied with the proposals, click **Accept** to convert the ideation session into live tasks.
+When you are satisfied with the proposals in **Tasks**, choose **Start Tasks** to convert the plan into live tasks and begin scheduling.
 
-What happens on accept:
+What happens on Start Tasks:
 1. Each proposal becomes a **Task** in the database
 2. Dependency edges from the proposal graph are preserved as task dependencies
 3. The session status changes to `accepted`
 4. The session is **automatically set as the Active Plan** for the project
-5. Tasks appear immediately on the Kanban board and Graph view
+5. Tasks appear immediately in the conversation's **Tasks** artifact; switch between its **Kanban** and **Graph** modes
 6. Ready tasks (no unmet dependencies) are scheduled for execution
 
 ---
 
 ## Active Plan: Tracking Your Work
 
-After acceptance, the ideation session becomes your **Active Plan** — a focused filter that makes Kanban and Graph show only the tasks from that plan.
+After **Start Tasks**, the ideation session becomes your **Active Plan** — a focused filter that makes the **Tasks** artifact's Kanban and Graph modes show only the tasks from that plan.
 
 ### Switching Plans
 
 | Method | How |
 |--------|-----|
-| **Inline selector** | Click the plan selector in the Kanban toolbar or Graph controls |
+| **Inline selector** | Click the plan selector in the Tasks artifact's Kanban toolbar or Graph controls |
 | **Quick switcher** | Press `Cmd+Shift+P` (Mac) / `Ctrl+Shift+P` (Windows/Linux) |
 
 Plans are ranked by your interaction frequency, active task count, and recency — plans you actively work on appear at the top automatically.
@@ -211,10 +211,10 @@ Plans are ranked by your interaction frequency, active task count, and recency �
 
 | Event | Effect on Active Plan |
 |-------|----------------------|
-| Accept ideation session | Auto-set as active plan |
-| Reopen accepted session (re-ideate) | Active plan is cleared; Graph/Kanban show empty state |
+| Start Tasks (session accepted) | Auto-set as active plan |
+| Reopen accepted session (re-ideate) | Active plan is cleared; the conversation's Tasks artifact shows an empty state |
 | Manually switch to another plan | New plan becomes active; old plan loses filter |
-| Clear selection | No active plan; both views show empty state |
+| Clear selection | No active plan; the Tasks artifact's views show empty state |
 
 ---
 
@@ -275,9 +275,9 @@ You describe a feature
          │
          v
   ┌──────────────────────────────────────────────┐
-  │             Ideation Studio                  │
+  │              Agents workspace                │
   │  ┌─────────────────────────────────────────┐ │
-  │  │  UNDERSTAND → EXPLORE → PLAN            │ │
+  │  │  Plan: UNDERSTAND → EXPLORE → PLAN      │ │
   │  │  (orchestrator or team lead + teammates)│ │
   │  └─────────────────────────────────────────┘ │
   │                    │                         │
@@ -291,10 +291,11 @@ You describe a feature
   │  └─────────────────────────────────────────┘ │
   └──────────────────────────────────────────────┘
          │
-         v  (you click Accept)
+         v  (you choose Create Proposals)
   ┌──────────────────────────────────────────────┐
-  │              Tasks Created                   │
-  │  Active Plan set → Kanban + Graph filtered   │
+  │              Tasks artifact                  │
+  │  Review → Start Tasks                        │
+  │  Kanban + Graph are embedded modes           │
   └──────────────────────────────────────────────┘
          │
          v
@@ -327,7 +328,7 @@ main
         └── ralphx/project/task-ghi789   ← Task branch
 ```
 
-Each task merges into the plan branch. When all tasks in the plan are merged, RalphX automatically creates a final **plan-merge task** that appears on your Kanban board and merges the plan branch into `main` once all sibling tasks reach Merged or Cancelled. This approach prevents partial feature merges and allows the full plan to be validated as a unit before touching `main`.
+Each task merges into the plan branch. When all tasks in the plan are merged, RalphX automatically creates a final **plan-merge task** that appears in the Tasks artifact's **Kanban** mode and merges the plan branch into `main` once all sibling tasks reach Merged or Cancelled. This approach prevents partial feature merges and allows the full plan to be validated as a unit before touching `main`.
 
 ---
 
@@ -362,11 +363,11 @@ Each task merges into the plan branch. When all tasks in the plan are merged, Ra
 **What it means:** You accepted the session and tasks were created, but you now want a different approach.
 
 **What to do:**
-1. Open the Ideation view and find the accepted session
-2. Click **Reopen** to return it to active status
-3. The active plan is automatically cleared — Kanban and Graph show empty state
+1. Open **Agents** and select the conversation that owns the accepted plan
+2. Open the plan artifact and choose **Reopen**
+3. The active plan is automatically cleared — the Tasks artifact reflects the empty state
 4. Chat with the orchestrator to revise the plan; the existing task proposals are preserved for reference
-5. Accept again when ready — new tasks are created
+5. Choose **Start Tasks** again when ready — new tasks are created
 
 > **Note:** Reopening a session does not automatically cancel tasks that were already created. Cancel unwanted tasks manually from the Kanban board.
 
@@ -384,7 +385,7 @@ If the app closes during an ideation session, it recovers automatically when you
 **What to do:**
 1. Press `Cmd+Shift+P` to open the quick switcher
 2. Type the plan name and select it
-3. Kanban and Graph will filter to that plan immediately
+3. The Tasks artifact's Kanban and Graph modes will filter to that plan immediately
 
 ### Validation Commands (Project Settings)
 

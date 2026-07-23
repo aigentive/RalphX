@@ -56,13 +56,7 @@ export const ideationKeys = {
  * if (error) return <Error message={error.message} />;
  * if (!data) return <NotFound />;
  *
- * return (
- *   <IdeationView
- *     session={data.session}
- *     proposals={data.proposals}
- *     messages={data.messages}
- *   />
- * );
+ * return <SessionSummary session={data.session} />;
  * ```
  */
 interface IdeationQueryOptions {

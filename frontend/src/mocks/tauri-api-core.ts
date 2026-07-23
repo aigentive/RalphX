@@ -1299,9 +1299,7 @@ const commandHandlers: Record<
     return {
       activityPage: true,
       extensibilityPage: true,
-      ideationPage: false,
       automationsPage: true,
-      battleMode: true,
       atlassianOauth: false,
       ticketingDashboard: false,
       ...overrides,
