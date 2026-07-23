@@ -323,6 +323,8 @@ export function ReleaseNotesDialog({
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
+        aria-labelledby="release-notes-dialog-title"
+        aria-describedby="release-notes-dialog-description"
         className="flex max-h-[85vh] min-h-[60vh] max-w-4xl flex-col overflow-hidden p-0"
         style={{
           backgroundColor: "var(--dialog-bg, var(--bg-elevated))",

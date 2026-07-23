@@ -86,8 +86,12 @@ export function ReleaseNotesChannels({
             style={{ color: "var(--accent-primary)" }}
           />
           <div className="min-w-0">
-            <DialogTitle className="truncate">Release Notes</DialogTitle>
-            <DialogDescription>{contextLabel}</DialogDescription>
+            <DialogTitle id="release-notes-dialog-title" className="truncate">
+              Release Notes
+            </DialogTitle>
+            <DialogDescription id="release-notes-dialog-description">
+              {contextLabel}
+            </DialogDescription>
           </div>
         </div>
         {isUpdateChannelSettled &&
