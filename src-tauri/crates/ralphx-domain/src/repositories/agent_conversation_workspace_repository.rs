@@ -377,6 +377,54 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
 
     async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 
+    async fn save_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+        decision: crate::entities::AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<()> {
+        let crate::entities::AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown,
+        } = decision
+        else {
+            return Err(crate::error::AppError::Validation(
+                "preserve metadata decisions require a repository implementation".to_string(),
+            ));
+        };
+        let Some(body_markdown) = body_markdown else {
+            return Err(crate::error::AppError::Validation(
+                "legacy PR description storage requires a body".to_string(),
+            ));
+        };
+        self.save_pr_description(
+            conversation_id,
+            AgentWorkspacePrDescription::new(title, body_markdown),
+        )
+        .await
+    }
+
+    async fn get_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<crate::entities::AgentWorkspacePrMetadataDecision>> {
+        Ok(self
+            .get_pr_description(conversation_id)
+            .await?
+            .map(
+                |description| crate::entities::AgentWorkspacePrMetadataDecision::Patch {
+                    title: description.title,
+                    body_markdown: Some(description.body_markdown),
+                },
+            ))
+    }
+
+    async fn clear_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        self.clear_pr_description(conversation_id).await
+    }
+
     async fn append_publication_event(
         &self,
         event: AgentConversationWorkspacePublicationEvent,

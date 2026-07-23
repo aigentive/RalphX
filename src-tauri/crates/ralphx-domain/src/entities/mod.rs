@@ -6,6 +6,9 @@ pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
 #[cfg(test)]
 mod agent_conversation_workspace_tests;
+pub mod agent_workspace_pr_metadata;
+#[cfg(test)]
+mod agent_workspace_pr_metadata_tests;
 pub mod agent_run;
 pub mod agent_task;
 pub mod agent_workflow_protocol;
@@ -104,6 +107,7 @@ pub use agent_conversation_workspace::{
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
+pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;
 pub use agent_run::{
     AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
     InterruptedConversation,

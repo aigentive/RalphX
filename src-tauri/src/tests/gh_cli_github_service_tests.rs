@@ -1445,6 +1445,49 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
+    async fn patch_pr_metadata_uses_only_requested_gh_flags() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Ok(Vec::new()),
+            Ok(Vec::new()),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        service
+            .patch_pr_metadata(Path::new("/tmp"), 68, Some("Updated title"), None)
+            .await
+            .unwrap();
+        service
+            .patch_pr_metadata(Path::new("/tmp"), 68, None, Some(Path::new("/tmp/body.md")))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            runner.gh_calls(),
+            vec![
+                vec!["pr", "edit", "68", "--title", "Updated title"],
+                vec!["pr", "edit", "68", "--body-file", "/tmp/body.md"],
+            ]
+            .into_iter()
+            .map(|args| args.into_iter().map(str::to_string).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_pr_metadata_rejects_empty_patch_before_running_gh() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(Vec::new()));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let error = service
+            .patch_pr_metadata(Path::new("/tmp"), 68, None, None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(runner.gh_calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn update_pr_base_uses_gh_pr_edit_with_base() {
         let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(Vec::new())]));
         let service = GhCliGithubService::with_runner(runner.clone());

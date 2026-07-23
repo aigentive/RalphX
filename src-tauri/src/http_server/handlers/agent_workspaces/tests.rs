@@ -3667,7 +3667,7 @@
     }
 
     #[tokio::test]
-    async fn submit_agent_workspace_pr_description_saves_valid_body() {
+    async fn submit_agent_workspace_pr_description_saves_partial_patch() {
         let app_state = Arc::new(AppState::new_test());
         let conversation_id = ChatConversationId::new();
         app_state
@@ -3681,8 +3681,9 @@
             State(state),
             Path(conversation_id.to_string()),
             Json(SubmitAgentWorkspacePrDescriptionRequest {
+                decision: "patch".to_string(),
                 title: Some("Better PR title".to_string()),
-                body_markdown: "## Summary\n\nGenerated body".to_string(),
+                body_markdown: None,
             }),
         )
         .await
@@ -3691,31 +3692,37 @@
         assert!(response.success);
         let saved = app_state
             .agent_conversation_workspace_repo
-            .get_pr_description(&conversation_id)
+            .get_pr_metadata_decision(&conversation_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(saved.title.as_deref(), Some("Better PR title"));
-        assert_eq!(saved.body_markdown, "## Summary\n\nGenerated body");
+        assert!(matches!(
+            saved,
+            crate::domain::entities::AgentWorkspacePrMetadataDecision::Patch {
+                title: Some(title),
+                body_markdown: None
+            } if title == "Better PR title"
+        ));
     }
 
     #[tokio::test]
-    async fn submit_agent_workspace_pr_description_rejects_empty_body() {
+    async fn submit_agent_workspace_pr_description_rejects_empty_patch() {
         let state = test_http_state(Arc::new(AppState::new_test()));
 
         let (status, Json(body)) = submit_agent_workspace_pr_description(
             State(state),
             Path(ChatConversationId::new().to_string()),
             Json(SubmitAgentWorkspacePrDescriptionRequest {
+                decision: "patch".to_string(),
                 title: None,
-                body_markdown: "   ".to_string(),
+                body_markdown: Some("   ".to_string()),
             }),
         )
         .await
         .unwrap_err();
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"].as_str().unwrap().contains("cannot be empty"));
+        assert!(body["error"].as_str().unwrap().contains("requires"));
     }
 
     #[tokio::test]
@@ -3726,8 +3733,9 @@
             State(state),
             Path(ChatConversationId::new().to_string()),
             Json(SubmitAgentWorkspacePrDescriptionRequest {
+                decision: "preserve".to_string(),
                 title: None,
-                body_markdown: "## Summary\n\nGenerated body".to_string(),
+                body_markdown: None,
             }),
         )
         .await
