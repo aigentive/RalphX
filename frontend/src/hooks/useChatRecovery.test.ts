@@ -81,6 +81,7 @@ interface DefaultProps {
   isGenerating: boolean;
   isConversationInCurrentContext: boolean;
   agentRunStatus: string | undefined;
+  activeAgentRunId?: string;
   isVisible: boolean;
   setAgentRunning: ReturnType<typeof vi.fn>;
   setStreamingToolCalls?: ReturnType<typeof vi.fn>;
@@ -337,6 +338,30 @@ describe("useChatRecovery", () => {
       ]);
     });
 
+    it("rejects a late active-state snapshot for a different parent run", async () => {
+      const setStreamingTasks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        runId: "run-old",
+        tool_calls: [],
+        streaming_tasks: [{
+          tool_use_id: "delegate-job:old",
+          status: "running",
+          delegated_job_id: "job-old",
+        }],
+        partial_text: "stale",
+      });
+
+      renderHook(() => useChatRecovery(makeProps({
+        activeAgentRunId: "run-current",
+        setStreamingTasks,
+        setStreamingContentBlocks: vi.fn(),
+      })));
+      await act(async () => {});
+
+      expect(setStreamingTasks).not.toHaveBeenCalled();
+    });
+
     it("hydrates provider and lifecycle aliases as one promoted delegation", async () => {
       const setStreamingTasks = vi.fn();
       const setStreamingToolCalls = vi.fn();
@@ -401,6 +426,36 @@ describe("useChatRecovery", () => {
       renderHook(() => useChatRecovery(props));
 
       expect(mockGetConversationActiveState).not.toHaveBeenCalled();
+    });
+
+    it("does not apply an active-state response after the panel becomes hidden", async () => {
+      let resolveActiveState: ((value: {
+        is_active: boolean;
+        tool_calls: unknown[];
+        streaming_tasks: never[];
+        partial_text: string;
+      }) => void) | undefined;
+      mockGetConversationActiveState.mockImplementationOnce(() => new Promise((resolve) => {
+        resolveActiveState = resolve;
+      }));
+      const setStreamingContentBlocks = vi.fn();
+      const props = makeProps({ setStreamingContentBlocks });
+      const { rerender } = renderHook(
+        (nextProps) => useChatRecovery(nextProps),
+        { initialProps: props },
+      );
+
+      rerender({ ...props, isVisible: false });
+      await act(async () => {
+        resolveActiveState?.({
+          is_active: true,
+          tool_calls: [],
+          streaming_tasks: [],
+          partial_text: "stale hidden response",
+        });
+      });
+
+      expect(setStreamingContentBlocks).not.toHaveBeenCalled();
     });
   });
 

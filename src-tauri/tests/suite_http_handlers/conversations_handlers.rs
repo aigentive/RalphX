@@ -45,6 +45,10 @@ fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
         cache_read_tokens: None,
         estimated_usd: None,
         text_output: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
+        seq: None,
     }
 }
 
@@ -615,4 +619,91 @@ async fn test_get_active_state_does_not_hydrate_a_run_from_another_conversation(
     assert_eq!(task.status, "running");
     assert_eq!(task.total_tokens, None);
     assert_eq!(task.provider_harness, None);
+}
+
+#[tokio::test]
+async fn test_get_active_state_does_not_borrow_latest_run_without_exact_cached_run_identity() {
+    let state = setup_test_state().await;
+    let parent_conversation = ChatConversation::new_task_execution(TaskId::new());
+    let parent_conversation_id = parent_conversation.id.as_str().to_string();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(parent_conversation)
+        .await
+        .unwrap();
+
+    let delegated_session = DelegatedSession::new(
+        ProjectId::new(),
+        ChatContextType::TaskExecution.to_string(),
+        "parent-context-id",
+        "verification-critic",
+        AgentHarnessKind::Codex,
+    );
+    state
+        .app_state
+        .delegated_session_repo
+        .create(delegated_session.clone())
+        .await
+        .unwrap();
+    let delegated_conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+    let delegated_conversation_id = delegated_conversation.id.as_str();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation.clone())
+        .await
+        .unwrap();
+
+    let mut newer_run = AgentRun::new(delegated_conversation.id);
+    newer_run.complete();
+    newer_run.harness = Some(AgentHarnessKind::Codex);
+    newer_run.input_tokens = Some(100);
+    newer_run.output_tokens = Some(20);
+    newer_run.completed_at = Some(Utc::now());
+    state
+        .app_state
+        .agent_run_repo
+        .create(newer_run)
+        .await
+        .unwrap();
+
+    for (tool_use_id, delegated_agent_run_id, status) in [
+        ("toolu_missing_run", None, "failed"),
+        ("toolu_wrong_run", Some("wrong-run-id"), "cancelled"),
+    ] {
+        state
+            .app_state
+            .streaming_state_cache
+            .add_task(
+                &parent_conversation_id,
+                CachedStreamingTask {
+                    status: status.to_string(),
+                    delegated_job_id: Some(format!("job-{tool_use_id}")),
+                    delegated_session_id: Some(delegated_session.id.as_str().to_string()),
+                    delegated_conversation_id: Some(delegated_conversation_id.clone()),
+                    delegated_agent_run_id: delegated_agent_run_id.map(str::to_string),
+                    started_at: Some("2026-07-23T00:00:00Z".to_string()),
+                    completed_at: Some("2026-07-23T00:01:00Z".to_string()),
+                    timestamp_provenance: Some("delegation_job".to_string()),
+                    seq: Some(17),
+                    ..cached_streaming_task(tool_use_id)
+                },
+            )
+            .await;
+    }
+
+    let response = get_conversation_active_state(State(state), Path(parent_conversation_id))
+        .await
+        .unwrap();
+
+    for task in response.0.streaming_tasks {
+        assert!(matches!(task.status.as_str(), "failed" | "cancelled"));
+        assert_eq!(task.total_tokens, None);
+        assert_eq!(task.provider_harness, None);
+        assert_eq!(task.started_at.as_deref(), Some("2026-07-23T00:00:00Z"));
+        assert_eq!(task.completed_at.as_deref(), Some("2026-07-23T00:01:00Z"));
+        assert_eq!(task.timestamp_provenance.as_deref(), Some("delegation_job"));
+        assert_eq!(task.seq, Some(17));
+    }
 }
