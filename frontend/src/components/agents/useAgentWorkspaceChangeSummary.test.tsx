@@ -110,6 +110,42 @@ describe("useAgentWorkspaceChangeSummary", () => {
     expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
   });
 
+  it("uses review changes for workspace count when a clean live summary is present", () => {
+    const reviewChanges = [
+      {
+        path: "src/committed.ts",
+        status: "modified" as const,
+        additions: 3,
+        deletions: 1,
+        isGenerated: false,
+      },
+      {
+        path: "src/also-committed.ts",
+        status: "added" as const,
+        additions: 4,
+        deletions: 0,
+        isGenerated: false,
+      },
+    ];
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview(reviewChanges),
+          liveSummary: makeLiveSummary(),
+        }),
+      { wrapper: makeWrapper() },
+    );
+
+    expect(result.current.effectiveMode).toBe("uncommitted");
+    expect(result.current.workspaceChangeCount).toBe(reviewChanges.length);
+    expect(result.current.currentFileCount).toBe(reviewChanges.length);
+    expect(result.current.currentFiles).toEqual(reviewChanges);
+    expect(result.current.stagedCount).toBe(0);
+    expect(result.current.unstagedCount).toBe(0);
+  });
+
   it("hydrates staged files only when live summary selects staged mode", async () => {
     const stagedFile: FileChange = {
       path: "src/staged.ts",
@@ -128,13 +164,29 @@ describe("useAgentWorkspaceChangeSummary", () => {
       () =>
         useAgentWorkspaceChangeSummary({
           conversationId: "conversation-1",
-          review: makeReview(),
+          review: makeReview([
+            {
+              path: "src/committed.ts",
+              status: "modified",
+              additions: 3,
+              deletions: 1,
+              isGenerated: false,
+            },
+            {
+              path: "src/also-committed.ts",
+              status: "added",
+              additions: 4,
+              deletions: 0,
+              isGenerated: false,
+            },
+          ]),
           liveSummary,
         }),
       { wrapper: makeWrapper() },
     );
 
     expect(result.current.effectiveMode).toBe("staged");
+    expect(result.current.workspaceChangeCount).toBe(2);
     expect(result.current.currentFileCount).toBe(1);
     expect(result.current.totalAdditions).toBe(2);
     expect(result.current.totalDeletions).toBe(1);

@@ -645,9 +645,24 @@ async fn get_agent_workspace_context(
         .get_by_id(&workspace.project_id)
         .await?
         .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.as_str().to_string()))?;
-
-    if let Some(context) = get_terminal_agent_workspace_pr_context(&project, &workspace).await? {
-        return Ok(context);
+    match get_terminal_agent_workspace_pr_context(&project, &workspace).await {
+        Ok(Some(context)) => return Ok(context),
+        Ok(None) => {}
+        Err(terminal_head_error) => {
+            if let Some(base_commit) = workspace.base_commit.as_deref() {
+                if let Some(context) = resolve_agent_workspace_github_patch_context(
+                    app_state,
+                    &project,
+                    &workspace,
+                    base_commit,
+                )
+                .await?
+                {
+                    return Ok(context);
+                }
+            }
+            return Err(terminal_head_error);
+        }
     }
 
     // For ideation workspaces linked to a plan branch, the commits live on the
@@ -846,13 +861,12 @@ async fn get_terminal_agent_workspace_pr_context(
 
     let repo_path = PathBuf::from(&project.working_directory);
     let pr_head_ref = agent_workspace_pr_head_ref(pr_number);
-    let head_ref = if GitService::ref_exists(&repo_path, &pr_head_ref).await? {
-        pr_head_ref
-    } else if GitService::ref_exists(&repo_path, &workspace.branch_name).await? {
-        workspace.branch_name.clone()
-    } else {
-        return Ok(None);
-    };
+    if !GitService::ref_exists(&repo_path, &pr_head_ref).await? {
+        return Err(AppError::GitOperation(format!(
+            "Terminal agent workspace PR head ref is unavailable: {pr_head_ref}"
+        )));
+    }
+    let head_ref = pr_head_ref;
     let base_ref_source = if workspace.base_ref.trim().is_empty() {
         project.base_branch.as_deref().unwrap_or("main").to_string()
     } else {
@@ -2124,16 +2138,10 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
-    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
-        let mut changes = get_workspace_file_changes_for_context(
-            &diff_service,
-            &working_path,
-            &base_ref,
-            Some(&head_ref),
-            supports_worktree_modes,
-        )?;
+        let mut changes =
+            diff_service.get_file_changes_between_refs(&working_path, &base_ref, &head_ref)?;
         let flags = {
             let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
             diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
@@ -2165,17 +2173,9 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
-    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
-        get_workspace_file_diff_for_context(
-            &diff_service,
-            &file_path,
-            &working_path,
-            &base_ref,
-            Some(&head_ref),
-            supports_worktree_modes,
-        )
+        diff_service.get_file_diff_between_refs(&file_path, &working_path, &base_ref, &head_ref)
     })
     .await
     .map_err(|e| AppError::Infrastructure(format!("cumulative file diff task failed: {e}")))?
@@ -2260,13 +2260,11 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
                     diff_service.get_file_diff_from_unified_diff(patch, &file_path)
                 } else {
                     let head_ref = diff_target.unwrap_or_else(|| "HEAD".to_string());
-                    get_workspace_file_diff_for_context(
-                        &diff_service,
+                    diff_service.get_file_diff_between_refs(
                         &file_path,
                         &working_path,
                         &base_ref,
-                        Some(&head_ref),
-                        supports_worktree_modes,
+                        &head_ref,
                     )
                 }
             }
@@ -2854,7 +2852,6 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
         DiffRefKind::CumulativeBase => DiffRefKind::Commit {
             sha: ctx.base_ref.clone(),
         },
-        DiffRefKind::CumulativeHead if live_worktree_head_range => DiffRefKind::Unstaged,
         DiffRefKind::CumulativeHead => {
             let head = ctx
                 .diff_target
@@ -3607,18 +3604,6 @@ mod tests {
         .await
         .expect("diff-target untracked file diff page should load");
         assert!(diff_page_contains_line(&file_diff_page, "draft"));
-
-        let cumulative_page = get_agent_conversation_workspace_file_diff_page(
-            app.state(),
-            conversation_id.as_str(),
-            "docs/untracked.md".to_string(),
-            DiffRefKind::CumulativeHead,
-            0,
-            20,
-        )
-        .await
-        .expect("diff-target cumulative untracked file diff page should load");
-        assert!(diff_page_contains_line(&cumulative_page, "draft"));
 
         let content_range = get_agent_conversation_workspace_file_content_range(
             app.state(),
