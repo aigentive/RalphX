@@ -6,6 +6,7 @@ import type {
 } from "@/api/chat";
 import type {
   AgentArtifactTab,
+  AgentRuntimeSelection,
   AgentTaskArtifactMode,
 } from "@/stores/agentSessionStore";
 
@@ -73,7 +74,10 @@ interface AgentsConversationSideRegionsProps {
     conversationId: string,
     options?: AutomationRunFocusOptions,
   ) => void;
-  onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusWorkspaceReview: (
+    conversationId: string,
+    runtimeHint?: AgentRuntimeSelection,
+  ) => void;
   onFocusTaskRuntime: (
     taskId: string,
     contextType: AgentTaskRuntimeContextType

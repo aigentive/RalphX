@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationApi } from "@/api/ideation";
 import { useIdeationEvents } from "@/hooks/useIdeationEvents";
+import { defaultIdeationSettings } from "@/types/ideation-config";
 import { AgentsView } from "./AgentsView";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import {
@@ -33,6 +34,7 @@ const {
   updateWorkspaceFromBaseMock,
   useProjectAgentConversationsMock,
   useConversationMock,
+  useConversationSummaryMock,
 } = getAgentsViewTestMocks();
 
 function AgentsViewWithIdeationEvents() {
@@ -467,6 +469,104 @@ describe("AgentsView", () => {
     expect(
       await screen.findByTestId("agents-conversation-workspace-line"),
     ).toBeInTheDocument();
+  });
+
+  it("uses the direct reviewer summary instead of stale paged metadata and focus hints", async () => {
+    const workspaceConversation = conversation({
+      id: "conversation-1",
+      agentMode: "ideation",
+      logicalEffort: "low",
+    });
+    const stalePagedReviewer = conversation({
+      id: "review-conversation-1",
+      parentConversationId: workspaceConversation.id,
+      providerHarness: "claude",
+      logicalModel: "sonnet",
+      logicalEffort: "low",
+    });
+    const durableReviewerSummary = conversation({
+      id: stalePagedReviewer.id,
+      parentConversationId: workspaceConversation.id,
+      providerHarness: "codex",
+      logicalModel: "gpt-5.5",
+      logicalEffort: "xhigh",
+    });
+    mockAgentViewData(workspaceConversation);
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+      }),
+    );
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: conversationWorkspace({
+        conversationId: workspaceConversation.id,
+        mode: "ideation",
+      }),
+      events: [],
+      target: null,
+      monitor: {
+        conversationId: workspaceConversation.id,
+        status: "reviewing",
+        reviewOutcome: "none",
+        reviewGateStatus: "reviewing",
+        reviewConversationId: stalePagedReviewer.id,
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+        lastError: null,
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: true,
+    });
+    vi.mocked(ideationApi.settings.get).mockResolvedValue(defaultIdeationSettings);
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: [workspaceConversation, stalePagedReviewer],
+      conversations: [workspaceConversation, stalePagedReviewer],
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useConversationSummaryMock.mockImplementation((conversationId: string | null) => ({
+      data:
+        conversationId === durableReviewerSummary.id
+          ? durableReviewerSummary
+          : conversationId === workspaceConversation.id
+            ? workspaceConversation
+            : null,
+      isLoading: false,
+    }));
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+    await screen.findByTestId("integrated-chat-panel");
+    fireEvent.click(await screen.findByRole("button", { name: "Open artifacts" }));
+    fireEvent.click(
+      await screen.findByTestId("mock-focus-workspace-review-with-stale-runtime"),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        durableReviewerSummary.id,
+      );
+      expect(
+        getAgentsViewTestMocks().integratedChatPanelRenderMock,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationIdOverride: durableReviewerSummary.id,
+          sendOptions: expect.objectContaining({
+            providerHarness: "codex",
+            modelId: "gpt-5.5",
+            logicalEffort: "xhigh",
+          }),
+        }),
+      );
+    });
   });
 
   it("shows the chat focus switcher on workspace chat when the latest archived/completed verification child is hydrated", async () => {
