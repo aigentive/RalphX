@@ -11,6 +11,7 @@ use crate::domain::entities::{
     Project, Task,
 };
 use crate::domain::services::{RunningAgentInfo, RunningAgentKey};
+use crate::utils::path_safety::{require_under_root, validate_absolute_non_root_path};
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -630,8 +631,12 @@ async fn evaluate_and_prune_merge_context_removes_worktree_dir() {
     let app_state = AppState::new_test();
 
     let worktree_parent = tempfile::TempDir::new().expect("failed to create worktree parent");
+    let worktree_parent_path = worktree_parent
+        .path()
+        .canonicalize()
+        .expect("failed to canonicalize worktree parent");
     let mut project = Project::new("P".to_string(), "/test".to_string());
-    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    project.worktree_parent_directory = Some(worktree_parent_path.to_string_lossy().to_string());
     app_state
         .project_repo
         .create(project.clone())
@@ -641,7 +646,18 @@ async fn evaluate_and_prune_merge_context_removes_worktree_dir() {
     task.internal_status = InternalStatus::Merging;
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let worktree_path_owned = project.task_worktree_path(task.id.as_str());
+    let worktree_path_owned = validate_absolute_non_root_path(
+        &project.task_worktree_path(task.id.as_str()),
+        "prune engine merge worktree test",
+    )
+    .expect("merge worktree test path should be safe");
+    require_under_root(
+        &worktree_path_owned,
+        &worktree_parent_path,
+        "prune engine merge worktree test",
+    )
+    .expect("merge worktree test path should stay under its temp root");
+    // codeql[rust/path-injection]
     std::fs::create_dir_all(&worktree_path_owned).expect("failed to create merge worktree");
     let worktree_path = worktree_path_owned.to_string_lossy().to_string();
 
