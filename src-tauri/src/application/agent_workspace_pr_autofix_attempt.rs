@@ -154,14 +154,12 @@ pub(crate) async fn load_pr_autofix_completion_authority(
     let Some(caller) = repo.get_by_id(&caller_id).await? else {
         return Ok(PrAutofixCompletionAuthority::Invalid);
     };
-    let context_id = pr_number.to_string();
     if caller.conversation_id != *conversation_id
-        || caller.action_kind != Some(AgentRunActionKind::PrAutofix)
-        || caller.action_context_id.as_deref() != Some(context_id.as_str())
-        || caller.action_target_id.as_deref().is_none_or(str::is_empty)
+        || !is_exact_pr_autofix_run_for_pr(&caller, pr_number)
     {
         return Ok(PrAutofixCompletionAuthority::Invalid);
     }
+    let context_id = pr_number.to_string();
     let fingerprint = caller.action_target_id.as_deref().expect("checked above");
     let attempts: Vec<AgentRun> = repo
         .get_by_conversation(conversation_id)
