@@ -21,6 +21,9 @@ lazy_static = "1.5"
 tokio = { version = "1", features = ["macros", "process", "rt"] }
 which = "7"
 
+[features]
+test-utils = []
+
 [lints.clippy]
 # Allowed lints consistent with root crate policy (see src-tauri/CLAUDE.md "Allowed Clippy Lints")
 derivable_impls = "allow"

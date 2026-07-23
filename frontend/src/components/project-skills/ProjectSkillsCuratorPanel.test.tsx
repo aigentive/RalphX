@@ -592,6 +592,45 @@ describe("ProjectSkillsCuratorPanel", () => {
     });
   });
 
+  it("proposes a staged revision without presenting an approved skill as directly editable", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole("tab", { name: /^approved$/i }));
+    await user.click(
+      screen.getByRole("button", { name: /propose revision/i }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: /propose skill revision/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/approved skill stays unchanged and active/i),
+    ).toBeInTheDocument();
+
+    const titleInput = screen.getByLabelText("Skill title");
+    await user.clear(titleInput);
+    await user.type(titleInput, "Approved review convention v2");
+    await user.click(
+      screen.getByRole("button", { name: /propose revision/i }),
+    );
+
+    await waitFor(() => {
+      expect(mockedProjectSkillsApi.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectSkillId: "approved-skill",
+          title: "Approved review convention v2",
+        }),
+      );
+    });
+    await waitFor(() => {
+      const listCalls = mockedProjectSkillsApi.list.mock.calls.map(
+        ([input]) => input.status,
+      );
+      expect(listCalls.filter((status) => status === "staged").length).toBeGreaterThan(1);
+      expect(listCalls.filter((status) => status === "approved").length).toBeGreaterThan(1);
+    });
+  });
+
   it("pins approved skills", async () => {
     mockedProjectSkillsApi.list.mockImplementation((input) =>
       Promise.resolve(

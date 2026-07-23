@@ -756,6 +756,61 @@ async fn update_project_skill_handler_updates_reviewable_fields() {
 }
 
 #[tokio::test]
+async fn update_project_skill_handler_returns_a_pending_revision_for_approved_content() {
+    let app_state = Arc::new(AppState::new_test());
+    let project_id = ProjectId::from_string("project-approved-update".to_string());
+    let mut approved = staged_skill(project_id.clone());
+    approved.id = ProjectSkillId::from_string("approved-update".to_string());
+    approved.status = ProjectSkillLifecycleStatus::Approved;
+    approved.body_markdown = "Approved body".to_string();
+    let approved_id = approved.id.clone();
+    app_state.project_skill_repo.create(approved).await.unwrap();
+
+    let response = update_project_skill(
+        State(test_state(Arc::clone(&app_state))),
+        ProjectScope(Some(vec![project_id])),
+        Json(UpdateProjectSkillRequest {
+            project_skill_id: approved_id.as_str().to_string(),
+            title: "Proposed approved revision".to_string(),
+            bucket: "review".to_string(),
+            stage: "review".to_string(),
+            scope_paths: vec!["src-tauri".to_string()],
+            compact_guidance: "Review the proposed revision.".to_string(),
+            body_markdown: "Proposed body".to_string(),
+            predicted_effect: "Preserves approval review.".to_string(),
+            source_sync_enabled: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0
+    .skill
+    .expect("pending revision");
+
+    assert_eq!(response.status, "staged");
+    assert_eq!(
+        response.companion_of_skill_id.as_deref(),
+        Some(approved_id.as_str())
+    );
+    let approved_after = app_state
+        .project_skill_repo
+        .get_by_id(&approved_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(approved_after.body_markdown, "Approved body");
+    assert_eq!(
+        app_state
+            .project_skill_repo
+            .list_versions(&ProjectSkillId::from_string(response.id))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn direct_user_lifecycle_dispatch_rejects_stale_without_mutation() {
     let app_state = Arc::new(AppState::new_test());
     let project_id = ProjectId::from_string("project-stale".to_string());
@@ -822,6 +877,69 @@ async fn source_tracked_project_skill_sync_updates_internal_copy() {
         "## Updated\n\nFollow the updated source procedure."
     );
     assert!(project_skill_source_sync_enabled(&updated));
+}
+
+#[tokio::test]
+async fn approved_source_sync_creates_a_staged_revision_without_mutating_approved_content() {
+    let app_state = Arc::new(AppState::new_test());
+    let project_id = ProjectId::from_string("project-approved-source-sync".to_string());
+    let mut approved = staged_skill(project_id.clone());
+    approved.id = ProjectSkillId::from_string("approved-source-sync".to_string());
+    approved.status = ProjectSkillLifecycleStatus::Approved;
+    approved.title = "Approved source title".to_string();
+    approved.body_markdown = "Approved source procedure".to_string();
+    approved.provenance_json = json!({
+        "source": "project_skill_import",
+        "external_id": ".claude/skills/review/SKILL.md",
+        "source_sync_enabled": true,
+        "source_snapshot": {
+            "relative_path": ".claude/skills/review/SKILL.md",
+            "source_sync_enabled": true
+        }
+    });
+    let approved_id = approved.id.clone();
+    app_state.project_skill_repo.create(approved).await.unwrap();
+
+    let synced = sync_source_tracked_project_skills(
+        &test_state(Arc::clone(&app_state)),
+        &project_id,
+        &[source_import_candidate()],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(synced, 1);
+    let approved_after = app_state
+        .project_skill_repo
+        .get_by_id(&approved_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(approved_after.title, "Approved source title");
+    assert_eq!(approved_after.body_markdown, "Approved source procedure");
+    let staged = app_state
+        .project_skill_repo
+        .list_by_project(
+            &project_id,
+            ProjectSkillListOptions {
+                status: Some(ProjectSkillLifecycleStatus::Staged),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].companion_of_skill_id, Some(approved_id));
+    assert_eq!(staged[0].title, "Updated source skill");
+    assert_eq!(
+        app_state
+            .project_skill_repo
+            .list_versions(&staged[0].id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]

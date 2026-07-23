@@ -865,6 +865,7 @@ function ProjectSkillEditDialog({
   const [sourceSyncEnabled, setSourceSyncEnabled] = useState(
     skill.sourceSyncEnabled,
   );
+  const proposingRevision = skill.status === "approved";
 
   const resetForm = () => {
     setTitle(skill.title);
@@ -895,16 +896,19 @@ function ProjectSkillEditDialog({
       <DialogTrigger asChild>
         <Button type="button" size="sm" variant="outline" disabled={disabled}>
           <Pencil />
-          Edit
+          {proposingRevision ? "Propose revision" : "Edit"}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-[760px]">
         <DialogHeader>
           <div>
-            <DialogTitle>Edit skill draft</DialogTitle>
+            <DialogTitle>
+              {proposingRevision ? "Propose skill revision" : "Edit skill draft"}
+            </DialogTitle>
             <DialogDescription className="mt-1 leading-5">
-              Save edits to RalphX's internal skill copy. Source files are not
-              overwritten from this dialog.
+              {proposingRevision
+                ? "Create a staged revision for review. The approved skill stays unchanged and active until the revision is approved."
+                : "Save edits to RalphX's internal skill copy. Source files are not overwritten from this dialog."}
             </DialogDescription>
           </div>
         </DialogHeader>
@@ -913,7 +917,9 @@ function ProjectSkillEditDialog({
             <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
               Source: <span className="font-medium">{skill.sourcePath}</span>.{" "}
               {sourceSyncEnabled
-                ? "Track source is on: explicit source reloads may refresh this internal copy from the file."
+                ? proposingRevision
+                  ? "Track source is on: explicit source reloads create or refresh a staged revision without replacing this approved skill."
+                  : "Track source is on: explicit source reloads may refresh this internal copy from the file."
                 : "Snapshot mode is on: source reloads skip this internal copy unless tracking is enabled."}
             </div>
           ) : null}
@@ -1006,8 +1012,9 @@ function ProjectSkillEditDialog({
                 </Button>
               </div>
               <p className="text-xs leading-5 text-[var(--text-secondary)]">
-                Track source only controls future RalphX reloads from the
-                source folder. Saving here still updates RalphX only.
+                {proposingRevision
+                  ? "Track source only controls future RalphX reloads. Reloading or saving changes creates a reviewable staged revision; it never silently overwrites the approved skill."
+                  : "Track source only controls future RalphX reloads from the source folder. Saving here still updates RalphX only."}
               </p>
             </div>
           ) : null}
@@ -1040,7 +1047,7 @@ function ProjectSkillEditDialog({
                 setOpen(false);
               }}
             >
-              Save changes
+              {proposingRevision ? "Propose revision" : "Save changes"}
             </Button>
           </div>
         </div>

@@ -15,8 +15,11 @@ use crate::domain::entities::{
     TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
-    ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
-    SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
+    ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
+    ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
+    ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
+    ProjectSkillResolutionOutcome, SkillUsageEventRepository, SkillUsageListOptions,
+    TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
 use crate::infrastructure::sqlite::run_migrations;
 
@@ -88,6 +91,124 @@ fn project_skill(
         created_at: now,
         updated_at: now,
     }
+}
+
+fn outcome_resolution_command(
+    mut skill: ProjectSkill,
+    outcome_id: &str,
+) -> ProjectSkillResolutionCommand {
+    skill.provenance_json = json!({
+        "source": "task_outcome",
+        "outcome_id": outcome_id,
+    });
+    ProjectSkillResolutionCommand {
+        candidate: skill,
+        intent: ProjectSkillResolutionIntent::Upsert {
+            identities: vec![ProjectSkillResolutionIdentity {
+                kind: ProjectSkillResolutionIdentityKind::Outcome,
+                value: outcome_id.to_string(),
+            }],
+            matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
+        },
+        evidence_markdown: None,
+    }
+}
+
+#[tokio::test]
+async fn concurrent_sqlite_resolution_converges_to_one_skill_and_snapshot() {
+    let conn = shared_test_connection();
+    let first_repo = SqliteProjectSkillRepository::from_shared(Arc::clone(&conn));
+    let second_repo = SqliteProjectSkillRepository::from_shared(conn);
+    let first = outcome_resolution_command(
+        project_skill(
+            "Concurrent skill",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "outcome-concurrent",
+    );
+    let mut second = first.clone();
+    second.candidate.id = ProjectSkillId::new();
+
+    let (first, second) = tokio::join!(first_repo.resolve(first), second_repo.resolve(second));
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(
+        [first.outcome, second.outcome]
+            .into_iter()
+            .filter(|outcome| *outcome == ProjectSkillResolutionOutcome::CreateNew)
+            .count(),
+        1
+    );
+    assert_eq!(
+        [first.outcome, second.outcome]
+            .into_iter()
+            .filter(|outcome| *outcome == ProjectSkillResolutionOutcome::Duplicate)
+            .count(),
+        1
+    );
+    let created = if first.outcome == ProjectSkillResolutionOutcome::CreateNew {
+        first
+    } else {
+        second
+    };
+    assert_eq!(
+        first_repo
+            .list_by_project(
+                &ProjectId::from_string("project-1".to_string()),
+                ProjectSkillListOptions::default(),
+            )
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        first_repo
+            .list_versions(&created.skill.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn sqlite_resolution_rolls_back_current_row_when_snapshot_insert_fails() {
+    let conn = shared_test_connection();
+    conn.lock()
+        .await
+        .execute_batch(
+            "CREATE TRIGGER fail_project_skill_version_insert
+             BEFORE INSERT ON project_skill_versions
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected version failure');
+             END;",
+        )
+        .unwrap();
+    let repo = SqliteProjectSkillRepository::from_shared(conn);
+    let command = outcome_resolution_command(
+        project_skill(
+            "Rollback skill",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "outcome-rollback",
+    );
+
+    assert!(repo.resolve(command).await.is_err());
+    assert!(repo
+        .list_by_project(
+            &ProjectId::from_string("project-1".to_string()),
+            ProjectSkillListOptions::default(),
+        )
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

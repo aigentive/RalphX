@@ -153,7 +153,12 @@ pub use persona_repository::PersonaRepository;
 pub use process_repo::ProcessRepository;
 pub use project_memory_settings_repository::ProjectMemorySettingsRepository;
 pub use project_skill_settings_repository::ProjectSkillSettingsRepository;
-pub use project_skill_repository::{ProjectSkillListOptions, ProjectSkillRepository};
+pub use project_skill_repository::{
+    ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
+    ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
+    ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
+    ProjectSkillResolutionOutcome, ProjectSkillResolutionResult,
+};
 pub use project_repository::ProjectRepository;
 pub use proposal_dependency_repository::ProposalDependencyRepository;
 pub use review_repository::ReviewRepository;
