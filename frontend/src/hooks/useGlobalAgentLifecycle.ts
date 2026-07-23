@@ -145,6 +145,14 @@ export function useGlobalAgentLifecycle() {
         return false;
       }
 
+      const activeRunId = useChatStore.getState().activeAgentRunIds[storeKey];
+      if (eventRunId == null && activeRunId != null) {
+        logger.warn(
+          `[GlobalAgentLifecycle] Ignoring ${eventName} without a run id while active=${activeRunId} for key=${storeKey}`
+        );
+        return false;
+      }
+
       const parsed = parseStoreKey(storeKey);
       if (parsed?.contextType === "ideation") {
         const activeChildId =
@@ -182,7 +190,11 @@ export function useGlobalAgentLifecycle() {
 
         useChatStore.getState().setAgentStatus(eventContextKey, "generating");
         useChatStore.getState().setAgentActivityLabel(eventContextKey, "Agent working");
-        useChatStore.getState().setActiveAgentRun(eventContextKey, payload.run_id);
+        useChatStore.getState().setActiveAgentRun(
+          eventContextKey,
+          payload.run_id,
+          payload.provider_harness ?? payload.providerHarness ?? null,
+        );
         // Track the active conversation for this context so the stale guard can function
         // for ALL sessions, not just those with mounted per-panel hooks.
         useChatStore.getState().setActiveConversation(eventContextKey, payload.conversation_id);

@@ -25,6 +25,7 @@ const chatStoreMocks = vi.hoisted(() => ({
   setAgentStatus: vi.fn(),
   agentStatus: {} as Record<string, string>,
   activeAgentRunIds: {} as Record<string, string>,
+  activeAgentRunHarnesses: {} as Record<string, string | null>,
   lastAgentEventTimestamp: {} as Record<string, number>,
   updateLastAgentEvent: vi.fn(),
   setAgentActivityLabel: vi.fn(),
@@ -173,6 +174,7 @@ describe("useGlobalAgentLifecycle", () => {
     chatStoreMocks.setEffectiveModel.mockClear();
     chatStoreMocks.agentStatus = {};
     chatStoreMocks.activeAgentRunIds = {};
+    chatStoreMocks.activeAgentRunHarnesses = {};
     chatStoreMocks.lastAgentEventTimestamp = {};
     chatStoreMocks.activeConversationIds = {};
     uiStoreMocks.clearActiveQuestion.mockClear();
@@ -322,12 +324,14 @@ describe("useGlobalAgentLifecycle", () => {
         ...mkRunStarted("project", "project-1"),
         conversation_id: "conv-project-1",
         run_id: "run-new",
+        provider_harness: "claude",
       });
     });
 
     expect(chatStoreMocks.setActiveAgentRun).toHaveBeenCalledWith(
       "project:conv-project-1",
-      "run-new"
+      "run-new",
+      "claude",
     );
   });
 
@@ -465,6 +469,7 @@ describe("useGlobalAgentLifecycle", () => {
   it("run_completed ignores stale terminal events from an older run on the same conversation", () => {
     chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
     chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    chatStoreMocks.activeAgentRunHarnesses = { "project:conv-project-1": "codex" };
     chatStoreMocks.agentStatus = { "project:conv-project-1": "generating" };
     renderHook(() => useGlobalAgentLifecycle());
 
@@ -482,6 +487,32 @@ describe("useGlobalAgentLifecycle", () => {
       "idle"
     );
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
+    expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
+  });
+
+  it("run_completed without an id preserves a newer run and harness pair", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    chatStoreMocks.activeAgentRunHarnesses = { "project:conv-project-1": "codex" };
+    chatStoreMocks.agentStatus = { "project:conv-project-1": "generating" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_completed", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "idle"
+    );
+    expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
+    expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
   });
 
   it("run_completed clears the active run id when the terminal event matches", () => {
