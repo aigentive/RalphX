@@ -949,6 +949,72 @@ describe("AgentsView publish", () => {
     );
   });
 
+  it("relocates publish history and automation without losing action-strip state", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        autoPublishEnabled: false,
+      },
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([
+      {
+        id: "event-1",
+        conversationId: "conversation-1",
+        step: "published",
+        status: "succeeded",
+        summary: "Published pull request",
+        classification: null,
+        createdAt: "2026-07-23T15:00:00Z",
+      },
+    ]);
+
+    const actionbar = await openPublishPane();
+    const tabs = screen.getByTestId("agents-publish-tabs");
+    expect(
+      Array.from(tabs.querySelectorAll('[role="tab"]')).map((tab) =>
+        tab.getAttribute("data-testid"),
+      ),
+    ).toEqual([
+      "agents-publish-tab-changes",
+      "agents-publish-tab-review",
+      "agents-publish-tab-history",
+      "agents-publish-tab-automation",
+    ]);
+    expect(screen.queryByTestId("agents-publish-events")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-pr-supervision-controls"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(actionbar).getByTestId("agents-pr-supervision-status"),
+    ).toHaveTextContent("Auto Publish paused");
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-history"), {
+      button: 0,
+    });
+    expect(
+      await screen.findByTestId("agents-publish-events"),
+    ).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-automation"), {
+      button: 0,
+    });
+    expect(
+      await screen.findByTestId("agents-pr-supervision-controls"),
+    ).toBeInTheDocument();
+    expect(
+      within(actionbar).getByTestId("agents-pr-supervision-status"),
+    ).toHaveTextContent("Auto Publish paused");
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-changes"), {
+      button: 0,
+    });
+    expect(
+      screen.getByTestId("agents-publish-content-automation"),
+    ).toHaveAttribute("data-state", "inactive");
+    expect(screen.queryByText("Checks")).not.toBeInTheDocument();
+  });
+
   it("shows a composer workspace changes summary from the compact live path and loads files on expand", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));

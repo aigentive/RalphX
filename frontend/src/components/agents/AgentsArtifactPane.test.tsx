@@ -1513,7 +1513,7 @@ function renderPublishPanelForWorkspaceRerender(
             onPublishWorkspace={vi.fn()}
             isPublishingWorkspace={false}
             reviewContext={reviewContext}
-            activeSubTab="changes"
+            activeSubTab="automation"
             showReviewTab
             onSubTabChange={() => {}}
             reviewContent={null}
@@ -1538,6 +1538,21 @@ function artifactTabIds(tabRow: HTMLElement): string[] {
   return Array.from(
     tabRow.querySelectorAll("[data-testid^='agents-artifact-tab-']"),
   ).map((tab) => tab.getAttribute("data-testid") ?? "");
+}
+
+async function openAutomationTab() {
+  fireEvent.mouseDown(
+    await screen.findByTestId("agents-publish-tab-automation"),
+    { button: 0 },
+  );
+  await screen.findByTestId("agents-publish-content-automation");
+}
+
+async function openHistoryTab() {
+  fireEvent.mouseDown(await screen.findByTestId("agents-publish-tab-history"), {
+    button: 0,
+  });
+  await screen.findByTestId("agents-publish-content-history");
 }
 
 function renderControlledPane(
@@ -3653,6 +3668,111 @@ describe("AgentsArtifactPane", () => {
     expect(onTabChange).not.toHaveBeenCalledWith("publish");
   });
 
+  it("renders History and Automation as lazy publish destinations without Checks", async () => {
+    listPublicationEventsMock.mockResolvedValue([
+      {
+        id: "event-history",
+        conversationId: "conversation-1",
+        step: "published",
+        status: "succeeded",
+        summary: "Published pull request",
+        classification: null,
+        createdAt: "2026-07-23T15:00:00Z",
+      },
+    ]);
+    renderControlledPane("publish", workspace({ mode: "edit" }));
+
+    const tabs = await screen.findByTestId("agents-publish-tabs");
+    expect(
+      Array.from(tabs.querySelectorAll('[role="tab"]')).map((tab) =>
+        tab.getAttribute("data-testid"),
+      ),
+    ).toEqual([
+      "agents-publish-tab-changes",
+      "agents-publish-tab-review",
+      "agents-publish-tab-history",
+      "agents-publish-tab-automation",
+    ]);
+    expect(screen.queryByTestId("agents-publish-events")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-pr-supervision-controls"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Checks")).not.toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-history"), {
+      button: 0,
+    });
+
+    expect(
+      await screen.findByTestId("agents-publish-content-history"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-publish-events"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-publish-content-changes"),
+    ).toHaveAttribute("data-state", "inactive");
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-automation"), {
+      button: 0,
+    });
+
+    expect(
+      await screen.findByTestId("agents-publish-content-automation"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-pr-supervision-controls"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-tab-automation")).toHaveClass(
+      "ml-auto",
+    );
+  });
+
+  it("accepts fresh History requests without creating Review focus", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+
+    renderControlledPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      conversation(),
+      {
+        onFocusWorkspaceReview,
+        publishSubTabRequest: {
+          conversationId: "conversation-1",
+          requestId: 1,
+          tab: "history",
+        },
+      },
+    );
+
+    expect(
+      await screen.findByTestId("agents-publish-tab-history"),
+    ).toHaveAttribute("data-state", "active");
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Changes when requested Automation is unavailable", async () => {
+    renderControlledPane(
+      "publish",
+      workspace({ mode: "plan" }),
+      conversation({ agentMode: "plan" }),
+      {
+        publishSubTabRequest: {
+          conversationId: "conversation-1",
+          requestId: 1,
+          tab: "automation",
+        },
+      },
+    );
+
+    expect(
+      await screen.findByTestId("agents-publish-tab-changes"),
+    ).toHaveAttribute("data-state", "active");
+    expect(
+      screen.queryByTestId("agents-publish-tab-automation"),
+    ).not.toBeInTheDocument();
+  });
+
   it("focuses the workspace Review chat when the user opens the Review tab", async () => {
     const onFocusWorkspaceReview = vi.fn();
     getWorkspaceReviewContextMock.mockResolvedValue(
@@ -4890,6 +5010,7 @@ describe("AgentsArtifactPane", () => {
 
   it("shows pre-PR Auto Publish with independent PR automation controls", async () => {
     renderPane("publish", workspace({ mode: "edit" }));
+    await openAutomationTab();
 
     expect(
       await screen.findByTestId("agents-auto-publish-switch"),
@@ -5328,6 +5449,7 @@ describe("AgentsArtifactPane", () => {
 
   it("persists pre-PR autofix preference while initial Auto Publish is off", async () => {
     renderPane("publish", workspace({ mode: "edit" }));
+    await openAutomationTab();
 
     expect(
       await screen.findByTestId("agents-auto-publish-switch"),
@@ -5355,6 +5477,7 @@ describe("AgentsArtifactPane", () => {
         prAutofixEnabled: true,
       }),
     );
+    await openAutomationTab();
 
     expect(
       await screen.findByTestId("agents-auto-publish-switch"),
@@ -5384,6 +5507,7 @@ describe("AgentsArtifactPane", () => {
         }),
     );
     renderPane("publish", workspace({ mode: "edit" }));
+    await openAutomationTab();
 
     fireEvent.click(await screen.findByTestId("agents-auto-publish-switch"));
 
@@ -5415,6 +5539,7 @@ describe("AgentsArtifactPane", () => {
         publicationPushStatus: "pushed",
       }),
     );
+    await openAutomationTab();
 
     fireEvent.click(await screen.findByTestId("agents-pr-autofix-switch"));
 
@@ -5445,6 +5570,7 @@ describe("AgentsArtifactPane", () => {
         prSupervisionStatus: "monitoring",
       }),
     );
+    await openAutomationTab();
 
     const autoMergeSwitch = await screen.findByRole("switch", {
       name: "GitHub auto-merge",
@@ -5617,6 +5743,7 @@ describe("AgentsArtifactPane", () => {
         prSupervisionStatus: "monitoring",
       }),
     );
+    await openAutomationTab();
 
     fireEvent.click(
       await screen.findByRole("switch", { name: "GitHub auto-merge" }),
@@ -5647,6 +5774,7 @@ describe("AgentsArtifactPane", () => {
         prSupervisionStatus: "monitoring",
       }),
     );
+    await openAutomationTab();
 
     fireEvent.click(
       await screen.findByRole("switch", { name: "GitHub auto-merge" }),
@@ -5671,6 +5799,7 @@ describe("AgentsArtifactPane", () => {
         publicationPushStatus: "pushed",
       }),
     );
+    await openAutomationTab();
 
     await user.hover(
       await screen.findByRole("button", {
@@ -5701,6 +5830,7 @@ describe("AgentsArtifactPane", () => {
         prAutofixEnabled: true,
       }),
     );
+    await openAutomationTab();
 
     fireEvent.click(await screen.findByTestId("agents-auto-publish-switch"));
 
@@ -5734,6 +5864,7 @@ describe("AgentsArtifactPane", () => {
         prSupervisionStatus: "paused",
       }),
     );
+    await openAutomationTab();
 
     expect(await screen.findByText("Auto Publish paused")).toBeInTheDocument();
     expect(screen.getByTestId("agents-auto-publish-switch")).not.toBeChecked();
@@ -5899,6 +6030,7 @@ describe("AgentsArtifactPane", () => {
       }),
       publish,
     );
+    await openAutomationTab();
 
     const publishButton = screen.getByTestId("agents-publish-confirm");
     expect(publishButton).toHaveTextContent("Commit & Publish");
@@ -9034,6 +9166,7 @@ describe("AgentsArtifactPane", () => {
       false,
       conversation(),
     );
+    await openAutomationTab();
 
     await user.click(screen.getByRole("switch", { name: "GitHub auto-merge" }));
 
@@ -10623,6 +10756,7 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByText("Could not load workspace changes"),
     ).not.toBeInTheDocument();
+    await openAutomationTab();
     expect(
       screen.getByTestId("agents-pr-supervision-controls"),
     ).toBeInTheDocument();
@@ -10682,6 +10816,7 @@ describe("AgentsArtifactPane", () => {
         autoPublishInitialPrEnabled: false,
       }),
     );
+    await openAutomationTab();
 
     expect(
       await screen.findByTestId("agents-auto-publish-switch"),
@@ -11268,6 +11403,7 @@ describe("AgentsArtifactPane", () => {
       "publish",
       workspace({ mode: "edit", publicationPushStatus: "needs_agent" }),
     );
+    await openHistoryTab();
 
     expect(
       await screen.findByTestId(
@@ -11323,6 +11459,7 @@ describe("AgentsArtifactPane", () => {
         publicationPrNumber: 78,
       }),
     );
+    await openHistoryTab();
 
     expect(
       await screen.findByTestId(
