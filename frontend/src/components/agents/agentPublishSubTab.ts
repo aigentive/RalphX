@@ -1,6 +1,7 @@
 export type AgentPublishSubTab =
   | "changes"
   | "review"
+  | "checks"
   | "history"
   | "automation";
 

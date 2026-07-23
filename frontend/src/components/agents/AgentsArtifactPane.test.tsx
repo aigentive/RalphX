@@ -3751,6 +3751,119 @@ describe("AgentsArtifactPane", () => {
     expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
   });
 
+  it("accepts a fresh Checks request for a URL-only published workspace", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+
+    renderControlledPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrUrl: "https://github.com/acme/app/pull/351",
+      }),
+      conversation(),
+      {
+        onFocusWorkspaceReview,
+        publishSubTabRequest: {
+          conversationId: "conversation-1",
+          requestId: 1,
+          tab: "checks",
+        },
+      },
+    );
+
+    expect(
+      await screen.findByTestId("agents-publish-tab-checks"),
+    ).toHaveAttribute("data-state", "active");
+    expect(
+      await screen.findByTestId("agents-publish-checks-shell"),
+    ).toBeInTheDocument();
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Changes when requested Checks is unavailable", async () => {
+    renderControlledPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        sourcePullRequest: {
+          number: 351,
+          url: "https://github.com/acme/app/pull/351",
+          title: "Source PR",
+          headRefName: "source/pr",
+          baseRefName: "main",
+          headRefOid: null,
+        },
+      }),
+      conversation(),
+      {
+        publishSubTabRequest: {
+          conversationId: "conversation-1",
+          requestId: 1,
+          tab: "checks",
+        },
+      },
+    );
+
+    expect(
+      await screen.findByTestId("agents-publish-tab-changes"),
+    ).toHaveAttribute("data-state", "active");
+    expect(
+      screen.queryByTestId("agents-publish-tab-checks"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("returns to Changes when the active workspace loses Checks eligibility", async () => {
+    const queryClient = createTestQueryClient();
+    const pane = (paneWorkspace: AgentConversationWorkspace) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={conversation()}
+              workspace={paneWorkspace}
+              activeTab="publish"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={vi.fn()}
+              isPublishingWorkspace={false}
+              onClose={() => {}}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+    const result = render(
+      pane(
+        workspace({
+          mode: "edit",
+          publicationPrNumber: 351,
+          publicationPrUrl: "https://github.com/acme/app/pull/351",
+        }),
+      ),
+    );
+
+    fireEvent.mouseDown(await screen.findByTestId("agents-publish-tab-checks"), {
+      button: 0,
+    });
+    expect(screen.getByTestId("agents-publish-tab-checks")).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+
+    result.rerender(pane(workspace({ mode: "edit" })));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-tab-changes")).toHaveAttribute(
+        "data-state",
+        "active",
+      ),
+    );
+    expect(
+      screen.queryByTestId("agents-publish-tab-checks"),
+    ).not.toBeInTheDocument();
+  });
+
   it("falls back to Changes when requested Automation is unavailable", async () => {
     renderControlledPane(
       "publish",

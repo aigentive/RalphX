@@ -14,6 +14,7 @@ import type {
   AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
 import type { FileChange } from "@/api/diff";
+import type { PullRequestDetail } from "@/api/github";
 import { useChatStore } from "@/stores/chatStore";
 import {
   conversationFixture as conversation,
@@ -25,11 +26,13 @@ import {
   useAgentArtifactUiStore,
 } from "./agentArtifactUiStore";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import { prKeys } from "@/hooks/usePullRequestDetail";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
 const {
   getAgentConversationRuntimeStatusesMock,
+  getPullRequestDetailMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
   getWorkspacePrAnnotationsMock,
@@ -60,6 +63,32 @@ const reviewFile: FileChange = {
   deletions: 1,
   isGenerated: false,
 };
+
+const checksDetail = (
+  checks: PullRequestDetail["checks"],
+): PullRequestDetail => ({
+  state: "loaded",
+  origin: "ownedOutbound",
+  description: {
+    number: 78,
+    title: "Published pull request",
+    body: null,
+    author: "octocat",
+    createdAt: "2026-07-23T15:00:00Z",
+    url: "https://github.com/mock/project/pull/78",
+    state: "open",
+    isDraft: false,
+    headRefName: "ralphx/ralphx/agent-abcdef12",
+    baseRefName: "main",
+  },
+  checks,
+  reviewSummary: null,
+  issueComments: [],
+  reviewThread: [],
+  rxConversations: [],
+  linkedTickets: [],
+  sourcesUnavailable: [],
+});
 
 const fullFreshness = (
   overrides: Partial<AgentConversationWorkspaceFreshness> = {},
@@ -978,6 +1007,7 @@ describe("AgentsView publish", () => {
     ).toEqual([
       "agents-publish-tab-changes",
       "agents-publish-tab-review",
+      "agents-publish-tab-checks",
       "agents-publish-tab-history",
       "agents-publish-tab-automation",
     ]);
@@ -988,6 +1018,13 @@ describe("AgentsView publish", () => {
     expect(
       within(actionbar).getByTestId("agents-pr-supervision-status"),
     ).toHaveTextContent("Auto Publish paused");
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-checks"), {
+      button: 0,
+    });
+    expect(
+      await screen.findByTestId("agents-publish-checks-shell"),
+    ).toBeInTheDocument();
 
     fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-history"), {
       button: 0,
@@ -1012,7 +1049,151 @@ describe("AgentsView publish", () => {
     expect(
       screen.getByTestId("agents-publish-content-automation"),
     ).toHaveAttribute("data-state", "inactive");
-    expect(screen.queryByText("Checks")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-publish-content-checks"),
+    ).toHaveAttribute("data-state", "inactive");
+  });
+
+  it("reuses fresh PR-detail cache data for the Checks badge and content", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+    });
+    const cachedDetail = checksDetail([
+      {
+        name: "lint",
+        status: "completed",
+        conclusion: "failure",
+        detailsUrl: null,
+      },
+      {
+        name: "types",
+        status: "in_progress",
+        conclusion: null,
+        detailsUrl: null,
+      },
+      {
+        name: "unit",
+        status: "completed",
+        conclusion: "success",
+        detailsUrl: null,
+      },
+    ]);
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      prKeys.detail({ projectId: "project-1", prNumber: 78 }),
+      cachedDetail,
+    );
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    expect(
+      within(screen.getByTestId("agents-publish-tab-checks")).getByLabelText(
+        "1 failed and 1 pending checks",
+      ),
+    ).toHaveTextContent("2");
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-checks"), {
+      button: 0,
+    });
+
+    expect(await screen.findByText("lint")).toBeInTheDocument();
+    expect(screen.getByText("types")).toBeInTheDocument();
+    expect(screen.getByText("unit")).toBeInTheDocument();
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+  });
+
+  it("suppresses the Checks attention badge when cached checks are all green", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+    });
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      prKeys.detail({ projectId: "project-1", prNumber: 78 }),
+      checksDetail([
+        {
+          name: "unit",
+          status: "completed",
+          conclusion: "success",
+          detailsUrl: null,
+        },
+      ]),
+    );
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    const checksTab = screen.getByTestId("agents-publish-tab-checks");
+    expect(checksTab).toHaveTextContent("Checks");
+    expect(
+      within(checksTab).queryByLabelText(/failed and .* pending checks/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("paints the Checks shell before showing deferred loading work", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+    });
+    getPullRequestDetailMock.mockImplementation(() => new Promise(() => {}));
+
+    await openPublishPane();
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-checks"), {
+      button: 0,
+    });
+
+    expect(screen.getByTestId("agents-publish-checks-shell")).toBeInTheDocument();
+    expect(screen.queryByText("Loading checks…")).not.toBeInTheDocument();
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+
+    expect(
+      await screen.findByText("Loading checks…"),
+    ).toBeInTheDocument();
+    expect(getPullRequestDetailMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides Checks for a source pull request without a published PR", async () => {
+    configurePublishPane({
+      workspace: {
+        sourcePullRequest: {
+          number: 77,
+          url: "https://github.com/mock/project/pull/77",
+          title: "Source PR",
+          headRefName: "source/pr",
+          baseRefName: "main",
+          headRefOid: null,
+        },
+      },
+    });
+
+    await openPublishPane();
+
+    expect(
+      screen.queryByTestId("agents-publish-tab-checks"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-publish-content-checks"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a composer workspace changes summary from the compact live path and loads files on expand", async () => {

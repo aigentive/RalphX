@@ -298,7 +298,11 @@ export function AgentWorkspaceToolbar({
                 type="button"
                 className="inline-flex min-w-0 items-center gap-1 rounded bg-transparent p-0 text-left font-medium text-[var(--text-primary)] transition-colors hover:text-[var(--accent-primary)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
                 onClick={() => void openExternalTicketUrl(shell.url!)}
-                aria-label={`Open PR #${shell.prNumber ?? ""} in GitHub`}
+                aria-label={
+                  shell.prNumber
+                    ? `Open PR #${shell.prNumber} in GitHub`
+                    : "Open pull request in GitHub"
+                }
               >
                 <span className="truncate">
                   {shell.prNumber ? `PR #${shell.prNumber}` : "Pull request"}
