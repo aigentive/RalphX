@@ -67,16 +67,17 @@ describe("AutomationRunTaskLedger", () => {
 
     expect(await screen.findByText("Active work")).toBeInTheDocument();
     expect(screen.getByText("Open work")).toBeInTheDocument();
-    expect(screen.getByText("coder-1")).toBeInTheDocument();
+    expect(screen.queryByText("coder-1")).not.toBeInTheDocument();
 
     // Only actionable (active/open) tasks get their own rows.
     expect(screen.getAllByTestId("automation-run-task-ledger-row")).toHaveLength(2);
     expect(screen.queryByText("Done work")).not.toBeInTheDocument();
     expect(screen.queryByText("Dropped work")).not.toBeInTheDocument();
 
-    expect(
-      screen.getByTestId("automation-run-task-ledger-summary"),
-    ).toHaveTextContent("1 done · 1 dropped");
+    const labelRow = screen.getByTestId("automation-run-task-ledger-label-row");
+    const summary = screen.getByTestId("automation-run-task-ledger-summary");
+    expect(labelRow).toContainElement(summary);
+    expect(summary).toHaveTextContent("1 done · 1 dropped");
   });
 
   it("shows the empty state when there are no agent tasks", async () => {
@@ -85,6 +86,46 @@ describe("AutomationRunTaskLedger", () => {
     renderLedger("merged");
 
     expect(await screen.findByText("No agent tasks yet.")).toBeInTheDocument();
+  });
+
+  it("surfaces an error state when the task query fails", async () => {
+    listConversationTasksMock.mockRejectedValue(new Error("boom"));
+
+    renderLedger("running");
+
+    expect(
+      await screen.findByText("Could not load agent tasks."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("automation-run-task-ledger-row"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the no-active-tasks state when every task is terminal", async () => {
+    listConversationTasksMock.mockResolvedValue([
+      task({ taskId: "a", taskNumber: 1, title: "Done work", state: "done" }),
+      task({ taskId: "b", taskNumber: 2, title: "Dropped work", state: "dropped" }),
+    ]);
+
+    renderLedger("running");
+
+    expect(await screen.findByText("No active tasks right now.")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-run-task-ledger-summary")).toHaveTextContent(
+      "1 done · 1 dropped",
+    );
+  });
+
+  it("coerces a lingering active task to Done once the run is terminal", async () => {
+    listConversationTasksMock.mockResolvedValue([
+      task({ taskId: "a", taskNumber: 1, title: "Still marked active", state: "active" }),
+    ]);
+
+    renderLedger("merged");
+
+    expect(await screen.findByText("Still marked active")).toBeInTheDocument();
+    // effectiveTaskState maps active → done for a merged run, so the row reads "Done".
+    const stateLabel = screen.getByTestId("automation-run-task-ledger-row-state");
+    expect(stateLabel).toHaveTextContent("Done");
   });
 
   it("polls on an interval while the run is open", async () => {

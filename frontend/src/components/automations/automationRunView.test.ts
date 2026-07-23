@@ -12,7 +12,10 @@ import {
   describeAutomationRunPrState,
   getAutomationJudgeRecovery,
   getAutomationRunJudgeLabel,
+  getAutomationRunStatusTone,
   getAutomationRunView,
+  isAutomationRunDeletable,
+  isAutomationRunResumable,
   isAutomationRunComposerReadOnly,
   isIdleAfterCancelledRun,
   latestRunHoldsGoalAuthority,
@@ -135,6 +138,62 @@ describe("automationRunView", () => {
     "in_progress",
     "failed",
   ];
+
+  it.each([
+    ["running", "accent"],
+    ["pending", "neutral"],
+    ["provisioning", "neutral"],
+    ["published", "success"],
+    ["merged", "success"],
+    ["completed", "success"],
+    ["awaiting_plan_approval", "warning"],
+    ["agent_failed", "error"],
+    ["pr_closed", "error"],
+    ["cancelled", "neutral"],
+  ] as const)("maps %s status to the %s tone", (status, tone) => {
+    expect(getAutomationRunStatusTone(run({ status }))).toBe(tone);
+  });
+
+  it.each(["running", "agent_failed", "cancelled"] as const)(
+    "allows deleting a %s run",
+    (status) => {
+      expect(isAutomationRunDeletable(run({ status }))).toBe(true);
+    },
+  );
+
+  it.each([
+    "completed",
+    "published",
+    "merged",
+    "pending",
+    "provisioning",
+    "awaiting_plan_approval",
+  ] as const)("rejects deleting a %s run", (status) => {
+    expect(isAutomationRunDeletable(run({ status }))).toBe(false);
+  });
+
+  it("rejects deletion when there is no run", () => {
+    expect(isAutomationRunDeletable(null)).toBe(false);
+  });
+
+  it("allows resuming an agent-failed run", () => {
+    expect(isAutomationRunResumable(run({ status: "agent_failed" }))).toBe(true);
+  });
+
+  it.each([
+    "running",
+    "completed",
+    "published",
+    "merged",
+    "cancelled",
+    "pending",
+  ] as const)("rejects resuming a %s run", (status) => {
+    expect(isAutomationRunResumable(run({ status }))).toBe(false);
+  });
+
+  it("rejects resume when there is no run", () => {
+    expect(isAutomationRunResumable(null)).toBe(false);
+  });
 
   it("mirrors goal authority independently from open-run semantics", () => {
     expect(

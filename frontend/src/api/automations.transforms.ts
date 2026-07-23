@@ -53,6 +53,10 @@ export function transformAutomation(raw: RawAutomation): Automation {
     baseRefKind: raw.base_ref_kind,
     baseRef: raw.base_ref,
     baseDisplayName: raw.base_display_name,
+    ...(raw.base_target_ref != null && { baseTargetRef: raw.base_target_ref }),
+    ...(raw.base_target_display_name != null && {
+      baseTargetDisplayName: raw.base_target_display_name,
+    }),
     baseSourcePullRequestJson: raw.base_source_pull_request_json,
     goalItemsJson: raw.goal_items_json,
     chainMode: raw.chain_mode,
