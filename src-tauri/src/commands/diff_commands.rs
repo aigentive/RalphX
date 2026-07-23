@@ -861,7 +861,11 @@ async fn get_terminal_agent_workspace_pr_context(
 
     let repo_path = PathBuf::from(&project.working_directory);
     let pr_head_ref = agent_workspace_pr_head_ref(pr_number);
-    if !GitService::ref_exists(&repo_path, &pr_head_ref).await? {
+    if !GitService::ref_exists(&repo_path, &pr_head_ref).await?
+        && GitService::fetch_pull_request_head_for_review(&repo_path, pr_number)
+            .await?
+            .is_none()
+    {
         return Err(AppError::GitOperation(format!(
             "Terminal agent workspace PR head ref is unavailable: {pr_head_ref}"
         )));
