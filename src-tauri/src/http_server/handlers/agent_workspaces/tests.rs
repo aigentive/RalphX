@@ -27,6 +27,7 @@
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+        AgentWorkspacePrMetadataDecision,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
         AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState,
         AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
@@ -37,8 +38,8 @@
     use crate::domain::review::ReviewSettings;
     use crate::domain::services::github_generated_markdown::RALPHX_GENERATED_FOOTER;
     use crate::domain::services::github_service::{
-        GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
-        PrSyncState,
+        GithubServiceTrait, PrDetail, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent,
+        PrStatus, PrSyncState,
     };
     use crate::http_server::handlers::agent_workspace_review_approval::{
         approve_agent_workspace_review_anyway_handler, ApproveAgentWorkspaceReviewAnywayRequest,
@@ -210,16 +211,19 @@
     struct SubmittingPrDescriptionClient {
         repo: Arc<dyn AgentConversationWorkspaceRepository>,
         conversation_id: ChatConversationId,
+        preserve_existing_pr_metadata: bool,
     }
 
     impl SubmittingPrDescriptionClient {
         fn new(
             repo: Arc<dyn AgentConversationWorkspaceRepository>,
             conversation_id: ChatConversationId,
+            preserve_existing_pr_metadata: bool,
         ) -> Self {
             Self {
                 repo,
                 conversation_id,
+                preserve_existing_pr_metadata,
             }
         }
     }
@@ -235,16 +239,26 @@
         }
 
         async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
-            self.repo
-                .save_pr_description(
-                    &self.conversation_id,
-                    AgentWorkspacePrDescription::new(
-                        Some("Cached publication title".to_string()),
-                        "## Summary\n\nReady to publish.".to_string(),
-                    ),
-                )
-                .await
-                .expect("test PR description should save");
+            if self.preserve_existing_pr_metadata {
+                self.repo
+                    .save_pr_metadata_decision(
+                        &self.conversation_id,
+                        AgentWorkspacePrMetadataDecision::Preserve,
+                    )
+                    .await
+                    .expect("test existing PR metadata decision should save");
+            } else {
+                self.repo
+                    .save_pr_description(
+                        &self.conversation_id,
+                        AgentWorkspacePrDescription::new(
+                            Some("Cached publication title".to_string()),
+                            "## Summary\n\nReady to publish.".to_string(),
+                        ),
+                    )
+                    .await
+                    .expect("test PR description should save");
+            }
             Ok(AgentOutput::success("submitted"))
         }
 
@@ -2744,6 +2758,7 @@
         let client = Arc::new(SubmittingPrDescriptionClient::new(
             Arc::clone(&state.agent_conversation_workspace_repo),
             conversation_id.clone(),
+            true,
         ));
         let state = state.with_agent_client(client);
         let app_state = Arc::new(state);
@@ -2787,6 +2802,18 @@
         std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
         git(&workspace_path, &["add", "fix.txt"]);
         git(&workspace_path, &["commit", "-m", "fix CI"]);
+        github.will_return_pr_detail(PrDetail {
+            number: 267,
+            title: "Existing PR title".to_string(),
+            body: Some("Existing PR body".to_string()),
+            author: Some("maintainer".to_string()),
+            created_at: None,
+            url: Some("https://github.com/owner/repo/pull/267".to_string()),
+            state: PrStatus::Open,
+            is_draft: false,
+            head_ref_name: branch_name.to_string(),
+            base_ref_name: "main".to_string(),
+        });
         let mut workspace = AgentConversationWorkspace::new(
             conversation_id.clone(),
             project.id.clone(),
@@ -2930,6 +2957,7 @@
         let publish_client = Arc::new(SubmittingPrDescriptionClient::new(
             Arc::clone(&state.agent_conversation_workspace_repo),
             conversation_id.clone(),
+            false,
         ));
         let state = state.with_agent_client(publish_client);
         let app_state = Arc::new(state);
