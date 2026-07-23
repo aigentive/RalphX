@@ -530,6 +530,9 @@ mod v20260722022339_usage_capture_provenance_and_raw_snapshots_tests;
 mod v20260722132100_automation_run_goal_item;
 #[cfg(test)]
 mod v20260722132100_automation_run_goal_item_tests;
+mod v20260723012559_agent_workspace_pr_metadata_decision;
+#[cfg(test)]
+mod v20260723012559_agent_workspace_pr_metadata_decision_tests;
 mod v20260723065349_pr_autofix_completed_supervision_history;
 #[cfg(test)]
 mod v20260723065349_pr_autofix_completed_supervision_history_tests;
@@ -1725,6 +1728,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260722132100,
         name: "automation_run_goal_item",
         migrate: v20260722132100_automation_run_goal_item::migrate,
+    },
+    Migration {
+        version: 20260723012559,
+        name: "agent_workspace_pr_metadata_decision",
+        migrate: v20260723012559_agent_workspace_pr_metadata_decision::migrate,
     },
     Migration {
         version: 20260723065349,
