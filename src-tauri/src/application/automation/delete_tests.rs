@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use ralphx_events::RecordingEventSink;
 
-use crate::application::automation::delete::delete_automation_with_archive;
+use crate::application::automation::delete::{
+    delete_automation_run_with_archive, delete_automation_with_archive,
+};
 use crate::application::plan_artifact_approval::{
     DbPlanArtifactApprovalWriter, PlanArtifactApprovalWriter,
 };
@@ -120,6 +123,19 @@ fn run_with_judge(
     }
 }
 
+fn deletable_run(
+    id: &str,
+    automation_id: &AutomationId,
+    run_index: i64,
+    status: AutomationRunStatus,
+    judge_state: AutomationJudgeState,
+) -> AutomationRun {
+    let mut run = run_with_judge(id, automation_id, judge_state, None);
+    run.run_index = run_index;
+    run.status = status;
+    run
+}
+
 /// AppState wired with an in-memory project and a mock GitHub service so
 /// conversation archiving (stop-agent + optional PR close) runs cleanly.
 async fn setup_state() -> (
@@ -178,6 +194,858 @@ async fn seed_conversation(
         .await
         .expect("conversation persisted");
     created.id
+}
+
+async fn seed_run_with_workspace(
+    state: &AppState,
+    project_id: &ProjectId,
+    automation_id: &AutomationId,
+    mut run: AutomationRun,
+    branch_name: &str,
+    worktree_path: &std::path::Path,
+) -> (AutomationRun, ChatConversationId) {
+    let conversation_id =
+        seed_conversation(state, project_id, automation_id, Some(&run.id), false).await;
+    run.conversation_id = Some(conversation_id.clone());
+    run.branch_name = Some(branch_name.to_string());
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .expect("run persisted");
+
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        branch_name.to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace persisted");
+
+    (run, conversation_id)
+}
+
+#[tokio::test]
+async fn delete_automation_run_latest_failed_cascades_only_target_and_resyncs_goals() {
+    let (temp, mut state, project_id, github) = setup_state().await;
+    let events = Arc::new(RecordingEventSink::new());
+    state.events = events.clone();
+    let mut stopped = automation(
+        "automation-delete-latest-failed",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    stopped.goal_items_json =
+        Some(r#"[{"id":"phase-1","title":"Run 1","status":"in_progress"}]"#.to_string());
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+
+    let previous = deletable_run(
+        "run-delete-previous",
+        &stopped.id,
+        1,
+        AutomationRunStatus::Completed,
+        AutomationJudgeState::Done,
+    );
+    let (previous, previous_conversation) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        previous,
+        "ralphx/previous-run",
+        &temp.path().join("missing-previous-worktree"),
+    )
+    .await;
+    let previous_workspace_before = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&previous_conversation)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let latest = deletable_run(
+        "run-delete-latest",
+        &stopped.id,
+        2,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Failed,
+    );
+    let (latest, latest_conversation) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        latest,
+        "ralphx/latest-failed-run",
+        &temp.path().join("missing-latest-worktree"),
+    )
+    .await;
+
+    delete_automation_run_with_archive(&state, &stopped.id, &latest.id)
+        .await
+        .expect("latest failed run delete succeeds even when worktree is already gone");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&latest.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        state
+            .automation_run_repo
+            .get_by_id(&previous.id)
+            .await
+            .unwrap(),
+        Some(previous.clone())
+    );
+    assert_eq!(
+        state
+            .automation_run_repo
+            .latest_for_automation(&stopped.id)
+            .await
+            .unwrap()
+            .map(|run| run.id),
+        Some(previous.id.clone())
+    );
+    assert!(state
+        .automation_run_repo
+        .list_for_automation(&stopped.id)
+        .await
+        .unwrap()
+        .iter()
+        .all(|run| !crate::domain::entities::is_open_automation_run(run.status, run.judge_state)));
+
+    let latest_conversation_after = state
+        .chat_conversation_repo
+        .get_by_id(&latest_conversation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(latest_conversation_after.archived_at.is_some());
+    let latest_workspace_after = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&latest_conversation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        latest_workspace_after.status,
+        crate::domain::entities::AgentConversationWorkspaceStatus::Archived
+    );
+
+    let previous_conversation_after = state
+        .chat_conversation_repo
+        .get_by_id(&previous_conversation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(previous_conversation_after.archived_at.is_none());
+    let previous_workspace_after = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&previous_conversation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        previous_workspace_after.status,
+        previous_workspace_before.status
+    );
+    assert_eq!(
+        previous_workspace_after.branch_name,
+        previous_workspace_before.branch_name
+    );
+
+    let automation_after = state
+        .automation_repo
+        .get_by_id(&stopped.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(automation_after
+        .goal_items_json
+        .as_deref()
+        .is_some_and(|json| json.contains(r#""status":"pending""#)));
+    assert_eq!(github.state().delete_remote_branch_calls, 1);
+    assert_eq!(
+        github.state().last_delete_remote_branch_name.as_deref(),
+        Some("ralphx/latest-failed-run")
+    );
+    assert_eq!(
+        events
+            .events()
+            .into_iter()
+            .map(|event| event.event)
+            .collect::<Vec<_>>(),
+        vec!["automation:run:updated", "automation:updated"]
+    );
+}
+
+#[tokio::test]
+async fn delete_automation_run_rejects_non_latest_without_teardown() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-non-latest",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let target = deletable_run(
+        "run-delete-non-latest-target",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    let (target, target_conversation) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        target,
+        "ralphx/non-latest",
+        &temp.path().join("missing-non-latest-worktree"),
+    )
+    .await;
+    let latest = deletable_run(
+        "run-delete-newer",
+        &stopped.id,
+        2,
+        AutomationRunStatus::Completed,
+        AutomationJudgeState::Done,
+    );
+    state
+        .automation_run_repo
+        .create_run(latest.clone())
+        .await
+        .unwrap();
+
+    let error = delete_automation_run_with_archive(&state, &stopped.id, &target.id)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message == "only the latest run can be deleted")
+    );
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&target.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&latest.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&target_conversation)
+        .await
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 0);
+}
+
+#[tokio::test]
+async fn delete_automation_run_rejects_success_statuses_without_teardown() {
+    for (suffix, status) in [
+        ("completed", AutomationRunStatus::Completed),
+        ("published", AutomationRunStatus::Published),
+        ("merged", AutomationRunStatus::Merged),
+    ] {
+        let (temp, state, project_id, github) = setup_state().await;
+        let stopped = automation(
+            &format!("automation-delete-reject-{suffix}"),
+            &project_id,
+            AutomationStatus::Stopped,
+        );
+        state.automation_repo.create(stopped.clone()).await.unwrap();
+        let run = deletable_run(
+            &format!("run-delete-reject-{suffix}"),
+            &stopped.id,
+            1,
+            status,
+            AutomationJudgeState::Done,
+        );
+        let (run, conversation_id) = seed_run_with_workspace(
+            &state,
+            &project_id,
+            &stopped.id,
+            run,
+            &format!("ralphx/reject-{suffix}"),
+            &temp.path().join(format!("missing-{suffix}-worktree")),
+        )
+        .await;
+
+        let error = delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AppError::Conflict(message) if message == format!("run status {} cannot be deleted", status.as_str()))
+        );
+        assert!(state
+            .automation_run_repo
+            .get_by_id(&run.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(state
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_none());
+        assert_eq!(github.state().delete_remote_branch_calls, 0);
+    }
+}
+
+#[tokio::test]
+async fn delete_automation_run_running_is_cancelled_before_delete() {
+    let (temp, state, project_id, _github) = setup_state().await;
+    let mut stopped = automation(
+        "automation-delete-running",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    stopped.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let running = deletable_run(
+        "run-delete-running",
+        &stopped.id,
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    let (running, conversation_id) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        running,
+        "ralphx/running-run",
+        &temp.path().join("missing-running-worktree"),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .agent_conversation_workspace_repo
+        .update_pr_supervision_preferences(
+            &conversation_id,
+            workspace.pr_autofix_enabled,
+            true,
+            &workspace.pr_auto_merge_method,
+        )
+        .await
+        .unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &running.id)
+        .await
+        .expect("running run is cancelled then deleted");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&running.id)
+        .await
+        .unwrap()
+        .is_none());
+    let conversation_after = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(conversation_after.archived_at.is_some());
+    let workspace_after = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !workspace_after.pr_auto_merge_desired,
+        "cancel_run must disarm automatic merge before the row disappears"
+    );
+}
+
+#[tokio::test]
+async fn delete_automation_run_rejects_live_judge_lease_without_teardown() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-live-judge",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let mut run = deletable_run(
+        "run-delete-live-judge",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::InProgress,
+    );
+    run.judge_lease_expires_at = Some(Utc::now() + Duration::minutes(5));
+    let (run, conversation_id) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        run,
+        "ralphx/live-judge",
+        &temp.path().join("missing-live-judge-worktree"),
+    )
+    .await;
+
+    let error = delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("judge is finalizing"))
+    );
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 0);
+}
+
+#[tokio::test]
+async fn delete_automation_run_rejects_pre_execution_statuses_without_teardown() {
+    for (suffix, status) in [
+        ("pending", AutomationRunStatus::Pending),
+        ("provisioning", AutomationRunStatus::Provisioning),
+        (
+            "awaiting-plan-approval",
+            AutomationRunStatus::AwaitingPlanApproval,
+        ),
+    ] {
+        let (temp, state, project_id, github) = setup_state().await;
+        let stopped = automation(
+            &format!("automation-delete-reject-{suffix}"),
+            &project_id,
+            AutomationStatus::Stopped,
+        );
+        state.automation_repo.create(stopped.clone()).await.unwrap();
+        let run = deletable_run(
+            &format!("run-delete-reject-{suffix}"),
+            &stopped.id,
+            1,
+            status,
+            AutomationJudgeState::None,
+        );
+        let (run, conversation_id) = seed_run_with_workspace(
+            &state,
+            &project_id,
+            &stopped.id,
+            run,
+            &format!("ralphx/reject-{suffix}"),
+            &temp.path().join(format!("missing-{suffix}-worktree")),
+        )
+        .await;
+
+        let error = delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AppError::Conflict(message) if message == format!("run status {} cannot be deleted", status.as_str()))
+        );
+        assert!(state
+            .automation_run_repo
+            .get_by_id(&run.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(state
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_none());
+        assert_eq!(github.state().close_pr_calls, 0);
+        assert_eq!(github.state().delete_remote_branch_calls, 0);
+    }
+}
+
+#[tokio::test]
+async fn delete_automation_run_rejects_successor_inserted_before_authority_cas() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-cas-race",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let target = deletable_run(
+        "run-delete-cas-race-target",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    let (target, conversation_id) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        target,
+        "ralphx/cas-race-target",
+        &temp.path().join("missing-cas-race-worktree"),
+    )
+    .await;
+    let successor = deletable_run(
+        "run-delete-cas-race-successor",
+        &stopped.id,
+        2,
+        AutomationRunStatus::Provisioning,
+        AutomationJudgeState::None,
+    );
+    state
+        .automation_run_repo
+        .create_run(successor.clone())
+        .await
+        .unwrap();
+
+    let error = delete_automation_run_with_archive(&state, &stopped.id, &target.id)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message == "only the latest run can be deleted")
+    );
+    assert_eq!(
+        state
+            .automation_run_repo
+            .delete_run_if_deletable(&stopped.id, &target.id)
+            .await
+            .unwrap(),
+        0,
+        "the authority CAS must independently reject a stale run"
+    );
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&target.id)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        state
+            .automation_run_repo
+            .get_by_id(&successor.id)
+            .await
+            .unwrap(),
+        Some(successor)
+    );
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_none());
+    assert_eq!(github.state().close_pr_calls, 0);
+    assert_eq!(github.state().delete_remote_branch_calls, 0);
+}
+
+#[tokio::test]
+async fn delete_automation_run_second_delete_has_no_repeated_teardown() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-twice",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let run = deletable_run(
+        "run-delete-twice",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    let (run, conversation_id) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        run,
+        "ralphx/delete-twice",
+        &temp.path().join("missing-delete-twice-worktree"),
+    )
+    .await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.publication_pr_number = Some(42);
+    workspace.publication_pr_url = Some("https://github.com/mock/repo/pull/42".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("first delete succeeds");
+    let archive_timestamp = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .archived_at;
+    let close_calls = github.state().close_pr_calls;
+    let branch_delete_calls = github.state().delete_remote_branch_calls;
+
+    let error = delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AppError::NotFound(_) | AppError::Conflict(_)
+    ));
+    assert_eq!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .archived_at,
+        archive_timestamp
+    );
+    assert_eq!(github.state().close_pr_calls, close_calls);
+    assert_eq!(
+        github.state().delete_remote_branch_calls,
+        branch_delete_calls
+    );
+}
+
+#[tokio::test]
+async fn delete_automation_run_skips_project_default_branch_cleanup() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-default-branch",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let run = deletable_run(
+        "run-delete-default-branch",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    let (run, conversation_id) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        run,
+        "main",
+        &temp.path().join("missing-default-branch-worktree"),
+    )
+    .await;
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("run row deletion still succeeds");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_some());
+    assert_eq!(github.state().delete_remote_branch_calls, 0);
+}
+
+#[tokio::test]
+async fn delete_automation_run_is_fail_open_when_archive_worktree_and_remote_cleanup_fail() {
+    let (_temp, state, project_id, github) = setup_state().await;
+    github.state().delete_remote_branch_result = Some(Err(AppError::Infrastructure(
+        "remote branch cleanup failed".to_string(),
+    )));
+    let stopped = automation(
+        "automation-delete-cleanup-failures",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let run = deletable_run(
+        "run-delete-cleanup-failures",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    let (run, conversation_id) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        run,
+        "ralphx/cleanup-failures",
+        std::path::Path::new("relative-unsafe-worktree"),
+    )
+    .await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_plan_branch_id = Some(crate::domain::entities::PlanBranchId::from_string(
+        "missing-plan-branch".to_string(),
+    ));
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("cleanup failures must not resurrect an authority-deleted run");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 1);
+    assert_eq!(
+        github.state().last_delete_remote_branch_name.as_deref(),
+        Some("ralphx/cleanup-failures")
+    );
+}
+
+#[tokio::test]
+async fn delete_automation_run_uses_run_branch_without_workspace_or_conversation() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-run-branch",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let mut run = deletable_run(
+        "run-delete-run-branch",
+        &stopped.id,
+        1,
+        AutomationRunStatus::Cancelled,
+        AutomationJudgeState::Failed,
+    );
+    run.branch_name = Some("ralphx/run-only-branch".to_string());
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("run-owned branch cleanup should be best effort");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 1);
+    assert_eq!(
+        github.state().last_delete_remote_branch_name.as_deref(),
+        Some("ralphx/run-only-branch")
+    );
+    drop(temp);
+}
+
+#[tokio::test]
+async fn delete_automation_run_skips_branch_cleanup_when_project_disappears() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-missing-project",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let mut run = deletable_run(
+        "run-delete-missing-project",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    run.branch_name = Some("ralphx/project-disappeared".to_string());
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .unwrap();
+    state.project_repo.delete(&project_id).await.unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("missing cleanup project must not block run deletion");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 0);
+    drop(temp);
 }
 
 async fn seed_plan_artifact_chain(state: &AppState, prefix: &str) -> (ArtifactId, ArtifactId) {

@@ -143,9 +143,22 @@ describe("getRunCardBadges", () => {
       run({ status: "agent_failed", judgeState: "failed" }),
     );
     expect(badges).toEqual([
-      { key: "status", label: "Agent failed", tone: "warning", live: false },
+      { key: "status", label: "Agent failed", tone: "error", live: false },
       { key: "judge", label: "Terminal judge failed", tone: "error", live: false },
     ]);
+  });
+
+  it("uses a concise warning stage when the automation is paused", () => {
+    const badges = getRunCardBadges(
+      automation({ status: "paused", pausedReasonCode: "workspace_review_blocked" }),
+      run({ status: "published" }),
+    );
+
+    expect(badges).toEqual([
+      { key: "status", label: "Published", tone: "success", live: false },
+      { key: "stage", label: "Paused", tone: "warning", live: false },
+    ]);
+    expect(badges.some((badge) => badge.label.includes("workspace_review_blocked"))).toBe(false);
   });
 
   it("drops a judge badge that would restate the status label", () => {
