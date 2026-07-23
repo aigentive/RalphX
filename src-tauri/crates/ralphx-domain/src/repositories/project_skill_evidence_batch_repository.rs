@@ -19,9 +19,23 @@ pub trait ProjectSkillEvidenceBatchRepository: Send + Sync {
         project_id: &ProjectId,
     ) -> AppResult<Vec<TaskOutcomeId>>;
 
+    async fn get_by_outcome_id(
+        &self,
+        project_id: &ProjectId,
+        outcome_id: &TaskOutcomeId,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>>;
+
     async fn claim_oldest_pending(
         &self,
         project_id: &ProjectId,
+        claim_token: &str,
+        claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>>;
+
+    async fn claim_pending_by_id(
+        &self,
+        project_id: &ProjectId,
+        batch_id: &ProjectSkillEvidenceBatchId,
         claim_token: &str,
         claimed_at: DateTime<Utc>,
     ) -> AppResult<Option<ProjectSkillEvidenceBatch>>;

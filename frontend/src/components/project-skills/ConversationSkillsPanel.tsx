@@ -39,13 +39,14 @@ export function ConversationSkillsPanel({
     mutationFn: () => projectSkillsApi.processConversation({ projectId, conversationId }),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey });
-      const staged = result.stagedSkills.length;
-      if (staged > 0) {
+      if (result.status === "started") {
         toast.success(
-          `Staged ${staged} skill${staged === 1 ? "" : "s"} from this conversation.`,
+          `Queued ${result.selectedOutcomes} evidence item${result.selectedOutcomes === 1 ? "" : "s"}; the distiller started.`,
         );
+      } else if (result.status === "failed") {
+        toast.error(result.message);
       } else {
-        toast.info("Conversation skill processing is up to date.");
+        toast.info(result.message);
       }
     },
     onError: () => {
@@ -83,14 +84,14 @@ export function ConversationSkillsPanel({
                 variant="outline"
                 onClick={() => processMutation.mutate()}
                 disabled={isRefreshing}
-                aria-label="Process conversation skills"
+                aria-label="Run skill distiller for this conversation"
               >
                 <RefreshCw
                   className={isRefreshing ? "animate-spin" : undefined}
                 />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Process conversation skills</TooltipContent>
+            <TooltipContent>Run skill distiller for this conversation</TooltipContent>
           </Tooltip>
         </TooltipProvider>
       </div>

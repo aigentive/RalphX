@@ -33,8 +33,6 @@ vi.mock("@/api/project-skills", () => ({
     applyImport: vi.fn(),
     applyProjectDirectoryImport: vi.fn(),
     promoteMemory: vi.fn(),
-    listPullRequestCandidates: vi.fn(),
-    stageFromPullRequest: vi.fn(),
   },
 }));
 
@@ -176,21 +174,14 @@ describe("ProjectSkillsCuratorPanel", () => {
       ],
     });
     mockedProjectSkillsApi.distill.mockResolvedValue({
-      stagedSkills: [stagedSkill({ id: "skill-2" })],
-      skippedExisting: 0,
-      updatedExisting: 0,
+      status: "started",
+      selectedOutcomes: 1,
+      batchCount: 1,
+      startedBatches: 1,
+      message: "Evidence queued and the skill distiller started.",
       ingestedOutcomes: 0,
       scannedGitCommits: 0,
       scannedGithubPrs: 0,
-    });
-    mockedProjectSkillsApi.listPullRequestCandidates.mockResolvedValue({
-      candidates: [],
-      count: 0,
-      limit: 25,
-    });
-    mockedProjectSkillsApi.stageFromPullRequest.mockResolvedValue({
-      skill: stagedSkill({ id: "skill-pr" }),
-      skippedExisting: false,
     });
     mockedProjectSkillsApi.listReportCards.mockResolvedValue({
       count: 1,
@@ -432,7 +423,7 @@ describe("ProjectSkillsCuratorPanel", () => {
     });
   });
 
-  it("distills eligible outcomes and refreshes staged skills", async () => {
+  it("queues eligible outcomes and reports asynchronous distillation", async () => {
     const user = userEvent.setup();
     mockedProjectSkillsApi.list.mockImplementation((input) =>
       Promise.resolve(
@@ -452,84 +443,30 @@ describe("ProjectSkillsCuratorPanel", () => {
       screen.queryByText(/Scan stored task, conversation, and agent workspace outcomes/i),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /find candidates\.\.\./i }));
+    await user.click(screen.getByRole("button", { name: /^run distiller$/i }));
     expect(
-      await screen.findByRole("dialog", { name: /find skill candidates/i }),
+      await screen.findByRole("dialog", { name: /run skill distiller/i }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Scan stored task, conversation, and agent workspace outcomes/i),
+      screen.getByText(/Queue stored task, conversation, review, and workspace evidence/i),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /^find candidates$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^run distiller$/i }));
 
     await waitFor(() => {
-      expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({
-        projectId: "project-1",
-        limit: 10,
-        source: null,
-        includeGitHistory: false,
-        includeGithubPrHistory: false,
-      });
+      expect(mockedProjectSkillsApi.distill).toHaveBeenCalledWith({ projectId: "project-1" });
     });
-    expect(await screen.findByText(/Staged 1 candidate/i)).toBeInTheDocument();
-    expect(await screen.findByText("Review PR evidence")).toBeInTheDocument();
+    expect(await screen.findByText(/Selected 1 outcome in 1 durable batch/i)).toBeInTheDocument();
   });
 
   it("does not expose recent commit batch generation", async () => {
     const user = userEvent.setup();
     renderPanel();
 
-    await user.click(await screen.findByRole("button", { name: /find candidates\.\.\./i }));
+    await user.click(await screen.findByRole("button", { name: /^run distiller$/i }));
     expect(
       screen.queryByRole("button", { name: /recent commits/i }),
     ).not.toBeInTheDocument();
-  });
-
-  it("loads GitHub PRs and stages one selected draft", async () => {
-    const user = userEvent.setup();
-    mockedProjectSkillsApi.listPullRequestCandidates.mockResolvedValue({
-      candidates: [
-        {
-          number: 42,
-          title: "Tighten merge validation",
-          state: "MERGED",
-          url: "https://github.com/aigentive/ralphx.app/pull/42",
-          mergedAt: "2026-06-14T10:00:00Z",
-          closedAt: null,
-          updatedAt: "2026-06-14T10:05:00Z",
-          headRefName: "feature/merge-validation",
-          baseRefName: "main",
-        },
-      ],
-      count: 1,
-      limit: 25,
-    });
-    mockedProjectSkillsApi.stageFromPullRequest.mockResolvedValue({
-      skill: stagedSkill({ id: "skill-pr-42", title: "Draft PR lesson" }),
-      skippedExisting: false,
-    });
-    renderPanel();
-
-    await user.click(await screen.findByRole("button", { name: /find candidates\.\.\./i }));
-    await user.click(screen.getByRole("button", { name: /github prs/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^load prs$/i }));
-
-    await waitFor(() => {
-      expect(mockedProjectSkillsApi.listPullRequestCandidates).toHaveBeenCalledWith({
-        projectId: "project-1",
-        limit: 25,
-      });
-    });
-    expect(await screen.findByText(/#42 Tighten merge validation/i)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /create draft/i }));
-    await waitFor(() => {
-      expect(mockedProjectSkillsApi.stageFromPullRequest).toHaveBeenCalledWith({
-        projectId: "project-1",
-        number: 42,
-      });
-    });
-    expect(await screen.findByText(/Created a draft for PR #42/i)).toBeInTheDocument();
   });
 
   it("runs lifecycle actions for staged skills", async () => {
@@ -755,6 +692,6 @@ describe("ProjectSkillsCuratorPanel", () => {
     renderPanel();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Scope rejected");
-    expect(screen.getByRole("button", { name: /find candidates/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /run distiller/i })).toBeEnabled();
   });
 });

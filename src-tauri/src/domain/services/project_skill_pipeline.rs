@@ -3,13 +3,15 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 
 use crate::domain::entities::{
-    ProjectId, ProjectSkill, ProjectSkillCreatedBy, ProjectSkillEvidenceBatchId,
-    ProjectSkillEvidenceBatchStatus, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcomeId,
+    ProjectId, ProjectSkill, ProjectSkillCreatedBy, ProjectSkillEvidenceBatch,
+    ProjectSkillEvidenceBatchId, ProjectSkillEvidenceBatchStatus, ProjectSkillId,
+    ProjectSkillLifecycleStatus, TaskOutcomeId,
 };
 use crate::domain::repositories::{
     ProjectSkillEvidenceBatchRepository, ProjectSkillMatchedMutation, ProjectSkillRepository,
-    ProjectSkillResolutionCommand, ProjectSkillResolutionIntent, ProjectSkillResolutionOutcome,
-    ProjectSkillResolutionResult, ProjectSkillStagingPolicy,
+    ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
+    ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
+    ProjectSkillResolutionOutcome, ProjectSkillResolutionResult, ProjectSkillStagingPolicy,
 };
 use crate::domain::services::project_skill_resolution::{
     import_title_resolution_identity, ProjectSkillResolutionService,
@@ -195,19 +197,28 @@ impl ProjectSkillPipelineService {
         input: ProjectSkillPipelineInput,
     ) -> AppResult<ProjectSkillResolutionResult> {
         context.validate()?;
-        self.validate_distillation_claim(&context).await?;
+        let evidence_batch = self.validate_distillation_claim(&context).await?;
         assert_context_project(&context, &input.project_id)?;
         validate_input(&input)?;
-        let candidate = build_candidate(&context, input);
-        let identity =
-            import_title_resolution_identity(&candidate.title, &candidate.bucket, &candidate.stage);
+        let candidate = build_candidate(&context, input, evidence_batch.as_ref());
+        let (identities, matched_mutation) = match evidence_batch.as_ref() {
+            Some(batch) => distillation_resolution(batch),
+            None => (
+                vec![import_title_resolution_identity(
+                    &candidate.title,
+                    &candidate.bucket,
+                    &candidate.stage,
+                )],
+                ProjectSkillMatchedMutation::PatchExisting,
+            ),
+        };
         let result = ProjectSkillResolutionService::new(Arc::clone(&self.repo))
             .resolve(ProjectSkillResolutionCommand {
                 staging_policy: Some(staging_policy(&context)),
                 candidate,
                 intent: ProjectSkillResolutionIntent::Upsert {
-                    identities: vec![identity],
-                    matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
+                    identities,
+                    matched_mutation,
                 },
                 evidence_markdown: None,
             })
@@ -229,7 +240,7 @@ impl ProjectSkillPipelineService {
         input: ProjectSkillPipelineInput,
     ) -> AppResult<ProjectSkillResolutionResult> {
         context.validate()?;
-        self.validate_distillation_claim(&context).await?;
+        let evidence_batch = self.validate_distillation_claim(&context).await?;
         assert_context_project(&context, &input.project_id)?;
         validate_input(&input)?;
         let target = self
@@ -238,7 +249,7 @@ impl ProjectSkillPipelineService {
             .await?
             .ok_or_else(|| AppError::NotFound("project skill was not found".to_string()))?;
         assert_same_project(&target.project_id, &input.project_id)?;
-        let candidate = build_candidate(&context, input);
+        let candidate = build_candidate(&context, input, evidence_batch.as_ref());
         let result = ProjectSkillResolutionService::new(Arc::clone(&self.repo))
             .resolve(ProjectSkillResolutionCommand {
                 staging_policy: Some(staging_policy(&context)),
@@ -309,9 +320,9 @@ impl ProjectSkillPipelineService {
     async fn validate_distillation_claim(
         &self,
         context: &ProjectSkillPipelineContext,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
         let Some(claim) = context.distillation_claim.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         let repository = self.evidence_batch_repo.as_ref().ok_or_else(|| {
             AppError::Database(
@@ -341,7 +352,7 @@ impl ProjectSkillPipelineService {
                 "skill distillation claim does not match the active evidence batch".to_string(),
             ));
         }
-        Ok(())
+        Ok(Some(batch))
     }
 
     async fn complete_distillation_claim(
@@ -398,6 +409,7 @@ impl ProjectSkillPipelineService {
 fn build_candidate(
     context: &ProjectSkillPipelineContext,
     input: ProjectSkillPipelineInput,
+    evidence_batch: Option<&ProjectSkillEvidenceBatch>,
 ) -> ProjectSkill {
     let now = Utc::now();
     let mut provenance_json = serde_json::json!({
@@ -412,7 +424,7 @@ fn build_candidate(
             "task_id": context.task_id,
         }
     });
-    if let Some(claim) = context.distillation_claim.as_ref() {
+    if let (Some(claim), Some(batch)) = (context.distillation_claim.as_ref(), evidence_batch) {
         provenance_json["evidence_batch"] = serde_json::json!({
             "id": claim.batch_id.as_str(),
             "fingerprint": claim.fingerprint,
@@ -422,6 +434,19 @@ fn build_candidate(
                 .map(TaskOutcomeId::as_str)
                 .collect::<Vec<_>>(),
         });
+        provenance_json["outcome_ids"] = serde_json::json!(batch
+            .items
+            .iter()
+            .map(|item| item.outcome_id.as_str())
+            .collect::<Vec<_>>());
+        if let [item] = batch.items.as_slice() {
+            provenance_json["outcome_id"] =
+                serde_json::Value::String(item.outcome_id.as_str().to_string());
+        }
+        if let Some(fingerprint) = trusted_verification_gap_fingerprint(batch) {
+            provenance_json["additional"]["verification_gap_fingerprint"] =
+                serde_json::Value::String(fingerprint);
+        }
     }
     ProjectSkill {
         id: ProjectSkillId::new(),
@@ -445,6 +470,55 @@ fn build_candidate(
         created_at: now,
         updated_at: now,
     }
+}
+
+fn distillation_resolution(
+    batch: &ProjectSkillEvidenceBatch,
+) -> (
+    Vec<ProjectSkillResolutionIdentity>,
+    ProjectSkillMatchedMutation,
+) {
+    if let Some(fingerprint) = trusted_verification_gap_fingerprint(batch) {
+        return (
+            vec![ProjectSkillResolutionIdentity {
+                kind: ProjectSkillResolutionIdentityKind::VerificationGap,
+                value: fingerprint,
+            }],
+            ProjectSkillMatchedMutation::AppendEvidence,
+        );
+    }
+    (
+        batch
+            .items
+            .iter()
+            .map(|item| ProjectSkillResolutionIdentity {
+                kind: ProjectSkillResolutionIdentityKind::Outcome,
+                value: item.outcome_id.as_str().to_string(),
+            })
+            .collect(),
+        ProjectSkillMatchedMutation::PatchExisting,
+    )
+}
+
+fn trusted_verification_gap_fingerprint(batch: &ProjectSkillEvidenceBatch) -> Option<String> {
+    let [item] = batch.items.as_slice() else {
+        return None;
+    };
+    if let Some(fingerprint) = item
+        .digest
+        .strip_prefix("verification_gap_fingerprint=")
+        .and_then(|rest| rest.lines().next())
+        .map(str::trim)
+        .filter(|fingerprint| *fingerprint == batch.fingerprint)
+    {
+        return Some(fingerprint.to_string());
+    }
+    let digest = serde_json::from_str::<serde_json::Value>(&item.digest).ok()?;
+    let fingerprint = digest.get("evidence")?.get("fingerprint")?.as_str()?.trim();
+    (digest.get("source")?.as_str()? == "verification"
+        && digest.get("source_ref_kind")?.as_str()? == "gap_recurrence"
+        && fingerprint == batch.fingerprint)
+        .then(|| fingerprint.to_string())
 }
 
 fn staging_policy(context: &ProjectSkillPipelineContext) -> ProjectSkillStagingPolicy {

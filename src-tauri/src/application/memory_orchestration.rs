@@ -6,8 +6,8 @@
 use crate::application::app_state::ResolvedBackgroundAgentRuntime;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::project_skill_distillation_service::{
-    claim_outcome_ids, PreparedProjectSkillDistillation, ProjectSkillDistillationService,
-    ProjectSkillDistillationTrigger, SKILL_DISTILLER_PROFILE,
+    claim_outcome_ids, PreparedProjectSkillDistillation, ProjectSkillDistillationSelection,
+    ProjectSkillDistillationService, ProjectSkillDistillationTrigger, SKILL_DISTILLER_PROFILE,
 };
 use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
@@ -28,6 +28,36 @@ use std::sync::Arc;
 
 const MEMORY_MAINTAINER_AGENT: &str = "ralphx:ralphx-memory-maintainer";
 const MEMORY_CAPTURE_AGENT: &str = "ralphx:ralphx-memory-capture";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSkillDistillationScheduleStatus {
+    Started,
+    Queued,
+    Skipped,
+    Unavailable,
+    Failed,
+}
+
+impl ProjectSkillDistillationScheduleStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Queued => "queued",
+            Self::Skipped => "skipped",
+            Self::Unavailable => "unavailable",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillDistillationScheduleResult {
+    pub status: ProjectSkillDistillationScheduleStatus,
+    pub selected_outcomes: usize,
+    pub batch_count: usize,
+    pub started_batches: usize,
+    pub message: Option<String>,
+}
 
 #[derive(Clone)]
 pub(crate) struct ProjectSkillDistillationDependencies {
@@ -391,6 +421,260 @@ fn is_memory_agent(agent_name: Option<&str>) -> bool {
     agent_name
         .map(|name| name.strip_prefix("ralphx:").unwrap_or(name))
         .is_some_and(|name| matches!(name, "ralphx-memory-maintainer" | "ralphx-memory-capture"))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn schedule_explicit_project_skill_distillation(
+    state: &crate::application::AppState,
+    project_id: &ProjectId,
+    selection: ProjectSkillDistillationSelection,
+    conversation_id: Option<&ChatConversationId>,
+    context_type: ChatContextType,
+    context_id: &str,
+) -> ProjectSkillDistillationScheduleResult {
+    let service = ProjectSkillDistillationService::new(
+        Arc::clone(&state.task_outcome_repo),
+        Arc::clone(&state.project_skill_evidence_batch_repo),
+        Arc::clone(&state.project_skill_settings_repo),
+        Arc::clone(&state.project_skill_repo),
+        Arc::clone(&state.memory_event_repo),
+    );
+    let stale_after_secs =
+        crate::infrastructure::agents::claude::limits_config().skill_distiller_claim_stale_secs;
+    let preparation = match service
+        .prepare_explicit_claims(project_id, selection, stale_after_secs)
+        .await
+    {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            log_skill_distillation_event(
+                &state.memory_event_repo,
+                project_id,
+                "skill_distillation_failed",
+                serde_json::json!({ "phase": "prepare_explicit", "error": error.to_string() }),
+            )
+            .await;
+            return ProjectSkillDistillationScheduleResult {
+                status: ProjectSkillDistillationScheduleStatus::Failed,
+                selected_outcomes: 0,
+                batch_count: 0,
+                started_batches: 0,
+                message: Some("Evidence could not be queued for distillation.".to_string()),
+            };
+        }
+    };
+    if !preparation.enabled {
+        return ProjectSkillDistillationScheduleResult {
+            status: ProjectSkillDistillationScheduleStatus::Skipped,
+            selected_outcomes: 0,
+            batch_count: 0,
+            started_batches: 0,
+            message: Some("Project skills are disabled for this project.".to_string()),
+        };
+    }
+    if preparation.selected_outcomes == 0 {
+        return ProjectSkillDistillationScheduleResult {
+            status: ProjectSkillDistillationScheduleStatus::Skipped,
+            selected_outcomes: 0,
+            batch_count: 0,
+            started_batches: 0,
+            message: Some("No eligible evidence was available to queue.".to_string()),
+        };
+    }
+    if preparation.prepared.is_empty() {
+        return ProjectSkillDistillationScheduleResult {
+            status: ProjectSkillDistillationScheduleStatus::Queued,
+            selected_outcomes: preparation.selected_outcomes,
+            batch_count: preparation.batch_count,
+            started_batches: 0,
+            message: Some(
+                "Evidence is already queued or being processed by the distiller.".to_string(),
+            ),
+        };
+    }
+
+    let project = match state.project_repo.get_by_id(project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            release_explicit_claims(state, &preparation.prepared).await;
+            return ProjectSkillDistillationScheduleResult {
+                status: ProjectSkillDistillationScheduleStatus::Unavailable,
+                selected_outcomes: preparation.selected_outcomes,
+                batch_count: preparation.batch_count,
+                started_batches: 0,
+                message: Some("The project is no longer available.".to_string()),
+            };
+        }
+        Err(error) => {
+            release_explicit_claims(state, &preparation.prepared).await;
+            return ProjectSkillDistillationScheduleResult {
+                status: ProjectSkillDistillationScheduleStatus::Failed,
+                selected_outcomes: preparation.selected_outcomes,
+                batch_count: preparation.batch_count,
+                started_batches: 0,
+                message: Some(format!("Project lookup failed: {error}")),
+            };
+        }
+    };
+    let working_directory = match crate::utils::path_safety::validate_absolute_non_root_path(
+        Path::new(&project.working_directory),
+        "project root",
+    ) {
+        Ok(path) if path.is_dir() => path,
+        _ => {
+            release_explicit_claims(state, &preparation.prepared).await;
+            return ProjectSkillDistillationScheduleResult {
+                status: ProjectSkillDistillationScheduleStatus::Unavailable,
+                selected_outcomes: preparation.selected_outcomes,
+                batch_count: preparation.batch_count,
+                started_batches: 0,
+                message: Some("The project working directory is unavailable.".to_string()),
+            };
+        }
+    };
+
+    let conversation = match conversation_id {
+        Some(conversation_id) => state
+            .chat_conversation_repo
+            .get_by_id(conversation_id)
+            .await
+            .ok()
+            .flatten(),
+        None => state
+            .chat_conversation_repo
+            .get_active_for_context(context_type, context_id)
+            .await
+            .ok()
+            .flatten(),
+    };
+    let launch_conversation_id = conversation
+        .as_ref()
+        .map(|conversation| conversation.id.clone())
+        .or_else(|| conversation_id.cloned())
+        .unwrap_or_else(|| {
+            ChatConversationId::from_string(format!(
+                "project-skill-distillation:{}",
+                project_id.as_str()
+            ))
+        });
+    let provider_harness = conversation
+        .as_ref()
+        .and_then(|conversation| conversation.provider_harness);
+    let runtime = state
+        .resolve_manual_role_background_agent_runtime(
+            Some(project_id.as_str()),
+            Some(&working_directory),
+            crate::domain::agents::RoutingRole::MemoryCapture,
+            crate::infrastructure::agents::claude::agent_names::SHORT_MEMORY_CAPTURE,
+            "explicit project skill distillation",
+            provider_harness,
+        )
+        .await
+        .ok();
+    let harness = runtime
+        .as_ref()
+        .and_then(|runtime| runtime.harness)
+        .or(provider_harness)
+        .unwrap_or(DEFAULT_AGENT_HARNESS);
+    let bootstrap =
+        crate::application::harness_runtime_registry::resolve_chat_service_bootstrap(harness);
+    let cli_path = runtime
+        .as_ref()
+        .and_then(|runtime| runtime.cli_path_override.clone())
+        .unwrap_or(bootstrap.cli_path);
+    let plugin_dir = crate::application::harness_runtime_registry::resolve_harness_plugin_dir(
+        harness,
+        &working_directory,
+    );
+
+    let mut started_batches = 0;
+    for prepared in &preparation.prepared {
+        log_skill_distillation_event(
+            &state.memory_event_repo,
+            project_id,
+            "skill_distillation_spawn_requested",
+            serde_json::json!({
+                "batch_id": prepared.batch.id.as_str(),
+                "fingerprint": prepared.batch.fingerprint,
+                "conversation_id": launch_conversation_id.as_str(),
+                "context_type": context_type.to_string(),
+                "context_id": context_id,
+                "trigger": "explicit",
+            }),
+        )
+        .await;
+        match spawn_skill_distiller(
+            prepared,
+            &launch_conversation_id,
+            context_type,
+            context_id,
+            project_id,
+            &cli_path,
+            &plugin_dir,
+            &working_directory,
+            runtime.clone(),
+            Arc::clone(&state.project_skill_evidence_batch_repo),
+            Arc::clone(&state.memory_event_repo),
+        )
+        .await
+        {
+            Ok(()) => started_batches += 1,
+            Err(error) => {
+                let released = state
+                    .project_skill_evidence_batch_repo
+                    .release_claim(
+                        &prepared.batch.id,
+                        &prepared.claim_token,
+                        chrono::Utc::now(),
+                    )
+                    .await;
+                log_skill_distillation_event(
+                    &state.memory_event_repo,
+                    project_id,
+                    "skill_distillation_failed",
+                    serde_json::json!({
+                        "phase": "spawn_explicit",
+                        "batch_id": prepared.batch.id.as_str(),
+                        "error": error,
+                        "claim_released": matches!(released, Ok(true)),
+                    }),
+                )
+                .await;
+            }
+        }
+    }
+
+    ProjectSkillDistillationScheduleResult {
+        status: if started_batches > 0 {
+            ProjectSkillDistillationScheduleStatus::Started
+        } else {
+            ProjectSkillDistillationScheduleStatus::Failed
+        },
+        selected_outcomes: preparation.selected_outcomes,
+        batch_count: preparation.batch_count,
+        started_batches,
+        message: (started_batches == 0)
+            .then(|| "Evidence remains queued because the distiller could not start.".to_string()),
+    }
+}
+
+async fn release_explicit_claims(
+    state: &crate::application::AppState,
+    prepared: &[PreparedProjectSkillDistillation],
+) {
+    for claim in prepared {
+        if let Err(error) = state
+            .project_skill_evidence_batch_repo
+            .release_claim(&claim.batch.id, &claim.claim_token, chrono::Utc::now())
+            .await
+        {
+            tracing::warn!(
+                batch_id = claim.batch.id.as_str(),
+                error = %error,
+                "Failed to release explicit skill distillation claim"
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

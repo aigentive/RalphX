@@ -538,7 +538,16 @@ fn skill_identity_values(
     match kind {
         ProjectSkillResolutionIdentityKind::Content => vec![skill.content_hash.clone()],
         ProjectSkillResolutionIdentityKind::Outcome => {
-            provenance_string_values(&skill.provenance_json, &["outcome_id"])
+            let mut values = provenance_string_values(&skill.provenance_json, &["outcome_id"]);
+            values.extend(provenance_array_string_values(
+                &skill.provenance_json,
+                &["outcome_ids"],
+            ));
+            values.extend(provenance_array_string_values(
+                &skill.provenance_json,
+                &["evidence_batch", "outcome_ids"],
+            ));
+            values
         }
         ProjectSkillResolutionIdentityKind::VerificationGap => provenance_string_values(
             &skill.provenance_json,
@@ -580,6 +589,23 @@ fn provenance_string_values(value: &Value, path: &[&str]) -> Vec<String> {
     if let Some(evidence) = value.get("resolution_evidence").and_then(Value::as_array) {
         for item in evidence {
             values.extend(provenance_string_values(item, path));
+        }
+    }
+    values
+}
+
+fn provenance_array_string_values(value: &Value, path: &[&str]) -> Vec<String> {
+    let mut values = value
+        .pointer(&format!("/{}", path.join("/")))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(evidence) = value.get("resolution_evidence").and_then(Value::as_array) {
+        for item in evidence {
+            values.extend(provenance_array_string_values(item, path));
         }
     }
     values

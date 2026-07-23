@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::domain::entities::{
-    ProjectId, ProjectSkillCreatedBy, ProjectSkillEvidenceBatch, ProjectSkillEvidenceBatchId,
-    ProjectSkillEvidenceBatchItem, ProjectSkillEvidenceBatchStatus, ProjectSkillId,
-    ProjectSkillLifecycleStatus, TaskOutcomeId,
+    ProjectId, ProjectSkill, ProjectSkillCreatedBy, ProjectSkillEvidenceBatch,
+    ProjectSkillEvidenceBatchId, ProjectSkillEvidenceBatchItem, ProjectSkillEvidenceBatchStatus,
+    ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcomeId,
 };
 use crate::domain::repositories::{
     ProjectSkillEvidenceBatchRepository, ProjectSkillListOptions, ProjectSkillRepository,
@@ -138,6 +138,14 @@ impl ProjectSkillEvidenceBatchRepository for FailFirstCompletionRepository {
         self.inner.list_batched_outcome_ids(project_id).await
     }
 
+    async fn get_by_outcome_id(
+        &self,
+        project_id: &ProjectId,
+        outcome_id: &TaskOutcomeId,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        self.inner.get_by_outcome_id(project_id, outcome_id).await
+    }
+
     async fn claim_oldest_pending(
         &self,
         project_id: &ProjectId,
@@ -146,6 +154,18 @@ impl ProjectSkillEvidenceBatchRepository for FailFirstCompletionRepository {
     ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
         self.inner
             .claim_oldest_pending(project_id, claim_token, claimed_at)
+            .await
+    }
+
+    async fn claim_pending_by_id(
+        &self,
+        project_id: &ProjectId,
+        batch_id: &ProjectSkillEvidenceBatchId,
+        claim_token: &str,
+        claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        self.inner
+            .claim_pending_by_id(project_id, batch_id, claim_token, claimed_at)
             .await
     }
 
@@ -590,6 +610,157 @@ async fn skill_distiller_validates_authoritative_claim_and_settles_after_canonic
     );
     assert_eq!(settled.resolution_action.as_deref(), Some("create_new"));
     assert!(settled.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn verification_claim_uses_trusted_fingerprint_to_create_an_approved_companion() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let fingerprint = "a".repeat(64);
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let now = Utc::now();
+    let approved = skill_repo
+        .create(ProjectSkill {
+            id: ProjectSkillId::from_string("approved-gap"),
+            project_id: project_id.clone(),
+            title: "Existing approved verification guidance".to_string(),
+            bucket: "verification".to_string(),
+            stage: "verification".to_string(),
+            status: ProjectSkillLifecycleStatus::Approved,
+            pinned: false,
+            archived: false,
+            scope_paths: Vec::new(),
+            compact_guidance: "Check this recurring verification gap.".to_string(),
+            body_markdown: "## Procedure\n\nRun the established verification check.".to_string(),
+            predicted_effect: Some("Prevents the recurring gap.".to_string()),
+            provenance_json: serde_json::json!({
+                "additional": { "verification_gap_fingerprint": fingerprint.clone() },
+            }),
+            companion_of_skill_id: None,
+            content_hash: String::new(),
+            evidence_hash: String::new(),
+            created_by: ProjectSkillCreatedBy::Agent,
+            pipeline_role: Some("skill_distiller".to_string()),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("seed approved verification skill");
+    let batch_repo = Arc::new(MemoryProjectSkillEvidenceBatchRepository::new());
+    let mut batch = evidence_batch("verification-batch", "gap-outcome");
+    batch.bucket = "verification".to_string();
+    batch.items[0].digest = format!("verification_gap_fingerprint={fingerprint}\n{{}}");
+    batch_repo
+        .insert_if_absent(batch)
+        .await
+        .expect("insert verification evidence batch");
+    batch_repo
+        .claim_oldest_pending(&project_id, "claim-1", Utc::now())
+        .await
+        .expect("claim verification batch")
+        .expect("claimed verification batch");
+    let service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo, batch_repo.clone());
+    let mut authored = input("Agent-authored verification revision");
+    authored.bucket = "verification".to_string();
+    authored.stage = "verification".to_string();
+    let result = service
+        .upsert(
+            distiller_context_with_outcomes("verification-batch", "claim-1", &["gap-outcome"]),
+            authored,
+        )
+        .await
+        .expect("create caller-authored companion");
+
+    assert_eq!(result.outcome, ProjectSkillResolutionOutcome::CreateNew);
+    assert_eq!(
+        result.skill.companion_of_skill_id.as_ref(),
+        Some(&approved.id)
+    );
+    assert_eq!(result.skill.title, "Agent-authored verification revision");
+    assert_eq!(
+        result.skill.provenance_json["additional"]["verification_gap_fingerprint"],
+        fingerprint
+    );
+    assert!(batch_repo
+        .get_by_id(&ProjectSkillEvidenceBatchId::from_string(
+            "verification-batch"
+        ))
+        .await
+        .expect("read verification batch")
+        .expect("verification batch exists")
+        .completed_at
+        .is_some());
+}
+
+#[tokio::test]
+async fn non_gap_verification_claim_does_not_reuse_gap_identity() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let fingerprint = "a".repeat(64);
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let now = Utc::now();
+    let approved = skill_repo
+        .create(ProjectSkill {
+            id: ProjectSkillId::from_string("approved-gap"),
+            project_id: project_id.clone(),
+            title: "Existing approved verification guidance".to_string(),
+            bucket: "verification".to_string(),
+            stage: "verification".to_string(),
+            status: ProjectSkillLifecycleStatus::Approved,
+            pinned: false,
+            archived: false,
+            scope_paths: Vec::new(),
+            compact_guidance: "Check this recurring verification gap.".to_string(),
+            body_markdown: "## Procedure\n\nRun the established verification check.".to_string(),
+            predicted_effect: Some("Prevents the recurring gap.".to_string()),
+            provenance_json: serde_json::json!({
+                "additional": { "verification_gap_fingerprint": fingerprint },
+            }),
+            companion_of_skill_id: None,
+            content_hash: String::new(),
+            evidence_hash: String::new(),
+            created_by: ProjectSkillCreatedBy::Agent,
+            pipeline_role: Some("skill_distiller".to_string()),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("seed approved verification skill");
+    let batch_repo = Arc::new(MemoryProjectSkillEvidenceBatchRepository::new());
+    let mut batch = evidence_batch("verification-batch", "verification-outcome");
+    batch.bucket = "verification".to_string();
+    batch.items[0].digest = serde_json::json!({
+        "source": "verification",
+        "source_ref_kind": "run_result",
+        "evidence": {},
+    })
+    .to_string();
+    batch_repo.insert_if_absent(batch).await.unwrap();
+    batch_repo
+        .claim_oldest_pending(&project_id, "claim-1", Utc::now())
+        .await
+        .unwrap();
+    let service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo, batch_repo.clone());
+    let mut authored = input("Independent verification guidance");
+    authored.bucket = "verification".to_string();
+    authored.stage = "verification".to_string();
+    let result = service
+        .upsert(
+            distiller_context_with_outcomes(
+                "verification-batch",
+                "claim-1",
+                &["verification-outcome"],
+            ),
+            authored,
+        )
+        .await
+        .expect("create independent verification skill");
+
+    assert_ne!(result.skill.id, approved.id);
+    assert_eq!(result.skill.companion_of_skill_id, None);
+    assert!(result.skill.provenance_json["additional"]
+        .get("verification_gap_fingerprint")
+        .is_none());
 }
 
 #[tokio::test]

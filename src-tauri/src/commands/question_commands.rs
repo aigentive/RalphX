@@ -8,6 +8,10 @@ use tauri::{Emitter, Runtime, State};
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::interactive_notification_producer::question_notification_key;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
+use crate::application::memory_orchestration::{
+    schedule_explicit_project_skill_distillation, ProjectSkillDistillationScheduleStatus,
+};
+use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
     create_chat_service, ensure_plan_workspace_planning_session_link_for_send,
@@ -21,10 +25,8 @@ use crate::domain::entities::{
 use crate::domain::services::learned_skill_adapters::{
     capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
 };
+use crate::domain::services::OutcomeLedgerService;
 use crate::domain::services::QueueKey;
-use crate::domain::services::{
-    OutcomeLedgerService, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
-};
 use crate::AppState;
 
 pub(crate) const PLAN_MODE_PROPOSAL_KIND: &str = "plan_mode_proposal";
@@ -202,22 +204,26 @@ async fn capture_accepted_plan_mode_proposal_outcome(
         let service = OutcomeLedgerService::new(Arc::clone(&state.task_outcome_repo));
         match service.record_outcome(task_outcome).await {
             Ok(recorded_outcome) => {
-                let distiller = ProjectSkillDistillerService::new(
-                    Arc::clone(&state.task_outcome_repo),
-                    Arc::clone(&state.project_skill_repo),
-                );
-                if let Err(error) = distiller
-                    .stage_eligible_outcome_candidate_with_origin(
-                        &recorded_outcome,
-                        ProjectSkillDistillationOrigin::PlanModeObserver,
-                    )
-                    .await
-                {
+                let outcome_id = recorded_outcome.id.clone();
+                let schedule = schedule_explicit_project_skill_distillation(
+                    state,
+                    &recorded_outcome.project_id,
+                    ProjectSkillDistillationSelection::ExactOutcomes(vec![outcome_id.clone()]),
+                    Some(conversation_id),
+                    ChatContextType::Project,
+                    project_id,
+                )
+                .await;
+                if matches!(
+                    schedule.status,
+                    ProjectSkillDistillationScheduleStatus::Failed
+                        | ProjectSkillDistillationScheduleStatus::Unavailable
+                ) {
                     tracing::warn!(
                         conversation_id = %conversation_id,
-                        outcome_id = %recorded_outcome.id.as_str(),
-                        error = %error,
-                        "Failed to stage learned skill from accepted Plan-mode proposal outcome"
+                        outcome_id = %outcome_id.as_str(),
+                        status = schedule.status.as_str(),
+                        "Accepted Plan-mode evidence was queued but the distiller did not start"
                     );
                 }
             }

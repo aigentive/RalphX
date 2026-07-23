@@ -88,9 +88,12 @@ describe("ConversationSkillsPanel", () => {
     const user = userEvent.setup();
     vi.mocked(projectSkillsApi.listForConversation).mockResolvedValue([]);
     vi.mocked(projectSkillsApi.processConversation).mockResolvedValue({
-      stagedSkills: [],
-      skippedExisting: 1,
       messageCount: 3,
+      status: "queued",
+      selectedOutcomes: 1,
+      batchCount: 1,
+      startedBatches: 0,
+      message: "Evidence is already queued or being processed.",
     });
 
     renderWithClient(
@@ -100,7 +103,9 @@ describe("ConversationSkillsPanel", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /process conversation skills/i }));
+    await user.click(
+      screen.getByRole("button", { name: /run skill distiller for this conversation/i }),
+    );
 
     expect(projectSkillsApi.processConversation).toHaveBeenCalledWith({
       projectId: "project-1",
