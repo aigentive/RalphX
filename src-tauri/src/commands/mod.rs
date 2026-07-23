@@ -85,6 +85,9 @@ pub mod review_commands_types;
 #[cfg(test)]
 mod review_commands_types_tests;
 pub mod review_helpers;
+pub mod startup_commands;
+#[cfg(test)]
+mod startup_commands_tests;
 pub mod task_commands;
 pub mod task_context_commands;
 pub mod task_step_commands;

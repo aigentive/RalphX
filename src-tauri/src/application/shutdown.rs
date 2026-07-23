@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tauri::Manager;
 
+use crate::application::startup_status::StartupCoordinator;
 use crate::application::HttpShutdownHandle;
 use crate::commands;
 use crate::domain::services::RunningAgentRegistry;
@@ -21,16 +22,25 @@ pub fn handle_run_event<R: tauri::Runtime>(
         // idle keep-alive sockets and finish in-flight requests before the
         // process is reaped. Do NOT prevent the exit — we want it to proceed.
         tauri::RunEvent::ExitRequested { .. } => {
+            trigger_startup_cancellation(app_handle);
             trigger_http_shutdown(app_handle);
         }
         // Final exit. Re-fire the HTTP shutdown trigger as a safety net in
         // case ExitRequested didn't fire on this code path (idempotent), then
         // do the existing child-process / WAL cleanup.
         tauri::RunEvent::Exit => {
+            trigger_startup_cancellation(app_handle);
             trigger_http_shutdown(app_handle);
             run_exit_cleanup(app_handle);
         }
         _ => {}
+    }
+}
+
+pub(crate) fn trigger_startup_cancellation<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    if let Some(coordinator) = app_handle.try_state::<Arc<StartupCoordinator>>() {
+        coordinator.cancel();
+        tracing::info!("Cancelled active startup attempt");
     }
 }
 
@@ -49,11 +59,16 @@ pub(crate) fn trigger_http_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHa
 }
 
 fn run_exit_cleanup<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
-    let app_state = app_handle.state::<AppState>();
-
     // Set shutdown flag before killing agents so stream handlers can skip escalation.
-    let exec_state = app_handle.state::<Arc<commands::ExecutionState>>();
-    exec_state.is_shutting_down.store(true, Ordering::SeqCst);
+    if let Some(exec_state) = app_handle.try_state::<Arc<commands::ExecutionState>>() {
+        exec_state.is_shutting_down.store(true, Ordering::SeqCst);
+    }
+
+    let Some(app_state) = app_handle.try_state::<AppState>() else {
+        tracing::debug!("AppState not registered; skipping AppState exit cleanup");
+        shutdown_external_mcp(app_handle);
+        return;
+    };
 
     let registry = Arc::clone(&app_state.running_agent_registry);
     let interactive = Arc::clone(&app_state.interactive_process_registry);
@@ -102,7 +117,10 @@ fn shutdown_agents(
 }
 
 fn shutdown_external_mcp<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
-    if let Some(supervisor) = app_handle.state::<ExternalMcpHandle>().get() {
+    let Some(handle) = app_handle.try_state::<ExternalMcpHandle>() else {
+        return;
+    };
+    if let Some(supervisor) = handle.get() {
         let supervisor = supervisor.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()

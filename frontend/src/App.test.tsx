@@ -173,9 +173,12 @@ vi.mock("@/hooks/useTicketingEvents", () => ({
   useTicketingCacheEvents: vi.fn(),
 }));
 
-// Mock AgentsView
-vi.mock("@/components/agents", () => ({
+// Mock the lazy Agents modules so App shell coverage does not hydrate its controller.
+vi.mock("@/components/agents/AgentIssueReportDialog", () => ({
   AgentIssueReportDialog: () => null,
+}));
+
+vi.mock("@/components/agents/AgentsView", () => ({
   AgentsView: ({
     footer,
     onCreateProject,
@@ -554,7 +557,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByTestId("agents-create-project"));
+    fireEvent.click(await screen.findByTestId("agents-create-project"));
     fireEvent.click(screen.getByTestId("project-wizard-create"));
 
     await waitFor(() => expect(createProjectSpy).toHaveBeenCalledTimes(1));
@@ -591,7 +594,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByTestId("agents-create-project"));
+    fireEvent.click(await screen.findByTestId("agents-create-project"));
     fireEvent.click(screen.getByTestId("project-wizard-create"));
 
     await waitFor(() => expect(createProjectSpy).toHaveBeenCalledTimes(1));
@@ -626,15 +629,13 @@ describe("App", () => {
     expect(toast.info).not.toHaveBeenCalled();
   });
 
-  it("shows the post-update preparing screen instead of the normal shell", () => {
+  it("does not derive app-shell readiness from the post-update marker", () => {
     markPostUpdatePreparing("0.12.3");
 
     render(<App />);
 
-    expect(screen.getByTestId("post-update-preparing")).toHaveTextContent(
-      "Preparing RalphX",
-    );
-    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("startup-screen")).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
   });
 
   it("renders the v27 mini rail logo and flat active highlight", () => {
@@ -1226,9 +1227,9 @@ describe("App", () => {
     expect(screen.getByTestId("reviews-badge")).toHaveTextContent("1");
   });
 
-  it("should render Agents view by default", () => {
+  it("should render Agents view by default", async () => {
     render(<App />);
-    expect(screen.getByTestId("agents-view-mock")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-view-mock")).toBeInTheDocument();
   });
 
   it("should provide QueryClient context", () => {

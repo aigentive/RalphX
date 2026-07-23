@@ -173,6 +173,7 @@ impl ExternalMcpSupervisor {
         self.set_readiness(ExternalMcpReadinessState::Starting);
         if is_test_environment() {
             tracing::info!("Skipping external MCP supervisor start (test environment)");
+            self.set_readiness(ExternalMcpReadinessState::Ready);
             return Ok(());
         }
 

@@ -636,6 +636,7 @@ pub const SCHEMA_VERSION: i64 = 20260723100604;
 type MigrationFn = fn(&Connection) -> AppResult<()>;
 
 /// Migration definition
+#[derive(Clone, Copy)]
 struct Migration {
     version: i64,
     name: &'static str,
@@ -1737,32 +1738,91 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
-/// Run all pending migrations on the database
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationProgress {
+    pub completed_units: u32,
+    pub total_units: u32,
+    pub elapsed_ms: u128,
+}
+
+/// Run all pending migrations on the database.
 pub fn run_migrations(conn: &Connection) -> AppResult<()> {
+    run_migrations_with_observer(conn, |_| {})
+}
+
+/// Runs pending migrations and reports real completed/pending units.
+///
+/// # Errors
+///
+/// Returns the first migration or schema-version persistence error. The
+/// observer is never advanced for the failed migration.
+pub fn run_migrations_with_observer(
+    conn: &Connection,
+    observer: impl FnMut(MigrationProgress),
+) -> AppResult<()> {
+    run_pending_migrations(conn, MIGRATIONS, observer)
+}
+
+fn run_pending_migrations(
+    conn: &Connection,
+    migrations: &[Migration],
+    mut observer: impl FnMut(MigrationProgress),
+) -> AppResult<()> {
+    let started_at = std::time::Instant::now();
     // Create migrations table if it doesn't exist
     create_migrations_table(conn)?;
 
     let mut applied_versions = get_applied_migration_versions(conn)?;
+    let pending = migrations
+        .iter()
+        .filter(|migration| !applied_versions.contains(&migration.version))
+        .collect::<Vec<_>>();
+    let total_units = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+    let mut completed_units = 0u32;
+    observer(MigrationProgress {
+        completed_units,
+        total_units,
+        elapsed_ms: started_at.elapsed().as_millis(),
+    });
 
     // Run registered migrations sequentially. Membership checks repair dev and
     // branch databases that have a later version recorded while missing an
     // earlier migration added on this branch.
-    for migration in MIGRATIONS {
-        if !applied_versions.contains(&migration.version) {
-            tracing::info!(
-                "Running migration v{}: {}",
-                migration.version,
-                migration.name
+    for migration in pending {
+        tracing::info!(
+            "Running migration v{}: {}",
+            migration.version,
+            migration.name
+        );
+
+        if let Err(error) = (migration.migrate)(conn) {
+            tracing::error!(
+                migration_version = migration.version,
+                completed_units,
+                total_units,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Database migration failed"
             );
-
-            (migration.migrate)(conn)?;
-            set_schema_version(conn, migration.version)?;
-            applied_versions.insert(migration.version);
-
-            tracing::info!("Migration v{} complete", migration.version);
+            return Err(error);
         }
+        set_schema_version(conn, migration.version)?;
+        applied_versions.insert(migration.version);
+        completed_units = completed_units.saturating_add(1);
+        observer(MigrationProgress {
+            completed_units,
+            total_units,
+            elapsed_ms: started_at.elapsed().as_millis(),
+        });
+
+        tracing::info!("Migration v{} complete", migration.version);
     }
 
+    tracing::info!(
+        completed_units,
+        total_units,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "Database migration pass completed"
+    );
     Ok(())
 }
 
@@ -1790,6 +1850,9 @@ pub(super) fn latest_registered_migration_version() -> i64 {
         .map(|migration| migration.version)
         .expect("migration registry should not be empty")
 }
+
+#[cfg(test)]
+mod migration_progress_tests;
 
 /// Create the migrations tracking table
 fn create_migrations_table(conn: &Connection) -> AppResult<()> {
