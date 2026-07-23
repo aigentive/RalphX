@@ -86,6 +86,7 @@ import {
 import {
   useAgentSessionStore,
   type AgentArtifactTab,
+  type AgentRuntimeSelection,
   type AgentTaskArtifactMode,
 } from "@/stores/agentSessionStore";
 import {
@@ -635,7 +636,10 @@ interface AgentsArtifactPaneProps {
   ) => void;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
-  onFocusWorkspaceReview?: (conversationId: string) => void;
+  onFocusWorkspaceReview?: (
+    conversationId: string,
+    runtimeHint?: AgentRuntimeSelection,
+  ) => void;
   onFocusTaskRuntime?: (
     taskId: string,
     contextType: AgentTaskRuntimeContextType,
@@ -676,6 +680,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const { registry: modelRegistry } = useAgentModels();
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
     !ideationSettingsQuery.isLoading &&
@@ -1102,7 +1107,20 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       const reviewConversationId = result.monitor.reviewConversationId;
       if (reviewConversationId) {
         invalidateConversationDataQueries(queryClient, reviewConversationId);
-        onFocusWorkspaceReview?.(reviewConversationId);
+        const runtimeHint =
+          result.started &&
+          !result.wasQueued &&
+          variables.runtimeOverride
+            ? materializeWorkspaceRuntimeSelection(
+                variables.runtimeOverride,
+                modelRegistry,
+              )
+            : null;
+        if (runtimeHint) {
+          onFocusWorkspaceReview?.(reviewConversationId, runtimeHint);
+        } else {
+          onFocusWorkspaceReview?.(reviewConversationId);
+        }
       }
       const artifactId = result.monitor.reviewArtifactId;
       if (artifactId) {
