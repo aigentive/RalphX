@@ -729,7 +729,7 @@ function getCurrentTurnProviderMessageId(
   const latestProviderMessage = latestMessageByCreatedAt(
     messages,
     (message) => {
-      if (!isProviderRole(message.role)) {
+      if (!isProviderRole(message.role) || isPersistedTimelineToolCallMessage(message)) {
         return false;
       }
       if (!latestUserMessage) {
