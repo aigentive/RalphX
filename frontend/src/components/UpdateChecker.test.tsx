@@ -23,8 +23,24 @@ const mocks = vi.hoisted(() => ({
   getVersion: vi.fn(),
 }));
 
+const updateChannelState = vi.hoisted(() => ({
+  channel: "stable" as "stable" | "nightly",
+  isSettled: true,
+  isError: false,
+  error: null as Error | null,
+}));
+
 vi.mock("@tauri-apps/plugin-updater", () => ({
   check: (...args: unknown[]) => mocks.check(...args),
+}));
+
+vi.mock("@/hooks/useUpdateChannel", () => ({
+  useUpdateChannel: () => ({
+    updateChannel: updateChannelState.channel,
+    isSettled: updateChannelState.isSettled,
+    isError: updateChannelState.isError,
+    loadError: updateChannelState.error,
+  }),
 }));
 
 vi.mock("@tauri-apps/plugin-process", () => ({
@@ -123,6 +139,10 @@ describe("UpdateChecker", () => {
     mocks.fetchReleaseMetadata.mockReset();
     mocks.getVersion.mockReset();
     update.downloadAndInstall.mockReset();
+    updateChannelState.channel = "stable";
+    updateChannelState.isSettled = true;
+    updateChannelState.isError = false;
+    updateChannelState.error = null;
     localStorage.clear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
 
@@ -150,6 +170,11 @@ describe("UpdateChecker", () => {
   });
 
   afterEach(() => {
+    for (const [options] of mocks.check.mock.calls) {
+      if (options !== undefined) {
+        expect(options).not.toHaveProperty("allowDowngrades");
+      }
+    }
     vi.useRealTimers();
   });
 
@@ -165,17 +190,121 @@ describe("UpdateChecker", () => {
     await vi.advanceTimersByTimeAsync(3_000);
 
     expect(mocks.check).toHaveBeenCalledTimes(1);
+    expect(mocks.check.mock.calls).toEqual([[{ target: "stable" }]]);
     expect(mocks.toast).toHaveBeenCalledTimes(1);
   });
 
-  it("polls for later releases without re-notifying the same version", async () => {
+  it("hydrates a stored Nightly channel without speculatively checking Stable", async () => {
+    updateChannelState.isSettled = false;
+    const { rerender } = render(<UpdateChecker />);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(mocks.check).not.toHaveBeenCalled();
+
+    updateChannelState.channel = "nightly";
+    updateChannelState.isSettled = true;
+    rerender(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(mocks.check.mock.calls).toEqual([[{ target: "nightly" }]]);
+  });
+
+  it("logs a failed channel read and uses Stable once the query has settled", async () => {
+    const consoleDebug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    updateChannelState.isError = true;
+    updateChannelState.error = new Error("state unavailable");
+    render(<UpdateChecker />);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(mocks.check).toHaveBeenCalledWith({ target: "stable" });
+    expect(consoleDebug).toHaveBeenCalledWith(
+      "Update channel load failed; using Stable for update checks:",
+      updateChannelState.error,
+    );
+    consoleDebug.mockRestore();
+  });
+
+  it("suppresses an old-channel result and queues one forced check for the final channel", async () => {
+    let resolveOldCheck: ((value: typeof update) => void) | undefined;
+    mocks.check.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldCheck = resolve;
+        }),
+    );
+    mocks.check.mockResolvedValueOnce(update);
+    const { rerender } = render(<UpdateChecker />);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(mocks.check).toHaveBeenCalledWith({ target: "stable" });
+
+    updateChannelState.channel = "nightly";
+    rerender(<UpdateChecker />);
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("update-available");
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+
+    updateChannelState.channel = "stable";
+    rerender(<UpdateChecker />);
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveOldCheck?.(update);
+      await flushAsyncWork();
+    });
+
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mocks.check.mock.calls).toEqual([
+      [{ target: "stable" }],
+      [{ target: "stable" }],
+    ]);
+    expect(toastCallsById("update-available")).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls the captured Nightly target without re-notifying the same version", async () => {
+    updateChannelState.channel = "nightly";
     render(<UpdateChecker />);
 
     await vi.advanceTimersByTimeAsync(3_000);
     await vi.advanceTimersByTimeAsync(30 * 60 * 1_000);
 
     expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mocks.check.mock.calls).toEqual([
+      [{ target: "nightly" }],
+      [{ target: "nightly" }],
+    ]);
     expect(mocks.toast).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs exactly one immediate forced check when an idle channel switch changes target", async () => {
+    mocks.check.mockResolvedValue(null);
+    const { rerender } = render(<UpdateChecker />);
+
+    updateChannelState.channel = "nightly";
+    rerender(<UpdateChecker />);
+    await flushAsyncWork();
+
+    expect(mocks.check.mock.calls).toEqual([[{ target: "nightly" }]]);
+  });
+
+  it("dismisses an unaccepted old offer and resets dedupe for the newly selected channel", async () => {
+    const { rerender } = render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(toastCallsById("update-available")).toHaveLength(1);
+
+    updateChannelState.channel = "nightly";
+    rerender(<UpdateChecker />);
+    await flushAsyncWork();
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("update-available");
+    expect(mocks.check.mock.calls).toEqual([
+      [{ target: "stable" }],
+      [{ target: "nightly" }],
+    ]);
+    expect(toastCallsById("update-available")).toHaveLength(2);
   });
 
   it("swallows automatic check() errors silently", async () => {
@@ -312,9 +441,38 @@ describe("UpdateChecker", () => {
     await flushAsyncWork();
 
     expect(mocks.check).toHaveBeenCalledTimes(1);
+    expect(mocks.check).toHaveBeenCalledWith({ target: "stable" });
     expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      "RalphX is up to date.",
+      "RalphX is up to date on Stable.",
       expect.objectContaining({ id: "update-check-result" }),
+    );
+  });
+
+  it("identifies Nightly in manual up-to-date and update-available results", async () => {
+    updateChannelState.channel = "nightly";
+    mocks.check.mockResolvedValue(null);
+    render(<UpdateChecker />);
+
+    eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+    await flushAsyncWork();
+
+    expect(mocks.check.mock.calls).toEqual([[{ target: "nightly" }]]);
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      "RalphX is up to date on Nightly.",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+
+    mocks.check.mockResolvedValue(update);
+    eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+    await flushAsyncWork();
+
+    expect(mocks.check.mock.calls).toEqual([
+      [{ target: "nightly" }],
+      [{ target: "nightly" }],
+    ]);
+    const toastUi = renderToastById("update-available");
+    expect(toastUi.getByTestId("update-available-toast")).toHaveTextContent(
+      "Nightly update available",
     );
   });
 
@@ -337,7 +495,8 @@ describe("UpdateChecker", () => {
     );
   });
 
-  it("checks on app focus after the lifecycle cooldown", async () => {
+  it("checks the captured Nightly target on app focus after the lifecycle cooldown", async () => {
+    updateChannelState.channel = "nightly";
     mocks.check.mockResolvedValue(null);
     render(<UpdateChecker />);
 
@@ -353,6 +512,10 @@ describe("UpdateChecker", () => {
     await flushAsyncWork();
 
     expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mocks.check.mock.calls).toEqual([
+      [{ target: "nightly" }],
+      [{ target: "nightly" }],
+    ]);
   });
 
   it("opens the release notes dialog from the update toast", async () => {
@@ -535,6 +698,7 @@ describe("UpdateChecker", () => {
   });
 
   it("handleUpdateFromDialog triggers update check and installs when available", async () => {
+    updateChannelState.channel = "nightly";
     const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
     const versioned = { ...update, version: "0.5.0", downloadAndInstall };
 
@@ -566,6 +730,40 @@ describe("UpdateChecker", () => {
     });
 
     expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mocks.check.mock.calls).toEqual([
+      [{ target: "nightly" }],
+      [{ target: "nightly" }],
+    ]);
+  });
+
+  it("suppresses a stale release-notes update check after the channel changes", async () => {
+    let resolveOldCheck: ((value: typeof update) => void) | undefined;
+    const { rerender } = render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
+    await act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
+
+    mocks.check.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldCheck = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByTestId("release-notes-update-button"));
+
+    updateChannelState.channel = "nightly";
+    rerender(<UpdateChecker />);
+    await act(async () => {
+      resolveOldCheck?.(update);
+      await flushAsyncWork();
+    });
+
+    expect(update.downloadAndInstall).not.toHaveBeenCalled();
+    expect(mocks.check).toHaveBeenLastCalledWith({ target: "nightly" });
   });
 
   it("handleUpdateFromDialog shows up-to-date toast when no update available", async () => {
@@ -595,7 +793,7 @@ describe("UpdateChecker", () => {
     });
 
     expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      "RalphX is up to date.",
+      "RalphX is up to date on Stable.",
       expect.objectContaining({ id: "update-check-result" }),
     );
   });

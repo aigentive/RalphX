@@ -66,6 +66,16 @@ const mockReviewSettings = {
   run_task_validations: true,
 };
 
+let mockUpdateChannel: "stable" | "nightly" = "stable";
+
+type MockUpdateChannelError = "read" | "write";
+
+function getMockUpdateChannelError(): MockUpdateChannelError | undefined {
+  return (
+    window as Window & { __mockUpdateChannelError?: MockUpdateChannelError }
+  ).__mockUpdateChannelError;
+}
+
 const mockExternalMcpConfig = {
   enabled: true,
   port: 3848,
@@ -3157,6 +3167,22 @@ const commandHandlers: Record<
     };
   },
   get_review_settings: async () => ({ ...mockReviewSettings }),
+  get_update_channel: async () => {
+    if (getMockUpdateChannelError() === "read") {
+      throw new Error("Mock update channel read failure");
+    }
+    return mockUpdateChannel;
+  },
+  set_update_channel: async (args) => {
+    if (getMockUpdateChannelError() === "write") {
+      throw new Error("Mock update channel write failure");
+    }
+    const updateChannel = args.updateChannel;
+    if (updateChannel === "stable" || updateChannel === "nightly") {
+      mockUpdateChannel = updateChannel;
+    }
+    return mockUpdateChannel;
+  },
   update_review_settings: async (args) => {
     const input = args.input as {
       requireHumanReview?: boolean;

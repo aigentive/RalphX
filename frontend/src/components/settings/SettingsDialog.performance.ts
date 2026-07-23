@@ -27,6 +27,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   mcp: () => import("./McpSettingsSection"),
+  updates: () => import("./UpdatesSettingsSection"),
   accessibility: () => import("./AccessibilitySection"),
   notifications: () => import("./NotificationSettingsPanel"),
 };

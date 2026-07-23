@@ -117,6 +117,10 @@ vi.mock("./McpSettingsSection", () => ({
   McpSettingsSection: () => <div data-testid="mcp-section">MCP</div>,
 }));
 
+vi.mock("./UpdatesSettingsSection", () => ({
+  UpdatesSettingsSection: () => <div data-testid="updates-section">Updates</div>,
+}));
+
 vi.mock("./HarnessProvidersSection", () => ({
   HarnessProvidersSection: () => (
     <div data-testid="providers-section">Providers</div>
@@ -259,6 +263,23 @@ describe("SettingsDialog", () => {
     await expect(sectionModuleLoaders.capabilities()).resolves.toHaveProperty(
       "CapabilitiesSection",
     );
+  });
+
+  it("registers Updates under Preferences and keeps its module lazy", async () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "updates",
+      groupId: "preferences",
+      label: "Updates",
+    });
+    await expect(sectionModuleLoaders.updates()).resolves.toHaveProperty(
+      "UpdatesSettingsSection",
+    );
+
+    uiState.activeModal = "settings";
+    uiState.modalContext = { section: "updates" };
+    render(<SettingsDialog {...defaultProps} />);
+
+    expect(await screen.findByTestId("updates-section")).toBeInTheDocument();
   });
 
   it("consolidates the legacy agent pages into one lazy Agents section", async () => {

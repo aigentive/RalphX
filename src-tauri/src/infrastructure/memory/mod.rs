@@ -18,6 +18,8 @@ pub mod memory_agent_run_repo;
 pub mod memory_agent_task_repo;
 pub mod memory_api_key_repo;
 pub mod memory_app_state_repo;
+#[cfg(test)]
+mod memory_app_state_repo_tests;
 pub mod memory_automation_repo;
 #[cfg(test)]
 mod memory_automation_repo_tests;
