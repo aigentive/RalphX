@@ -225,7 +225,7 @@ const AutomationRow = memo(function AutomationRow({
                     style={{
                       backgroundColor:
                         automation.status === "active" && runView.isOpen
-                          ? "var(--accent-primary, #ff6b35)"
+                          ? "var(--accent-primary)"
                           : "var(--text-subtle, #6a6a72)",
                       width: `${progressPercent}%`,
                     }}

@@ -494,8 +494,8 @@ export interface RunTimelineHighlight {
 export function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
   if (run.status === "merged") {
     return {
-      backgroundColor: "var(--status-success-muted, rgba(63, 191, 127, 0.08))",
-      borderColor: "var(--status-success-border, rgba(63, 191, 127, 0.3))",
+      backgroundColor: "var(--status-success-muted)",
+      borderColor: "var(--status-success-border)",
       markerColor: "var(--status-success, #3fbf7f)",
     };
   }
@@ -503,8 +503,8 @@ export function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
     isOpenAutomationRun(run) && run.status !== "cancelled" && !describeRunFailure(run);
   if (isActive) {
     return {
-      backgroundColor: "var(--accent-muted, rgba(255, 106, 53, 0.08))",
-      borderColor: "var(--accent-border, rgba(255, 106, 53, 0.28))",
+      backgroundColor: "var(--accent-muted)",
+      borderColor: "var(--accent-border)",
       markerColor: "var(--accent-primary, #ff6a35)",
     };
   }

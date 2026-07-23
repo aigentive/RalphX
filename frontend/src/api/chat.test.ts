@@ -3641,6 +3641,14 @@ describe("getConversationActiveState", () => {
 
     const result = await startAgentWorkspaceReview("conversation/1", {
       force: true,
+      runtimeOverride: {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: "high",
+        serviceTier: "standard",
+        coordinationMode: "solo",
+        personaId: null,
+      },
     });
 
     expect(mockFetch).toHaveBeenCalledWith(
@@ -3648,7 +3656,17 @@ describe("getConversationActiveState", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: true }),
+        body: JSON.stringify({
+          force: true,
+          runtime_override: {
+            provider: "codex",
+            model: "gpt-5.5",
+            effort: "high",
+            service_tier: "standard",
+            coordination_mode: "solo",
+            persona_id: null,
+          },
+        }),
       },
     );
     expect(result.started).toBe(true);

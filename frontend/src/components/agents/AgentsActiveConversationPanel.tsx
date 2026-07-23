@@ -707,6 +707,7 @@ interface AgentsActiveConversationPanelProps {
   chatFocusOptions: readonly AgentsChatFocusSwitchOption[];
   hasAttachedPlanArtifact: boolean;
   hasAutoOpenArtifacts: boolean;
+  focusedWorkspaceReviewServiceTier: ManualServiceTier | null;
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
   onActiveConversationModeMenuOpen: () => void;
@@ -743,7 +744,10 @@ interface AgentsActiveConversationPanelProps {
     conversationId: string,
     sessionId: string
   ) => void;
-  onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusWorkspaceReview: (
+    conversationId: string,
+    runtimeHint?: AgentRuntimeSelection,
+  ) => void;
   onFocusVerificationSession: (
     parentSessionId: string,
     childSessionId: string
@@ -798,6 +802,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   chatFocusOptions,
   hasAttachedPlanArtifact,
   hasAutoOpenArtifacts,
+  focusedWorkspaceReviewServiceTier,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
@@ -1038,6 +1043,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     (state) => state.serviceTierByConversationId[runtimeControlConversationId],
   );
   const activeServiceTier: ManualServiceTier =
+    focusedWorkspaceReviewServiceTier ??
     persistedConversationServiceTier ??
     (conversationServiceTier === "fast" || conversationServiceTier === "standard"
       ? conversationServiceTier
