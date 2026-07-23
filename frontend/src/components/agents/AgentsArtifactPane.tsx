@@ -1919,11 +1919,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       }
       selectPublishSubTab(tab);
       setPendingReviewFocusConversationId(null);
-      if (onOpenPublish) {
-        onOpenPublish();
-        return;
-      }
       if (activeTab !== "publish") {
+        if (onOpenPublish) {
+          onOpenPublish();
+          return;
+        }
         onTabChange("publish");
       }
     },

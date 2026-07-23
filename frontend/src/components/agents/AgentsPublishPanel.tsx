@@ -1280,7 +1280,7 @@ export function AgentPublishPanel({
             }
           />
           <TabsList
-            className="mt-4 flex h-10 w-full justify-start gap-5 rounded-none border-y bg-transparent p-0 text-[var(--text-muted)]"
+            className="mt-4 flex h-10 w-full min-w-0 justify-start gap-5 overflow-x-auto rounded-none border-y bg-transparent p-0 text-[var(--text-muted)]"
             style={{
               borderColor: "var(--border-subtle)",
               borderStyle: "solid",

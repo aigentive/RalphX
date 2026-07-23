@@ -3762,6 +3762,100 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("keeps History and Automation selected when the host re-opens the publish pane", async () => {
+    // Production wires `onOpenPublish` to the Agents view helper that always
+    // requests the `changes` sub-tab. Selecting History/Automation while the
+    // publish artifact tab is already active must not round-trip through that
+    // helper, otherwise the request snaps the pane straight back to Changes.
+    listPublicationEventsMock.mockResolvedValue([
+      {
+        id: "event-history",
+        conversationId: "conversation-1",
+        step: "published",
+        status: "succeeded",
+        summary: "Published pull request",
+        classification: null,
+        createdAt: "2026-07-23T15:00:00Z",
+      },
+    ]);
+
+    function HostControlledPane() {
+      const [activeTab, setActiveTab] = useState<AgentArtifactTab>("publish");
+      const [publishSubTabRequest, setPublishSubTabRequest] = useState<{
+        conversationId: string;
+        requestId: number;
+        tab: "changes";
+      } | null>(null);
+
+      return (
+        <QueryClientProvider client={createTestQueryClient()}>
+          <TooltipProvider delayDuration={0}>
+            <div className="h-[480px]">
+              <AgentsArtifactPane
+                conversation={conversation()}
+                workspace={workspace({ mode: "edit" })}
+                activeTab={activeTab}
+                taskMode="graph"
+                onTabChange={setActiveTab}
+                onTaskModeChange={() => {}}
+                onPublishWorkspace={vi.fn()}
+                isPublishingWorkspace={false}
+                onClose={() => {}}
+                publishSubTabRequest={publishSubTabRequest}
+                onOpenPublish={() => {
+                  setActiveTab("publish");
+                  setPublishSubTabRequest((current) => ({
+                    conversationId: "conversation-1",
+                    requestId: (current?.requestId ?? 0) + 1,
+                    tab: "changes",
+                  }));
+                }}
+              />
+            </div>
+          </TooltipProvider>
+        </QueryClientProvider>
+      );
+    }
+
+    render(<HostControlledPane />);
+
+    fireEvent.mouseDown(await screen.findByTestId("agents-publish-tab-history"), {
+      button: 0,
+    });
+
+    expect(
+      await screen.findByTestId("agents-publish-content-history"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-publish-tab-history")).toHaveAttribute(
+        "data-state",
+        "active",
+      );
+    });
+    expect(screen.getByTestId("agents-publish-tab-changes")).toHaveAttribute(
+      "data-state",
+      "inactive",
+    );
+
+    fireEvent.mouseDown(
+      screen.getByTestId("agents-publish-tab-automation"),
+      { button: 0 },
+    );
+
+    expect(
+      await screen.findByTestId("agents-publish-content-automation"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("agents-publish-tab-automation"),
+      ).toHaveAttribute("data-state", "active");
+    });
+    expect(screen.getByTestId("agents-publish-tab-changes")).toHaveAttribute(
+      "data-state",
+      "inactive",
+    );
+  });
+
   it("accepts fresh History requests without creating Review focus", async () => {
     const onFocusWorkspaceReview = vi.fn();
 
