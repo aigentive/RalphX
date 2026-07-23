@@ -645,7 +645,7 @@ export async function callAgentWorkspaceTool(
     case "read_agent_workspace_pr_comment":
       return callReadAgentWorkspacePrCommentTool(callTauriGet, args);
     case "complete_agent_workspace_pr_fix":
-      return callCompleteAgentWorkspacePrFixTool(callTauri, args);
+      return callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext);
     case "complete_agent_workspace_repair":
       return callCompleteAgentWorkspaceRepairTool(callTauri, args);
     case "submit_agent_workspace_pr_description":
@@ -1031,7 +1031,8 @@ export async function callReadAgentWorkspacePrCommentTool(
 
 export async function callCompleteAgentWorkspacePrFixTool(
   callTauri: TauriPost,
-  args: unknown
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
   const { conversation_id, summary, blocker, fix_commit_sha } = args as {
     conversation_id: string;
@@ -1044,6 +1045,7 @@ export async function callCompleteAgentWorkspacePrFixTool(
     summary,
     blocker,
     fix_commit_sha,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 

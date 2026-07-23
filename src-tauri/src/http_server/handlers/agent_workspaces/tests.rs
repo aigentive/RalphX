@@ -816,6 +816,7 @@
                 summary: "Should never publish".to_string(),
                 blocker: None,
                 fix_commit_sha: None,
+                created_by_run_id: None,
             }),
         )
         .await
@@ -1038,29 +1039,24 @@
         app_state: Arc<AppState>,
         conversation_id: ChatConversationId,
         fix_commit_sha: String,
+        pr_fix_run_id: AgentRunId,
         github: Arc<MockGithubService>,
     }
 
     async fn seed_pr_fix_completion_authority(
         app_state: &AppState,
         conversation_id: &ChatConversationId,
-    ) {
+    ) -> AgentRunId {
+        let mut run = AgentRun::new(conversation_id.clone());
+        run.action_kind = Some(crate::domain::entities::AgentRunActionKind::PrAutofix);
+        run.action_context_id = Some("267".to_string());
+        run.action_target_id = Some("github_pr_autofix:267:test".to_string());
         app_state
             .agent_run_repo
-            .create(AgentRun::new(conversation_id.clone()))
+            .create(run)
             .await
-            .expect("active repair run should persist");
-        app_state
-            .agent_conversation_workspace_repo
-            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                conversation_id.clone(),
-                "repair_sent",
-                "succeeded",
-                "Current PR fix dispatch",
-                Some("agent_fixable".to_string()),
-            ))
-            .await
-            .expect("repair dispatch event should persist");
+            .expect("active PR autofix run should persist")
+            .id
     }
 
     async fn setup_pr_fix_workspace_with_review_gate(
@@ -1146,7 +1142,7 @@
             .create_or_update(workspace.clone())
             .await
             .expect("seed workspace");
-        seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
+        let pr_fix_run_id = seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
 
         let review_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
             .await
@@ -1190,6 +1186,7 @@
             app_state,
             conversation_id,
             fix_commit_sha,
+            pr_fix_run_id,
             github,
         }
     }
@@ -1913,6 +1910,7 @@
             .create_or_update(workspace)
             .await
             .unwrap();
+        let pr_fix_run_id = seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
         let state = test_http_state(Arc::clone(&app_state));
 
         let Json(response) = complete_agent_workspace_pr_fix(
@@ -1922,6 +1920,7 @@
                 summary: "Investigated post-merge fixer state".to_string(),
                 blocker: None,
                 fix_commit_sha: None,
+                created_by_run_id: Some(pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -1938,6 +1937,352 @@
         assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
         assert!(updated.pr_supervision_status.is_none());
         assert_eq!(github.state().check_pr_status_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_stale_attempt_is_a_side_effect_free_superseded_noop() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "stale-superseded",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let mut stale_run = AgentRun::new(fixture.conversation_id.clone());
+        stale_run.action_kind = Some(crate::domain::entities::AgentRunActionKind::PrAutofix);
+        stale_run.action_context_id = Some("267".to_string());
+        stale_run.action_target_id = Some("github_pr_autofix:267:test".to_string());
+        stale_run.status = crate::domain::entities::AgentRunStatus::Failed;
+        stale_run.started_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let stale_run_id = fixture
+            .app_state
+            .agent_run_repo
+            .create(stale_run)
+            .await
+            .expect("stale PR autofix run should persist")
+            .id;
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Stale fixer must not settle the replacement".to_string(),
+                blocker: None,
+                fix_commit_sha: None,
+                created_by_run_id: Some(stale_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("stale attempt should be acknowledged as superseded");
+
+        assert_eq!(response.status, "superseded");
+        assert!(response.workspace.is_none());
+        assert_eq!(fixture.github.state().check_pr_status_calls, 0);
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after.publication_push_status, before.publication_push_status);
+        assert_eq!(after.pr_supervision_status, before.pr_supervision_status);
+        assert_eq!(
+            fixture
+                .app_state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&fixture.conversation_id)
+                .await
+                .expect("events should load")
+                .len(),
+            events_before
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_already_completed_is_a_side_effect_free_noop() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "already-completed-noop",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        fixture
+            .app_state
+            .agent_run_repo
+            .update_status(
+                &fixture.pr_fix_run_id,
+                crate::domain::entities::AgentRunStatus::Completed,
+            )
+            .await
+            .expect("settled PR autofix run should persist");
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "The settled fixer must not publish twice".to_string(),
+                blocker: Some("must not persist".to_string()),
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("settled attempt should be acknowledged without side effects");
+
+        assert_eq!(response.status, "already_completed");
+        assert!(response.workspace.is_none());
+        assert_eq!(fixture.github.state().check_pr_status_calls, 0);
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        assert_eq!(fixture.github.state().enable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().disable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().submit_pr_review_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after, before);
+        assert_eq!(
+            fixture
+                .app_state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&fixture.conversation_id)
+                .await
+                .expect("events should load")
+                .len(),
+            events_before
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_current_authority_with_stale_claim_schedules_recovery_without_effects() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "stale-current-claim",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let mut stale_workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        stale_workspace.publication_push_status = Some("failed".to_string());
+        stale_workspace.pr_supervision_status = Some("blocked".to_string());
+        fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(stale_workspace.clone())
+            .await
+            .expect("seed stale PR fixer claim");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "The stale workspace claim must not settle".to_string(),
+                blocker: Some("must not persist".to_string()),
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect_err("stale workspace claim must fail closed");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("claim is no longer current")));
+        for _ in 0..100 {
+            if fixture.github.state().check_pr_sync_state_calls >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(fixture.github.state().check_pr_sync_state_calls, 1);
+        {
+            let github_state = fixture.github.state();
+            assert_eq!(github_state.check_pr_status_calls, 0);
+            assert_eq!(github_state.create_issue_calls, 0);
+            assert_eq!(github_state.create_draft_pr_calls, 0);
+            assert_eq!(github_state.mark_pr_ready_calls, 0);
+            assert_eq!(github_state.update_pr_details_calls, 0);
+            assert_eq!(github_state.update_pr_base_calls, 0);
+            assert_eq!(github_state.push_branch_calls, 0);
+            assert_eq!(github_state.enable_pr_auto_merge_calls, 0);
+            assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
+            assert_eq!(github_state.submit_pr_review_calls, 0);
+            assert_eq!(github_state.close_pr_calls, 0);
+            assert_eq!(github_state.delete_remote_branch_calls, 0);
+        }
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after.status, stale_workspace.status);
+        assert_eq!(after.source_pull_request, stale_workspace.source_pull_request);
+        assert_eq!(after.publication_pr_number, stale_workspace.publication_pr_number);
+        assert_eq!(after.publication_pr_url, stale_workspace.publication_pr_url);
+        assert_eq!(after.publication_pr_status, stale_workspace.publication_pr_status);
+        assert_eq!(after.publication_push_status, stale_workspace.publication_push_status);
+        assert_eq!(after.auto_publish_enabled, stale_workspace.auto_publish_enabled);
+        assert_eq!(
+            after.auto_publish_initial_pr_enabled,
+            stale_workspace.auto_publish_initial_pr_enabled
+        );
+        assert_eq!(
+            after.auto_publish_paused_pr_autofix_enabled,
+            stale_workspace.auto_publish_paused_pr_autofix_enabled
+        );
+        assert_eq!(
+            after.auto_publish_paused_pr_auto_merge_desired,
+            stale_workspace.auto_publish_paused_pr_auto_merge_desired
+        );
+        assert_eq!(after.pr_autofix_enabled, stale_workspace.pr_autofix_enabled);
+        assert_eq!(
+            after.pr_auto_merge_desired,
+            stale_workspace.pr_auto_merge_desired
+        );
+        assert_eq!(after.pr_auto_merge_method, stale_workspace.pr_auto_merge_method);
+        assert_eq!(after.pr_auto_merge_current, stale_workspace.pr_auto_merge_current);
+        assert_eq!(
+            after.pr_supervision_status,
+            stale_workspace.pr_supervision_status
+        );
+        assert_eq!(
+            after.pr_supervision_summary,
+            stale_workspace.pr_supervision_summary
+        );
+        let events_after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load");
+        assert_eq!(events_after.len(), events_before);
+        assert!(
+            !events_after.iter().skip(events_before).any(|event| {
+                matches!(
+                    event.step.as_str(),
+                    "pr_autofix_completed"
+                        | "pr_autofix_blocked"
+                        | "pr_autofix_published"
+                        | "pr_autofix_publish_failed"
+                )
+            }),
+            "stale claim must not append completion, block, or publish events"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_invalid_or_missing_caller_fails_closed_without_completion_effects() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "missing-caller-noop",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        for created_by_run_id in [None, Some("not-a-run-id".to_string())] {
+            let (status, Json(body)) = complete_agent_workspace_pr_fix(
+                State(test_http_state(Arc::clone(&fixture.app_state))),
+                Path(fixture.conversation_id.to_string()),
+                Json(CompleteAgentWorkspacePrFixRequest {
+                    summary: "Invalid ownership must not settle the fixer".to_string(),
+                    blocker: Some("must not persist".to_string()),
+                    fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                    created_by_run_id,
+                }),
+            )
+            .await
+            .expect_err("invalid fixer authority must fail closed");
+
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(body["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("no longer current")));
+        }
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        assert_eq!(fixture.github.state().enable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().disable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().submit_pr_review_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after, before);
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load");
+        assert_eq!(events.len(), events_before);
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.step.as_str(),
+                "pr_autofix_completed"
+                    | "pr_autofix_blocked"
+                    | "pr_autofix_published"
+                    | "pr_autofix_publish_failed"
+            )
+        }));
     }
 
     #[tokio::test]
@@ -1979,6 +2324,7 @@
                 summary: "Fixed requested review change".to_string(),
                 blocker: None,
                 fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2023,6 +2369,7 @@
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
                 fix_commit_sha: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2077,6 +2424,7 @@
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
                 fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2125,6 +2473,7 @@
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
                 fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2162,6 +2511,7 @@
                 summary: "Repair could not be completed".to_string(),
                 blocker: Some("Required dependency is unavailable".to_string()),
                 fix_commit_sha: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2220,6 +2570,7 @@
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
                 fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2316,7 +2667,7 @@
             .create_or_update(workspace.clone())
             .await
             .expect("seed workspace");
-        seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
+        let pr_fix_run_id = seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
         let review_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
             .await
             .expect("review context should load");
@@ -2337,6 +2688,7 @@
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
                 fix_commit_sha: Some(fix_commit_sha),
+                created_by_run_id: Some(pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2593,6 +2945,7 @@
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
                 fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2694,6 +3047,7 @@
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
                 fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await

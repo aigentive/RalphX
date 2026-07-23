@@ -70,9 +70,9 @@ use crate::application::agent_workspace_pr_description::{
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
 };
 use crate::application::agent_workspace_pr_supervision_recovery::{
+    build_agent_workspace_pr_supervision_recovery_deps,
     pr_supervision_recovery_schedule_skip_reason, schedule_agent_workspace_pr_supervision_recovery,
-    AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryDeps,
-    AgentWorkspacePrSupervisionRecoveryTrigger,
+    AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::agent_workspace_publish_repair_state::{
@@ -1077,23 +1077,34 @@ fn schedule_pr_supervision_recovery_for_workspace(
     if pr_supervision_recovery_schedule_skip_reason(workspace).is_some() {
         return;
     }
-    let Some(github) = state.github_service.as_ref().map(Arc::clone) else {
+    let Some(execution_state) = state
+        .app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
+        .map(|state| state.inner().clone())
+    else {
         return;
     };
-    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    let runtime_app_handle = state.app_handle.clone();
+    let transition_service = Arc::new(state.build_transition_service_for_runtime(
+        Arc::clone(&execution_state),
+        runtime_app_handle.clone(),
+    ));
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service_for_runtime(
+        Some(execution_state),
+        runtime_app_handle.clone(),
+    ));
+    let Some(deps) = build_agent_workspace_pr_supervision_recovery_deps(
+        state,
+        runtime_app_handle,
+        Some(transition_service),
+        Some(chat_service),
+        None,
+    ) else {
+        return;
+    };
     schedule_agent_workspace_pr_supervision_recovery(
-        AgentWorkspacePrSupervisionRecoveryDeps {
-            workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            project_repo: Arc::clone(&state.project_repo),
-            plan_branch_repo: Arc::clone(&state.plan_branch_repo),
-            github,
-            pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
-            transition_service: None,
-            chat_service: Some(chat_service),
-            agent_run_repo: Arc::clone(&state.agent_run_repo),
-            app_handle: state.app_handle.clone(),
-            pr_fix_review_publish_resumer: None,
-        },
+        deps,
         workspace.conversation_id.clone(),
         trigger,
         force,
