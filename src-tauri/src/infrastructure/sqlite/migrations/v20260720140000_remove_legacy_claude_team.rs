@@ -1,10 +1,71 @@
 // Migration v20260720140000: remove legacy Claude team persistence
 
+use std::collections::BTreeMap;
+
 use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
 
 use super::helpers::{column_exists, table_exists};
+
+/// Violation counts keyed by `(child table, parent table, foreign key id)`.
+///
+/// Keying on the constraint rather than the offending rowid keeps the baseline
+/// comparison stable across the table rewrites this migration performs, which
+/// renumber rowids.
+type ForeignKeyViolationCounts = BTreeMap<(String, String, i64), i64>;
+
+fn foreign_key_violation_counts(conn: &Connection) -> AppResult<ForeignKeyViolationCounts> {
+    let mut statement = conn
+        .prepare(
+            "SELECT \"table\", \"parent\", \"fkid\", COUNT(*)
+             FROM pragma_foreign_key_check
+             GROUP BY \"table\", \"parent\", \"fkid\"",
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                (
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ),
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|error| AppError::Database(error.to_string()))?;
+
+    let mut counts = ForeignKeyViolationCounts::new();
+    for row in rows {
+        let (key, count) = row.map_err(|error| AppError::Database(error.to_string()))?;
+        counts.insert(key, count);
+    }
+    Ok(counts)
+}
+
+/// Reports only violations this migration added, so orphan rows that already
+/// existed cannot be attributed to it.
+fn introduced_violations(
+    baseline: &ForeignKeyViolationCounts,
+    after: &ForeignKeyViolationCounts,
+) -> Vec<(String, String, i64)> {
+    after
+        .iter()
+        .filter(|(key, count)| **count > baseline.get(*key).copied().unwrap_or(0))
+        .map(|((table, parent, fkid), count)| {
+            (
+                table.clone(),
+                parent.clone(),
+                count
+                    - baseline
+                        .get(&(table.clone(), parent.clone(), *fkid))
+                        .copied()
+                        .unwrap_or(0),
+            )
+        })
+        .collect()
+}
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     let foreign_keys_was_enabled =
@@ -19,15 +80,29 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| AppError::Database(error.to_string()))?;
 
+        // Production never enables `PRAGMA foreign_keys`, so live databases carry
+        // orphan rows unrelated to legacy Claude team state. Baseline them inside
+        // the transaction and gate only on violations this migration introduces;
+        // counting pre-existing ones as damage aborts startup permanently.
+        let baseline_violations = foreign_key_violation_counts(conn)?;
+        if !baseline_violations.is_empty() {
+            tracing::warn!(
+                "legacy Claude team removal: ignoring {} pre-existing foreign-key violation(s) not owned by this migration",
+                baseline_violations.values().sum::<i64>()
+            );
+        }
+
         migrate_inner(conn).and_then(|()| {
-            let violation_count = conn
-                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .map_err(|error| AppError::Database(error.to_string()))?;
-            if violation_count != 0 {
+            let introduced = introduced_violations(&baseline_violations, &foreign_key_violation_counts(conn)?);
+            if !introduced.is_empty() {
+                let violation_count: i64 = introduced.iter().map(|(_, _, count)| count).sum();
+                let details = introduced
+                    .iter()
+                    .map(|(table, parent, count)| format!("{table} -> {parent} ({count})"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(AppError::Database(format!(
-                    "legacy Claude team removal left {violation_count} foreign-key violations"
+                    "legacy Claude team removal left {violation_count} foreign-key violations: {details}"
                 )));
             }
             conn.execute_batch("COMMIT")
