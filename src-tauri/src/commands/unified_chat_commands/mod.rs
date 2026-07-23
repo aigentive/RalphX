@@ -6320,9 +6320,9 @@ async fn resolve_agent_workspace_pr_metadata_target(
             "pull request #{pr_number} head branch does not match workspace branch"
         ));
     }
-    Ok(ResolvedAgentWorkspacePrTarget::Existing(
+    Ok(ResolvedAgentWorkspacePrTarget::Existing(Box::new(
         ExistingPrMetadataSnapshot::from_detail(detail),
-    ))
+    )))
 }
 
 async fn normalize_drafted_agent_workspace_pr_metadata_decision(
@@ -6363,7 +6363,7 @@ async fn confirm_agent_workspace_existing_pr_metadata_target(
     if snapshot.authority_fingerprint() != expected_fingerprint {
         return Err("pull request changed again before metadata mutation".to_string());
     }
-    Ok(snapshot)
+    Ok(*snapshot)
 }
 
 async fn recover_duplicate_agent_workspace_pr_publish(
@@ -7732,7 +7732,8 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             .await
             {
                 Ok(confirmed_snapshot) => {
-                    pr_target = ResolvedAgentWorkspacePrTarget::Existing(confirmed_snapshot);
+                    pr_target =
+                        ResolvedAgentWorkspacePrTarget::Existing(Box::new(confirmed_snapshot));
                 }
                 Err(error) => {
                     mark_agent_workspace_publish_description_failure(state, &workspace, &error)

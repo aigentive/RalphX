@@ -154,11 +154,12 @@ fn run_git(repo: &Path, args: &[&str]) -> String {
 }
 
 fn test_cache_key() -> AgentWorkspacePrDescriptionCacheKey {
-    AgentWorkspacePrDescriptionCacheKey::new(
+    AgentWorkspacePrDescriptionCacheKey::for_target(
         ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
         "base-sha",
         "head-sha",
         2,
+        &ResolvedAgentWorkspacePrTarget::NewPr,
     )
     .expect("test key should be cacheable")
 }
@@ -246,25 +247,28 @@ fn validation_rejects_empty_body() {
 
 #[test]
 fn pr_description_cache_rejects_uncacheable_keys() {
-    assert!(AgentWorkspacePrDescriptionCacheKey::new(
+    assert!(AgentWorkspacePrDescriptionCacheKey::for_target(
         ChatConversationId::from_string(uuid::Uuid::nil().to_string()),
         "base",
         "head",
         1,
+        &ResolvedAgentWorkspacePrTarget::NewPr,
     )
     .is_none());
-    assert!(AgentWorkspacePrDescriptionCacheKey::new(
+    assert!(AgentWorkspacePrDescriptionCacheKey::for_target(
         ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
         "",
         "head",
         1,
+        &ResolvedAgentWorkspacePrTarget::NewPr,
     )
     .is_none());
-    assert!(AgentWorkspacePrDescriptionCacheKey::new(
+    assert!(AgentWorkspacePrDescriptionCacheKey::for_target(
         ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
         "base",
         " ",
         1,
+        &ResolvedAgentWorkspacePrTarget::NewPr,
     )
     .is_none());
 }
@@ -337,9 +341,15 @@ async fn get_or_draft_pr_description_caches_miss_then_hit() {
     let conversation = conversation_for(&project);
     let workspace = workspace_for(&conversation, &project, &repo, &base);
     let head = run_git(&repo, &["rev-parse", "HEAD"]);
-    let key =
-        AgentWorkspacePrDescriptionCacheKey::new(conversation.id.clone(), base.clone(), head, 1)
-            .expect("cache key should be valid");
+    let target = ResolvedAgentWorkspacePrTarget::NewPr;
+    let key = AgentWorkspacePrDescriptionCacheKey::for_target(
+        conversation.id.clone(),
+        base.clone(),
+        head,
+        1,
+        &target,
+    )
+    .expect("cache key should be valid");
     invalidate_agent_workspace_pr_description_cache(&conversation.id);
 
     let state = AppState::new_test();
@@ -351,13 +361,14 @@ async fn get_or_draft_pr_description_caches_miss_then_hit() {
     ));
     let state = state.with_agent_client(client.clone());
 
-    let first = get_or_draft_agent_workspace_pr_description(
+    let first = get_or_draft_agent_workspace_pr_metadata_decision(
         &state,
         &conversation,
         &project,
         &workspace,
         &repo,
         &base,
+        &target,
         key.clone(),
     )
     .await
@@ -368,19 +379,20 @@ async fn get_or_draft_pr_description_caches_miss_then_hit() {
         AgentWorkspacePrDescriptionCacheStatus::Miss
     );
     assert!(first.cache_age_ms.is_none());
-    assert_eq!(
-        first.description.title.as_deref(),
-        Some("Cached draft title")
-    );
+    let AgentWorkspacePrMetadataDecision::Patch { title, .. } = &first.decision else {
+        panic!("new PR draft should be a metadata patch");
+    };
+    assert_eq!(title.as_deref(), Some("Cached draft title"));
     assert_eq!(client.spawned_configs().await.len(), 1);
 
-    let second = get_or_draft_agent_workspace_pr_description(
+    let second = get_or_draft_agent_workspace_pr_metadata_decision(
         &state,
         &conversation,
         &project,
         &workspace,
         &repo,
         &base,
+        &target,
         key,
     )
     .await
@@ -392,9 +404,12 @@ async fn get_or_draft_pr_description_caches_miss_then_hit() {
     );
     assert!(second.cache_age_ms.is_some());
     assert_eq!(second.cache_wait_ms, 0);
+    let AgentWorkspacePrMetadataDecision::Patch { body_markdown, .. } = &second.decision else {
+        panic!("new PR draft should be a metadata patch");
+    };
     assert_eq!(
-        second.description.body_markdown,
-        "## Summary\n\nCached draft body."
+        body_markdown.as_deref(),
+        Some("## Summary\n\nCached draft body.")
     );
     assert_eq!(
         client.spawned_configs().await.len(),
@@ -1052,7 +1067,9 @@ async fn draft_pr_description_summarizes_tool_unavailable_output_when_agent_subm
 }
 
 fn existing_target_from_detail(detail: PrDetail) -> ResolvedAgentWorkspacePrTarget {
-    ResolvedAgentWorkspacePrTarget::Existing(ExistingPrMetadataSnapshot::from_detail(detail))
+    ResolvedAgentWorkspacePrTarget::Existing(Box::new(ExistingPrMetadataSnapshot::from_detail(
+        detail,
+    )))
 }
 
 fn existing_target(body: Option<&str>) -> ResolvedAgentWorkspacePrTarget {

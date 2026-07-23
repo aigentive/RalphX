@@ -71,7 +71,7 @@ impl ExistingPrMetadataSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedAgentWorkspacePrTarget {
     NewPr,
-    Existing(ExistingPrMetadataSnapshot),
+    Existing(Box<ExistingPrMetadataSnapshot>),
 }
 
 impl ResolvedAgentWorkspacePrTarget {
@@ -132,29 +132,6 @@ pub(crate) struct AgentWorkspacePrDescriptionCacheKey {
 }
 
 impl AgentWorkspacePrDescriptionCacheKey {
-    pub(crate) fn new(
-        conversation_id: ChatConversationId,
-        review_base: impl Into<String>,
-        branch_head_sha: impl Into<String>,
-        reviewable_commit_count: u32,
-    ) -> Option<Self> {
-        if conversation_id.as_uuid().is_nil() {
-            return None;
-        }
-        let review_base = review_base.into();
-        let branch_head_sha = branch_head_sha.into();
-        if review_base.trim().is_empty() || branch_head_sha.trim().is_empty() {
-            return None;
-        }
-        Self::for_target(
-            conversation_id,
-            review_base,
-            branch_head_sha,
-            reviewable_commit_count,
-            &ResolvedAgentWorkspacePrTarget::NewPr,
-        )
-    }
-
     pub(crate) fn for_target(
         conversation_id: ChatConversationId,
         review_base: impl Into<String>,
@@ -208,14 +185,6 @@ impl AgentWorkspacePrDescriptionCacheStatus {
             Self::Disabled => "disabled",
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AgentWorkspacePrDescriptionDraftOutcome {
-    pub(crate) description: AgentWorkspacePrDescription,
-    pub(crate) cache_status: AgentWorkspacePrDescriptionCacheStatus,
-    pub(crate) cache_age_ms: Option<u128>,
-    pub(crate) cache_wait_ms: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -620,43 +589,6 @@ pub(crate) fn validate_agent_workspace_pr_metadata_decision(
         }
         (ResolvedAgentWorkspacePrTarget::Existing(_), _) => Ok(()),
     }
-}
-
-pub(crate) async fn get_or_draft_agent_workspace_pr_description(
-    state: &AppState,
-    conversation: &ChatConversation,
-    project: &Project,
-    workspace: &AgentConversationWorkspace,
-    workspace_path: &Path,
-    review_base: &str,
-    key: AgentWorkspacePrDescriptionCacheKey,
-) -> AppResult<AgentWorkspacePrDescriptionDraftOutcome> {
-    let outcome = get_or_draft_agent_workspace_pr_metadata_decision(
-        state,
-        conversation,
-        project,
-        workspace,
-        workspace_path,
-        review_base,
-        &ResolvedAgentWorkspacePrTarget::NewPr,
-        key,
-    )
-    .await?;
-    let AgentWorkspacePrMetadataDecision::Patch {
-        title,
-        body_markdown: Some(body_markdown),
-    } = outcome.decision
-    else {
-        return Err(AppError::Validation(
-            "new pull requests require a complete metadata body patch".to_string(),
-        ));
-    };
-    Ok(AgentWorkspacePrDescriptionDraftOutcome {
-        description: AgentWorkspacePrDescription::new(title, body_markdown),
-        cache_status: outcome.cache_status,
-        cache_age_ms: outcome.cache_age_ms,
-        cache_wait_ms: outcome.cache_wait_ms,
-    })
 }
 
 pub(crate) async fn get_or_draft_agent_workspace_pr_metadata_decision(
