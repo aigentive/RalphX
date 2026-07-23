@@ -10,6 +10,8 @@ import { seedMergedWorkspace } from "../../fixtures/terminal-publish.fixtures";
 import {
   expectNoPaneOverflow,
   expectPrimaryActionContained,
+  expectPrimaryActionSharesSummaryRow,
+  expectSummarySpacingBalanced,
 } from "../../helpers/agents-publish-layout.helpers";
 import { BasePage } from "../base.page";
 
@@ -78,6 +80,14 @@ export class AgentsPublishPage extends BasePage {
 
   async expectPrimaryActionContained(testId: string) {
     await expectPrimaryActionContained(this.page, this.publishPane, testId);
+  }
+
+  async expectPrimaryActionSharesSummaryRow(testId: string) {
+    await expectPrimaryActionSharesSummaryRow(this.publishPane, testId);
+  }
+
+  async expectSummarySpacingBalanced() {
+    await expectSummarySpacingBalanced(this.publishPane);
   }
 
   async expectDiffRowsLoaded() {

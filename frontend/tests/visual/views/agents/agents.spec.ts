@@ -1479,6 +1479,10 @@ test.describe("Agents View", () => {
     await expect(page.getByText("1 passed")).toBeVisible();
     await expect(page.getByText("1 pending")).toBeVisible();
     await publishPage.expectPrimaryActionContained("agents-publish-confirm");
+    await publishPage.expectPrimaryActionSharesSummaryRow(
+      "agents-publish-confirm",
+    );
+    await publishPage.expectSummarySpacingBalanced();
 
     await expect(page).toHaveScreenshot("agents-edit-publish-pane.png", {
       fullPage: false,

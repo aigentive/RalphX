@@ -1167,7 +1167,7 @@ export function AgentPublishPanel({
   const changedFileCount = reviewQuery.isSuccess ? changes.length : null;
 
   return (
-    <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
+    <div className="flex h-full flex-col px-4 pb-4" data-testid="agents-publish-pane">
       <Tabs
         className="@container flex w-full min-h-0 flex-1 flex-col"
         value={activeSubTab}
@@ -1181,7 +1181,10 @@ export function AgentPublishPanel({
             borderColor: "var(--border-subtle)",
           }}
         >
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+          <div
+            className="flex flex-wrap items-center justify-start gap-3"
+            data-testid="agents-publish-summary-row"
+          >
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-[var(--text-primary)]">
                 {publishPresentation.title}
@@ -1190,7 +1193,7 @@ export function AgentPublishPanel({
                 {publishPresentation.summary}
               </div>
             </div>
-            <div className="col-span-2 flex max-w-full flex-wrap items-center justify-start gap-2">
+            <div className="flex max-w-full shrink-0 flex-wrap items-center justify-start gap-2">
               {isRepairPending ? (
                 <Button
                   type="button"
