@@ -1,13 +1,14 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
     completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
-    is_user_attended_turn_completion, normalize_codex_cumulative_usage_for_persistence,
-    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
-    persist_message_text_timeline_item, persist_timeline_snapshot, persist_usage_capture_run_first,
-    process_codex_stream_background, process_exit_details, process_stream_background,
-    provider_session_ref_for_harness, record_agent_waiting_if_user_attended,
-    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
-    upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
+    is_completion_tool_name, is_user_attended_turn_completion,
+    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
+    persist_assistant_message_snapshot, persist_message_text_timeline_item,
+    persist_timeline_snapshot, persist_usage_capture_run_first, process_codex_stream_background,
+    process_exit_details, process_stream_background, provider_session_ref_for_harness,
+    record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
+    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
+    StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
@@ -69,6 +70,32 @@ fn completion_tool_result_rejects_error_payloads() {
     assert!(!completion_tool_result_accepted(Some(
         &serde_json::json!({ "status": "failed" })
     )));
+}
+
+#[test]
+fn workspace_review_completion_tool_names_require_exact_supported_aliases() {
+    for tool_name in [
+        "mcp__ralphx__complete_workspace_review_run",
+        "ralphx::complete_workspace_review_run",
+        "ralphx:complete_workspace_review_run",
+    ] {
+        assert!(
+            is_completion_tool_name(tool_name),
+            "{tool_name} must classify as a completion tool"
+        );
+    }
+
+    for lookalike in [
+        "mcp__ralphx__complete_workspace_review",
+        "mcp__ralphx__complete_workspace_review_run_now",
+        "ralphx::complete_workspace_review_run_extra",
+        "ralphx:complete_workspace_review_runs",
+    ] {
+        assert!(
+            !is_completion_tool_name(lookalike),
+            "{lookalike} must not gain completion authority"
+        );
+    }
 }
 
 #[test]
@@ -1831,6 +1858,19 @@ async fn claude_stream_accepted_completion_tool_enters_grace_path() {
 }
 
 #[tokio::test]
+async fn claude_stream_accepted_workspace_review_completion_enters_grace_path() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__complete_workspace_review_run","input":{"outcome":"passed","summary":"Review passed"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":true},"is_error":false}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"Done","cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("accepted Workspace Review completion should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
 async fn claude_stream_accepted_completion_suppresses_late_agent_exit() {
     let outcome = run_claude_stream_lines(&[
         r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
@@ -1852,6 +1892,19 @@ async fn claude_stream_rejected_completion_remains_failed() {
     ])
     .await
     .expect_err("a rejected completion result must remain a failed run");
+
+    assert!(matches!(result, StreamError::AgentExit { .. }));
+}
+
+#[tokio::test]
+async fn claude_stream_rejected_workspace_review_completion_remains_failed() {
+    let result = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__complete_workspace_review_run","input":{"outcome":"passed","summary":"Review passed"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":false},"is_error":true}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["workspace_review_rejected"],"cost_usd":0.0}"#,
+    ])
+    .await
+    .expect_err("a rejected Workspace Review completion must not gain completion authority");
 
     assert!(matches!(result, StreamError::AgentExit { .. }));
 }
