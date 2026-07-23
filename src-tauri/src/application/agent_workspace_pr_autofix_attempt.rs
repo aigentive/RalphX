@@ -18,7 +18,7 @@ pub(crate) enum PrAutofixAttemptDecision {
 }
 
 /// Completion authority is deliberately narrower than retry eligibility: a caller may settle a
-/// PR autofix claim only while it is the current running run for the exact PR/fingerprint tuple.
+/// PR autofix claim only while it is the latest exact PR attempt and that attempt is still running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrAutofixCompletionAuthority {
     Current,
@@ -159,30 +159,20 @@ pub(crate) async fn load_pr_autofix_completion_authority(
     {
         return Ok(PrAutofixCompletionAuthority::Invalid);
     }
-    let context_id = pr_number.to_string();
-    let fingerprint = caller.action_target_id.as_deref().expect("checked above");
-    let attempts: Vec<AgentRun> = repo
-        .get_by_conversation(conversation_id)
-        .await?
-        .into_iter()
-        .filter(|run| {
-            run.action_kind == Some(AgentRunActionKind::PrAutofix)
-                && run.action_context_id.as_deref() == Some(context_id.as_str())
-                && run.action_target_id.as_deref() == Some(fingerprint)
-        })
-        .collect();
-    let active_attempt = attempts
-        .iter()
-        .filter(|run| run.status == AgentRunStatus::Running)
-        .max_by_key(|run| run.started_at);
-    if active_attempt.is_some_and(|active| active.id != caller.id) {
-        return Ok(PrAutofixCompletionAuthority::Superseded);
+    let Some(current_attempt) =
+        load_latest_exact_pr_autofix_run_for_pr(repo, conversation_id, pr_number).await?
+    else {
+        return Ok(PrAutofixCompletionAuthority::Invalid);
+    };
+    if current_attempt.id != caller.id {
+        return Ok(if current_attempt.status == AgentRunStatus::Running {
+            PrAutofixCompletionAuthority::Superseded
+        } else {
+            PrAutofixCompletionAuthority::Invalid
+        });
     }
     Ok(match caller.status {
-        AgentRunStatus::Running if active_attempt.is_some() => {
-            PrAutofixCompletionAuthority::Current
-        }
-        AgentRunStatus::Running => PrAutofixCompletionAuthority::Invalid,
+        AgentRunStatus::Running => PrAutofixCompletionAuthority::Current,
         AgentRunStatus::Completed => PrAutofixCompletionAuthority::AlreadyCompleted,
         AgentRunStatus::Failed | AgentRunStatus::Cancelled => PrAutofixCompletionAuthority::Invalid,
     })

@@ -307,7 +307,7 @@ async fn completion_authority_treats_stale_caller_with_running_replacement_as_su
 }
 
 #[tokio::test]
-async fn completion_authority_requires_the_caller_to_be_the_current_active_exact_attempt() {
+async fn completion_authority_requires_the_caller_to_be_the_latest_exact_pr_attempt() {
     let repo = MemoryAgentRunRepository::new();
     let conversation_id = ChatConversationId::new();
     let fingerprint = "github_pr_autofix:42:head:active-replacement";
@@ -338,7 +338,7 @@ async fn completion_authority_requires_the_caller_to_be_the_current_active_exact
         )
         .await
         .unwrap(),
-        PrAutofixCompletionAuthority::Current
+        PrAutofixCompletionAuthority::Invalid
     );
 
     create_attempt_at(
@@ -349,6 +349,41 @@ async fn completion_authority_requires_the_caller_to_be_the_current_active_exact
         now,
     )
     .await;
+    assert_eq!(
+        load_pr_autofix_completion_authority(
+            &repo,
+            &conversation_id,
+            42,
+            Some(&caller_id.to_string()),
+        )
+        .await
+        .unwrap(),
+        PrAutofixCompletionAuthority::Superseded
+    );
+}
+
+#[tokio::test]
+async fn completion_authority_supersedes_a_running_caller_for_an_older_fingerprint() {
+    let repo = MemoryAgentRunRepository::new();
+    let conversation_id = ChatConversationId::new();
+    let now = chrono::Utc::now();
+    let caller_id = create_attempt_at(
+        &repo,
+        conversation_id.clone(),
+        "github_pr_autofix:42:head:old-issue",
+        AgentRunStatus::Running,
+        now - chrono::Duration::seconds(1),
+    )
+    .await;
+    create_attempt_at(
+        &repo,
+        conversation_id.clone(),
+        "github_pr_autofix:42:head:new-issue",
+        AgentRunStatus::Running,
+        now,
+    )
+    .await;
+
     assert_eq!(
         load_pr_autofix_completion_authority(
             &repo,
