@@ -468,7 +468,7 @@ export function AgentComposerSurface({
   });
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
-  const canQueue = !isReadOnly && isAgentAlive;
+  const canSendWhileAgentActive = !isReadOnly && isAgentAlive;
   const shouldShowStop =
     Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
   const emptySubmitValue = emptySubmitMessage?.trim() ?? "";
@@ -478,8 +478,9 @@ export function AgentComposerSurface({
     hasSubmittableValue &&
     !isReadOnly &&
     !sendDisabledReason &&
-    (!isSubmitting || canQueue);
-  const attachmentDisabled = isReadOnly || (isSubmitting && !canQueue);
+    (!isSubmitting || canSendWhileAgentActive);
+  const attachmentDisabled =
+    isReadOnly || (isSubmitting && !canSendWhileAgentActive);
   const folderReferencesSupported =
     (mode?.value === "persona_builder" && featureFlags.agentPersonas === true) ||
     (mode?.value !== "persona_builder" && Boolean(project.value?.trim()));
@@ -1260,7 +1261,7 @@ export function AgentComposerSurface({
         return;
       }
       if (item.detail === "plan:refine") {
-        if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
+        if ((isSubmitting && !canSendWhileAgentActive) || isReadOnly || sendDisabledReason) {
           return;
         }
         addHistoryEntry(PLAN_REFINE_COMMAND_MESSAGE);
@@ -1327,7 +1328,7 @@ export function AgentComposerSurface({
       addHistoryEntry,
       addSelectedIntegrationReferences,
       applyComposerText,
-      canQueue,
+      canSendWhileAgentActive,
       clearValue,
       integrationByMenuId,
       isReadOnly,
@@ -1610,7 +1611,7 @@ export function AgentComposerSurface({
       return;
     }
 
-    if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
+    if ((isSubmitting && !canSendWhileAgentActive) || isReadOnly || sendDisabledReason) {
       return;
     }
 
@@ -1645,7 +1646,7 @@ export function AgentComposerSurface({
     }
   }, [
     addHistoryEntry,
-    canQueue,
+    canSendWhileAgentActive,
     clearValue,
     emptySubmitValue,
     isControlled,
@@ -1812,7 +1813,7 @@ export function AgentComposerSurface({
 
   const handleTextareaPaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      if (questionMode || isReadOnly || (isSubmitting && !canQueue)) {
+      if (questionMode || isReadOnly || (isSubmitting && !canSendWhileAgentActive)) {
         return;
       }
       const pastedText = event.clipboardData.getData("text");
@@ -1836,7 +1837,7 @@ export function AgentComposerSurface({
       });
     },
     [
-      canQueue,
+      canSendWhileAgentActive,
       isReadOnly,
       isSubmitting,
       questionMode,
@@ -1911,7 +1912,7 @@ export function AgentComposerSurface({
             setIsFocused(false);
             onFocusChange?.(false);
           }}
-          disabled={isReadOnly || (isSubmitting && !canQueue)}
+          disabled={isReadOnly || (isSubmitting && !canSendWhileAgentActive)}
           placeholder={effectivePlaceholder}
           className={cn(
             "agent-composer-textarea block w-full resize-none border-0 bg-transparent px-5 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]",
@@ -2070,7 +2071,7 @@ export function AgentComposerSurface({
                     forkSessionDisabled:
                       forkSessionDisabled ||
                       isReadOnly ||
-                      (isSubmitting && !canQueue),
+                      (isSubmitting && !canSendWhileAgentActive),
                   }
                 : {})}
               open={actionMenuOpen}
@@ -2186,7 +2187,7 @@ export function AgentComposerSurface({
                   <Square className="h-3.5 w-3.5 fill-current" />
                   <span className="agent-composer-action-label">Stop</span>
                 </>
-              ) : isSubmitting && !canQueue ? (
+              ) : isSubmitting && !canSendWhileAgentActive ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <span className="agent-composer-action-label">
