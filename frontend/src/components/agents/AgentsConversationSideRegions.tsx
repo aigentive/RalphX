@@ -17,6 +17,7 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
+import { isAgentWorkspacePublishActive } from "./agentWorkspacePublishState";
 import type {
   AgentsChatFocus,
   AutomationRunFocusOptions,
@@ -132,6 +133,11 @@ export function AgentsConversationSideRegions({
   const publishAttempt = selectedConversationId
     ? publishAttemptsByConversationId[selectedConversationId] ?? null
     : null;
+  const isActiveWorkspacePublishing =
+    activeWorkspace?.conversationId === selectedConversationId &&
+    isAgentWorkspacePublishActive(activeWorkspace);
+  const isPublishingWorkspace =
+    publishAttempt !== null || isActiveWorkspacePublishing;
 
   return (
     <>
@@ -159,7 +165,7 @@ export function AgentsConversationSideRegions({
             setArtifactTaskMode(selectedConversationId, mode)
           }
           onPublishWorkspace={onPublishWorkspace}
-          isPublishingWorkspace={publishAttempt !== null}
+          isPublishingWorkspace={isPublishingWorkspace}
           publishAttempt={publishAttempt}
           publishFocusRequest={publishFocusRequest}
           publishSubTabRequest={publishSubTabRequest}
