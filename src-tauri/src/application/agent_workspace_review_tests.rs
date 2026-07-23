@@ -3,8 +3,8 @@ use crate::application::agent_workspace_review_approval::approve_agent_workspace
 use crate::application::chat_service::MockChatService;
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderSettings, AgenticClient, LogicalEffort, ManualRoleDefault,
-    ManualServiceTier, ProviderSessionRef, RoutingRole, CODEX_DEFAULT_APPROVAL_POLICY,
-    CODEX_DEFAULT_SANDBOX_MODE,
+    ManualRoleRuntimeOverride, ManualServiceTier, ProviderSessionRef, RoutingRole,
+    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
@@ -1986,6 +1986,105 @@ async fn start_review_uses_the_workspace_reviewer_role_default() {
     assert_eq!(
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
+    );
+}
+
+#[tokio::test]
+async fn start_review_prefers_an_explicit_runtime_override_over_the_reviewer_default() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test()
+        .with_agent_client(default_client)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_client);
+    let provider_repo =
+        Arc::new(crate::infrastructure::memory::MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    provider_repo.upsert(&codex).await.unwrap();
+    provider_repo
+        .upsert(&AgentProviderSettings::disabled_defaults(
+            AgentHarnessKind::Claude,
+        ))
+        .await
+        .unwrap();
+    state.agent_provider_settings_repo = provider_repo;
+    let state = Arc::new(state);
+    let chat_service = MockChatService::new();
+    chat_service.set_available(false).await;
+    let project = seed_project(&state, &repo).await;
+    state
+        .manual_role_default_repo
+        .upsert_for_project(
+            project.id.as_str(),
+            RoutingRole::WorkspaceReviewer,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Codex,
+                model: Some("gpt-settings-medium".to_string()),
+                effort: Some(LogicalEffort::Medium),
+                service_tier: ManualServiceTier::Fast,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
+                sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = workspace.conversation_id.clone();
+    conversation.agent_mode = Some(workspace.mode);
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("owner conversation should persist");
+    let runtime_override = ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Codex,
+        model: Some("gpt-confirmed-high".to_string()),
+        effort: Some(LogicalEffort::High),
+        service_tier: ManualServiceTier::Standard,
+        coordination_mode: None,
+        persona_id: None,
+    };
+
+    start_agent_workspace_review_with_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        Some(&runtime_override),
+        &chat_service,
+    )
+    .await
+    .expect_err("review child chat send should fail after options are recorded");
+
+    let sent_options = chat_service.get_sent_options().await;
+    assert_eq!(sent_options.len(), 1);
+    assert_eq!(
+        sent_options[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
+    assert_eq!(
+        sent_options[0].model_override.as_deref(),
+        Some("gpt-confirmed-high")
+    );
+    assert_eq!(
+        sent_options[0].logical_effort_override,
+        Some(LogicalEffort::High)
+    );
+    assert_eq!(
+        sent_options[0].service_tier_override.as_deref(),
+        Some("standard")
     );
 }
 

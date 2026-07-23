@@ -41,6 +41,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   useAgentSidebarAutomationGroupIndexMock: vi.fn(),
   useAgentSidebarAutomationGroupMock: vi.fn(),
   useConversationMock: vi.fn(),
+  useConversationSummaryMock: vi.fn(),
   startAgentConversationMock: vi.fn(),
   createAutomationDraftMock: vi.fn(),
   finalizeAutomationMock: vi.fn(),
@@ -186,6 +187,7 @@ const {
   useAgentSidebarAutomationGroupIndexMock,
   useAgentSidebarAutomationGroupMock,
   useConversationMock,
+  useConversationSummaryMock,
   startAgentConversationMock,
   createAutomationDraftMock,
   finalizeAutomationMock,
@@ -761,13 +763,8 @@ vi.mock("@/hooks/useChat", () => ({
     Boolean(conversationId?.startsWith("optimistic-conversation:")),
   invalidateConversationDataQueries: vi.fn(),
   useConversation: (conversationId: string | null) => useConversationMock(conversationId),
-  useConversationSummary: (conversationId: string | null) => {
-    const query = useConversationMock(conversationId);
-    return {
-      ...query,
-      data: query.data?.conversation ?? null,
-    };
-  },
+  useConversationSummary: (conversationId: string | null) =>
+    useConversationSummaryMock(conversationId),
   useConversationHistoryWindow: (conversationId: string | null) => {
     const query = useConversationMock(conversationId);
     return {
@@ -1090,6 +1087,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       onClose,
       onFocusIdeationSessionForConversation,
       onFocusVerificationSession,
+      onFocusWorkspaceReview,
       onOpenAutomation,
       onPublishWorkspace,
       workspace,
@@ -1113,6 +1111,14 @@ vi.mock("./AgentsArtifactPane", async () => {
       onFocusVerificationSession?: (
         parentSessionId: string,
         childSessionId: string
+      ) => void;
+      onFocusWorkspaceReview?: (
+        conversationId: string,
+        runtimeHint?: {
+          provider: "codex";
+          modelId: "gpt-5.6-terra";
+          effort: "medium";
+        },
       ) => void;
       onOpenAutomation?: (automationId: string) => void;
       onPublishWorkspace?: (conversationId: string) => Promise<void>;
@@ -1202,6 +1208,21 @@ vi.mock("./AgentsArtifactPane", async () => {
             }
           >
             Focus verification
+          </button>
+        ) : null}
+        {onFocusWorkspaceReview ? (
+          <button
+            type="button"
+            data-testid="mock-focus-workspace-review-with-stale-runtime"
+            onClick={() =>
+              onFocusWorkspaceReview("review-conversation-1", {
+                provider: "codex",
+                modelId: "gpt-5.6-terra",
+                effort: "medium",
+              })
+            }
+          >
+            Focus workspace review with stale runtime
           </button>
         ) : null}
         {conversation && onPublishWorkspace ? (
@@ -1611,6 +1632,7 @@ export function setupAgentsViewTest() {
   useProjectsMock.mockReset();
   useHarnessProvidersMock.mockReset();
   useConversationMock.mockReset();
+  useConversationSummaryMock.mockReset();
   startAgentConversationMock.mockReset();
   createAutomationDraftMock.mockReset();
   finalizeAutomationMock.mockReset();
@@ -2178,6 +2200,13 @@ export function setupAgentsViewTest() {
     rows: [],
   });
   getAgentConversationRuntimeStatusesMock.mockResolvedValue({});
+  useConversationSummaryMock.mockImplementation((conversationId: string | null) => {
+    const query = useConversationMock(conversationId);
+    return {
+      ...query,
+      data: query?.data?.conversation ?? null,
+    };
+  });
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined);
 

@@ -44,6 +44,7 @@ function mainRegionProps(
     defaultRuntime: agentRuntimeFixture,
     hasAttachedPlanArtifact: false,
     hasAutoOpenArtifacts: false,
+    focusedWorkspaceReviewServiceTier: null,
     isLoadingProjects: false,
     modelRegistry: null,
     normalizedActiveRuntime: agentRuntimeFixture,
