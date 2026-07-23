@@ -707,3 +707,116 @@ async fn sqlite_quiesce_retains_exact_owner_until_cleanup_finishes() {
         .await
         .is_ok());
 }
+
+#[tokio::test]
+async fn coverage_regression_lease_updates_require_the_exact_reservation_owner() {
+    let db = setup_conn();
+    let registry = SqliteRunningAgentRegistry::new(db.shared_conn());
+    let key = RunningAgentKey::new("project", "lease-owner");
+    registry
+        .try_register(key.clone(), "conversation".into(), "run-owned".into())
+        .await
+        .unwrap();
+    let original = registry.get(&key).await.unwrap().last_active_at.unwrap();
+
+    let heartbeat = original + chrono::Duration::seconds(5);
+    assert!(!registry
+        .update_heartbeat(&key, "run-stale", heartbeat)
+        .await
+        .unwrap());
+    assert_eq!(
+        registry.get(&key).await.unwrap().last_active_at,
+        Some(original)
+    );
+    assert!(registry
+        .update_heartbeat(&key, "run-owned", heartbeat)
+        .await
+        .unwrap());
+    assert_eq!(
+        registry.get(&key).await.unwrap().last_active_at,
+        Some(heartbeat)
+    );
+
+    let renewal = heartbeat + chrono::Duration::seconds(5);
+    assert!(!registry
+        .renew_reservation(&key, "run-stale", renewal)
+        .await
+        .unwrap());
+    assert!(registry
+        .renew_reservation(&key, "run-owned", renewal)
+        .await
+        .unwrap());
+    assert_eq!(
+        registry.get(&key).await.unwrap().last_active_at,
+        Some(renewal)
+    );
+}
+
+#[tokio::test]
+async fn coverage_regression_owned_tokens_survive_reads_and_cancel_on_quiesce() {
+    let db = setup_conn();
+    let registry = SqliteRunningAgentRegistry::new(db.shared_conn());
+    let key = RunningAgentKey::new("merge", "token-owner");
+    let token = CancellationToken::new();
+    registry
+        .register(
+            key.clone(),
+            2_000_001,
+            "conversation".into(),
+            "run-owned".into(),
+            None,
+            Some(token.clone()),
+        )
+        .await;
+
+    let listed = registry.list_all().await;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].1.cancellation_token.is_some());
+
+    let occupied = registry
+        .try_register(key.clone(), "replacement".into(), "run-new".into())
+        .await
+        .unwrap_err()
+        .occupied()
+        .cloned()
+        .unwrap();
+    assert_eq!(occupied.agent_run_id, "run-owned");
+    assert!(occupied.cancellation_token.is_some());
+
+    let quiesced = registry
+        .quiesce_if_owned(&key, "run-owned")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(quiesced.agent_run_id, "run-owned");
+    assert!(token.is_cancelled());
+    assert_eq!(registry.get(&key).await.unwrap().pid, 0);
+}
+
+#[tokio::test]
+async fn coverage_regression_stale_cleanup_deletes_and_returns_only_the_dead_owner() {
+    let db = setup_conn();
+    let registry = SqliteRunningAgentRegistry::new(db.shared_conn());
+    let key = RunningAgentKey::new("task_execution", "dead-owner");
+    let token = CancellationToken::new();
+    registry
+        .register(
+            key.clone(),
+            2_000_002,
+            "conversation".into(),
+            "run-owned".into(),
+            None,
+            Some(token),
+        )
+        .await;
+
+    let removed = registry
+        .cleanup_stale_entry(&key, "run-owned")
+        .await
+        .unwrap()
+        .expect("dead exact owner should be removed");
+
+    assert_eq!(removed.agent_run_id, "run-owned");
+    assert!(removed.cancellation_token.is_some());
+    assert!(registry.get(&key).await.is_none());
+}

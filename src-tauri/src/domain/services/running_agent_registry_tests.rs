@@ -57,6 +57,13 @@ impl FakeProcessState {
     }
 }
 
+#[test]
+fn coverage_regression_storage_failure_is_not_reported_as_an_occupied_slot() {
+    let error = TryRegisterError::Storage("database unavailable".to_string());
+
+    assert!(error.occupied().is_none());
+}
+
 #[tokio::test]
 async fn test_register_and_get() {
     let registry = MemoryRunningAgentRegistry::new();

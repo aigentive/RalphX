@@ -91,3 +91,47 @@ async fn unrelated_active_run_does_not_own_the_pr_autofix_attempt() {
         PrAutofixAttemptDecision::StartFirst
     );
 }
+
+#[test]
+fn coverage_regression_manual_decisions_explain_why_autofix_cannot_start() {
+    let cases = [
+        (
+            PrAutofixAttemptDecision::RetryExhausted,
+            "retry budget is exhausted",
+        ),
+        (
+            PrAutofixAttemptDecision::CompletedUnresolved,
+            "completed but the same issue is still unresolved",
+        ),
+        (
+            PrAutofixAttemptDecision::Cancelled,
+            "was cancelled while the same issue remains unresolved",
+        ),
+        (
+            PrAutofixAttemptDecision::LegacyUnbound,
+            "legacy PR autofix event has no exact fixer attempt",
+        ),
+    ];
+
+    for (decision, expected) in cases {
+        assert!(!decision.allows_start());
+        assert!(decision.manual_summary().unwrap().contains(expected));
+    }
+    assert_eq!(PrAutofixAttemptDecision::StartFirst.manual_summary(), None);
+}
+
+#[tokio::test]
+async fn coverage_regression_running_exact_attempt_blocks_duplicate_dispatch() {
+    let repo = MemoryAgentRunRepository::new();
+    let conversation_id = ChatConversationId::new();
+    let fingerprint = "github_pr_autofix:42:head:running";
+    create_attempt(&repo, conversation_id, fingerprint, AgentRunStatus::Running).await;
+
+    let decision =
+        load_pr_autofix_attempt_decision(&repo, &conversation_id, 42, fingerprint, false)
+            .await
+            .unwrap();
+
+    assert_eq!(decision, PrAutofixAttemptDecision::Active);
+    assert!(!decision.allows_start());
+}

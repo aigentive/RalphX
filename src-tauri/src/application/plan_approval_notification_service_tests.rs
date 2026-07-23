@@ -734,6 +734,62 @@ async fn exact_typed_verifier_authority_can_defer_its_own_artifact() {
 }
 
 #[tokio::test]
+async fn coverage_regression_pr_autofix_authority_cannot_defer_plan_approval() {
+    let state = AppState::new_test();
+    let (session, conversation) = planning_session_with_workspace(&state).await;
+    let mut fixer = AgentRun::new(conversation.id);
+    fixer.action_kind = Some(AgentRunActionKind::PrAutofix);
+    fixer.action_context_id = Some("851".to_string());
+    fixer.action_target_id = Some("failing-check".to_string());
+    let fixer = state.agent_run_repo.create(fixer).await.unwrap();
+    let authority = PlanApprovalPublishAuthority::new(fixer.id, conversation.id);
+
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "plan-current",
+        std::slice::from_ref(&session),
+        Some(&authority),
+    )
+    .await;
+
+    assert!(
+        !has_deferred_plan_approval(&state, &session.id, "plan-current")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        state
+            .notification_repo
+            .list(None, None, 20)
+            .await
+            .unwrap()
+            .notifications
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn coverage_regression_conversation_release_skips_when_no_marker_exists() {
+    let state = AppState::new_test();
+    let (_, conversation) = planning_session_with_workspace(&state).await;
+
+    let disposition = release_deferred_plan_approval_for_conversation(&state, &conversation.id)
+        .await
+        .unwrap();
+
+    assert_eq!(disposition, PlanApprovalNotificationDisposition::Skipped);
+    assert!(state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications
+        .is_empty());
+}
+
+#[tokio::test]
 async fn release_skips_non_planning_and_already_approved_sessions() {
     let approval_repo = std::sync::Arc::new(MemoryPlanArtifactApprovalRepository::new());
     let mut state = AppState::new_test();

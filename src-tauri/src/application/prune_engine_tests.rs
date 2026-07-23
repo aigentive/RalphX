@@ -798,6 +798,199 @@ async fn evaluate_and_prune_merge_context_healthy_no_worktree_cleanup() {
     let pruned = engine.evaluate_and_prune(&key, info, true).await;
     assert!(!pruned, "healthy merge entry should not be pruned");
 }
+
+#[tokio::test]
+async fn coverage_regression_expired_running_reservation_is_pruned_and_cancelled() {
+    let app_state = AppState::new_test();
+    let run_id = create_running_agent_run(&app_state).await;
+    let key = RunningAgentKey::new("project", "expired-running-launch");
+    app_state
+        .running_agent_registry
+        .try_register(key.clone(), "conversation".into(), run_id.as_str())
+        .await
+        .unwrap();
+    let lease = i64::try_from(
+        crate::infrastructure::agents::claude::stream_timeouts().launch_reservation_lease_secs,
+    )
+    .unwrap();
+    assert!(app_state
+        .running_agent_registry
+        .renew_reservation(
+            &key,
+            &run_id.as_str(),
+            chrono::Utc::now() - chrono::Duration::seconds(lease + 1),
+        )
+        .await
+        .unwrap());
+
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
+    assert!(
+        build_engine(&app_state, None)
+            .evaluate_and_prune(&key, &info, false)
+            .await
+    );
+    assert!(!app_state.running_agent_registry.is_running(&key).await);
+    assert_eq!(
+        app_state
+            .agent_run_repo
+            .get_by_id(&run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn coverage_regression_terminal_run_invalidates_a_fresh_reservation() {
+    let app_state = AppState::new_test();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.complete();
+    let run_id = run.id;
+    app_state.agent_run_repo.create(run).await.unwrap();
+    let key = RunningAgentKey::new("project", "terminal-launch");
+    app_state
+        .running_agent_registry
+        .try_register(key.clone(), "conversation".into(), run_id.as_str())
+        .await
+        .unwrap();
+
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
+    assert!(
+        build_engine(&app_state, None)
+            .evaluate_and_prune(&key, &info, false)
+            .await
+    );
+    assert!(!app_state.running_agent_registry.is_running(&key).await);
+    assert_eq!(
+        app_state
+            .agent_run_repo
+            .get_by_id(&run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn coverage_regression_live_non_merge_stale_owner_is_stopped_and_cancelled() {
+    let app_state = AppState::new_test();
+    let project = Project::new("P".to_string(), "/test".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id, "T".to_string());
+    task.internal_status = InternalStatus::Merged;
+    app_state.task_repo.create(task.clone()).await.unwrap();
+    let run_id = create_running_agent_run(&app_state).await;
+    let key = RunningAgentKey::new("task_execution", task.id.as_str());
+    register_stale_entry(&app_state, &key, &run_id, None).await;
+
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
+    assert!(
+        build_engine(&app_state, None)
+            .evaluate_and_prune(&key, &info, true)
+            .await
+    );
+    assert!(!app_state.running_agent_registry.is_running(&key).await);
+    assert_eq!(
+        app_state
+            .agent_run_repo
+            .get_by_id(&run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn coverage_regression_merge_prune_never_removes_untrusted_worktree_paths() {
+    let app_state = AppState::new_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let unrelated = tempfile::TempDir::new().unwrap();
+    let missing_project_candidate = tempfile::TempDir::new().unwrap();
+    let unsafe_expected_candidate = tempfile::TempDir::new().unwrap();
+    let mut project = Project::new("P".to_string(), "/test".to_string());
+    project.worktree_parent_directory = Some(
+        worktree_parent
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut unsafe_expected_project = Project::new("Unsafe".to_string(), "/test".to_string());
+    unsafe_expected_project.worktree_parent_directory = Some("relative-root".to_string());
+    app_state
+        .project_repo
+        .create(unsafe_expected_project.clone())
+        .await
+        .unwrap();
+
+    let candidates = [
+        (project.id.clone(), "relative/worktree".to_string()),
+        (
+            project.id,
+            unrelated
+                .path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        ),
+        (
+            crate::domain::entities::ProjectId::from_string("missing-project".to_string()),
+            missing_project_candidate
+                .path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        ),
+        (
+            unsafe_expected_project.id,
+            unsafe_expected_candidate
+                .path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        ),
+    ];
+
+    for (index, (project_id, candidate)) in candidates.into_iter().enumerate() {
+        let mut task = Task::new(project_id, format!("T{index}"));
+        task.internal_status = InternalStatus::Merged;
+        app_state.task_repo.create(task.clone()).await.unwrap();
+        let run_id = create_running_agent_run(&app_state).await;
+        let key = RunningAgentKey::new("merge", task.id.as_str());
+        register_stale_entry(&app_state, &key, &run_id, Some(candidate)).await;
+        let info = app_state.running_agent_registry.get(&key).await.unwrap();
+
+        assert!(
+            build_engine(&app_state, None)
+                .evaluate_and_prune(&key, &info, false)
+                .await
+        );
+        assert!(!app_state.running_agent_registry.is_running(&key).await);
+    }
+
+    assert!(unrelated.path().exists());
+    assert!(missing_project_candidate.path().exists());
+    assert!(unsafe_expected_candidate.path().exists());
+}
 #[cfg(test)]
 mod terminal_settlement_prune_tests {
     use super::*;
