@@ -463,3 +463,133 @@ fn migration_restores_pragmas_when_begin_immediate_is_locked() {
         .execute_batch("ROLLBACK")
         .expect("release competing write lock");
 }
+
+/// Live databases carry orphan rows this migration neither created nor cleans up:
+/// foreign keys are enforced by default, but migrations that rewrite tables turn
+/// them off, so deletes inside those windows can leave children behind. A
+/// database-wide integrity check counted those pre-existing violations as
+/// migration damage, so the migration failed, `AppState` initialization panicked,
+/// and the app aborted on every launch with no way to recover.
+#[test]
+fn migration_ignores_preexisting_unrelated_foreign_key_violations() {
+    let conn = open_memory_connection().expect("create memory db");
+    run_migrations_through(&conn, PREVIOUS_SCHEMA_VERSION).expect("run prior migrations");
+    conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+    conn.execute(
+        "INSERT INTO external_issue_sync_records
+            (id, link_id, sync_kind, idempotency_key, status)
+         VALUES ('sync-orphan', 'missing-link', 'push', 'idem-orphan', 'pending')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO projects (id, name, working_directory) VALUES ('project-1', 'Project', '/tmp/project')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO chat_conversations (id, context_type, context_id, coordination_mode)
+         VALUES ('conversation-1', 'project', 'project-1', 'legacy_claude_team')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO artifacts
+            (id, type, name, content_type, content_text, created_by)
+         VALUES ('finding-1', 'verification_finding', 'Finding', 'text', 'retired', 'system')",
+        [],
+    )
+    .unwrap();
+
+    v20260720140000_remove_legacy_claude_team::migrate(&conn)
+        .expect("pre-existing unrelated violations must not block the migration");
+
+    assert_eq!(
+        conn.query_row(
+            "SELECT coordination_mode FROM chat_conversations WHERE id = 'conversation-1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "rx_native_team"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM artifacts WHERE id = 'finding-1'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+    assert!(!table_exists(&conn, "team_sessions"));
+    // The migration must not silently repair unrelated data it does not own.
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM external_issue_sync_records WHERE id = 'sync-orphan'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn migration_still_aborts_when_cleanup_introduces_new_foreign_key_violations() {
+    let conn = open_memory_connection().expect("create memory db");
+    run_migrations_through(&conn, PREVIOUS_SCHEMA_VERSION).expect("run prior migrations");
+    conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+    // A pre-existing orphan on the same parent must not mask a violation the
+    // migration itself introduces on that parent.
+    conn.execute(
+        "INSERT INTO external_issue_sync_records
+            (id, link_id, sync_kind, idempotency_key, status)
+         VALUES ('sync-orphan', 'missing-link', 'push', 'idem-orphan', 'pending')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO artifacts
+            (id, type, name, content_type, content_text, created_by)
+         VALUES ('finding-1', 'verification_finding', 'Finding', 'text', 'retired', 'system')",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER inject_orphan_on_finding_delete
+         AFTER DELETE ON artifacts
+         WHEN OLD.type = 'verification_finding'
+         BEGIN
+             INSERT INTO external_issue_sync_records
+                 (id, link_id, sync_kind, idempotency_key, status)
+             VALUES ('sync-injected', 'missing-link', 'push', 'idem-injected', 'pending');
+         END;",
+    )
+    .unwrap();
+
+    let error = v20260720140000_remove_legacy_claude_team::migrate(&conn)
+        .expect_err("newly introduced violations must abort the migration");
+    assert!(
+        error.to_string().contains("foreign-key violations"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM artifacts WHERE id = 'finding-1'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM external_issue_sync_records WHERE id = 'sync-injected'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+}

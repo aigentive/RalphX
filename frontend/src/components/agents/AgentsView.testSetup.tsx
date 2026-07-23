@@ -1094,7 +1094,6 @@ vi.mock("./AgentsArtifactPane", async () => {
       onPublishWorkspace,
       workspace,
       projectBaseBranch,
-      isPublishingWorkspace,
       publishAttempt,
     }: {
       conversation: AgentConversation | null;
@@ -1145,12 +1144,7 @@ vi.mock("./AgentsArtifactPane", async () => {
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch ?? null}
           onPublishWorkspace={onPublishWorkspace}
-          publishAttempt={
-            publishAttempt ??
-            (isPublishingWorkspace && workspace
-              ? { conversationId: workspace.conversationId, startedAtMs: Date.now() }
-              : null)
-          }
+          publishAttempt={publishAttempt ?? null}
           publishFocusRequest={publishFocusRequest ?? null}
           reviewContext={
             realPublishPanelState.reviewContext as AgentWorkspaceReviewContext | null

@@ -208,7 +208,15 @@ impl RecoveryQueueProcessor {
         use crate::domain::services::RunningAgentKey;
         let context_type_str = format!("{}", item.context_type);
         let key = RunningAgentKey::new(context_type_str, item.context_id.clone());
-        match self.running_agent_registry.cleanup_stale_entry(&key).await {
+        let cleanup = match self.running_agent_registry.get(&key).await {
+            Some(info) => {
+                self.running_agent_registry
+                    .cleanup_stale_entry(&key, &info.agent_run_id)
+                    .await
+            }
+            None => Ok(None),
+        };
+        match cleanup {
             Ok(Some(info)) => {
                 tracing::info!(
                     context_id = %item.context_id,
