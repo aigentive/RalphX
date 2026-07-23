@@ -884,6 +884,17 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(true)
     }
 
+    async fn clear_judge_state(&self, id: &AutomationRunId) -> AppResult<()> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(());
+        };
+        run.judge_state = AutomationJudgeState::None;
+        run.judge_verdict_json = None;
+        run.updated_at = Utc::now();
+        Ok(())
+    }
+
     async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool> {
         let mut runs = self.runs.write().unwrap();
         let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
@@ -970,6 +981,20 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.agent_phase_started_at = agent_phase_started_at;
         run.updated_at = Utc::now();
         Ok(Some(run.clone()))
+    }
+
+    async fn clear_finished_at(&self, id: &AutomationRunId) -> AppResult<()> {
+        if let Some(run) = self
+            .runs
+            .write()
+            .unwrap()
+            .iter_mut()
+            .find(|run| run.id == *id)
+        {
+            run.finished_at = None;
+            run.updated_at = Utc::now();
+        }
+        Ok(())
     }
 
     async fn create_judge_successor_run(
@@ -1095,5 +1120,32 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         let before = runs.len();
         runs.retain(|run| run.automation_id != *automation_id);
         Ok(before - runs.len())
+    }
+
+    async fn delete_run_if_deletable(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<usize> {
+        let mut runs = self.runs.write().unwrap();
+        let latest_run_index = runs
+            .iter()
+            .filter(|run| run.automation_id == *automation_id)
+            .map(|run| run.run_index)
+            .max();
+        let Some(position) = runs.iter().position(|run| {
+            run.id == *run_id
+                && run.automation_id == *automation_id
+                && matches!(
+                    run.status,
+                    AutomationRunStatus::AgentFailed | AutomationRunStatus::Cancelled
+                )
+                && run.judge_state != AutomationJudgeState::InProgress
+                && Some(run.run_index) == latest_run_index
+        }) else {
+            return Ok(0);
+        };
+        runs.remove(position);
+        Ok(1)
     }
 }

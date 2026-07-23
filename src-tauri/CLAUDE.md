@@ -155,7 +155,7 @@ New migration: `python3 scripts/new_sqlite_migration.py <description>` → `vYYY
 ## Commands
 Local agents: focused commands only; ❌ `cargo check` (hangs) | ❌ broad/full suites | ❌ `--nocapture`
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib           # pinpoint lib tests
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils <filter> --lib           # pinpoint lib tests
 cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'  # targeted integration suites
 python3 scripts/check-layering.py                                        # only for layer/import/module-boundary changes
 rustfmt --edition 2021 --check <touched-leaf.rs>                         # touched leaves only

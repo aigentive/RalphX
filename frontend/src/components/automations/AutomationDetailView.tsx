@@ -226,6 +226,49 @@ export function AutomationDetailView({
     },
     onError: () => toast.error("Failed to delete automation"),
   });
+  const deleteRunMutation = useMutation({
+    mutationFn: (runId: string) => automationsApi.deleteRun({ id: automationId, runId }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Run deleted");
+    },
+    onError: () => toast.error("Failed to delete run"),
+  });
+  const resumeRunMutation = useMutation({
+    mutationFn: (runId: string) => automationsApi.resumeRun({ id: automationId, runId }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Run resumed");
+    },
+    onError: () => toast.error("Failed to resume run"),
+  });
+  const handleDeleteRun = useCallback(async (run: AutomationRun) => {
+    const running = run.status === "running";
+    const confirmed = await confirm({
+      title: running ? "Stop and delete run?" : "Delete run?",
+      description: running
+        ? `This stops the running agent, then permanently deletes Run ${run.runIndex}, its worktree, and branch. The conversation is archived. This cannot be undone.`
+        : `This permanently deletes Run ${run.runIndex}, its worktree, and branch. The conversation is archived. This cannot be undone.`,
+      confirmText: running ? "Stop & delete" : "Delete",
+      pendingText: running ? "Stopping..." : "Deleting...",
+      variant: "destructive",
+    });
+    if (confirmed) {
+      deleteRunMutation.mutate(run.id);
+    }
+  }, [confirm, deleteRunMutation]);
+  const handleResumeRun = useCallback(async (run: AutomationRun) => {
+    const confirmed = await confirm({
+      title: "Resume run?",
+      description: `Reopens Run ${run.runIndex} in place and continues the existing agent in its worktree — prior work and conversation history are kept, nothing restarts.`,
+      confirmText: "Resume",
+      pendingText: "Resuming...",
+      variant: "default",
+    });
+    if (confirmed) {
+      resumeRunMutation.mutate(run.id);
+    }
+  }, [confirm, resumeRunMutation]);
   const goalItemsJson = detail.data?.automation.goalItemsJson ?? null;
   const activeGoalItem = useMemo(
     () => findInProgressAutomationGoalItem(goalItemsJson),
@@ -290,6 +333,8 @@ export function AutomationDetailView({
     || retryPlanJudgeMutation.isPending
     || runNowMutation.isPending
     || skipJudgeMutation.isPending
+    || deleteRunMutation.isPending
+    || resumeRunMutation.isPending
     || deleteMutation.isPending;
 
   const handleRunNow = async () => {
@@ -373,18 +418,24 @@ export function AutomationDetailView({
           onValueChange={(value) => setSelectedTab(value as AutomationDetailTab)}
         >
           <TabsList
-            className="mb-4 h-9 justify-start rounded-md bg-transparent p-0"
+            className="mb-4 h-9 justify-start rounded-md p-1"
+            style={{
+              backgroundColor: "var(--bg-surface, #1e1e23)",
+              borderColor: "var(--border-subtle, #2e2e36)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
             aria-label="Automation detail sections"
           >
             <TabsTrigger
-              className="rounded-sm px-3 py-1 text-xs"
+              className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
               value="overview"
               data-testid="automation-tab-overview"
             >
               Overview
             </TabsTrigger>
             <TabsTrigger
-              className="rounded-sm px-3 py-1 text-xs"
+              className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
               value="runs"
               data-testid="automation-tab-runs"
             >
@@ -423,6 +474,8 @@ export function AutomationDetailView({
                 onRetryPlanJudge={() => retryPlanJudgeMutation.mutate()}
                 onRetryJudge={() => retryJudgeMutation.mutate()}
                 onRunNow={() => void handleRunNow()}
+                onDeleteRun={handleDeleteRun}
+                onResumeRun={handleResumeRun}
                 {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                 {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
               />

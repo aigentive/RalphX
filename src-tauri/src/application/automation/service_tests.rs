@@ -720,6 +720,14 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
             .cloned())
     }
 
+    async fn delete_run_if_deletable(
+        &self,
+        _automation_id: &AutomationId,
+        _run_id: &AutomationRunId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
+    }
+
     async fn list_for_automation(
         &self,
         automation_id: &AutomationId,
@@ -894,6 +902,12 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
+    async fn clear_judge_state(&self, _id: &AutomationRunId) -> crate::error::AppResult<()> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
     async fn clear_plan_judge_state(&self, _id: &AutomationRunId) -> crate::error::AppResult<bool> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
@@ -945,6 +959,12 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         _id: &AutomationRunId,
         _agent_phase_started_at: Option<chrono::DateTime<Utc>>,
     ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn clear_finished_at(&self, _id: &AutomationRunId) -> crate::error::AppResult<()> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
         ))
@@ -1258,6 +1278,86 @@ async fn service_update_config_writes_provided_fields_on_draft_and_emits_event()
             automation_id: draft.id
         }]
     );
+}
+
+#[tokio::test]
+async fn service_update_config_preserves_integration_base_from_project_default_downgrade() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter);
+    let mut draft = automation("automation-1", AutomationStatus::Draft);
+    draft.base_ref_kind = "local_branch".to_string();
+    draft.base_ref = "ralphx/ralphx/automation-abc".to_string();
+    draft.base_display_name = Some("ralphx/ralphx/automation-abc".to_string());
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            base_ref_kind: Some("project_default".to_string()),
+            base_ref: Some("main".to_string()),
+            base_display_name: Some("Project default (main)".to_string()),
+            ..empty_config_input(draft.id)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "ralphx/ralphx/automation-abc");
+    assert_eq!(
+        updated.base_display_name.as_deref(),
+        Some("ralphx/ralphx/automation-abc")
+    );
+    assert_ne!(updated.base_ref_kind, "project_default");
+    assert_ne!(updated.base_ref, "main");
+}
+
+#[tokio::test]
+async fn service_update_config_allows_project_default_to_local_branch_change() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter);
+    let draft = automation("automation-1", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            base_ref_kind: Some("local_branch".to_string()),
+            base_ref: Some("some-branch".to_string()),
+            base_display_name: Some("some-branch".to_string()),
+            ..empty_config_input(draft.id)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "some-branch");
+    assert_eq!(updated.base_display_name.as_deref(), Some("some-branch"));
+    assert_ne!(updated.base_ref_kind, "project_default");
+}
+
+#[tokio::test]
+async fn service_update_config_patches_goal_while_preserving_integration_base() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter);
+    let mut draft = automation("automation-1", AutomationStatus::Draft);
+    draft.base_ref_kind = "local_branch".to_string();
+    draft.base_ref = "ralphx/ralphx/automation-abc".to_string();
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            goal_prompt: Some("Updated automation goal".to_string()),
+            base_ref_kind: Some("project_default".to_string()),
+            base_ref: Some("main".to_string()),
+            base_display_name: Some("Project default (main)".to_string()),
+            ..empty_config_input(draft.id)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.goal_prompt, "Updated automation goal");
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "ralphx/ralphx/automation-abc");
+    assert_ne!(updated.base_ref_kind, "project_default");
+    assert_ne!(updated.base_ref, "main");
 }
 
 fn empty_config_input(id: AutomationId) -> UpdateAutomationConfigInput {
@@ -1681,6 +1781,239 @@ async fn service_status_controls_use_transition_service_and_fail_closed() {
                 automation_id: active.id
             },
         ]
+    );
+}
+
+#[tokio::test]
+async fn service_resume_judge_stopped_unmet_creates_fresh_run_from_failed_attempt() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut paused = automation("automation-resume-unmet", AutomationStatus::Paused);
+    paused.paused_reason_code = Some("judge_stopped_unmet".to_string());
+    paused.paused_reason_detail = Some("Repair the external blocker, then retry.".to_string());
+    automation_repo.create(paused.clone()).await.unwrap();
+    let mut failed = automation_run(
+        "run-1",
+        &paused.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    failed.run_prompt = "Implement Spec §PR F0".to_string();
+    failed.base_ref_kind = "local_branch".to_string();
+    failed.base_ref_used = "ralphx/base".to_string();
+    run_repo.create_run(failed.clone()).await.unwrap();
+
+    let resumed = service.resume(&paused.id).await.unwrap();
+
+    assert_eq!(resumed.status, AutomationStatus::Active);
+    assert!(resumed.paused_reason_code.is_none());
+    assert!(resumed.paused_reason_detail.is_none());
+    let runs = run_repo.list_for_automation(&paused.id).await.unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].status, AutomationRunStatus::Pending);
+    assert_eq!(runs[1].run_prompt, "Implement Spec §PR F0");
+    assert_eq!(runs[1].prompt_author, AutomationPromptAuthor::SetupAgent);
+    assert_eq!(runs[1].base_ref_kind, "local_branch");
+    assert_eq!(runs[1].base_ref_used, "ralphx/base");
+    assert_eq!(runs[1].base_from_run_id, Some(failed.id));
+    assert!(emitter
+        .events()
+        .contains(&AutomationEvent::AutomationUpdated {
+            automation_id: paused.id.clone(),
+        }));
+    assert!(emitter
+        .events()
+        .iter()
+        .any(|event| matches!(event, AutomationEvent::AutomationRunUpdated { automation_id, run_id } if automation_id == &paused.id && run_id == &runs[1].id)));
+}
+
+#[tokio::test]
+async fn service_resume_judge_stopped_unmet_fails_closed_without_current_unmet_stop_verdict() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut paused = automation("automation-resume-stale", AutomationStatus::Paused);
+    paused.paused_reason_code = Some("judge_stopped_unmet".to_string());
+    automation_repo.create(paused.clone()).await.unwrap();
+    let mut stale = automation_run(
+        "run-1",
+        &paused.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    stale.judge_verdict_json = Some(serde_json::to_string(&stop_verdict(true, "Done")).unwrap());
+    run_repo.create_run(stale).await.unwrap();
+
+    let error = service.resume(&paused.id).await.unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("current unmet stop verdict"))
+    );
+    let stored = automation_repo
+        .get_by_id(&paused.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Paused);
+    assert_eq!(
+        stored.paused_reason_code.as_deref(),
+        Some("judge_stopped_unmet")
+    );
+    assert_eq!(
+        run_repo
+            .list_for_automation(&paused.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn service_resume_judge_stopped_unmet_rejects_each_stale_or_invalid_authority() {
+    #[derive(Clone, Copy)]
+    enum Case {
+        NoRuns,
+        NonTerminal,
+        JudgeNotDone,
+        MissingVerdict,
+        InvalidVerdict,
+        ContinueVerdict,
+        EmptyPrompt,
+        MaxRuns,
+        ConsecutiveFailures,
+    }
+
+    for (case, expected_detail) in [
+        (Case::NoRuns, "automation has no runs"),
+        (
+            Case::NonTerminal,
+            "latest run is not terminal with a completed judge",
+        ),
+        (
+            Case::JudgeNotDone,
+            "latest run is not terminal with a completed judge",
+        ),
+        (
+            Case::MissingVerdict,
+            "latest run has no stored judge verdict",
+        ),
+        (Case::InvalidVerdict, "latest verdict is invalid"),
+        (
+            Case::ContinueVerdict,
+            "latest verdict is not stop with goalMet=false",
+        ),
+        (Case::EmptyPrompt, "latest run prompt is empty"),
+        (Case::MaxRuns, "reached the configured limit"),
+        (Case::ConsecutiveFailures, "consecutive runs failed"),
+    ] {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+        let mut paused = automation("automation-resume-invalid", AutomationStatus::Paused);
+        paused.paused_reason_code = Some("judge_stopped_unmet".to_string());
+        if matches!(case, Case::MaxRuns) {
+            paused.max_runs = 1;
+        }
+        if matches!(case, Case::ConsecutiveFailures) {
+            paused.max_consecutive_failures = 1;
+        }
+        automation_repo.create(paused.clone()).await.unwrap();
+
+        if !matches!(case, Case::NoRuns) {
+            let status = if matches!(case, Case::NonTerminal) {
+                AutomationRunStatus::Running
+            } else {
+                AutomationRunStatus::AgentFailed
+            };
+            let judge_state = if matches!(case, Case::JudgeNotDone) {
+                AutomationJudgeState::Failed
+            } else {
+                AutomationJudgeState::Done
+            };
+            let mut latest = automation_run("run-invalid", &paused.id, 1, status, judge_state);
+            match case {
+                Case::MissingVerdict => latest.judge_verdict_json = None,
+                Case::InvalidVerdict => latest.judge_verdict_json = Some("{".to_string()),
+                Case::ContinueVerdict => {
+                    latest.judge_verdict_json = Some(continue_verdict(
+                        "Continue the unfinished goal with focused tests and publish the result.",
+                    ))
+                }
+                Case::EmptyPrompt => latest.run_prompt = "   ".to_string(),
+                _ => {}
+            }
+            run_repo.create_run(latest).await.unwrap();
+        }
+
+        let error = service.resume(&paused.id).await.unwrap_err();
+
+        assert!(
+            matches!(error, AppError::Validation(ref detail) if detail.contains(expected_detail)),
+            "unexpected rejection for {expected_detail}: {error:?}"
+        );
+        let stored = automation_repo
+            .get_by_id(&paused.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, AutomationStatus::Paused);
+        assert_eq!(
+            stored.paused_reason_code.as_deref(),
+            Some("judge_stopped_unmet")
+        );
+        assert!(emitter.events().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn service_resume_judge_stopped_unmet_rolls_back_when_retry_creation_fails() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter);
+    let mut paused = automation("automation-resume-rollback", AutomationStatus::Paused);
+    paused.paused_reason_code = Some("judge_stopped_unmet".to_string());
+    paused.paused_reason_detail = Some("Preserve this recovery guidance".to_string());
+    automation_repo.create(paused.clone()).await.unwrap();
+    let stale_open = automation_run(
+        "run-stale-open",
+        &paused.id,
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(stale_open.clone()).await.unwrap();
+    let failed = automation_run(
+        "run-current-failed",
+        &paused.id,
+        2,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(failed.clone()).await.unwrap();
+
+    let error = service.resume(&paused.id).await.unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Conflict(ref detail) if detail == "automation already has an open run")
+    );
+    let rolled_back = automation_repo
+        .get_by_id(&paused.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rolled_back.status, AutomationStatus::Paused);
+    assert_eq!(
+        rolled_back.paused_reason_code.as_deref(),
+        Some("judge_stopped_unmet")
+    );
+    assert_eq!(
+        rolled_back.paused_reason_detail.as_deref(),
+        Some("Preserve this recovery guidance")
+    );
+    assert_eq!(
+        run_repo.list_for_automation(&paused.id).await.unwrap(),
+        vec![stale_open, failed]
     );
 }
 

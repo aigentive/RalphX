@@ -99,10 +99,16 @@ describe("describeAutomationStage", () => {
   it("describes paused automations with and without a reason code", () => {
     expect(
       describeAutomationStage(
+        automation({ status: "paused", pausedReasonCode: "judge_stopped_unmet" }),
+        null,
+      ),
+    ).toBe("Judge stopped — goal unmet");
+    expect(
+      describeAutomationStage(
         automation({ status: "paused", pausedReasonCode: "release_gate" }),
         null,
       ),
-    ).toBe("Paused: release_gate");
+    ).toBe("Release gate");
     expect(
       describeAutomationStage(automation({ status: "paused", pausedReasonCode: null }), null),
     ).toBe("Paused");
