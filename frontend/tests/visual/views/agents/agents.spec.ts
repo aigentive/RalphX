@@ -1469,11 +1469,22 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
 
     await hydratePublishHistoryCache(page, editConversationId);
-    await expect(page.getByTestId("agents-publish-events")).toBeVisible();
-    await page.getByTestId("agents-publish-history-toggle").click();
-    await expect(page.getByTestId("agents-publish-event-published")).toBeVisible();
+    // The publish event log now lives in the lazy-mounted History tab, so the
+    // tab has to be activated before its content exists in the DOM.
+    await publishPage.selectHistory();
+    await expect(
+      publishPage.historyContent.getByTestId("agents-publish-events"),
+    ).toBeVisible();
+    await publishPage.historyContent
+      .getByTestId("agents-publish-history-toggle")
+      .click();
+    await expect(
+      publishPage.historyContent.getByTestId("agents-publish-event-published"),
+    ).toBeVisible();
     await stabilizePublishHistoryTimestamps(page, editConversationId);
-    await expect(page.getByText("Published / May 13, 5:20 AM")).toBeVisible();
+    await expect(
+      publishPage.historyContent.getByText("Published / May 13, 5:20 AM"),
+    ).toBeVisible();
     await expect(page.getByTestId("agents-workspace-toolbar")).toBeVisible();
     await expect(page.getByTestId("pr-status-strip")).toBeVisible();
     await publishPage.expectCompactPrStatus("1 passed");

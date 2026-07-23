@@ -26,6 +26,10 @@ export class AgentsPublishPage extends BasePage {
   readonly changesTab: Locator;
   readonly reviewTab: Locator;
   readonly reviewContent: Locator;
+  readonly historyTab: Locator;
+  readonly historyContent: Locator;
+  readonly automationTab: Locator;
+  readonly automationContent: Locator;
 
   constructor(page: Page) {
     super(page);
@@ -40,6 +44,12 @@ export class AgentsPublishPage extends BasePage {
     this.changesTab = page.getByTestId("agents-publish-tab-changes");
     this.reviewTab = page.getByTestId("agents-publish-tab-review");
     this.reviewContent = page.getByTestId("agents-publish-content-review");
+    this.historyTab = page.getByTestId("agents-publish-tab-history");
+    this.historyContent = page.getByTestId("agents-publish-content-history");
+    this.automationTab = page.getByTestId("agents-publish-tab-automation");
+    this.automationContent = page.getByTestId(
+      "agents-publish-content-automation",
+    );
   }
 
   async openFromHeader() {
@@ -58,6 +68,23 @@ export class AgentsPublishPage extends BasePage {
     await this.reviewTab.click();
     await expect(this.reviewTab).toHaveAttribute("data-state", "active");
     await expect(this.reviewContent).toBeVisible();
+  }
+
+  /**
+   * Publish sub-tabs are lazy-mounted: the panel only renders a tab's content
+   * after that tab has been activated once. Always route through these helpers
+   * before asserting on anything that lives inside a non-default tab.
+   */
+  async selectHistory() {
+    await this.historyTab.click();
+    await expect(this.historyTab).toHaveAttribute("data-state", "active");
+    await expect(this.historyContent).toBeVisible();
+  }
+
+  async selectAutomation() {
+    await this.automationTab.click();
+    await expect(this.automationTab).toHaveAttribute("data-state", "active");
+    await expect(this.automationContent).toBeVisible();
   }
 
   async seedWorkspaceReviewState(
