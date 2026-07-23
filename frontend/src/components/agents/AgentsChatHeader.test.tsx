@@ -1342,6 +1342,37 @@ describe("AgentsChatHeader", () => {
     );
   });
 
+  it("locks the publish shortcut when the effective workspace is publishing in the background", () => {
+    const openPublishPane = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1", agentMode: "edit" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        publishShortcutWorkspace={conversationWorkspace({
+          conversationId: "conversation-2",
+          mode: "edit",
+          publicationPushStatus: "  PuShInG  ",
+        })}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={openPublishPane}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const publishShortcut = screen.getByRole("button", { name: "Publishing" });
+    expect(publishShortcut).toBeDisabled();
+    expect(publishShortcut).toHaveTextContent("Publishing");
+
+    fireEvent.click(publishShortcut);
+
+    expect(openPublishPane).not.toHaveBeenCalled();
+  });
+
   it("hides the publish header shortcut while the publish pane is open", () => {
     renderWithProviders(
       <AgentsChatHeader

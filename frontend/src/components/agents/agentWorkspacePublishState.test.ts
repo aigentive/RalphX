@@ -15,6 +15,7 @@ import {
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  isAgentWorkspacePublishActive,
   isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
@@ -138,6 +139,56 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("isAgentWorkspacePublishActive", () => {
+  it.each(["checking", "committing", "refreshing", "describing", "pushing"])(
+    "treats %s as an active publish status",
+    (publicationPushStatus) => {
+      expect(
+        isAgentWorkspacePublishActive(workspace({ publicationPushStatus })),
+      ).toBe(true);
+    },
+  );
+
+  it("normalizes casing and whitespace for active publish statuses", () => {
+    expect(
+      isAgentWorkspacePublishActive(
+        workspace({ publicationPushStatus: "  PuShInG  " }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    null,
+    "pending",
+    "pushed",
+    "published",
+    "refreshed",
+    "failed",
+    "description_failed",
+    "needs_agent",
+    "future_status",
+  ])("does not treat %s as active publishing", (publicationPushStatus) => {
+    expect(
+      isAgentWorkspacePublishActive(workspace({ publicationPushStatus })),
+    ).toBe(false);
+  });
+
+  it.each(["merged", "closed"])(
+    "keeps terminal %s pull requests out of the active publish lock",
+    (publicationPrStatus) => {
+      expect(
+        isAgentWorkspacePublishActive(
+          workspace({ publicationPrStatus, publicationPushStatus: "pushing" }),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("handles a missing workspace", () => {
+    expect(isAgentWorkspacePublishActive(null)).toBe(false);
+  });
+});
 
 describe("getPostBaselinePublicationEvents", () => {
   const startedAtMs = new Date("2026-04-23T09:00:00Z").getTime();
