@@ -151,7 +151,10 @@ import {
 } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { AgentWorkspaceToolbar } from "./AgentWorkspaceToolbar";
-import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
+import {
+  getAgentWorkspaceReviewActionBlocker,
+  shouldShowAgentWorkspacePublishSurface,
+} from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type {
   AgentPublishSubTab,
@@ -2504,6 +2507,7 @@ function ArtifactContent({
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
+  const reviewActionBlocker = getAgentWorkspaceReviewActionBlocker(workspace);
   const renderReviewPanel = (embedded: boolean) => (
     <AgentReviewPanel
       reviewArtifact={reviewArtifact}
@@ -2523,6 +2527,7 @@ function ArtifactContent({
       isApproveAnywayActionPending={isApproveAnywayActionPending}
       isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
       isPublishingWorkspace={isPublishingWorkspace}
+      reviewActionBlocker={reviewActionBlocker}
       onOpenPublish={onOpenPublish}
       onStartReview={onStartReview}
       onFixIssues={onFixIssues}

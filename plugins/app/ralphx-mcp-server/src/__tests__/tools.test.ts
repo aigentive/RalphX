@@ -1223,6 +1223,13 @@ describe('agent workspace PR fix tools', () => {
     expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
     expect(tool?.inputSchema.properties).toHaveProperty('summary');
     expect(tool?.inputSchema.properties).toHaveProperty('blocker');
+    expect(tool?.inputSchema.properties).toHaveProperty('fix_commit_sha');
+    expect(tool?.inputSchema.properties).toMatchObject({
+      fix_commit_sha: {
+        description: expect.stringContaining('Required when blocker is absent'),
+        pattern: '^[0-9a-f]{40}$',
+      },
+    });
     expect(tool?.inputSchema.required).toEqual(
       expect.arrayContaining(['conversation_id', 'summary'])
     );
@@ -2028,7 +2035,7 @@ describe('agent workspace publish tool transport', () => {
     );
   });
 
-  it('routes PR fix completion to the agent workspace endpoint', async () => {
+  it('routes a PR fix blocker without fabricating a commit SHA', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
 
     await expect(
@@ -2042,6 +2049,24 @@ describe('agent workspace publish tool transport', () => {
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
       summary: 'Fixed failing tests',
       blocker: 'Needs maintainer decision',
+      fix_commit_sha: undefined,
+    });
+  });
+
+  it('forwards the exact committed HEAD for successful PR fix completion', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+    const fixCommitSha = 'c'.repeat(40);
+
+    await callCompleteAgentWorkspacePrFixTool(callTauri, {
+      conversation_id: 'conversation-1',
+      summary: 'Fixed failing tests',
+      fix_commit_sha: fixCommitSha,
+    });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Fixed failing tests',
+      blocker: undefined,
+      fix_commit_sha: fixCommitSha,
     });
   });
 
@@ -2141,6 +2166,7 @@ describe('agent workspace publish tool transport', () => {
       {
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
+        fix_commit_sha: 'a'.repeat(40),
       },
     ],
     [
@@ -2179,6 +2205,7 @@ describe('agent workspace publish tool transport', () => {
         resolved_base_commit: 'b'.repeat(40),
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
+        fix_commit_sha: 'a'.repeat(40),
         title: 'Generated title',
         body_markdown: '## Summary\n\nGenerated body',
         content: '## Summary\n\nGenerated body',
