@@ -5,11 +5,11 @@ import { NoticeBanner } from "./notice-banner";
 
 describe("NoticeBanner", () => {
   it.each([
-    ["warning", "var(--status-warning-muted, rgba(224, 179, 65, 0.1))"],
-    ["error", "var(--status-error-muted, rgba(213, 94, 0, 0.1))"],
-    ["success", "var(--status-success-muted, rgba(63, 191, 127, 0.1))"],
+    ["warning", "var(--status-warning-muted)"],
+    ["error", "var(--status-error-muted)"],
+    ["success", "var(--status-success-muted)"],
     ["neutral", "var(--bg-surface, #1e1e23)"],
-    ["accent", "var(--accent-muted, rgba(255, 106, 53, 0.1))"],
+    ["accent", "var(--accent-muted)"],
   ] as const)("maps %s to its semantic tinted surface", (tone, backgroundColor) => {
     render(
       <NoticeBanner tone={tone} title="Notice" testId="notice">
