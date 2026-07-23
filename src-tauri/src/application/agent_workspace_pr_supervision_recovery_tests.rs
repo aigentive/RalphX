@@ -2122,7 +2122,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_manual")
     );
     assert_eq!(
         publish_resumer.calls(),
@@ -2269,7 +2269,7 @@ async fn pending_review_handoff_without_monitor_aborts_fail_closed_without_publi
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_manual")
     );
     assert_eq!(resumer.calls(), 0);
     let updated = workspace_repo
