@@ -166,7 +166,7 @@ export function useChatPanelContext({
 
   // Cleanup on unmount: clear isSending for the current context key
   // agentStatus is intentionally NOT cleared here — it is owned by useGlobalAgentLifecycle
-  // and must survive unmount/remount cycles (e.g., PlanningView key={session.id} switches).
+  // and must survive unmount/remount cycles when Agents changes artifact/session scope.
   useEffect(() => {
     return () => {
       setSending(storeContextKeyRef.current, false);

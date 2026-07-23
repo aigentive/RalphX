@@ -3,9 +3,7 @@ import { z } from "zod";
 export const featureFlagsSchema = z.object({
   activityPage: z.boolean(),
   extensibilityPage: z.boolean(),
-  ideationPage: z.boolean().default(false),
   automationsPage: z.boolean().default(true),
-  battleMode: z.boolean().default(true),
   atlassianOauth: z.boolean().default(false),
   ticketingDashboard: z.boolean().default(false),
   agentPersonas: z.boolean().default(false),

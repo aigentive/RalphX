@@ -42,11 +42,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
-import {
-  DEFAULT_PROJECT_VIEW,
-  normalizeMainView,
-  type ViewType,
-} from "@/types/chat";
+import { DEFAULT_APP_VIEW, type AppView } from "@/types/app-view";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import type { CreateProject } from "@/types/project";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
@@ -64,7 +60,7 @@ import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
 import {
-  navigateToAgentTask,
+  openTaskInAgents,
   navigateToIdeationSession,
 } from "@/lib/navigation";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
@@ -218,7 +214,6 @@ function AppContent() {
   const setExecutionStatus = useUiStore((s) => s.setExecutionStatus);
   const currentView = useUiStore((s) => s.currentView);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
-  const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
@@ -228,16 +223,12 @@ function AppContent() {
   // Ticketing remains directly reachable when a provider enables the dashboard
   // entry; provider availability is handled by the dashboard/sidebar surfaces.
   useEffect(() => {
-    if (normalizeMainView(currentView) !== currentView) {
-      setCurrentView(currentView);
-      return;
-    }
     if (
       currentView !== "ticketing" &&
       !import.meta.env.DEV &&
       !isViewEnabled(currentView, featureFlags)
     ) {
-      setCurrentView(DEFAULT_PROJECT_VIEW);
+      setCurrentView(DEFAULT_APP_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
 
@@ -622,7 +613,7 @@ function AppContent() {
     openModal("settings", { section: "integrations" });
   }, [openModal]);
 
-  const handleWarmView = useCallback((view: ViewType) => {
+  const handleWarmView = useCallback((view: AppView) => {
     if (!currentProjectId) {
       return;
     }
@@ -659,7 +650,7 @@ function AppContent() {
 
   const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
     const targetProjectId = deepLink.projectId ?? currentProjectId;
-    const switchProjectForDeepLink = (view: ViewType) => {
+    const switchProjectForDeepLink = (view: AppView) => {
       setCurrentView(view);
       if (targetProjectId && targetProjectId !== activeProjectId) {
         preserveCurrentViewOnNextProjectSwitch();
@@ -669,43 +660,12 @@ function AppContent() {
 
     if (deepLink.view === "kanban" || deepLink.view === "graph") {
       const taskMode = deepLink.view;
-      if (targetProjectId && deepLink.conversationId) {
-        navigateToAgentTask(
-          targetProjectId,
-          deepLink.conversationId,
-          deepLink.id,
-          taskMode,
-        );
-        return;
-      }
-
-      if (targetProjectId) {
-        setFocusedAgentProject(targetProjectId);
-        if (targetProjectId !== activeProjectId) {
-          setCurrentView("agents");
-          preserveCurrentViewOnNextProjectSwitch();
-          selectProject(targetProjectId);
-        }
-      }
-      setCurrentView("agents");
-
-      void tasksApi
-        .resolveAgentWorkspace(deepLink.id)
-        .then((workspace) => {
-          if (workspace) {
-            navigateToAgentTask(
-              workspace.projectId,
-              workspace.conversationId,
-              deepLink.id,
-              taskMode,
-            );
-            return;
-          }
-          toast.info("Open the linked Agent conversation to view this task");
-        })
-        .catch(() => {
-          toast.info("Open the linked Agent conversation to view this task");
-        });
+      void openTaskInAgents(deepLink.id, taskMode, {
+        projectId: targetProjectId,
+        ...(deepLink.conversationId
+          ? { conversationId: deepLink.conversationId }
+          : {}),
+      });
       return;
     }
     if (deepLink.view === "ideation") {
@@ -848,26 +808,12 @@ function AppContent() {
         toast.info("No Agent conversation is linked to this task yet");
         return;
       }
-
-      const agentSessionState = useAgentSessionStore.getState();
-      setFocusedAgentProject(agentWorkspace.projectId);
-      agentSessionState.selectConversation(
-        agentWorkspace.projectId,
-        agentWorkspace.conversationId,
-      );
-      agentSessionState.focusTaskArtifact(
-        agentWorkspace.conversationId,
-        target.taskId,
-      );
-      useChatStore
-        .getState()
-        .setActiveConversation(
-          `project:${agentWorkspace.projectId}`,
-          agentWorkspace.conversationId,
-        );
-      setCurrentView("agents");
+      void openTaskInAgents(target.taskId, "graph", {
+        projectId: agentWorkspace.projectId,
+        conversationId: agentWorkspace.conversationId,
+      });
     },
-    [setCurrentView, setFocusedAgentProject],
+    [],
   );
 
   const handleNavigateToAutomationRun = useCallback(
@@ -985,11 +931,10 @@ function AppContent() {
     closeWelcomeOverlay();
   }, [welcomeOverlayReturnView, setCurrentView, closeWelcomeOverlay]);
 
-  // Handler for view changes - clears task selection to reset state.
-  const handleViewChange = useCallback((view: ViewType) => {
-    setSelectedTaskId(null);
+  // Root view changes do not own task selection; Agents does.
+  const handleViewChange = useCallback((view: AppView) => {
     setCurrentView(view);
-  }, [setSelectedTaskId, setCurrentView]);
+  }, [setCurrentView]);
 
   const handleOpenNewAgent = useCallback(() => {
     const nextProjectId = activeProjectId ?? fetchedProjects?.[0]?.id ?? null;
@@ -998,7 +943,6 @@ function AppContent() {
     }
     clearAgentSelection();
     if (currentView !== "agents") {
-      setSelectedTaskId(null);
       setCurrentView("agents");
     }
   }, [
@@ -1007,7 +951,6 @@ function AppContent() {
     currentView,
     fetchedProjects,
     setFocusedAgentProject,
-    setSelectedTaskId,
     setCurrentView,
   ]);
 

@@ -8,7 +8,7 @@ import {
   type StartAgentConversationResult,
 } from "@/api/chat";
 import { typedInvoke, TauriVoidSchema } from "@/lib/tauri";
-import { ViewTypeSchema } from "@/types/chat";
+import { AppViewSchema } from "@/types/app-view";
 
 export const LegacyStandaloneTaskViewSchema = z.enum([
   "kanban",
@@ -260,7 +260,7 @@ export const TicketFilterOptionsSchema = z.object({
 export type TicketFilterOptions = z.infer<typeof TicketFilterOptionsSchema>;
 
 export const TicketDeepLinkSchema = z.object({
-  view: z.union([ViewTypeSchema, LegacyStandaloneTaskViewSchema]),
+  view: z.union([AppViewSchema, LegacyStandaloneTaskViewSchema]),
   id: z.string(),
   projectId: z.string().nullable().optional(),
   /** Additive ownership context for legacy task links. */
