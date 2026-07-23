@@ -136,7 +136,24 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 created_pr: true,
                 pr_status: "draft",
             }),
-            Err(AppError::DuplicatePr) => Err(AppError::DuplicatePr),
+            Err(AppError::DuplicatePr) => {
+                let Some((pr_number, pr_url)) = self
+                    .github
+                    .find_pr_by_head_branch(working_dir, &workspace.branch_name)
+                    .await?
+                else {
+                    return Err(AppError::DuplicatePr);
+                };
+                self.github
+                    .update_pr_details(working_dir, pr_number, &title, body_file.path())
+                    .await?;
+                Ok(AgentWorkspacePrPublishOutcome {
+                    pr_number,
+                    pr_url,
+                    created_pr: false,
+                    pr_status: "open",
+                })
+            }
             Err(error) => Err(error),
         }
     }
