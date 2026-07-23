@@ -7,11 +7,11 @@ import {
   type AgentTaskSummary,
 } from "@/api/agent-tasks";
 import type { AutomationRunStatus } from "@/api/automations";
-import { StatusPill, type StatusPillTone } from "@/components/ui/status-pill";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "@/components/agents/agentWorkspaceQueries";
+import { FieldLabel } from "./automationDetailShared";
 import { automationRunTaskLedgerRefetchInterval } from "./automationRunTaskLedgerPolling";
 
 const STATE_LABELS: Record<AgentTaskState, string> = {
@@ -21,57 +21,96 @@ const STATE_LABELS: Record<AgentTaskState, string> = {
   dropped: "Dropped",
 };
 
-/** Tone for a task state badge — accent for live, success/error when settled. */
-function stateTone(state: AgentTaskState): StatusPillTone {
+const TERMINAL_SUCCESS_RUN_STATUSES: AutomationRunStatus[] = [
+  "merged",
+  "completed",
+  "published",
+];
+
+/**
+ * Keep the ledger in sync with the run's terminal state: once a run has merged /
+ * completed / published, there is no live work left, so a task the agent left as
+ * `active` is shown as `done` rather than a misleading in-progress dot.
+ */
+function effectiveTaskState(
+  state: AgentTaskState,
+  runStatus: AutomationRunStatus,
+): AgentTaskState {
+  if (state === "active" && TERMINAL_SUCCESS_RUN_STATUSES.includes(runStatus)) {
+    return "done";
+  }
+  return state;
+}
+
+/** Small status dot per task state — animated for the live/in-progress task. */
+function stateDotColor(state: AgentTaskState): string {
   switch (state) {
     case "active":
-      return "accent";
+      return "var(--accent-primary, #ff6a35)";
     case "done":
-      return "success";
+      return "var(--status-success, #3fbf7f)";
     case "dropped":
-      return "error";
+      return "var(--status-error, #d55e00)";
     default:
-      return "neutral";
+      return "var(--text-subtle, #6b6b73)";
   }
 }
 
-function TaskStateBadge({ state }: { state: AgentTaskState }) {
+function TaskStateDot({ state }: { state: AgentTaskState }) {
   return (
-    <StatusPill
-      label={STATE_LABELS[state]}
-      tone={stateTone(state)}
-      className="shrink-0 text-[10px] uppercase tracking-normal"
+    <span
+      role="img"
+      aria-label={STATE_LABELS[state]}
+      title={STATE_LABELS[state]}
+      className={`h-2 w-2 shrink-0 rounded-full${state === "active" ? " animate-pulse" : ""}`}
+      style={{ backgroundColor: stateDotColor(state) }}
     />
   );
 }
 
-function TaskRow({ task }: { task: AgentTaskSummary }) {
+function TaskRow({
+  task,
+  state,
+  isFirst,
+}: {
+  task: AgentTaskSummary;
+  state: AgentTaskState;
+  isFirst: boolean;
+}) {
   return (
     <div
-      className="flex items-center gap-2 text-sm"
+      className="grid grid-cols-[1.75rem_0.5rem_minmax(0,1fr)_auto] items-center gap-x-2.5 px-3 py-2 text-sm"
+      style={
+        isFirst
+          ? undefined
+          : {
+              borderTopColor: "var(--border-subtle, #2e2e36)",
+              borderTopStyle: "solid",
+              borderTopWidth: "1px",
+            }
+      }
       data-testid="automation-run-task-ledger-row"
     >
       <span
-        className="w-10 shrink-0 text-right font-mono text-xs font-semibold"
+        className="text-right font-mono text-xs font-semibold tabular-nums"
         style={{ color: "var(--text-muted)" }}
       >
         #{task.taskNumber}
       </span>
-      <TaskStateBadge state={task.state} />
+      <TaskStateDot state={state} />
       <span
-        className="min-w-0 flex-1 truncate"
+        className="min-w-0 truncate"
         style={{ color: "var(--text-secondary)" }}
       >
         {task.title}
       </span>
-      {task.ownerAgent && (
-        <span
-          className="max-w-[7rem] shrink-0 truncate text-xs"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {task.ownerAgent}
-        </span>
-      )}
+      <span
+        className="shrink-0 text-[0.6875rem] font-semibold uppercase tracking-wide"
+        style={{ color: stateDotColor(state) }}
+        data-testid="automation-run-task-ledger-row-state"
+      >
+        {STATE_LABELS[state]}
+      </span>
     </div>
   );
 }
@@ -95,10 +134,12 @@ export function AutomationRunTaskLedger({
   conversationId,
   projectId,
   runStatus,
+  onOwnerAgentChange,
 }: {
   conversationId: string;
   projectId: string | null;
   runStatus: AutomationRunStatus;
+  onOwnerAgentChange?: (ownerAgent: string | null) => void;
 }) {
   const lastFingerprintRef = useRef<string | null>(null);
   const unchangedResponsesRef = useRef(0);
@@ -137,6 +178,12 @@ export function AutomationRunTaskLedger({
     unchangedResponsesRef.current = 0;
   }, [query.data, query.dataUpdatedAt]);
 
+  useEffect(() => {
+    if (query.isSuccess) {
+      onOwnerAgentChange?.(query.data[0]?.ownerAgent ?? null);
+    }
+  }, [onOwnerAgentChange, query.data, query.isSuccess]);
+
   const { taskCount, activeTasks, doneCount, droppedCount } = useMemo(() => {
     const tasks = query.data ?? [];
     const active = tasks.filter(
@@ -158,21 +205,23 @@ export function AutomationRunTaskLedger({
   }, [query.data]);
 
   const hasSnapshot = query.isSuccess;
-  const summaryParts: string[] = [];
-  if (doneCount > 0) {
-    summaryParts.push(`${doneCount} done`);
-  }
-  if (droppedCount > 0) {
-    summaryParts.push(`${droppedCount} dropped`);
-  }
 
   return (
     <div className="space-y-2" data-testid="automation-run-task-ledger">
       <div
-        className="text-xs font-medium uppercase tracking-normal"
-        style={{ color: "var(--text-muted)" }}
+        className="flex items-baseline justify-between gap-3"
+        data-testid="automation-run-task-ledger-label-row"
       >
-        Task ledger
+        <FieldLabel>Task ledger</FieldLabel>
+        {hasSnapshot ? (
+          <span
+            className="shrink-0 text-right text-xs"
+            style={{ color: "var(--text-muted, #8e8e96)" }}
+            data-testid="automation-run-task-ledger-summary"
+          >
+            {doneCount} done · {droppedCount} dropped
+          </span>
+        ) : null}
       </div>
       {!hasSnapshot ? (
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
@@ -183,24 +232,30 @@ export function AutomationRunTaskLedger({
           No agent tasks yet.
         </p>
       ) : (
-        <div className="space-y-1.5">
-          {activeTasks.length > 0 ? (
-            activeTasks.map((task) => <TaskRow key={task.taskId} task={task} />)
-          ) : (
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              No active tasks right now.
-            </p>
-          )}
-          {summaryParts.length > 0 && (
-            <p
-              className="text-xs"
-              style={{ color: "var(--text-muted)" }}
-              data-testid="automation-run-task-ledger-summary"
-            >
-              {summaryParts.join(" · ")}
-            </p>
-          )}
-        </div>
+        activeTasks.length > 0 ? (
+          <div
+            className="overflow-hidden rounded-md"
+            style={{
+              backgroundColor: "var(--bg-elevated, #232329)",
+              borderColor: "var(--border-default, #393940)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            {activeTasks.map((task, index) => (
+              <TaskRow
+                key={task.taskId}
+                task={task}
+                state={effectiveTaskState(task.state, runStatus)}
+                isFirst={index === 0}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            No active tasks right now.
+          </p>
+        )
       )}
     </div>
   );

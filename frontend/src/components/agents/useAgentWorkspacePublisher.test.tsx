@@ -511,4 +511,62 @@ describe("useAgentWorkspacePublisher", () => {
     );
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
+
+  it("does not put verbose durable publish output in the terminal toast", async () => {
+    const queryClient = createTestQueryClient();
+    const baseline = publicationEvent({ id: "baseline" });
+    const failure = publicationEvent({
+      id: "failure",
+      step: "needs_agent",
+      status: "failed",
+      summary: [
+        "\u001B[1mGuard 1: pre-commit design token guards\u001B[0m",
+        "src/components/ui/notice-banner.tsx:21: backgroundColor: var(--status-warning-muted, rgba(224, 179, 65, 0.1))",
+        "src/components/automations/automationRunView.ts:497: backgroundColor: var(--status-success-muted, rgba(63, 191, 127, 0.08))",
+      ].join("\n"),
+      classification: "agent_fixable",
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([baseline]);
+    publishAgentConversationWorkspaceMock.mockReturnValue(new Promise(() => undefined));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({ publicationPushStatus: "needs_agent" }),
+    );
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: conversationWorkspaceFixture(),
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1");
+    });
+    await waitFor(() => expect(publishAgentConversationWorkspaceMock).toHaveBeenCalled());
+    act(() => {
+      queryClient.setQueryData(
+        ["agents", "conversation-workspace-publication-events", "conversation-1"],
+        [baseline, failure],
+      );
+    });
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Publish failed. Sent the error to the agent to fix.",
+        {
+          closeButton: true,
+          description: "Untitled agent • Full output is available in the workspace.",
+          dismissible: true,
+          duration: 12_000,
+          id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+        },
+      ),
+    );
+  });
 });

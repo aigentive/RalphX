@@ -1911,24 +1911,26 @@ impl AutomationScheduler {
                 )
                 .await?;
             }
-            // No publication has started yet. If the run's agent process has already
-            // terminated (exited, errored, or was killed and pruned as `pid_missing` —
-            // which marks the agent_run Cancelled) without opening a pull request, the run
-            // can never progress. Fail it now instead of leaving it Running until the
-            // `max_run_duration` backstop hours later. Any `Some(...)` push status (e.g.
-            // "pushed" mid-publish, or "needs_agent" still within grace) is left untouched
-            // so an in-flight publish is not raced.
-            None => {
+            // Settled pre-publication state: no auto-publish is in flight (no push
+            // status yet, or only a base `refreshed`). If the run's agent process has
+            // already terminated (exited, errored, or killed and pruned as
+            // `pid_missing` -> agent_run `Cancelled`) without opening a pull request,
+            // the run can never progress. Fail it now instead of leaving it Running
+            // until the `max_run_duration` backstop hours later. Any in-flight
+            // publish status (`pushing`/`pushed`/`checking`/`describing`, or a
+            // `needs_agent` repair still within grace) and any unrecognized status is
+            // left untouched by the final arm so an in-flight publish is not raced.
+            push_status if publication_push_status_is_settled_pre_publication(push_status) => {
                 if let Some(status) = latest_agent_run.as_ref().map(|agent_run| agent_run.status) {
                     // Only a genuinely dead agent is failed promptly here: `Failed`, or a
                     // process killed and pruned as `pid_missing` (-> agent_run `Cancelled`).
                     // A `Completed` agent is deliberately NOT failed: a cleanly-finished
-                    // `pr_merged` run is legitimately awaiting the workspace review ->
-                    // auto-publish handoff, which can take minutes and does not set a push
-                    // status until review passes. The scheduler is intentionally
-                    // review-unaware, so failing on `Completed` would kill healthy runs
-                    // mid-review; the `max_run_duration` backstop covers the rare
-                    // genuinely-stuck `Completed` case instead.
+                    // run is legitimately awaiting the workspace review -> auto-publish
+                    // handoff, which can take minutes and does not set a push status until
+                    // review passes. The scheduler is intentionally review-unaware, so
+                    // failing on `Completed` would kill healthy runs mid-review; the
+                    // `max_run_duration` backstop covers the rare genuinely-stuck
+                    // `Completed` case instead.
                     // Recover in place (F2) before treating a restart orphan as terminal.
                     if matches!(status, AgentRunStatus::Failed | AgentRunStatus::Cancelled)
                         && !latest_agent_run_is_restart_orphan
@@ -4212,6 +4214,21 @@ fn running_run_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
         .agent_phase_started_at
         .unwrap_or_else(|| run.started_at.unwrap_or(run.created_at));
     elapsed_since(started_at).is_some_and(|elapsed| elapsed >= limit)
+}
+
+/// Publication push statuses representing a *settled, pre-publication* workspace
+/// where no auto-publish operation is in flight. In these states a genuinely dead
+/// current agent (`Failed`/`Cancelled`) can never open a pull request, so the
+/// scheduler may fail the run promptly instead of waiting for the
+/// `max_run_duration` backstop hours later.
+///
+/// `refreshed` means only that the workspace base was updated (base freshness); it
+/// does NOT indicate an opened or in-flight publication. `None` means no publish has
+/// started. Every other status (`checking`/`describing`/`pushing`/`pushed`, a
+/// `needs_agent` repair within grace, or any unrecognized/future status) may be
+/// racing an in-flight publish and is deliberately left to its own arm or hands-off.
+fn publication_push_status_is_settled_pre_publication(status: Option<&str>) -> bool {
+    matches!(status, None | Some("refreshed"))
 }
 
 fn agent_run_is_current_for_phase(run: &AutomationRun, agent_run: &AgentRun) -> bool {

@@ -12,6 +12,7 @@ import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { cn } from "@/lib/utils";
 import type {
   AgentArtifactTab,
+  AgentRuntimeSelection,
   AgentTaskArtifactMode,
 } from "@/stores/agentSessionStore";
 
@@ -98,7 +99,10 @@ interface AgentsArtifactPaneRegionProps {
     conversationId: string,
     options?: AutomationRunFocusOptions,
   ) => void;
-  onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusWorkspaceReview: (
+    conversationId: string,
+    runtimeHint?: AgentRuntimeSelection,
+  ) => void;
   onFocusTaskRuntime: (
     taskId: string,
     contextType: AgentTaskRuntimeContextType

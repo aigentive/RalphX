@@ -293,6 +293,60 @@ describe("workspace review runtime", () => {
     });
   });
 
+  it("uses a committed reviewer focus hint before durable child metadata arrives", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        null,
+        {
+          provider: "claude",
+          modelId: "sonnet",
+          effort: "high",
+        },
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "high",
+        },
+      ),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "high",
+    });
+  });
+
+  it("keeps durable child metadata ahead of a stale reviewer focus hint", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        null,
+        {
+          provider: "claude",
+          modelId: "sonnet",
+          effort: "high",
+        },
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "medium",
+        },
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "medium",
+        },
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    });
+  });
+
   it("falls back to the workspace runtime while the role default is unavailable", () => {
     const workspaceRuntime = {
       provider: "codex" as const,

@@ -17,7 +17,11 @@ use crate::application::automation::api::{
     AutomationRunResponse, AutomationScheduleResponse, CreateAutomationDraftResponse,
 };
 use crate::application::automation::decomposition_verifier::AutomationAuthoringMode;
-use crate::application::automation::delete::delete_automation_with_archive;
+use crate::application::automation::delete::{
+    delete_automation_run_with_archive, delete_automation_with_archive,
+};
+use crate::application::automation::reopen::reopen_automation_run;
+use crate::application::automation::resume_orchestrator::resume_automation_smart;
 use crate::application::automation::service::{
     AutomationService, CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
@@ -311,8 +315,7 @@ pub async fn resume_automation(
     state: State<'_, AppState>,
 ) -> Result<AutomationResponse, String> {
     let id = parse_automation_id(&input.id)?;
-    automation_service(&state)
-        .resume(&id)
+    resume_automation_smart(&state, &id)
         .await
         .map(AutomationResponse::from)
         .map_err(|error| error.to_string())
@@ -419,6 +422,30 @@ pub async fn cancel_automation_run(
         .await
         .map_err(|error| error.to_string())?;
     automation_run_response_for_state(run, state.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_automation_run(
+    input: AutomationRunScopedInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id = parse_automation_id(&input.id)?;
+    let run_id = parse_automation_run_id(&input.run_id)?;
+    delete_automation_run_with_archive(&state, &id, &run_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn resume_automation_run(
+    input: AutomationRunScopedInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id = parse_automation_id(&input.id)?;
+    let run_id = parse_automation_run_id(&input.run_id)?;
+    reopen_automation_run(&state, &id, &run_id)
         .await
         .map_err(|error| error.to_string())
 }

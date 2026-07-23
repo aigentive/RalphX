@@ -50,6 +50,8 @@ macro_rules! register_tauri_commands {
             commands::automation_commands::retry_automation_plan_judge,
             commands::automation_commands::skip_automation_judge,
             commands::automation_commands::cancel_automation_run,
+            commands::automation_commands::delete_automation_run,
+            commands::automation_commands::resume_automation_run,
             commands::automation_commands::delete_automation,
             commands::persona_commands::list_personas,
             commands::persona_commands::get_persona,
@@ -490,6 +492,8 @@ macro_rules! register_tauri_commands {
             commands::github_commands::get_pull_request_detail,
             commands::repository_settings_commands::get_repository_settings,
             commands::repository_settings_commands::update_repository_settings,
+            commands::update_channel_commands::get_update_channel,
+            commands::update_channel_commands::set_update_channel,
             // Plan branch commands (Phase 85 - Feature branch for plan groups)
             commands::plan_branch_commands::get_plan_branch,
             commands::plan_branch_commands::get_plan_branch_by_task_id,

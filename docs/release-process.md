@@ -1,6 +1,6 @@
 # RalphX.app Release Process
 
-This document covers the RalphX.app release workflow, from local build testing through public GitHub Releases, Homebrew publication, and in-app updater publication.
+This document covers the RalphX.app release workflow: versioned prerelease builds, explicit Stable control, Homebrew publication, and in-app updater manifests.
 
 ---
 
@@ -96,7 +96,7 @@ What the scheduled workflow does:
 6. Runs `./scripts/bump-version.sh`, `./scripts/generate-release-notes.sh`, and `./scripts/append-github-release-metadata.sh`.
 7. Commits the version bump and `release-notes/vX.Y.Z.md` to `main`.
 8. Tags that release-prep commit.
-9. Dispatches `Release Build`, which still feeds the existing `Release Publish` workflow.
+9. Dispatches `Release Build`, which feeds `Release Publish` as a published prerelease only.
 
 The committed release note keeps the curated RalphX summary first, then appends a managed GitHub metadata block with pull-request attribution, new contributors when present, and the full changelog link. The public GitHub Release uses the full note. The app updater metadata strips that managed block so in-app update notes stay concise.
 
@@ -121,7 +121,7 @@ Skipping scheduled release for maintenance-only commits:
 - The scheduled workflow skips only when all commits after the latest reachable release tag carry one of those markers.
 - Pushing to `main` can still run CI/CodeQL; this marker only affects the `Daily Release` workflow.
 
-Scheduled runs use `gpt-5.6-terra`, `draft=false`, `prerelease=false`, the Blacksmith Linux release runner, the Blacksmith macOS release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
+Scheduled runs use `gpt-5.6-terra`, a published prerelease (`draft=false`, `prerelease=true`), the Blacksmith Linux release runner, the Blacksmith macOS release runner, and standard GitHub-hosted macOS runner size. Stable state is never selectable from Daily Release.
 If Codex proposes a major version without a manual bump/version override, the workflow fails before version bump, tag creation, build dispatch, or publish.
 
 Runner labels:
@@ -268,8 +268,6 @@ After the tag is on `origin`, trigger `Release Build` manually from `main`:
 3. Use:
    - `ref`: `v0.2.0`
    - `version`: `0.2.0`
-   - `draft`: choose whether the public release should stay a draft
-   - `prerelease`: choose whether the release should be marked as a prerelease
    - `linux_runner`: `blacksmith`, `depot`, `github-hosted`, or `self-hosted`
    - `arm_runner`: `blacksmith`, `depot`, `self-hosted`, or `github-hosted`
    - `intel_runner`: `blacksmith`, `depot`, `self-hosted`, or `github-hosted`
@@ -286,7 +284,7 @@ What `Release Build` does:
 5. **Notarize DMG**: Submits and staples the finished, signed DMG
 6. **Validate**: Blocks artifact collection unless the app and DMG pass signature, ticket, Gatekeeper, metadata, and architecture policy checks
 7. **Artifacts**: Uploads only validated `release-aarch64`, `release-x86_64`, trace logs, and `release-metadata`
-8. **Trigger**: A successful `Release Build` on `main` automatically triggers `Release Publish`
+8. **Trigger**: A successful `Release Build` on `main` automatically triggers `Release Publish` for a published prerelease
 
 The DMG is validated after stapling, so downstream checksums and publication always use the final byte-level deliverable. Local validation on the current macOS 26 host is supported; no clean VM is required. A notarization rejection, timeout, missing ticket, wrong architecture, or Gatekeeper failure stops the build before artifact collection.
 
@@ -294,12 +292,10 @@ The DMG is validated after stapling, so downstream checksums and publication alw
 
 `Release Publish` reuses the successful build artifacts instead of rebuilding.
 
-1. Go to `aigentive/ralphx.app` → Actions → `Release Publish`
-2. Confirm the auto-triggered run finished successfully
-3. For manual publish reruns, optionally set `linux_runner` to `depot`, `github-hosted`, or `self-hosted`; auto-triggered publish runs use Depot.
-4. Then go to `aigentive/ralphx.app` → Releases
-5. Find the release created or updated by the workflow
-6. Review the artifacts:
+1. Go to `aigentive/ralphx.app` → Actions → `Release Publish` and confirm the auto-triggered run finished successfully.
+2. The release must remain published and marked as a prerelease; a normal publish run cannot create a Stable release or update Homebrew.
+3. Then go to `aigentive/ralphx.app` → Releases and find the release created or updated by the workflow.
+4. Review the fixed artifact set:
    - `RalphX_x.x.x_aarch64.dmg` - Apple Silicon
    - `RalphX_x.x.x_x86_64.dmg` - Intel
    - `RalphX_x.x.x_aarch64.app.tar.gz` - Apple Silicon updater bundle
@@ -308,8 +304,7 @@ The DMG is validated after stapling, so downstream checksums and publication alw
    - `RalphX_x.x.x_x86_64.app.tar.gz.sig` - Intel updater signature
    - `latest.json`
    - `checksums.txt`
-6. Edit release notes as needed
-7. If you dispatched the build with `draft=true`, click **Publish release**
+5. `Release Publish` first verifies that the eight versioned source assets are readable and their signatures and fixed GitHub tag URLs match `latest.json`; only then does it upload and publicly verify the two fixed `updater-nightly` architecture pointers.
 
 ## Manual Workflow Dispatch
 
@@ -321,8 +316,29 @@ For recovery publishing after a successful build run, use `Release Publish` manu
    - `source_run_id`: the successful `Release Build` run ID
    - `ref`: `v0.2.0`
    - `version`: `0.2.0`
-   - `draft` / `prerelease` flags to match the release you want
 4. Click **Run workflow**
+
+Manual Publish uses the build run's persisted `draft=false` and `prerelease=true` metadata. It rejects any build metadata that could create or edit Stable state.
+
+### Step 8: Promote Or Halt Stable
+
+`Stable Release Control` is the sole workflow that can change Stable GitHub authority, the fixed `updater-stable` pointers, or the Homebrew cask. It never builds, signs, re-signs, creates, moves, or pushes a release tag.
+
+GitHub Immutable Releases must remain disabled for this no-rebuild channel design: Stable promotion reclassifies version releases and both fixed updater releases replace same-named assets. The workflows inspect the Release API `immutable` field and fail closed; enabling immutable releases makes this promotion mechanism unavailable and requires a different transport/process.
+
+To promote a tested prerelease:
+
+1. Go to `aigentive/ralphx.app` → Actions → `Stable Release Control`.
+2. Choose `operation=promote` and set only `candidate_tag` to the exact source tag, for example `v0.77.0` (not `0.77.0`, a branch, or a ref prefix).
+3. The workflow validates/downloads/renders the candidate first: it requires the exact eight-source-asset allowlist, byte-compares manifest signatures with their `.sig` files, checks every updater URL is the fixed GitHub download URL for that tag, and stages the deterministic Homebrew cask from the downloaded DMGs.
+4. It then creates or validates the mutable, published-prerelease `updater-stable` infrastructure release before changing version authority; only after that does it make the candidate the full GitHub latest release, publish both fixed pointers, wait for their public URLs to converge, and reconcile the already-staged cask.
+5. Later promotions are semver-monotonic, but older successful Stable releases remain published full releases as history; normal promotion never demotes them to prereleases.
+
+An exact rerun repairs only bounded partial states for the same request: GitHub authority already advanced with absent, prior, or one-architecture-updated pointers; or completed pointers with an unfinished Homebrew cask. Unrelated pointer disagreement, a draft/immutable release, a mismatched full release, or a missing fixed asset fails closed.
+
+To halt Stable, select `operation=halt`, set `bad_tag` to the exact current Stable tag, and set `restore_tag` to the exact derived prior full Stable tag. The workflow validates the bad and restore releases first, demotes the bad release and promotes the restore release in GitHub, restores both `updater-stable` pointers, and then reconciles Homebrew. Exact reruns repair only those bad/restore partial states; they never accept another candidate combination. It does not build, upload versioned assets, retag, or push a release tag.
+
+A halt stops new Stable and Homebrew delivery; it does not downgrade already-installed clients. Those clients remain on their installed version and wait for a later fixed Stable promotion with a newer version.
 
 ---
 
@@ -331,22 +347,23 @@ For recovery publishing after a successful build run, use `Release Publish` manu
 The release workflow publishes Tauri updater artifacts to the public source repo release.
 
 Current release contract:
-- updater endpoint: `https://github.com/aigentive/ralphx.app/releases/latest/download/latest.json`
-- published releases include per-architecture `.app.tar.gz` updater bundles and `.sig` files
-- `latest.json` points the app at those public updater bundles
-- the updater follows GitHub's `latest` endpoint, so only the latest published non-draft release is visible automatically
+- every versioned prerelease retains only its normal `latest.json`, with both Tauri macOS targets and fixed URLs under its own `vX.Y.Z` GitHub Release tag
+- `updater-nightly` owns the two fixed one-target Nightly pointers: `latest-aarch64.json` and `latest-x86_64.json`; it is always a published prerelease with `latest=false`, and each pointer is rendered only after the versioned source assets are readable and validated
+- `updater-stable` owns the same two fixed one-target Stable pointers; it is always a published prerelease with `latest=false`, and Stable control first moves the versioned GitHub latest authority, then replaces both pointers and verifies the public pointer bytes before continuing
 - the Homebrew cask declares `auto_updates true`, so RalphX.app can self-update after install while still allowing an explicit `brew upgrade --cask ralphx`
+
+Rollout compatibility: already-shipped clients using `/releases/latest/download/latest.json` remain Stable-only because `Release Publish` keeps normal `latest.json` on every version release and only Stable Release Control makes a version release GitHub latest. New builds use `updater-{{target}}/latest-{{arch}}.json`.
 
 ---
 
 ## Homebrew Tap Publishing
 
-The release workflow also maintains the public tap repo `aigentive/homebrew-ralphx`.
+Only `Stable Release Control` maintains the public tap repo `aigentive/homebrew-ralphx`.
 
 Current tap contract:
 - release artifacts stay in `aigentive/ralphx.app`
-- `Casks/ralphx.rb` is rendered from the release workflow using the per-arch DMG sha256 values
-- only non-draft, non-prerelease releases update the tap automatically
+- `Casks/ralphx.rb` is rendered by `scripts/render-homebrew-cask.sh` using the authoritative Stable release's per-arch DMG sha256 values
+- Daily, Build, and Publish never update the tap; both exact Stable promotion and halt reruns reconcile it after GitHub and `updater-stable` authority converge
 - testers install with `brew tap aigentive/ralphx` and `brew install --cask ralphx`
 
 ---
@@ -393,7 +410,7 @@ cargo tauri build
 **"Secret not found"**
 - Verify all secrets are configured in repository settings
 - Secret names are case-sensitive
-- Homebrew tap publishing also requires `HOMEBREW_TAP_TOKEN`
+- Stable Homebrew cask publishing requires `HOMEBREW_TAP_TOKEN`
 
 **"Certificate import failed"**
 - Re-export the certificate and base64 encode it
@@ -402,13 +419,13 @@ cargo tauri build
 **Workflow doesn't trigger**
 - Ensure tag follows pattern `v*` (e.g., `v0.2.0`)
 - `Release Publish` auto-triggers only after a successful `Release Build` run from `main`
-- Check the Actions tab for `Release Build` and `Release Publish`
+- Check the Actions tab for `Release Build`, `Release Publish`, and (when deliberately promoting) `Stable Release Control`
 
 **Public release upload failed**
 - Verify the workflow has `contents: write` permission for `aigentive/ralphx.app`
 - Confirm the tag exists and the GitHub Actions token can create or update releases
 
-**Homebrew tap update failed**
+**Stable Homebrew cask update failed**
 - Verify `HOMEBREW_TAP_TOKEN` has `Contents: Read and write` on `aigentive/homebrew-ralphx`
 - Confirm the tap repo exists, is public, and contains a top-level `Casks/` directory
 
@@ -435,9 +452,15 @@ cargo tauri build
 | File | Purpose |
 |------|---------|
 | `.github/workflows/release.yml` | Build-only release workflow: sign, notarize, package, and upload release artifacts |
-| `.github/workflows/release-publish.yml` | Publish workflow: consume release artifacts, publish public assets, and update Homebrew |
+| `.github/workflows/release-publish.yml` | Prerelease-only publish workflow: consume validated build artifacts, publish versioned source assets, and reconcile `updater-nightly` pointers |
+| `.github/workflows/release-promote.yml` | Stable-control workflow: validates/promotes or halts with ordered versioned GitHub authority → `updater-stable` pointers → Homebrew reconciliation |
 | `scripts/build-local-release.sh` | Local internal release-like build script |
 | `scripts/build-prod-release.sh` | Internal CI release artifact entrypoint |
+| `scripts/render-updater-channel-manifests.sh` | Pure renderer for versioned and one-target channel Tauri updater manifests with fixed GitHub tag URLs |
+| `scripts/validate-release-promotion.sh` | Pure fail-closed validator for fixed release asset sets, manifest URLs, and signature bytes |
+| `scripts/reconcile-stable-release-state.sh` | Ordered Stable promote/halt state machine with bounded exact-rerun recovery |
+| `scripts/reconcile-homebrew-cask.sh` | Idempotently commits, pushes, and byte-verifies the pre-rendered Stable cask after Stable authority convergence |
+| `scripts/verify-public-updater-pointers.sh` | Bounded public GitHub pointer-cache verification shared by Stable and Nightly publication |
 | `scripts/validate-macos-release-artifacts.sh` | Read-only app/DMG signature, ticket, Gatekeeper, metadata, and architecture validator |
 | `scripts/release.sh` | Guided local release-prep wrapper that orchestrates proposal, version bump, and release-note generation |
 | `scripts/propose-release.sh` | Codex-assisted version recommendation generator |

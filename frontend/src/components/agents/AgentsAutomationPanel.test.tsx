@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { AgentsAutomationPanel } from "./AgentsAutomationPanel";
 
 const {
@@ -298,11 +299,13 @@ function renderPanel({
 
   const rendered = render(
     <QueryClientProvider client={queryClient}>
-      <AgentsAutomationPanel
-        automationId="automation-1"
-        {...(onOpenAutomation ? { onOpenAutomation } : {})}
-        {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
-      />
+      <TooltipProvider>
+        <AgentsAutomationPanel
+          automationId="automation-1"
+          {...(onOpenAutomation ? { onOpenAutomation } : {})}
+          {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
+        />
+      </TooltipProvider>
     </QueryClientProvider>,
   );
 
@@ -446,6 +449,55 @@ describe("AgentsAutomationPanel", () => {
     expect(openExternalUrlMock).toHaveBeenCalledWith(
       "https://github.com/aigentive/ralphx.app/pull/100",
     );
+  });
+
+  it("tints each run row by status, matching the runs-timeline cards", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({ id: "run-1", runIndex: 1, status: "merged" }),
+          automationRunFixture({
+            id: "run-2",
+            runIndex: 2,
+            status: "agent_failed",
+            prNumber: null,
+            prUrl: null,
+            errorCode: "timeout",
+          }),
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "running",
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const rows = within(
+      screen.getByTestId("agents-automation-runs-list"),
+    ).getAllByRole("listitem");
+    const [running, failed, merged] = rows as [HTMLElement, HTMLElement, HTMLElement];
+
+    // Running/open → soft accent (orange).
+    expect(running.style.backgroundColor).toContain("--accent-muted");
+    expect(running.style.borderColor).toContain("--accent-border");
+    // Failed → soft darker surface.
+    expect(failed.style.backgroundColor).toContain("--bg-surface");
+    expect(failed.style.borderColor).toContain("--border-default");
+    // Merged → soft green.
+    expect(merged.style.backgroundColor).toContain("--status-success-muted");
+    expect(merged.style.borderColor).toContain("--status-success-border");
+    // Every row carries an explicit 1px solid edge (WKWebView-safe longhands).
+    for (const row of [running, failed, merged]) {
+      expect(row.style.borderStyle).toBe("solid");
+      expect(row.style.borderWidth).toBe("1px");
+    }
   });
 
   it("renders URL-only run pull request links", () => {
