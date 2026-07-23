@@ -97,6 +97,9 @@ export async function seedMergedWorkspace(
         },
         { updatedAt: Date.now() + 60 * 60 * 1000 },
       );
+      await window.__queryClient.cancelQueries({
+        queryKey: ["agents", "sidebar-conversations"],
+      });
       window.__queryClient.removeQueries({ queryKey: ["agents", "sidebar-conversations"] });
       window.__queryClient.removeQueries({ queryKey: ["agents", "project-conversations"] });
     },

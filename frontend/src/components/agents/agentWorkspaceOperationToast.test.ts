@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentWorkspaceOperationErrorDetail,
+  agentWorkspaceOperationResultDetail,
   agentWorkspaceOperationToastId,
   publishPipelineToastLabel,
   startAgentWorkspaceOperationToast,
@@ -67,7 +68,7 @@ describe("agentWorkspaceOperationToast", () => {
     expect(
       agentWorkspaceOperationErrorDetail(
         new Error(
-          "PR describer agent completed without submitting a PR description. Raw output: ## Summary\n\n" +
+          "\u001B[31mPR describer agent completed without submitting a PR description.\u001B[0m Raw output: ## Summary\n\n" +
             "A".repeat(2_000),
         ),
         "Failed to publish branch",
@@ -83,6 +84,24 @@ describe("agentWorkspaceOperationToast", () => {
 
     expect(detail).toHaveLength(240);
     expect(detail.endsWith("...")).toBe(true);
+  });
+
+  it("keeps terminal result details short enough for toast descriptions", () => {
+    const detail = agentWorkspaceOperationResultDetail(
+      [
+        "\u001B[1mGuard 1: pre-commit design token guards\u001B[0m",
+        "src/components/ui/notice-banner.tsx:21: backgroundColor: var(--status-warning-muted, rgba(224, 179, 65, 0.1))",
+        "src/components/automations/automationRunView.ts:497: backgroundColor: var(--status-success-muted, rgba(63, 191, 127, 0.08))",
+      ].join("\n"),
+    );
+
+    expect(detail).toBe("Full output is available in the workspace.");
+  });
+
+  it("preserves concise terminal result details", () => {
+    expect(agentWorkspaceOperationResultDetail("Typecheck failed")).toBe(
+      "Typecheck failed",
+    );
   });
 
   it("keeps one persistent loading toast updated with elapsed time", () => {
