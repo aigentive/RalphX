@@ -105,6 +105,8 @@ async fn passed_workspace_review_resumes_pr_fix_publish_after_stale_recovery_blo
         ],
     );
     std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
+    git(&workspace_path, &["add", "fix.txt"]);
+    git(&workspace_path, &["commit", "-m", "fix CI"]);
 
     let mut workspace = AgentConversationWorkspace::new(
         conversation_id,
