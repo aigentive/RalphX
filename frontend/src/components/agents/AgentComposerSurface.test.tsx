@@ -2987,6 +2987,62 @@ describe("AgentComposerSurface", () => {
   });
 
   describe("collapsible resting state", () => {
+    it("uses the presented queue prop for ArrowUp editing and queue-caused expansion", () => {
+      const onEditLastQueued = vi.fn();
+      // With no queued message, ArrowUp falls through to persisted input
+      // history. Remove that independent source of composer activity so this
+      // test exercises the queue prop's effect on edit/expansion behavior.
+      localStorage.removeItem("ralphx:composer-input-history");
+      const { rerender } = renderComposer({
+        dataTestId: "agent-composer",
+        collapsible: true,
+        hasQueuedMessages: false,
+        onEditLastQueued,
+      });
+
+      const textarea = screen.getByLabelText("Message input");
+      fireEvent.keyDown(textarea, { key: "ArrowUp" });
+      expect(onEditLastQueued).not.toHaveBeenCalled();
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "true",
+      );
+
+      rerender(
+        <QueryClientProvider client={new QueryClient()}>
+          <TooltipProvider delayDuration={0}>
+            <AgentComposerSurface
+              project={{
+                value: "project-1",
+                onValueChange: vi.fn(),
+                options: [],
+                placeholder: "Project",
+              }}
+              provider={{ value: "codex", onValueChange: vi.fn(), options: [] }}
+              model={{ value: "gpt-5.5", onValueChange: vi.fn(), options: [] }}
+              effort={{ value: "xhigh", onValueChange: vi.fn(), options: [] }}
+              mode={{ value: "edit", onValueChange: vi.fn(), options: [] }}
+              onSend={vi.fn()}
+              actionTestId="agent-composer-submit"
+              dataTestId="agent-composer"
+              collapsible
+              hasQueuedMessages
+              onEditLastQueued={onEditLastQueued}
+            />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+
+      fireEvent.keyDown(screen.getByLabelText("Message input"), {
+        key: "ArrowUp",
+      });
+      expect(onEditLastQueued).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
+        "data-collapsed",
+        "false",
+      );
+    });
+
     it("rests in a minimal one-row state when idle and empty", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
 
