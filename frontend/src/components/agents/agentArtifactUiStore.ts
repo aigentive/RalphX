@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import type { AgentArtifactState, AgentTaskArtifactMode } from "@/stores/agentSessionStore";
 
+import type {
+  AgentPublishSubTab,
+  AgentPublishSubTabRequest,
+} from "./agentPublishSubTab";
+
 const TASK_MODE_STORAGE_KEY = "ralphx:agents:taskMode";
 
 function loadPersistedTaskMode(): AgentTaskArtifactMode {
@@ -24,17 +29,23 @@ export const DEFAULT_AGENT_ARTIFACT_UI_STATE: AgentArtifactState = {
 
 interface AgentArtifactUiState {
   artifactByConversationId: Record<string, AgentArtifactState>;
+  publishSubTabRequest: AgentPublishSubTabRequest | null;
 }
 
 interface AgentArtifactUiActions {
   setArtifactState: (conversationId: string, state: AgentArtifactState) => void;
   clearArtifactState: (conversationId: string) => void;
+  requestPublishSubTab: (
+    conversationId: string,
+    tab: AgentPublishSubTab,
+  ) => void;
 }
 
 export const useAgentArtifactUiStore = create<
   AgentArtifactUiState & AgentArtifactUiActions
 >((set) => ({
   artifactByConversationId: {},
+  publishSubTabRequest: null,
 
   setArtifactState: (conversationId, state) =>
     set((current) => ({
@@ -50,6 +61,15 @@ export const useAgentArtifactUiStore = create<
       delete next[conversationId];
       return { artifactByConversationId: next };
     }),
+
+  requestPublishSubTab: (conversationId, tab) =>
+    set((current) => ({
+      publishSubTabRequest: {
+        conversationId,
+        requestId: (current.publishSubTabRequest?.requestId ?? 0) + 1,
+        tab,
+      },
+    })),
 }));
 
 export function selectOptimisticArtifactState(conversationId: string | null) {

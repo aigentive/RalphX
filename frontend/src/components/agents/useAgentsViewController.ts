@@ -82,6 +82,7 @@ import {
 } from "./agentConversations";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentPublishSubTab } from "./agentPublishSubTab";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   getAgentChatFocusSwitchOptions,
@@ -210,6 +211,14 @@ export function useAgentsViewController({
   );
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
+  const requestPublishSubTab = useCallback(
+    (conversationId: string, tab: AgentPublishSubTab) => {
+      useAgentArtifactUiStore
+        .getState()
+        .requestPublishSubTab(conversationId, tab);
+    },
+    [],
+  );
   const [taskArtifactFocusRequest, setTaskArtifactFocusRequest] =
     useState<AgentTaskArtifactFocusRequest | null>(null);
   const [selectedTaskArtifactId, setSelectedTaskArtifactId] =
@@ -722,8 +731,9 @@ export function useAgentsViewController({
     hasCurrentPassedWorkspaceReview(workspaceReviewContext);
   const workspaceReviewArtifactId =
     workspaceReviewContext?.monitor.reviewArtifactId ?? null;
-  const reviewArtifactId =
-    workspaceReviewArtifactId ?? prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const prReviewArtifactId = prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const reviewArtifactId = workspaceReviewArtifactId ?? prReviewArtifactId;
+  const shouldShowPrReviewTab = Boolean(prReviewContext || prReviewArtifactId);
   const shouldShowWorkspaceReviewTab = Boolean(
     workspaceReviewContext?.shouldShowTab || workspaceReviewArtifactId,
   );
@@ -734,10 +744,10 @@ export function useAgentsViewController({
       !availableArtifactTabs.includes("issues")
         ? (["issues", ...availableArtifactTabs] as IdeationArtifactTab[])
         : availableArtifactTabs;
-    if (
-      (!reviewArtifactId && !shouldShowWorkspaceReviewTab) ||
-      tabs.includes("review")
-    ) {
+    if (!shouldShowPrReviewTab) {
+      return tabs.filter((tab) => tab !== "review");
+    }
+    if (tabs.includes("review")) {
       return tabs;
     }
     return [...tabs, "review"];
@@ -745,8 +755,7 @@ export function useAgentsViewController({
     activeConversation?.contextType,
     availableArtifactTabs,
     hasActiveConversationIssues,
-    reviewArtifactId,
-    shouldShowWorkspaceReviewTab,
+    shouldShowPrReviewTab,
   ]);
   const hasAutomationArtifact =
     activeConversation?.agentMode === "automation" &&
@@ -1186,7 +1195,8 @@ export function useAgentsViewController({
             conversationId === workspaceReviewConversationId &&
             conversationId === selectedConversationId
           ) {
-            openArtifactTab(conversationId, "review");
+            requestPublishSubTab(conversationId, "review");
+            openArtifactTab(conversationId, "publish");
           }
         },
       );
@@ -1206,6 +1216,7 @@ export function useAgentsViewController({
     eventBus,
     openArtifactTab,
     queryClient,
+    requestPublishSubTab,
     selectedConversationId,
     workspaceReviewConversationId,
   ]);
@@ -1366,6 +1377,7 @@ export function useAgentsViewController({
     handlePreloadArtifacts,
     handleSelectArtifact,
   } = useAgentArtifactActions({
+    onPublishSubTabRequest: requestPublishSubTab,
     openArtifactTab,
     scheduleArtifactPanePreload,
     selectedConversationId,
@@ -1452,6 +1464,7 @@ export function useAgentsViewController({
         mode,
         requestId: (current?.requestId ?? 0) + 1,
       }));
+      requestPublishSubTab(selectedConversationId, "changes");
       openArtifactTab(selectedConversationId, "publish");
     },
     [
@@ -1459,6 +1472,7 @@ export function useAgentsViewController({
       handleReturnToWorkspaceChat,
       isWorkspaceReviewRunning,
       openArtifactTab,
+      requestPublishSubTab,
       selectedConversationId,
     ],
   );
@@ -1482,10 +1496,15 @@ export function useAgentsViewController({
       ) {
         handleReturnToWorkspaceChat();
       }
+      if (tab === "publish") {
+        handleOpenPublishPane();
+        return;
+      }
       handleSelectArtifact(tab);
     },
     [
       focusedAutomationRunConversationId,
+      handleOpenPublishPane,
       handleReturnToWorkspaceChat,
       handleSelectArtifact,
       isWorkspaceReviewRunning,

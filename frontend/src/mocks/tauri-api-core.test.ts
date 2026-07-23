@@ -25,6 +25,19 @@ const notificationSettings = {
   muted_project_ids: [],
 };
 
+describe("artifact command mocks", () => {
+  it("returns version history without an unhandled-command warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      invoke("get_artifact_version_history", { id: "review-artifact-1" }),
+    ).resolves.toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+
+    warn.mockRestore();
+  });
+});
+
 describe("agent workspace diff command mocks", () => {
   afterEach(() => {
     mockChatApi.reset();
