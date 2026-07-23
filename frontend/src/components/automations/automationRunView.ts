@@ -479,6 +479,49 @@ export function describeRunFailure(run: AutomationRun | null): string | null {
   return "Judge failed";
 }
 
+export interface RunTimelineHighlight {
+  backgroundColor: string;
+  borderColor: string;
+  markerColor: string;
+}
+
+/**
+ * Per-status soft card treatment, shared by the Runs-timeline cards and the Agents
+ * automation panel's runs list so both surfaces read identically at a glance:
+ * merged = soft green, running/active = soft accent (orange), failed = soft darker
+ * surface with an error marker. Everything else stays neutral.
+ */
+export function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
+  if (run.status === "merged") {
+    return {
+      backgroundColor: "var(--status-success-muted, rgba(63, 191, 127, 0.08))",
+      borderColor: "var(--status-success-border, rgba(63, 191, 127, 0.3))",
+      markerColor: "var(--status-success, #3fbf7f)",
+    };
+  }
+  const isActive =
+    isOpenAutomationRun(run) && run.status !== "cancelled" && !describeRunFailure(run);
+  if (isActive) {
+    return {
+      backgroundColor: "var(--accent-muted, rgba(255, 106, 53, 0.08))",
+      borderColor: "var(--accent-border, rgba(255, 106, 53, 0.28))",
+      markerColor: "var(--accent-primary, #ff6a35)",
+    };
+  }
+  if (describeRunFailure(run)) {
+    return {
+      backgroundColor: "var(--bg-surface, #1c1c21)",
+      borderColor: "var(--border-default, #393940)",
+      markerColor: "var(--status-error, #d55e00)",
+    };
+  }
+  return {
+    backgroundColor: "var(--bg-elevated, #232329)",
+    borderColor: "var(--border-subtle, #2e2e36)",
+    markerColor: "var(--text-subtle, #6b6b73)",
+  };
+}
+
 export function describeAutomationRunPrState(run: AutomationRun | null): string {
   if (!run) {
     return "No PR yet";
