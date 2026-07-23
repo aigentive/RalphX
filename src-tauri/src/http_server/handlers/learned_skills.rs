@@ -1,5 +1,4 @@
 use axum::{extract::State, http::StatusCode, Json};
-use chrono::Utc;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -10,6 +9,11 @@ use tokio::time::timeout;
 use tracing::error;
 
 use super::*;
+use crate::application::memory_orchestration::{
+    schedule_explicit_project_skill_distillation, ProjectSkillDistillationScheduleResult,
+    ProjectSkillDistillationScheduleStatus,
+};
+use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
 use crate::application::project_skill_export_service::MAX_SKILL_DESCRIPTION_CHARS;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::ChatConversationId;
@@ -21,8 +25,7 @@ use crate::domain::repositories::{
     ProjectSkillListOptions, SkillUsageListOptions, UpsertTaskOutcomeInput,
 };
 use crate::domain::services::{
-    new_empty_task_outcome, DistillEligibleOutcomesInput, MemoryToProjectSkillPromotionService,
-    ProjectSkillDistillationOrigin, ProjectSkillDistillerService, ProjectSkillImportApplyInput,
+    new_empty_task_outcome, MemoryToProjectSkillPromotionService, ProjectSkillImportApplyInput,
     ProjectSkillImportCandidate, ProjectSkillImportPreview, ProjectSkillImportPreviewInput,
     ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
     ProjectSkillReportService, ProjectSkillService, PromoteMemoryToProjectSkillInput,
@@ -38,16 +41,14 @@ use crate::utils::path_safety::validate_absolute_non_root_path;
 const GIT_HISTORY_SCAN_LIMIT: usize = 50;
 const GIT_HISTORY_DISTILL_SOURCE: &str = "git_commit_history";
 const GITHUB_PR_HISTORY_SCAN_LIMIT: usize = 25;
-const GITHUB_PR_CANDIDATE_LIST_LIMIT: usize = 25;
-pub(super) const GITHUB_PR_CANDIDATE_MAX_LIMIT: usize = 50;
 const GITHUB_PR_DISTILL_SOURCE: &str = "github_pr_history";
-const PROJECT_SKILL_AUTHORING_CONTRACT: &str = "project-skill-authoring";
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct GitHistoryIngestSummary {
     ingested_outcomes: usize,
     scanned_git_commits: usize,
     scanned_github_prs: usize,
+    outcome_ids: Vec<crate::domain::entities::TaskOutcomeId>,
 }
 
 pub async fn list_project_skills(
@@ -244,9 +245,14 @@ pub async fn process_conversation_project_skills(
     let message_count = messages.len();
     if message_count == 0 {
         return Ok(Json(ProcessConversationProjectSkillsResponse {
-            staged_skills: Vec::new(),
-            skipped_existing: 0,
             message_count,
+            status: ProjectSkillDistillationScheduleStatus::Skipped
+                .as_str()
+                .to_string(),
+            selected_outcomes: 0,
+            batch_count: 0,
+            started_batches: 0,
+            message: Some("No conversation evidence was available to queue.".to_string()),
         }));
     }
     let evidence = build_conversation_skill_evidence(&conversation_id, &messages);
@@ -265,7 +271,7 @@ pub async fn process_conversation_project_skills(
     }
     outcome.provider_session_id = conversation.provider_session_id;
 
-    state
+    let recorded_outcome = state
         .app_state
         .task_outcome_repo
         .upsert(UpsertTaskOutcomeInput { outcome })
@@ -277,35 +283,23 @@ pub async fn process_conversation_project_skills(
                 message: Some("failed to record conversation skill outcome".to_string()),
             }
         })?;
-
-    let distiller = ProjectSkillDistillerService::new(
-        Arc::clone(&state.app_state.task_outcome_repo),
-        Arc::clone(&state.app_state.project_skill_repo),
-    );
-    let result = distiller
-        .distill_eligible_outcomes(DistillEligibleOutcomesInput {
-            project_id,
-            source: Some("agent_conversation".to_string()),
-            limit: 10,
-            origin: ProjectSkillDistillationOrigin::ManualCurator,
-        })
-        .await
-        .map_err(|error| {
-            error!("failed to process conversation project skills: {}", error);
-            HttpError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: Some("failed to process conversation project skills".to_string()),
-            }
-        })?;
+    let schedule = schedule_explicit_project_skill_distillation(
+        &state.app_state,
+        &project_id,
+        ProjectSkillDistillationSelection::ExactOutcomes(vec![recorded_outcome.id]),
+        Some(&conversation.id),
+        ChatContextType::Project,
+        project_id.as_str(),
+    )
+    .await;
 
     Ok(Json(ProcessConversationProjectSkillsResponse {
-        staged_skills: result
-            .staged_skills
-            .into_iter()
-            .map(ProjectSkillResponse::from)
-            .collect(),
-        skipped_existing: result.skipped_existing,
         message_count,
+        status: schedule.status.as_str().to_string(),
+        selected_outcomes: schedule.selected_outcomes,
+        batch_count: schedule.batch_count,
+        started_batches: schedule.started_batches,
+        message: schedule.message,
     }))
 }
 
@@ -473,66 +467,44 @@ pub async fn distill_project_skills(
     let project_id = ProjectId::from_string(req.project_id);
     assert_project_id_scope(&project_id, &scope)?;
     let requested_source = req.source.clone();
-    let limit = req.limit.unwrap_or(25);
-    let include_git_history = req.include_git_history.unwrap_or_else(|| {
-        requested_source
-            .as_deref()
-            .map_or(true, |source| source == GIT_HISTORY_DISTILL_SOURCE)
-    });
-    let include_github_pr_history = req.include_github_pr_history.unwrap_or_else(|| {
-        requested_source
-            .as_deref()
-            .map_or(true, |source| source == GITHUB_PR_DISTILL_SOURCE)
-    });
-
-    let distiller = ProjectSkillDistillerService::new(
-        Arc::clone(&state.app_state.task_outcome_repo),
-        Arc::clone(&state.app_state.project_skill_repo),
-    );
-    let mut result = distiller
-        .distill_eligible_outcomes(DistillEligibleOutcomesInput {
-            project_id: project_id.clone(),
-            source: requested_source.clone(),
-            limit,
-            origin: ProjectSkillDistillationOrigin::ManualCurator,
-        })
-        .await
-        .map_err(|error| {
-            error!("failed to distill project skills: {}", error);
-            HttpError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: Some("failed to distill project skills".to_string()),
-            }
-        })?;
+    let limit = req.limit.unwrap_or(10).clamp(1, 10);
+    let include_git_history = req.include_git_history.unwrap_or(false);
+    let include_github_pr_history = req.include_github_pr_history.unwrap_or(false);
+    let mut schedules = vec![
+        schedule_explicit_project_skill_distillation(
+            &state.app_state,
+            &project_id,
+            ProjectSkillDistillationSelection::EligibleOutcomes {
+                source: requested_source,
+                limit,
+            },
+            None,
+            ChatContextType::Project,
+            project_id.as_str(),
+        )
+        .await,
+    ];
     let mut ingested_outcomes = 0;
     let mut scanned_git_commits = 0;
     let mut scanned_github_prs = 0;
 
-    if result.staged_skills.is_empty() && include_git_history {
+    if include_git_history {
         match ingest_recent_git_history_outcomes(&state, &project_id).await {
-            Ok(summary) if summary.ingested_outcomes > 0 => {
+            Ok(summary) => {
                 ingested_outcomes = summary.ingested_outcomes;
                 scanned_git_commits = summary.scanned_git_commits;
                 scanned_github_prs = summary.scanned_github_prs;
-                result = distiller
-                    .distill_eligible_outcomes(DistillEligibleOutcomesInput {
-                        project_id: project_id.clone(),
-                        source: Some(GIT_HISTORY_DISTILL_SOURCE.to_string()),
-                        limit,
-                        origin: ProjectSkillDistillationOrigin::ManualCurator,
-                    })
-                    .await
-                    .map_err(|error| {
-                        error!("failed to distill git history project skills: {}", error);
-                        HttpError {
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: Some("failed to distill project skills".to_string()),
-                        }
-                    })?;
-            }
-            Ok(summary) => {
-                scanned_git_commits = summary.scanned_git_commits;
-                scanned_github_prs = summary.scanned_github_prs;
+                schedules.push(
+                    schedule_explicit_project_skill_distillation(
+                        &state.app_state,
+                        &project_id,
+                        ProjectSkillDistillationSelection::ExactOutcomes(summary.outcome_ids),
+                        None,
+                        ChatContextType::Project,
+                        project_id.as_str(),
+                    )
+                    .await,
+                );
             }
             Err(error) => {
                 error!(
@@ -542,31 +514,23 @@ pub async fn distill_project_skills(
             }
         }
     }
-    if result.staged_skills.is_empty() && include_github_pr_history {
+    if include_github_pr_history {
         match ingest_recent_github_pr_outcomes(&state, &project_id).await {
-            Ok(summary) if summary.ingested_outcomes > 0 => {
+            Ok(summary) => {
                 ingested_outcomes += summary.ingested_outcomes;
                 scanned_git_commits += summary.scanned_git_commits;
                 scanned_github_prs += summary.scanned_github_prs;
-                result = distiller
-                    .distill_eligible_outcomes(DistillEligibleOutcomesInput {
-                        project_id: project_id.clone(),
-                        source: Some(GITHUB_PR_DISTILL_SOURCE.to_string()),
-                        limit,
-                        origin: ProjectSkillDistillationOrigin::ManualCurator,
-                    })
-                    .await
-                    .map_err(|error| {
-                        error!("failed to distill GitHub PR project skills: {}", error);
-                        HttpError {
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: Some("failed to distill project skills".to_string()),
-                        }
-                    })?;
-            }
-            Ok(summary) => {
-                scanned_git_commits += summary.scanned_git_commits;
-                scanned_github_prs += summary.scanned_github_prs;
+                schedules.push(
+                    schedule_explicit_project_skill_distillation(
+                        &state.app_state,
+                        &project_id,
+                        ProjectSkillDistillationSelection::ExactOutcomes(summary.outcome_ids),
+                        None,
+                        ChatContextType::Project,
+                        project_id.as_str(),
+                    )
+                    .await,
+                );
             }
             Err(error) => {
                 error!(
@@ -577,18 +541,75 @@ pub async fn distill_project_skills(
         }
     }
 
+    let schedule = combine_distillation_schedules(&schedules);
     Ok(Json(DistillProjectSkillsResponse {
-        staged_skills: result
-            .staged_skills
-            .into_iter()
-            .map(ProjectSkillResponse::from)
-            .collect(),
-        skipped_existing: result.skipped_existing,
-        updated_existing: result.updated_existing,
+        status: schedule.status.as_str().to_string(),
+        selected_outcomes: schedule.selected_outcomes,
+        batch_count: schedule.batch_count,
+        started_batches: schedule.started_batches,
+        message: schedule.message,
         ingested_outcomes,
         scanned_git_commits,
         scanned_github_prs,
     }))
+}
+
+fn combine_distillation_schedules(
+    schedules: &[ProjectSkillDistillationScheduleResult],
+) -> ProjectSkillDistillationScheduleResult {
+    let selected_outcomes = schedules
+        .iter()
+        .map(|result| result.selected_outcomes)
+        .sum();
+    let batch_count = schedules.iter().map(|result| result.batch_count).sum();
+    let started_batches = schedules.iter().map(|result| result.started_batches).sum();
+    let status = if started_batches > 0 {
+        ProjectSkillDistillationScheduleStatus::Started
+    } else if schedules
+        .iter()
+        .any(|result| result.status == ProjectSkillDistillationScheduleStatus::Failed)
+    {
+        ProjectSkillDistillationScheduleStatus::Failed
+    } else if schedules
+        .iter()
+        .any(|result| result.status == ProjectSkillDistillationScheduleStatus::Queued)
+    {
+        ProjectSkillDistillationScheduleStatus::Queued
+    } else if schedules
+        .iter()
+        .any(|result| result.status == ProjectSkillDistillationScheduleStatus::Unavailable)
+    {
+        ProjectSkillDistillationScheduleStatus::Unavailable
+    } else {
+        ProjectSkillDistillationScheduleStatus::Skipped
+    };
+    ProjectSkillDistillationScheduleResult {
+        status,
+        selected_outcomes,
+        batch_count,
+        started_batches,
+        message: Some(match status {
+            ProjectSkillDistillationScheduleStatus::Started if started_batches < batch_count => {
+                "Some evidence batches started; the remainder stay queued for retry.".to_string()
+            }
+            ProjectSkillDistillationScheduleStatus::Started => {
+                "Evidence queued and the skill distiller started.".to_string()
+            }
+            ProjectSkillDistillationScheduleStatus::Failed => {
+                "Evidence remains queued because the skill distiller could not start.".to_string()
+            }
+            ProjectSkillDistillationScheduleStatus::Queued => {
+                "Evidence is already queued or being processed by the distiller.".to_string()
+            }
+            ProjectSkillDistillationScheduleStatus::Unavailable => {
+                "Evidence remains queued until the project runtime is available.".to_string()
+            }
+            ProjectSkillDistillationScheduleStatus::Skipped => schedules
+                .iter()
+                .find_map(|result| result.message.clone())
+                .unwrap_or_else(|| "No eligible evidence was available to queue.".to_string()),
+        }),
+    }
 }
 
 pub async fn list_project_skill_report_cards(
@@ -629,156 +650,6 @@ pub async fn list_project_skill_report_cards(
     Ok(Json(ListProjectSkillReportCardsResponse { cards, count }))
 }
 
-pub async fn list_project_skill_pull_request_candidates(
-    State(state): State<HttpServerState>,
-    scope: ProjectScope,
-    Json(req): Json<ListProjectSkillPullRequestCandidatesRequest>,
-) -> Result<Json<ListProjectSkillPullRequestCandidatesResponse>, HttpError> {
-    let project_id = ProjectId::from_string(req.project_id);
-    assert_project_id_scope(&project_id, &scope)?;
-    let limit = req
-        .limit
-        .unwrap_or(GITHUB_PR_CANDIDATE_LIST_LIMIT)
-        .clamp(1, GITHUB_PR_CANDIDATE_MAX_LIMIT);
-    let working_dir = project_working_dir(&state, &project_id).await?;
-    if !working_dir.is_dir() {
-        return Ok(Json(ListProjectSkillPullRequestCandidatesResponse {
-            candidates: Vec::new(),
-            count: 0,
-            limit,
-        }));
-    }
-
-    let candidates = read_recent_github_pull_requests(&working_dir, limit)
-        .await
-        .map_err(|error| {
-            error!("failed to list GitHub PR skill candidates: {}", error);
-            HttpError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: Some("failed to list GitHub PR skill candidates".to_string()),
-            }
-        })?
-        .into_iter()
-        .map(ProjectSkillPullRequestCandidateResponse::from)
-        .collect::<Vec<_>>();
-    let count = candidates.len();
-
-    Ok(Json(ListProjectSkillPullRequestCandidatesResponse {
-        candidates,
-        count,
-        limit,
-    }))
-}
-
-pub async fn stage_project_skill_from_pull_request(
-    State(state): State<HttpServerState>,
-    scope: ProjectScope,
-    Json(req): Json<StageProjectSkillFromPullRequestRequest>,
-) -> Result<Json<StageProjectSkillFromPullRequestResponse>, HttpError> {
-    let project_id = ProjectId::from_string(req.project_id);
-    assert_project_id_scope(&project_id, &scope)?;
-    if req.number <= 0 {
-        return Err(HttpError {
-            status: StatusCode::BAD_REQUEST,
-            message: Some("pull request number must be positive".to_string()),
-        });
-    }
-
-    let working_dir = project_working_dir(&state, &project_id).await?;
-    if !working_dir.is_dir() {
-        return Err(HttpError {
-            status: StatusCode::BAD_REQUEST,
-            message: Some("project working directory is unavailable".to_string()),
-        });
-    }
-    let pull_request =
-        read_recent_github_pull_requests(&working_dir, GITHUB_PR_CANDIDATE_MAX_LIMIT)
-            .await
-            .map_err(|error| {
-                error!("failed to read GitHub PR skill candidate: {}", error);
-                HttpError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: Some("failed to read GitHub PR skill candidate".to_string()),
-                }
-            })?
-            .into_iter()
-            .find(|candidate| candidate.number == req.number)
-            .ok_or_else(|| HttpError {
-                status: StatusCode::NOT_FOUND,
-                message: Some(
-                    "pull request candidate was not found in recent GitHub PRs".to_string(),
-                ),
-            })?;
-
-    // Enrich from `gh pr view` (files, commits, reviews, labels, body) so the
-    // candidate encodes real triggers + scope; fall back to summary-only
-    // templating if detail is unavailable (graceful degradation).
-    let detail = read_github_pull_request_detail(&working_dir, pull_request.number)
-        .await
-        .unwrap_or(None);
-    let source = match detail {
-        Some(detail) => pr_skill_source_from_detail(detail),
-        None => pr_skill_source_from_summary(&pull_request),
-    };
-    let fields = build_pr_skill_fields(&source);
-
-    let now = Utc::now();
-    let skill = ProjectSkill {
-        id: ProjectSkillId::new(),
-        project_id: project_id.clone(),
-        title: fields.title,
-        bucket: "execution".to_string(),
-        stage: "execution".to_string(),
-        status: ProjectSkillLifecycleStatus::Staged,
-        pinned: false,
-        archived: false,
-        scope_paths: fields.scope_paths,
-        compact_guidance: fields.compact_guidance,
-        body_markdown: fields.body_markdown,
-        predicted_effect: Some(fields.predicted_effect),
-        provenance_json: serde_json::json!({
-            "source": GITHUB_PR_DISTILL_SOURCE,
-            "source_ref_kind": "pull_request",
-            "source_ref_id": pull_request.number.to_string(),
-            "pull_request_number": pull_request.number,
-            "enriched_from_pr_detail": fields.enriched,
-            "authoring_contract": PROJECT_SKILL_AUTHORING_CONTRACT,
-            "evidence": fields.evidence,
-        }),
-        companion_of_skill_id: None,
-        content_hash: String::new(),
-        evidence_hash: String::new(),
-        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
-        pipeline_role: None,
-        created_at: now,
-        updated_at: now,
-    };
-
-    let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
-    let resolution = service
-        .stage_skill_resolved(skill)
-        .await
-        .map_err(|error| match error {
-            AppError::Validation(message) => HttpError {
-                status: StatusCode::BAD_REQUEST,
-                message: Some(message),
-            },
-            other => {
-                error!("failed to stage GitHub PR project skill: {}", other);
-                HttpError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: Some("failed to stage GitHub PR project skill".to_string()),
-                }
-            }
-        })?;
-
-    Ok(Json(StageProjectSkillFromPullRequestResponse {
-        skill: Some(ProjectSkillResponse::from(resolution.skill)),
-        skipped_existing: resolution.outcome
-            == crate::domain::repositories::ProjectSkillResolutionOutcome::Duplicate,
-    }))
-}
-
 async fn ingest_recent_git_history_outcomes(
     state: &HttpServerState,
     project_id: &ProjectId,
@@ -798,6 +669,7 @@ async fn ingest_recent_git_history_outcomes(
     let commits = read_recent_git_commits(&working_dir, GIT_HISTORY_SCAN_LIMIT).await?;
     let scanned_git_commits = commits.len();
     let mut ingested_outcomes = 0;
+    let mut outcome_ids = Vec::new();
     for commit in commits {
         let mut outcome = new_empty_task_outcome(
             project_id.clone(),
@@ -815,18 +687,22 @@ async fn ingest_recent_git_history_outcomes(
             "subject": commit.subject,
             "scan_limit": GIT_HISTORY_SCAN_LIMIT,
         });
-        state
+        let saved = state
             .app_state
             .task_outcome_repo
             .upsert(UpsertTaskOutcomeInput { outcome })
             .await?;
         ingested_outcomes += 1;
+        if saved.status == TaskOutcomeStatus::Eligible {
+            outcome_ids.push(saved.id);
+        }
     }
 
     Ok(GitHistoryIngestSummary {
         ingested_outcomes,
         scanned_git_commits,
         scanned_github_prs: 0,
+        outcome_ids,
     })
 }
 
@@ -850,6 +726,7 @@ async fn ingest_recent_github_pr_outcomes(
         read_recent_github_pull_requests(&working_dir, GITHUB_PR_HISTORY_SCAN_LIMIT).await?;
     let scanned_github_prs = pull_requests.len();
     let mut ingested_outcomes = 0;
+    let mut outcome_ids = Vec::new();
     for pull_request in pull_requests {
         let mut outcome = new_empty_task_outcome(
             project_id.clone(),
@@ -879,18 +756,22 @@ async fn ingest_recent_github_pr_outcomes(
             "base_ref_name": pull_request.base_ref_name,
             "scan_limit": GITHUB_PR_HISTORY_SCAN_LIMIT,
         });
-        state
+        let saved = state
             .app_state
             .task_outcome_repo
             .upsert(UpsertTaskOutcomeInput { outcome })
             .await?;
         ingested_outcomes += 1;
+        if saved.status == TaskOutcomeStatus::Eligible {
+            outcome_ids.push(saved.id);
+        }
     }
 
     Ok(GitHistoryIngestSummary {
         ingested_outcomes,
         scanned_git_commits: 0,
         scanned_github_prs,
+        outcome_ids,
     })
 }
 
@@ -914,53 +795,6 @@ pub(super) struct GithubPrSummary {
     pub(super) updated_at: Option<String>,
     pub(super) head_ref_name: Option<String>,
     pub(super) base_ref_name: Option<String>,
-}
-
-impl From<GithubPrSummary> for ProjectSkillPullRequestCandidateResponse {
-    fn from(summary: GithubPrSummary) -> Self {
-        Self {
-            number: summary.number,
-            title: summary.title,
-            state: summary.state,
-            url: summary.url,
-            merged_at: summary.merged_at,
-            closed_at: summary.closed_at,
-            updated_at: summary.updated_at,
-            head_ref_name: summary.head_ref_name,
-            base_ref_name: summary.base_ref_name,
-        }
-    }
-}
-
-async fn project_working_dir(
-    state: &HttpServerState,
-    project_id: &ProjectId,
-) -> Result<std::path::PathBuf, HttpError> {
-    let project = state
-        .app_state
-        .project_repo
-        .get_by_id(project_id)
-        .await
-        .map_err(|error| {
-            error!(
-                "failed to load project for skill candidate discovery: {}",
-                error
-            );
-            HttpError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: Some("failed to load project".to_string()),
-            }
-        })?
-        .ok_or_else(|| HttpError {
-            status: StatusCode::NOT_FOUND,
-            message: Some(format!("project {} not found", project_id)),
-        })?;
-    validate_absolute_non_root_path(Path::new(&project.working_directory), "project root")
-        .map(|path| path.to_path_buf())
-        .map_err(|error| HttpError {
-            status: StatusCode::BAD_REQUEST,
-            message: Some(error.to_string()),
-        })
 }
 
 async fn read_recent_github_pull_requests(
@@ -1011,112 +845,6 @@ pub(super) fn parse_github_pr_summaries(output: &str) -> AppResult<Vec<GithubPrS
     Ok(pull_requests)
 }
 
-const MAX_PR_BODY_EXCERPT_CHARS: usize = 600;
-const MAX_PR_SCOPE_PATHS: usize = 8;
-const MAX_PR_WORKFLOW_COMMITS: usize = 8;
-const MAX_PR_SKILL_TITLE_CHARS: usize = 64;
-
-/// Structured `gh pr view --json` fields used to build a useful, reusable skill
-/// candidate. The raw diff is intentionally NOT fetched: structured metadata
-/// (files, commits, reviews, labels, body) gives enough signal for deterministic
-/// templating while avoiding the large-payload / secret-in-diff surface.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct GithubPrDetail {
-    #[serde(default)]
-    pub(super) number: i64,
-    #[serde(default)]
-    pub(super) body: String,
-    #[serde(default)]
-    pub(super) state: Option<String>,
-    #[serde(default)]
-    pub(super) url: Option<String>,
-    #[serde(default)]
-    pub(super) additions: i64,
-    #[serde(default)]
-    pub(super) deletions: i64,
-    #[serde(default)]
-    pub(super) base_ref_name: Option<String>,
-    #[serde(default)]
-    pub(super) files: Vec<GithubPrFile>,
-    #[serde(default)]
-    pub(super) commits: Vec<GithubPrCommit>,
-    #[serde(default)]
-    pub(super) reviews: Vec<GithubPrReview>,
-    #[serde(default)]
-    pub(super) labels: Vec<GithubPrLabel>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct GithubPrFile {
-    #[serde(default)]
-    pub(super) path: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct GithubPrCommit {
-    #[serde(default)]
-    pub(super) message_headline: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct GithubPrReview {
-    #[serde(default)]
-    pub(super) state: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct GithubPrLabel {
-    #[serde(default)]
-    pub(super) name: String,
-}
-
-/// Read structured detail for one PR via `gh pr view <n> --json ...`.
-/// Returns `Ok(None)` when gh is unavailable/unauthenticated or the PR is not
-/// found, so staging degrades gracefully to summary-only templating.
-pub(super) async fn read_github_pull_request_detail(
-    working_dir: &Path,
-    number: i64,
-) -> AppResult<Option<GithubPrDetail>> {
-    if number <= 0 {
-        return Ok(None);
-    }
-    let output = timeout(Duration::from_secs(15), async {
-        let child = Command::new(resolve_gh_cli_path())
-            .arg("pr")
-            .arg("view")
-            // `number` is a validated positive integer, never a raw string arg.
-            .arg(number.to_string())
-            .arg("--json")
-            .arg("number,body,state,url,additions,deletions,baseRefName,files,commits,reviews,labels")
-            .current_dir(working_dir)
-            .env("GH_NO_UPDATE_NOTIFIER", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| {
-                AppError::Infrastructure(format!("failed to start gh pr view: {error}"))
-            })?;
-        child.wait_with_output().await.map_err(|error| {
-            AppError::Infrastructure(format!("failed to read gh pr view output: {error}"))
-        })
-    })
-    .await
-    .map_err(|_| AppError::Infrastructure("timed out reading GitHub PR detail".to_string()))??;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let detail = serde_json::from_slice::<GithubPrDetail>(&output.stdout).map_err(|error| {
-        AppError::Infrastructure(format!("failed to parse gh pr view: {error}"))
-    })?;
-    Ok(Some(detail))
-}
-
-/// Mask common secret shapes before PR free-text is persisted to provenance JSON
 /// or rendered into an exported (committed) SKILL.md.
 pub(super) fn redact_pr_text(text: &str) -> String {
     use std::sync::OnceLock;
@@ -1151,299 +879,6 @@ pub(super) fn redact_pr_text(text: &str) -> String {
         .expect("valid secret key=value regex")
     });
     kv.replace_all(&output, "$1=[REDACTED]").into_owned()
-}
-
-/// Provider-neutral inputs for deterministic PR skill templating.
-pub(super) struct PrSkillSource {
-    pub(super) number: i64,
-    pub(super) url: Option<String>,
-    pub(super) state: Option<String>,
-    pub(super) base_ref: Option<String>,
-    pub(super) changed_paths: Vec<String>,
-    pub(super) commit_headlines: Vec<String>,
-    pub(super) review_states: Vec<String>,
-    pub(super) labels: Vec<String>,
-    pub(super) body_excerpt: Option<String>,
-    pub(super) additions: i64,
-    pub(super) deletions: i64,
-    pub(super) enriched: bool,
-}
-
-pub(super) struct PrSkillFields {
-    pub(super) title: String,
-    pub(super) compact_guidance: String,
-    pub(super) body_markdown: String,
-    pub(super) predicted_effect: String,
-    pub(super) scope_paths: Vec<String>,
-    pub(super) evidence: serde_json::Value,
-    pub(super) enriched: bool,
-}
-
-pub(super) fn pr_skill_source_from_detail(detail: GithubPrDetail) -> PrSkillSource {
-    let changed_paths = detail
-        .files
-        .into_iter()
-        .map(|file| file.path.trim().to_string())
-        .filter(|path| !path.is_empty())
-        .collect::<Vec<_>>();
-    let commit_headlines = detail
-        .commits
-        .into_iter()
-        .map(|commit| redact_pr_text(commit.message_headline.trim()))
-        .filter(|headline| !headline.is_empty())
-        .collect::<Vec<_>>();
-    let review_states = detail
-        .reviews
-        .into_iter()
-        .map(|review| review.state.trim().to_string())
-        .filter(|state| !state.is_empty())
-        .collect::<Vec<_>>();
-    let labels = detail
-        .labels
-        .into_iter()
-        // Label names are arbitrary user-controlled free text → redact like other PR text.
-        .map(|label| redact_pr_text(label.name.trim()))
-        .filter(|name| !name.is_empty())
-        .collect::<Vec<_>>();
-    let body_excerpt = {
-        let redacted = redact_pr_text(detail.body.trim());
-        if redacted.is_empty() {
-            None
-        } else {
-            Some(truncate_text(&redacted, MAX_PR_BODY_EXCERPT_CHARS))
-        }
-    };
-    PrSkillSource {
-        number: detail.number,
-        url: detail.url,
-        state: detail.state,
-        base_ref: detail.base_ref_name,
-        changed_paths,
-        commit_headlines,
-        review_states,
-        labels,
-        body_excerpt,
-        additions: detail.additions,
-        deletions: detail.deletions,
-        enriched: true,
-    }
-}
-
-pub(super) fn pr_skill_source_from_summary(summary: &GithubPrSummary) -> PrSkillSource {
-    PrSkillSource {
-        number: summary.number,
-        url: summary.url.clone(),
-        state: summary.state.clone(),
-        base_ref: summary.base_ref_name.clone(),
-        changed_paths: Vec::new(),
-        commit_headlines: Vec::new(),
-        review_states: Vec::new(),
-        labels: Vec::new(),
-        body_excerpt: None,
-        additions: 0,
-        deletions: 0,
-        enriched: false,
-    }
-}
-
-/// Reduce a changed file path to a stable directory scope prefix (up to 3 dir
-/// segments), dropping the file name. Top-level files yield no scope.
-fn pr_scope_path(file: &str) -> Option<String> {
-    let parts: Vec<&str> = file
-        .split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-        .collect();
-    if parts.len() <= 1 {
-        return None;
-    }
-    let take = (parts.len() - 1).min(3);
-    Some(parts[..take].join("/"))
-}
-
-fn pr_scope_paths(changed_paths: &[String]) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut paths = Vec::new();
-    for file in changed_paths {
-        if let Some(scope) = pr_scope_path(file) {
-            if seen.insert(scope.clone()) {
-                paths.push(scope);
-                if paths.len() >= MAX_PR_SCOPE_PATHS {
-                    break;
-                }
-            }
-        }
-    }
-    paths
-}
-
-fn pr_file_extensions(changed_paths: &[String]) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut extensions = Vec::new();
-    for file in changed_paths {
-        if let Some(extension) = Path::new(file).extension().and_then(|value| value.to_str()) {
-            let dotted = format!(".{extension}");
-            if seen.insert(dotted.clone()) {
-                extensions.push(dotted);
-                if extensions.len() >= 4 {
-                    break;
-                }
-            }
-        }
-    }
-    extensions
-}
-
-fn pr_primary_area(scope_paths: &[String]) -> String {
-    scope_paths
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "the repository".to_string())
-}
-
-fn pr_review_summary(review_states: &[String]) -> String {
-    if review_states.is_empty() {
-        return "no recorded reviews".to_string();
-    }
-    let approved = review_states
-        .iter()
-        .filter(|state| state.eq_ignore_ascii_case("APPROVED"))
-        .count();
-    let changes = review_states
-        .iter()
-        .filter(|state| state.eq_ignore_ascii_case("CHANGES_REQUESTED"))
-        .count();
-    let mut parts = Vec::new();
-    if approved > 0 {
-        parts.push(format!("{approved} approving"));
-    }
-    if changes > 0 {
-        parts.push(format!("{changes} requesting changes"));
-    }
-    if parts.is_empty() {
-        format!("{} review(s)", review_states.len())
-    } else {
-        parts.join(", ")
-    }
-}
-
-/// Build deterministic draft fields from bounded PR signal. This intentionally
-/// produces an authoring worksheet, not a final approved skill.
-pub(super) fn build_pr_skill_fields(source: &PrSkillSource) -> PrSkillFields {
-    let scope_paths = pr_scope_paths(&source.changed_paths);
-    let extensions = pr_file_extensions(&source.changed_paths);
-    let area = pr_primary_area(&scope_paths);
-    let review_summary = pr_review_summary(&source.review_states);
-
-    let title = truncate_text(
-        &format!("Draft procedure from PR #{} {area}", source.number),
-        MAX_PR_SKILL_TITLE_CHARS,
-    );
-
-    let mut compact_guidance = String::from(
-        "Use this selected PR only as bounded evidence while authoring a reusable procedure.",
-    );
-    if scope_paths.is_empty() {
-        compact_guidance.push_str(" Review before similar changes");
-    } else {
-        compact_guidance.push_str(&format!(
-            " Review before work on {}",
-            scope_paths.join(", ")
-        ));
-    }
-    if !extensions.is_empty() {
-        compact_guidance.push_str(&format!(" or editing {} files", extensions.join("/")));
-    }
-    if !source.labels.is_empty() {
-        compact_guidance.push_str(&format!(" ({} work)", source.labels.join(", ")));
-    }
-    compact_guidance.push('.');
-
-    let when = if scope_paths.is_empty() {
-        "similar changes".to_string()
-    } else {
-        scope_paths.join(", ")
-    };
-    let extension_clause = if extensions.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", extensions.join(", "))
-    };
-    let evidence_steps = if source.commit_headlines.is_empty() {
-        "1. Identify the reusable procedure from the PR metadata before approval.\n2. Add concrete project commands, files, or review checks if this draft is too generic.\n3. Keep only steps that apply beyond this one pull request.".to_string()
-    } else {
-        let commit_hints = source
-            .commit_headlines
-            .iter()
-            .take(MAX_PR_WORKFLOW_COMMITS)
-            .map(|headline| format!("   - {headline}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            "1. Treat these commit headlines as hints, not as procedure:\n{commit_hints}\n2. Rewrite the reusable steps a future agent should follow.\n3. Remove PR-specific details before approval unless they belong in provenance."
-        )
-    };
-    let url_clause = source
-        .url
-        .as_deref()
-        .map(|url| format!(" ({url})"))
-        .unwrap_or_default();
-    let labels_line = if source.labels.is_empty() {
-        String::new()
-    } else {
-        format!("\nLabels: {}.", source.labels.join(", "))
-    };
-    let body_excerpt_block = source
-        .body_excerpt
-        .as_deref()
-        .filter(|excerpt| !excerpt.is_empty())
-        .map(|excerpt| format!("\n\nPR summary:\n\n{excerpt}"))
-        .unwrap_or_default();
-    let body_markdown = format!(
-        "## Authoring required\n\nThis is a staged draft from bounded GitHub PR metadata. Edit it before approval so it describes a reusable project procedure, not just PR #{number}.\n\n## When to use\n\nUse when working on {when}{extension_clause}.\n\n## Procedure\n\n{evidence_steps}\n\n## Verification\n\n- Replace generic hints with concrete commands or checks before approval.\n- Confirm the procedure is reusable beyond PR #{number}.\n- Re-run the project's relevant lint and tests when applying this skill.\n- Compare the approved draft against the original review outcome ({review_summary}).\n\n<details>\n<summary>Provenance</summary>\n\n- Source: GitHub PR #{number}{url_clause}.\n- Authoring contract: `{authoring_contract}`.\n- Changed {file_count} files (+{additions}/-{deletions}).\n- Full diff read: false.{labels_line}{body_excerpt_block}\n\n</details>",
-        number = source.number,
-        authoring_contract = PROJECT_SKILL_AUTHORING_CONTRACT,
-        file_count = source.changed_paths.len(),
-        additions = source.additions,
-        deletions = source.deletions,
-    );
-
-    let predicted_effect = format!(
-        "Improves similar {area} work only after this PR-backed draft is rewritten into an approved reusable procedure ({review_summary})."
-    );
-
-    let evidence = serde_json::json!({
-        "source": "gh_pr_view",
-        "number": source.number,
-        "url": source.url,
-        "state": source.state,
-        "base_ref_name": source.base_ref,
-        "changed_paths": source.changed_paths.iter().take(50).collect::<Vec<_>>(),
-        "changed_file_count": source.changed_paths.len(),
-        "additions": source.additions,
-        "deletions": source.deletions,
-        "commit_headlines": source
-            .commit_headlines
-            .iter()
-            .take(MAX_PR_WORKFLOW_COMMITS)
-            .collect::<Vec<_>>(),
-        "review_states": source.review_states,
-        "labels": source.labels,
-        "body_excerpt": source.body_excerpt,
-        "full_diff_read": false,
-        "redaction_applied": true,
-        "enriched_from_pr_detail": source.enriched,
-        "authoring_contract": PROJECT_SKILL_AUTHORING_CONTRACT,
-    });
-
-    PrSkillFields {
-        title,
-        compact_guidance,
-        body_markdown,
-        predicted_effect,
-        scope_paths,
-        evidence,
-        enriched: source.enriched,
-    }
 }
 
 async fn read_recent_git_commits(

@@ -172,6 +172,7 @@ pub mod priority_service;
 pub mod project_pr_template;
 pub mod project_skill_export_service;
 pub mod project_skill_distillation_service;
+mod project_skill_distillation_batching;
 #[cfg(test)]
 mod project_skill_distillation_service_tests;
 pub(crate) mod provider_env_file;

@@ -1,22 +1,22 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, Utc};
-use sha2::{Digest, Sha256};
-
 use crate::domain::entities::{
     MemoryActorType, MemoryEvent, ProjectId, ProjectSkillEvidenceBatch,
-    ProjectSkillEvidenceBatchId, ProjectSkillEvidenceBatchItem, ProjectSkillEvidenceBatchStatus,
-    ProjectSkillLifecycleStatus, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
-    PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS, PROJECT_SKILL_EVIDENCE_DIGEST_MAX_CHARS,
+    ProjectSkillEvidenceBatchStatus, ProjectSkillLifecycleStatus, TaskOutcome, TaskOutcomeId,
+    TaskOutcomeStatus, PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS,
 };
 use crate::domain::repositories::{
     MemoryEventRepository, ProjectSkillEvidenceBatchRepository, ProjectSkillListOptions,
     ProjectSkillRepository, ProjectSkillSettingsRepository, TaskOutcomeListOptions,
     TaskOutcomeRepository,
 };
-use crate::domain::services::learned_skill_substrate::bucket_for_outcome_source;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
+use chrono::{DateTime, Duration, Utc};
+
+use super::project_skill_distillation_batching::{
+    bucket_for_outcome_source, build_batch, verification_gap_fingerprint,
+};
 
 pub const SKILL_DISTILLER_PROFILE: &str = "skill_distiller";
 pub const SKILL_DISTILLER_PROMPT_INDEX_LIMIT: usize = 24;
@@ -25,6 +25,23 @@ pub const SKILL_DISTILLER_PROMPT_INDEX_LIMIT: usize = 24;
 pub enum ProjectSkillDistillationTrigger {
     Automatic,
     Explicit,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProjectSkillDistillationSelection {
+    EligibleOutcomes {
+        source: Option<String>,
+        limit: usize,
+    },
+    ExactOutcomes(Vec<TaskOutcomeId>),
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedExplicitProjectSkillDistillation {
+    pub enabled: bool,
+    pub selected_outcomes: usize,
+    pub batch_count: usize,
+    pub prepared: Vec<PreparedProjectSkillDistillation>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,8 +144,165 @@ impl ProjectSkillDistillationService {
         }))
     }
 
+    pub async fn prepare_explicit_claims(
+        &self,
+        project_id: &ProjectId,
+        selection: ProjectSkillDistillationSelection,
+        stale_after_secs: u64,
+    ) -> AppResult<PreparedExplicitProjectSkillDistillation> {
+        let settings = self
+            .settings_repo
+            .get_for_project(project_id)
+            .await?
+            .unwrap_or_else(|| {
+                crate::domain::entities::ProjectSkillSettings::default_for_project(
+                    project_id.clone(),
+                )
+            });
+        if !settings.enabled {
+            self.record_skip(project_id, "project_skills_disabled")
+                .await?;
+            return Ok(PreparedExplicitProjectSkillDistillation {
+                enabled: false,
+                selected_outcomes: 0,
+                batch_count: 0,
+                prepared: Vec::new(),
+            });
+        }
+
+        let now = Utc::now();
+        let stale_seconds = i64::try_from(stale_after_secs).unwrap_or(i64::MAX);
+        let stale_before = now
+            .checked_sub_signed(Duration::seconds(stale_seconds))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+        self.batch_repo
+            .requeue_stale_claims(project_id, stale_before, now)
+            .await?;
+
+        let outcomes = self
+            .selected_eligible_outcomes(project_id, selection)
+            .await?;
+        self.enqueue_outcomes(project_id, &outcomes).await?;
+        let selected_ids = outcomes
+            .iter()
+            .map(|outcome| outcome.id.clone())
+            .collect::<HashSet<_>>();
+        let mut batches = BTreeMap::new();
+        for outcome in &outcomes {
+            if let Some(batch) = self
+                .batch_repo
+                .get_by_outcome_id(project_id, &outcome.id)
+                .await?
+            {
+                batches
+                    .entry(batch.id.as_str().to_string())
+                    .or_insert(batch);
+            }
+        }
+
+        let batch_count = batches.len();
+        let mut prepared = Vec::new();
+        for batch in batches.into_values() {
+            if batch.status != ProjectSkillEvidenceBatchStatus::Pending
+                || !batch
+                    .items
+                    .iter()
+                    .all(|item| selected_ids.contains(&item.outcome_id))
+            {
+                continue;
+            }
+            let claim_token = uuid::Uuid::new_v4().to_string();
+            let Some(claimed) = self
+                .batch_repo
+                .claim_pending_by_id(project_id, &batch.id, &claim_token, Utc::now())
+                .await?
+            else {
+                continue;
+            };
+            let prompt = match self.render_prompt(&claimed).await {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    if let Err(release_error) = self
+                        .batch_repo
+                        .release_claim(&claimed.id, &claim_token, Utc::now())
+                        .await
+                    {
+                        tracing::warn!(
+                            batch_id = claimed.id.as_str(),
+                            error = %release_error,
+                            "Failed to release explicit skill distillation claim after prompt rendering failed"
+                        );
+                    }
+                    return Err(error);
+                }
+            };
+            prepared.push(PreparedProjectSkillDistillation {
+                batch: claimed,
+                claim_token,
+                prompt,
+            });
+        }
+
+        Ok(PreparedExplicitProjectSkillDistillation {
+            enabled: true,
+            selected_outcomes: outcomes.len(),
+            batch_count,
+            prepared,
+        })
+    }
+
+    async fn selected_eligible_outcomes(
+        &self,
+        project_id: &ProjectId,
+        selection: ProjectSkillDistillationSelection,
+    ) -> AppResult<Vec<TaskOutcome>> {
+        match selection {
+            ProjectSkillDistillationSelection::EligibleOutcomes { source, limit } => Ok(self
+                .outcome_repo
+                .list_by_project(
+                    project_id,
+                    TaskOutcomeListOptions {
+                        source,
+                        status: Some(TaskOutcomeStatus::Eligible),
+                    },
+                )
+                .await?
+                .into_iter()
+                .take(limit.clamp(1, 10))
+                .collect()),
+            ProjectSkillDistillationSelection::ExactOutcomes(outcome_ids) => {
+                let mut selected = Vec::new();
+                let mut seen = HashSet::new();
+                for outcome_id in outcome_ids {
+                    if !seen.insert(outcome_id.clone()) {
+                        continue;
+                    }
+                    let outcome =
+                        self.outcome_repo
+                            .get_by_id(&outcome_id)
+                            .await?
+                            .ok_or_else(|| {
+                                AppError::NotFound(format!(
+                                    "task outcome {} was not found",
+                                    outcome_id.as_str()
+                                ))
+                            })?;
+                    if outcome.project_id != *project_id {
+                        return Err(AppError::Validation(
+                            "selected task outcome belongs to a different project".to_string(),
+                        ));
+                    }
+                    if outcome.status == TaskOutcomeStatus::Eligible {
+                        selected.push(outcome);
+                    }
+                }
+                Ok(selected)
+            }
+        }
+    }
+
     async fn enqueue_unbatched_outcomes(&self, project_id: &ProjectId) -> AppResult<()> {
-        let mut outcomes = self
+        let outcomes = self
             .outcome_repo
             .list_by_project(
                 project_id,
@@ -138,13 +312,25 @@ impl ProjectSkillDistillationService {
                 },
             )
             .await?;
+        self.enqueue_outcomes(project_id, &outcomes).await
+    }
+
+    async fn enqueue_outcomes(
+        &self,
+        project_id: &ProjectId,
+        outcomes: &[TaskOutcome],
+    ) -> AppResult<()> {
         let batched = self
             .batch_repo
             .list_batched_outcome_ids(project_id)
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
-        outcomes.retain(|outcome| !batched.contains(&outcome.id));
+        let mut outcomes = outcomes
+            .iter()
+            .filter(|outcome| !batched.contains(&outcome.id))
+            .cloned()
+            .collect::<Vec<_>>();
         outcomes.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -153,6 +339,16 @@ impl ProjectSkillDistillationService {
 
         let mut by_bucket = BTreeMap::<String, Vec<TaskOutcome>>::new();
         for outcome in outcomes {
+            if verification_gap_fingerprint(&outcome).is_some() {
+                self.batch_repo
+                    .insert_if_absent(build_batch(
+                        project_id,
+                        bucket_for_outcome_source(&outcome.source),
+                        std::slice::from_ref(&outcome),
+                    ))
+                    .await?;
+                continue;
+            }
             by_bucket
                 .entry(bucket_for_outcome_source(&outcome.source).to_string())
                 .or_default()
@@ -247,68 +443,6 @@ impl ProjectSkillDistillationService {
             .await?;
         Ok(())
     }
-}
-
-fn build_batch(
-    project_id: &ProjectId,
-    bucket: &str,
-    outcomes: &[TaskOutcome],
-) -> ProjectSkillEvidenceBatch {
-    let items = outcomes
-        .iter()
-        .enumerate()
-        .map(|(ordinal, outcome)| ProjectSkillEvidenceBatchItem {
-            outcome_id: outcome.id.clone(),
-            ordinal,
-            digest: outcome_digest(outcome),
-        })
-        .collect::<Vec<_>>();
-    let canonical = serde_json::json!({
-        "bucket": bucket,
-        "items": items.iter().map(|item| serde_json::json!({
-            "outcome_id": item.outcome_id.as_str(),
-            "digest": item.digest,
-        })).collect::<Vec<_>>(),
-    });
-    let fingerprint = format!("{:x}", Sha256::digest(canonical.to_string().as_bytes()));
-    let now = Utc::now();
-    ProjectSkillEvidenceBatch {
-        id: ProjectSkillEvidenceBatchId::new(),
-        project_id: project_id.clone(),
-        fingerprint,
-        bucket: bucket.to_string(),
-        status: ProjectSkillEvidenceBatchStatus::Pending,
-        claim_token: None,
-        claimed_at: None,
-        completed_project_skill_id: None,
-        resolution_action: None,
-        completed_at: None,
-        created_at: now,
-        updated_at: now,
-        items,
-    }
-}
-
-fn outcome_digest(outcome: &TaskOutcome) -> String {
-    let canonical = serde_json::json!({
-        "source": outcome.source,
-        "source_ref_kind": outcome.source_ref_kind,
-        "source_ref_id": outcome.source_ref_id,
-        "outcome_class": outcome.outcome_class,
-        "task_id": outcome.task_id,
-        "conversation_id": outcome.conversation_id,
-        "agent_run_id": outcome.agent_run_id,
-        "pull_request_id": outcome.pull_request_id,
-        "proposal_id": outcome.proposal_id,
-        "verification_id": outcome.verification_id,
-        "review_id": outcome.review_id,
-        "evidence": outcome.evidence_json,
-    })
-    .to_string();
-    canonical
-        .chars()
-        .take(PROJECT_SKILL_EVIDENCE_DIGEST_MAX_CHARS)
-        .collect()
 }
 
 pub fn claim_outcome_ids(batch: &ProjectSkillEvidenceBatch) -> Vec<TaskOutcomeId> {

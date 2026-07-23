@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 
 use super::project_skill_distillation_service::{
-    ProjectSkillDistillationService, ProjectSkillDistillationTrigger,
+    ProjectSkillDistillationSelection, ProjectSkillDistillationService,
+    ProjectSkillDistillationTrigger,
 };
 use crate::domain::entities::{
     ProjectId, ProjectSkillSettings, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
@@ -222,4 +223,125 @@ async fn automatic_gate_is_durable_and_explicit_trigger_bypasses_only_auto_disti
         .await
         .expect("explicit disabled gate")
         .is_none());
+}
+
+#[tokio::test]
+async fn explicit_preparation_claims_only_the_selected_outcome() {
+    let project_id = ProjectId::from_string("project-explicit".to_string());
+    let (service, outcomes, batches, _settings, _events) = service_fixture(&project_id).await;
+    let unrelated = eligible_outcome(&project_id, 1, -10, 20);
+    let selected = eligible_outcome(&project_id, 2, 0, 20);
+    outcomes
+        .upsert(UpsertTaskOutcomeInput {
+            outcome: unrelated.clone(),
+        })
+        .await
+        .expect("seed unrelated outcome");
+    outcomes
+        .upsert(UpsertTaskOutcomeInput {
+            outcome: selected.clone(),
+        })
+        .await
+        .expect("seed selected outcome");
+
+    let preparation = service
+        .prepare_explicit_claims(
+            &project_id,
+            ProjectSkillDistillationSelection::ExactOutcomes(vec![selected.id.clone()]),
+            1_800,
+        )
+        .await
+        .expect("prepare explicit claim");
+
+    assert!(preparation.enabled);
+    assert_eq!(preparation.selected_outcomes, 1);
+    assert_eq!(preparation.batch_count, 1);
+    assert_eq!(preparation.prepared.len(), 1);
+    assert_eq!(
+        preparation.prepared[0]
+            .batch
+            .items
+            .iter()
+            .map(|item| item.outcome_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![selected.id.as_str()]
+    );
+    assert_eq!(
+        batches
+            .list_batched_outcome_ids(&project_id)
+            .await
+            .expect("list selected batches"),
+        vec![selected.id]
+    );
+}
+
+#[tokio::test]
+async fn explicit_eligible_selection_is_bounded_to_ten_outcomes() {
+    let project_id = ProjectId::from_string("project-bounded".to_string());
+    let (service, outcomes, batches, _settings, _events) = service_fixture(&project_id).await;
+    for id in 0..12 {
+        outcomes
+            .upsert(UpsertTaskOutcomeInput {
+                outcome: eligible_outcome(&project_id, id, id as i64, 20),
+            })
+            .await
+            .expect("seed eligible outcome");
+    }
+
+    let preparation = service
+        .prepare_explicit_claims(
+            &project_id,
+            ProjectSkillDistillationSelection::EligibleOutcomes {
+                source: None,
+                limit: 10,
+            },
+            1_800,
+        )
+        .await
+        .expect("prepare bounded explicit claims");
+
+    assert_eq!(preparation.selected_outcomes, 10);
+    assert_eq!(
+        batches
+            .list_batched_outcome_ids(&project_id)
+            .await
+            .expect("list bounded outcomes")
+            .len(),
+        10
+    );
+}
+
+#[tokio::test]
+async fn verification_gap_batch_uses_the_trusted_gap_fingerprint() {
+    let project_id = ProjectId::from_string("project-verification".to_string());
+    let (service, outcomes, _batches, _settings, _events) = service_fixture(&project_id).await;
+    let mut gap = eligible_outcome(&project_id, 1, 0, 20);
+    let fingerprint = "b".repeat(64);
+    gap.source = "verification".to_string();
+    gap.source_ref_kind = "gap_recurrence".to_string();
+    gap.evidence_json = serde_json::json!({
+        "fingerprint": fingerprint,
+        "description": "The same verification gap recurred.",
+    });
+    outcomes
+        .upsert(UpsertTaskOutcomeInput {
+            outcome: gap.clone(),
+        })
+        .await
+        .expect("seed verification gap");
+
+    let preparation = service
+        .prepare_explicit_claims(
+            &project_id,
+            ProjectSkillDistillationSelection::ExactOutcomes(vec![gap.id]),
+            1_800,
+        )
+        .await
+        .expect("prepare verification claim");
+
+    assert_eq!(preparation.prepared.len(), 1);
+    assert_eq!(preparation.prepared[0].batch.fingerprint, fingerprint);
+    assert!(preparation.prepared[0].batch.items[0]
+        .digest
+        .starts_with(&format!("verification_gap_fingerprint={fingerprint}\n")));
 }

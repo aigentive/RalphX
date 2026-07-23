@@ -319,14 +319,6 @@ pub async fn start_http_server(
         .route("/api/project_skills/update", post(update_project_skill))
         .route("/api/project_skills/distill", post(distill_project_skills))
         .route(
-            "/api/project_skills/pr_candidates/list",
-            post(list_project_skill_pull_request_candidates),
-        )
-        .route(
-            "/api/project_skills/pr_candidates/stage",
-            post(stage_project_skill_from_pull_request),
-        )
-        .route(
             "/api/project_skills/report_cards",
             post(list_project_skill_report_cards),
         )

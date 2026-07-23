@@ -65,6 +65,26 @@ impl ProjectSkillEvidenceBatchRepository for MemoryProjectSkillEvidenceBatchRepo
         Ok(outcome_ids)
     }
 
+    async fn get_by_outcome_id(
+        &self,
+        project_id: &ProjectId,
+        outcome_id: &TaskOutcomeId,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        Ok(self
+            .batches
+            .read()
+            .await
+            .values()
+            .find(|batch| {
+                &batch.project_id == project_id
+                    && batch
+                        .items
+                        .iter()
+                        .any(|item| &item.outcome_id == outcome_id)
+            })
+            .cloned())
+    }
+
     async fn claim_oldest_pending(
         &self,
         project_id: &ProjectId,
@@ -95,6 +115,34 @@ impl ProjectSkillEvidenceBatchRepository for MemoryProjectSkillEvidenceBatchRepo
         let batch = batches.get_mut(&batch_id).ok_or_else(|| {
             AppError::Database("evidence batch disappeared during claim".to_string())
         })?;
+        batch.status = ProjectSkillEvidenceBatchStatus::Consumed;
+        batch.claim_token = Some(claim_token.to_string());
+        batch.claimed_at = Some(claimed_at);
+        batch.updated_at = claimed_at;
+        Ok(Some(batch.clone()))
+    }
+
+    async fn claim_pending_by_id(
+        &self,
+        project_id: &ProjectId,
+        batch_id: &ProjectSkillEvidenceBatchId,
+        claim_token: &str,
+        claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        if claim_token.trim().is_empty() {
+            return Err(AppError::Validation(
+                "project skill evidence claim token is required".to_string(),
+            ));
+        }
+        let mut batches = self.batches.write().await;
+        let Some(batch) = batches.get_mut(batch_id) else {
+            return Ok(None);
+        };
+        if &batch.project_id != project_id
+            || batch.status != ProjectSkillEvidenceBatchStatus::Pending
+        {
+            return Ok(None);
+        }
         batch.status = ProjectSkillEvidenceBatchStatus::Consumed;
         batch.claim_token = Some(claim_token.to_string());
         batch.claimed_at = Some(claimed_at);

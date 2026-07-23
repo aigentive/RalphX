@@ -191,6 +191,34 @@ impl ProjectSkillEvidenceBatchRepository for SqliteProjectSkillEvidenceBatchRepo
             .await
     }
 
+    async fn get_by_outcome_id(
+        &self,
+        project_id: &ProjectId,
+        outcome_id: &TaskOutcomeId,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        let project_id = project_id.as_str().to_string();
+        let outcome_id = outcome_id.as_str().to_string();
+        self.db
+            .run(move |connection| {
+                let batch_id = connection
+                    .query_row(
+                        "SELECT batches.id
+                         FROM project_skill_evidence_batches batches
+                         JOIN project_skill_evidence_batch_items items
+                           ON items.batch_id = batches.id
+                         WHERE batches.project_id = ?1 AND items.outcome_id = ?2",
+                        rusqlite::params![project_id, outcome_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                match batch_id {
+                    Some(batch_id) => batch_from_connection(connection, &batch_id),
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
     async fn claim_oldest_pending(
         &self,
         project_id: &ProjectId,
@@ -224,6 +252,38 @@ impl ProjectSkillEvidenceBatchRepository for SqliteProjectSkillEvidenceBatchRepo
                      SET status = 'consumed', claim_token = ?2, claimed_at = ?3, updated_at = ?3
                      WHERE id = ?1 AND status = 'pending'",
                     rusqlite::params![batch_id, claim_token, claimed_at.to_rfc3339()],
+                )?;
+                if changed != 1 {
+                    return Ok(None);
+                }
+                batch_from_connection(connection, &batch_id)
+            })
+            .await
+    }
+
+    async fn claim_pending_by_id(
+        &self,
+        project_id: &ProjectId,
+        batch_id: &ProjectSkillEvidenceBatchId,
+        claim_token: &str,
+        claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        let project_id = project_id.as_str().to_string();
+        let batch_id = batch_id.as_str().to_string();
+        let claim_token = claim_token.to_string();
+        if claim_token.trim().is_empty() {
+            return Err(AppError::Validation(
+                "project skill evidence claim token is required".to_string(),
+            ));
+        }
+        self.db
+            .run_transaction(move |connection| {
+                let changed = connection.execute(
+                    "UPDATE project_skill_evidence_batches
+                     SET status = 'consumed', claim_token = ?3, claimed_at = ?4,
+                         updated_at = ?4
+                     WHERE id = ?1 AND project_id = ?2 AND status = 'pending'",
+                    rusqlite::params![batch_id, project_id, claim_token, claimed_at.to_rfc3339(),],
                 )?;
                 if changed != 1 {
                     return Ok(None);

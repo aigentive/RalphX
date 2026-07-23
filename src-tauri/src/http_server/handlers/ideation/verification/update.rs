@@ -6,13 +6,14 @@ async fn record_verification_gap_recurrence_outcomes(
     session_id: &str,
     run_snapshot: &crate::domain::entities::ideation::VerificationRunSnapshot,
 ) {
+    use crate::application::memory_orchestration::{
+        schedule_explicit_project_skill_distillation, ProjectSkillDistillationScheduleStatus,
+    };
+    use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
     use crate::domain::services::learned_skill_adapters::{
         verification_gap_recurrence_candidates, VerificationGapRecurrenceGate,
     };
-    use crate::domain::services::{
-        new_empty_task_outcome, OutcomeLedgerService, ProjectSkillDistillationOrigin,
-        ProjectSkillDistillerService,
-    };
+    use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
 
     let report = verification_gap_recurrence_candidates(
         &run_snapshot.rounds,
@@ -53,22 +54,26 @@ async fn record_verification_gap_recurrence_outcomes(
 
         match service.record_outcome(outcome).await {
             Ok(recorded_outcome) => {
-                let distiller = ProjectSkillDistillerService::new(
-                    Arc::clone(&state.app_state.task_outcome_repo),
-                    Arc::clone(&state.app_state.project_skill_repo),
-                );
-                if let Err(error) = distiller
-                    .stage_eligible_outcome_candidate_with_origin(
-                        &recorded_outcome,
-                        ProjectSkillDistillationOrigin::VerificationObserver,
-                    )
-                    .await
-                {
+                let outcome_id = recorded_outcome.id.clone();
+                let schedule = schedule_explicit_project_skill_distillation(
+                    &state.app_state,
+                    &session.project_id,
+                    ProjectSkillDistillationSelection::ExactOutcomes(vec![outcome_id.clone()]),
+                    None,
+                    crate::domain::entities::ChatContextType::Ideation,
+                    session_id,
+                )
+                .await;
+                if matches!(
+                    schedule.status,
+                    ProjectSkillDistillationScheduleStatus::Failed
+                        | ProjectSkillDistillationScheduleStatus::Unavailable
+                ) {
                     tracing::warn!(
                         session_id,
-                        outcome_id = %recorded_outcome.id.as_str(),
-                        error = %error,
-                        "Failed to stage learned skill from recurring verification gap outcome"
+                        outcome_id = %outcome_id.as_str(),
+                        status = schedule.status.as_str(),
+                        "Recurring verification gap evidence was queued but the distiller did not start"
                     );
                 }
             }

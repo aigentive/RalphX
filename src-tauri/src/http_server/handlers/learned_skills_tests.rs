@@ -202,124 +202,6 @@ fn split_imported_skill_body_strips_h1_and_predicted_effect() {
 }
 
 #[test]
-fn build_pr_skill_fields_encodes_triggers_scope_and_workflow() {
-    let source = PrSkillSource {
-        number: 42,
-        url: Some("https://github.com/x/y/pull/42".to_string()),
-        state: Some("MERGED".to_string()),
-        base_ref: Some("main".to_string()),
-        changed_paths: vec![
-            "src-tauri/src/domain/services/merge.rs".to_string(),
-            "src-tauri/src/domain/services/validation.rs".to_string(),
-            "frontend/src/components/Merge.tsx".to_string(),
-        ],
-        commit_headlines: vec![
-            "Add merge guard".to_string(),
-            "Cover guard with tests".to_string(),
-        ],
-        review_states: vec!["APPROVED".to_string(), "CHANGES_REQUESTED".to_string()],
-        labels: vec!["backend".to_string()],
-        body_excerpt: Some("Adds a guard.".to_string()),
-        additions: 120,
-        deletions: 8,
-        enriched: true,
-    };
-
-    let fields = build_pr_skill_fields(&source);
-
-    // Draft title within the open-standard length budget.
-    assert!(fields.title.chars().count() <= 64);
-    assert!(fields.title.starts_with("Draft procedure from PR #42"));
-    // Guidance makes the selected PR an evidence source, not the skill itself.
-    assert!(fields.compact_guidance.contains("bounded evidence"));
-    assert!(fields.compact_guidance.contains("Review before work on"));
-    assert!(fields.compact_guidance.contains("src-tauri/src/domain"));
-    assert!(fields.compact_guidance.contains(".rs") || fields.compact_guidance.contains(".tsx"));
-    // scope_paths derived from changed files (dir prefixes, deduped).
-    assert!(fields
-        .scope_paths
-        .contains(&"src-tauri/src/domain".to_string()));
-    assert!(fields
-        .scope_paths
-        .contains(&"frontend/src/components".to_string()));
-    // Progressive-disclosure body with authoring gate and commit hints.
-    assert!(fields.body_markdown.contains("## Authoring required"));
-    assert!(fields.body_markdown.contains("## When to use"));
-    assert!(fields.body_markdown.contains("## Procedure"));
-    assert!(fields.body_markdown.contains("## Verification"));
-    assert!(fields.body_markdown.contains("- Add merge guard"));
-    assert!(fields.body_markdown.contains("Full diff read: false"));
-    assert!(fields.body_markdown.contains("project-skill-authoring"));
-    assert!(fields.body_markdown.contains("PR #42"));
-    assert_eq!(
-        fields.evidence["authoring_contract"].as_str(),
-        Some("project-skill-authoring")
-    );
-    assert_eq!(fields.evidence["full_diff_read"].as_bool(), Some(false));
-    assert!(fields.enriched);
-}
-
-#[test]
-fn build_pr_skill_fields_degrades_without_detail() {
-    let summary = GithubPrSummary {
-        number: 7,
-        title: "Fix bug".to_string(),
-        state: Some("MERGED".to_string()),
-        url: None,
-        merged_at: None,
-        closed_at: None,
-        updated_at: None,
-        head_ref_name: None,
-        base_ref_name: Some("main".to_string()),
-    };
-    let source = pr_skill_source_from_summary(&summary);
-    let fields = build_pr_skill_fields(&source);
-
-    assert!(!fields.enriched);
-    assert!(fields.scope_paths.is_empty());
-    assert!(fields
-        .compact_guidance
-        .contains("Review before similar changes"));
-    assert!(fields.body_markdown.contains("Authoring required"));
-    assert!(fields
-        .body_markdown
-        .contains("Keep only steps that apply beyond this one pull request"));
-}
-
-#[test]
-fn pr_skill_source_from_detail_redacts_body_and_commits() {
-    let detail = GithubPrDetail {
-        number: 9,
-        body: "Set API_KEY=supersecretvalue123 in env.".to_string(),
-        state: Some("OPEN".to_string()),
-        url: None,
-        additions: 1,
-        deletions: 0,
-        base_ref_name: None,
-        files: vec![GithubPrFile {
-            path: "src/a.rs".to_string(),
-        }],
-        commits: vec![GithubPrCommit {
-            message_headline: "Use ghp_abcdefghijklmnopqrstuvwxyz0123".to_string(),
-        }],
-        reviews: vec![GithubPrReview {
-            state: "APPROVED".to_string(),
-        }],
-        labels: vec![GithubPrLabel {
-            name: "feature".to_string(),
-        }],
-    };
-
-    let source = pr_skill_source_from_detail(detail);
-
-    let excerpt = source.body_excerpt.as_deref().expect("body excerpt");
-    assert!(excerpt.contains("[REDACTED]"));
-    assert!(!excerpt.contains("supersecretvalue123"));
-    assert!(source.commit_headlines[0].contains("[REDACTED]"));
-    assert!(!source.commit_headlines[0].contains("ghp_abcdefghijklmnopqrstuvwxyz0123"));
-}
-
-#[test]
 fn parse_github_pr_summaries_filters_invalid_rows_and_reports_bad_json() {
     let output = r#"[
           {"number": 0, "title": "No number", "state": "OPEN"},
@@ -336,18 +218,6 @@ fn parse_github_pr_summaries_filters_invalid_rows_and_reports_bad_json() {
         .unwrap_err()
         .to_string()
         .contains("failed to parse gh PR history"));
-}
-
-#[tokio::test]
-async fn read_github_pull_request_detail_returns_none_for_invalid_number() {
-    let project_dir =
-        tempfile::tempdir_in(std::env::current_dir().expect("cwd")).expect("temp project dir");
-
-    let detail = read_github_pull_request_detail(project_dir.path(), 0)
-        .await
-        .unwrap();
-
-    assert!(detail.is_none());
 }
 
 #[test]
@@ -520,50 +390,6 @@ async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
     .await
     .expect_err("cross-project get should fail");
     assert_eq!(error.status, StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn pr_candidate_handlers_return_empty_for_missing_workdir_and_reject_bad_number() {
-    let app_state = Arc::new(AppState::new_test());
-    let project = test_project(
-        "Missing workdir project",
-        Path::new("/tmp/ralphx-missing-pr-skill-workdir"),
-    );
-    let project_id = project.id.clone();
-    app_state.project_repo.create(project).await.unwrap();
-
-    let candidates = list_project_skill_pull_request_candidates(
-        State(test_state(app_state.clone())),
-        ProjectScope(Some(vec![project_id.clone()])),
-        Json(ListProjectSkillPullRequestCandidatesRequest {
-            project_id: project_id.as_str().to_string(),
-            limit: Some(999),
-        }),
-    )
-    .await
-    .unwrap()
-    .0;
-
-    assert_eq!(candidates.count, 0);
-    assert_eq!(candidates.limit, GITHUB_PR_CANDIDATE_MAX_LIMIT);
-
-    let error = stage_project_skill_from_pull_request(
-        State(test_state(app_state)),
-        ProjectScope(Some(vec![project_id.clone()])),
-        Json(StageProjectSkillFromPullRequestRequest {
-            project_id: project_id.as_str().to_string(),
-            number: 0,
-        }),
-    )
-    .await
-    .expect_err("non-positive PR number rejected");
-
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error
-        .message
-        .as_deref()
-        .unwrap_or_default()
-        .contains("pull request number must be positive"));
 }
 
 #[tokio::test]
@@ -1099,7 +925,7 @@ async fn list_conversation_project_skills_scopes_generated_and_used_skills() {
 }
 
 #[tokio::test]
-async fn process_conversation_project_skills_stages_from_existing_chat() {
+async fn process_conversation_project_skills_queues_existing_chat_evidence() {
     let app_state = Arc::new(AppState::new_test());
     let project_id = ProjectId::from_string("project-process".to_string());
     let mut conversation = ChatConversation::new_project(project_id.clone());
@@ -1134,13 +960,28 @@ async fn process_conversation_project_skills_stages_from_existing_chat() {
     .unwrap();
 
     assert_eq!(response.0.message_count, 1);
-    assert_eq!(response.0.staged_skills.len(), 1);
-    let staged = &response.0.staged_skills[0];
-    assert_eq!(staged.status, "staged");
-    assert_eq!(staged.project_id, project_id.as_str());
+    assert_eq!(response.0.status, "unavailable");
+    assert_eq!(response.0.selected_outcomes, 1);
+    assert_eq!(response.0.batch_count, 1);
+    assert_eq!(response.0.started_batches, 0);
+    assert_eq!(
+        app_state
+            .project_skill_evidence_batch_repo
+            .list_batched_outcome_ids(&project_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(app_state
+        .project_skill_repo
+        .list_by_project(&project_id, ProjectSkillListOptions::default())
+        .await
+        .unwrap()
+        .is_empty());
 
     let scoped = list_conversation_project_skills(
-        State(test_state(app_state)),
+        State(test_state(Arc::clone(&app_state))),
         ProjectScope(Some(vec![project_id.clone()])),
         Json(ListConversationProjectSkillsRequest {
             project_id: project_id.as_str().to_string(),
@@ -1149,8 +990,7 @@ async fn process_conversation_project_skills_stages_from_existing_chat() {
     )
     .await
     .unwrap();
-    assert_eq!(scoped.0.count, 1);
-    assert!(scoped.0.skills[0].generated_by_conversation);
+    assert_eq!(scoped.0.count, 0);
 }
 
 #[tokio::test]
@@ -1213,7 +1053,7 @@ async fn pin_project_skill_handler_updates_pin_state() {
 }
 
 #[tokio::test]
-async fn distill_project_skills_stages_eligible_outcomes() {
+async fn distill_project_skills_queues_eligible_outcomes_without_staging() {
     let app_state = Arc::new(AppState::new_test());
     let project_id = ProjectId::from_string("project-distill".to_string());
     let mut outcome =
@@ -1227,8 +1067,8 @@ async fn distill_project_skills_stages_eligible_outcomes() {
         .unwrap();
 
     let response = distill_project_skills(
-        State(test_state(app_state)),
-        ProjectScope(Some(vec![project_id])),
+        State(test_state(Arc::clone(&app_state))),
+        ProjectScope(Some(vec![project_id.clone()])),
         Json(DistillProjectSkillsRequest {
             project_id: "project-distill".to_string(),
             source: Some("review".to_string()),
@@ -1240,13 +1080,19 @@ async fn distill_project_skills_stages_eligible_outcomes() {
     .await
     .unwrap();
 
-    assert_eq!(response.0.staged_skills.len(), 1);
-    assert_eq!(response.0.staged_skills[0].status, "staged");
-    assert_eq!(response.0.staged_skills[0].bucket, "review");
-    assert_eq!(response.0.skipped_existing, 0);
+    assert_eq!(response.0.status, "unavailable");
+    assert_eq!(response.0.selected_outcomes, 1);
+    assert_eq!(response.0.batch_count, 1);
+    assert_eq!(response.0.started_batches, 0);
     assert_eq!(response.0.ingested_outcomes, 0);
     assert_eq!(response.0.scanned_git_commits, 0);
     assert_eq!(response.0.scanned_github_prs, 0);
+    assert!(app_state
+        .project_skill_repo
+        .list_by_project(&project_id, ProjectSkillListOptions::default())
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
