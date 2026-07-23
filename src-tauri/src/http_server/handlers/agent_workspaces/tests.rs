@@ -1222,6 +1222,7 @@
                 .with_agent_client(Arc::new(SubmittingPrDescriptionClient::new(
                     workspace_repo,
                     fixture.conversation_id.clone(),
+                    false,
                 ))),
         );
         fixture
