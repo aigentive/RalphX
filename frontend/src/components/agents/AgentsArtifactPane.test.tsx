@@ -31,6 +31,7 @@ import type {
   AutomationDetail,
   AutomationRun,
 } from "@/api/automations";
+import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import {
   useAgentSessionStore,
@@ -62,6 +63,9 @@ const { approvedPlanRuntime } = vi.hoisted(() => ({
     coordinationMode: "solo",
     personaId: null,
   } as const,
+}));
+const workspaceReviewRuntimeOverride = vi.hoisted(() => ({
+  current: null as ManualRoleRuntimeSelection | null,
 }));
 
 vi.mock("./useApprovedPlanContinuation", () => ({
@@ -329,7 +333,19 @@ vi.mock("./useWorkspaceReviewActions", () => ({
     onStartReview,
     onStartFixer,
   }: {
-    onStartReview: (input: { force: boolean }) => Promise<unknown>;
+    onStartReview: (input: {
+      force: boolean;
+      confirmation?: {
+        targetScope: string;
+        diffFingerprint: string;
+        headSha: string | null;
+        prNumber: number | null;
+        willDisableAutoMerge: boolean;
+        mergeMethod: string | null;
+        restoreAfterPublish: boolean;
+      };
+      runtimeOverride?: ManualRoleRuntimeSelection;
+    }) => Promise<unknown>;
     onStartFixer: (input: {
       confirmation: {
         targetScope: string;
@@ -342,7 +358,24 @@ vi.mock("./useWorkspaceReviewActions", () => ({
     }) => Promise<unknown>;
   }) => ({
     startReview: (force: boolean) => {
-      void onStartReview({ force }).catch(() => undefined);
+      const runtimeOverride = workspaceReviewRuntimeOverride.current;
+      void onStartReview({
+        force,
+        ...(runtimeOverride
+          ? {
+              confirmation: {
+                targetScope: "workspace_delta",
+                diffFingerprint: "fingerprint-1",
+                headSha: null,
+                prNumber: null,
+                willDisableAutoMerge: false,
+                mergeMethod: null,
+                restoreAfterPublish: false,
+              },
+              runtimeOverride,
+            }
+          : {}),
+      }).catch(() => undefined);
     },
     startFixer: (context: AgentWorkspaceReviewContext) => {
       const { target, monitor } = context;
@@ -1576,6 +1609,7 @@ function renderControlledPane(
 
 describe("AgentsArtifactPane", () => {
   beforeEach(() => {
+    workspaceReviewRuntimeOverride.current = null;
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockResolvedValue(defaultReviewSettings);
     tasksEnabledRef.current = true;
@@ -4222,6 +4256,215 @@ describe("AgentsArtifactPane", () => {
     expect(onFocusWorkspaceReview).toHaveBeenCalledWith(
       "review-conversation-1",
     );
+  });
+
+  it("carries the committed reviewer runtime only to a newly started child focus", async () => {
+    const queryClient = createTestQueryClient();
+    const onFocusWorkspaceReview = vi.fn();
+    workspaceReviewRuntimeOverride.current = {
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "high",
+      serviceTier: "standard",
+      coordinationMode: "solo",
+      personaId: null,
+    };
+    const initialContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      shouldShowTab: true,
+    });
+    const startedContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "reviewing",
+      reviewGateStatus: "reviewing",
+      reviewConversationId: "review-conversation-1",
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock
+      .mockResolvedValueOnce(initialContext)
+      .mockResolvedValue(startedContext);
+    startWorkspaceReviewMock.mockResolvedValue({ ...startedContext, started: true });
+    const sessionStateBefore = useAgentSessionStore.getState();
+    const runtimeStateBefore = {
+      runtimeByConversationId: { ...sessionStateBefore.runtimeByConversationId },
+      lastRuntimeByProjectId: { ...sessionStateBefore.lastRuntimeByProjectId },
+      lastModelEffortByProvider: {
+        ...sessionStateBefore.lastModelEffortByProvider,
+      },
+    };
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onFocusWorkspaceReview },
+      queryClient,
+    );
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run review" }));
+
+    await waitFor(() =>
+      expect(onFocusWorkspaceReview).toHaveBeenCalledWith(
+        "review-conversation-1",
+        {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "high",
+        },
+      ),
+    );
+    const sessionStateAfter = useAgentSessionStore.getState();
+    expect({
+      runtimeByConversationId: sessionStateAfter.runtimeByConversationId,
+      lastRuntimeByProjectId: sessionStateAfter.lastRuntimeByProjectId,
+      lastModelEffortByProvider: sessionStateAfter.lastModelEffortByProvider,
+    }).toEqual(runtimeStateBefore);
+  });
+
+  it.each([
+    {
+      label: "already-reviewing review",
+      result: {
+        started: false,
+        wasQueued: false,
+        skippedReason: "already_reviewing",
+      },
+    },
+    {
+      label: "queued review",
+      result: { started: true, wasQueued: true },
+    },
+  ])("focuses a $label without carrying a runtime hint", async ({ result }) => {
+    const queryClient = createTestQueryClient();
+    const onFocusWorkspaceReview = vi.fn();
+    workspaceReviewRuntimeOverride.current = {
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "high",
+      serviceTier: "standard",
+      coordinationMode: "solo",
+      personaId: null,
+    };
+    const initialContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      shouldShowTab: true,
+    });
+    const reviewContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      reviewConversationId: "review-conversation-1",
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock
+      .mockResolvedValueOnce(initialContext)
+      .mockResolvedValue(reviewContext);
+    startWorkspaceReviewMock.mockResolvedValue({
+      ...reviewContext,
+      ...result,
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onFocusWorkspaceReview },
+      queryClient,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run review" }));
+
+    await waitFor(() =>
+      expect(onFocusWorkspaceReview).toHaveBeenCalledWith(
+        "review-conversation-1",
+      ),
+    );
+  });
+
+  it("does not focus or carry a hint for a successful start without a child conversation", async () => {
+    const queryClient = createTestQueryClient();
+    const onFocusWorkspaceReview = vi.fn();
+    workspaceReviewRuntimeOverride.current = {
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "high",
+      serviceTier: "standard",
+      coordinationMode: "solo",
+      personaId: null,
+    };
+    const childlessContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      reviewConversationId: null,
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock.mockResolvedValue(childlessContext);
+    startWorkspaceReviewMock.mockResolvedValue({
+      ...childlessContext,
+      started: true,
+      wasQueued: false,
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onFocusWorkspaceReview },
+      queryClient,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run review" }));
+
+    await waitFor(() => expect(startWorkspaceReviewMock).toHaveBeenCalled());
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+  });
+
+  it("does not focus or carry a hint when review start is rejected", async () => {
+    const queryClient = createTestQueryClient();
+    const onFocusWorkspaceReview = vi.fn();
+    workspaceReviewRuntimeOverride.current = {
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "high",
+      serviceTier: "standard",
+      coordinationMode: "solo",
+      personaId: null,
+    };
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+    startWorkspaceReviewMock.mockRejectedValue(new Error("review conflict"));
+    const runtimeBefore =
+      useAgentSessionStore.getState().runtimeByConversationId[
+        "review-conversation-1"
+      ];
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onFocusWorkspaceReview },
+      queryClient,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run review" }));
+
+    await waitFor(() => expect(startWorkspaceReviewMock).toHaveBeenCalled());
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+    expect(
+      useAgentSessionStore.getState().runtimeByConversationId[
+        "review-conversation-1"
+      ],
+    ).toBe(runtimeBefore);
   });
 
   it("starts the workspace fixer from Fix Issues for a current blocking Review", async () => {

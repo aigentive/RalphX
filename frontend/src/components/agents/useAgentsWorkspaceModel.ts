@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
 import type { AgentConversationWorkspace } from "@/api/chat";
+import type { ManualServiceTier } from "@/api/manual-role-defaults.types";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
@@ -35,6 +36,7 @@ interface UseAgentsWorkspaceModelArgs {
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
   modelRegistry: AgentModelRegistry;
   focusedWorkspaceReviewConversationId?: string | null;
+  focusedWorkspaceReviewRuntimeHint?: AgentRuntimeSelection | null;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
   workspaceReviewerRuntime: AgentRuntimeSelection | null;
@@ -44,6 +46,7 @@ export function useAgentsWorkspaceModel({
   activeConversation,
   focusedWorkspaceReviewConversation = null,
   focusedWorkspaceReviewConversationId = null,
+  focusedWorkspaceReviewRuntimeHint = null,
   optimisticWorkspacesByConversationId,
   modelRegistry,
   runtimeByConversationId,
@@ -75,11 +78,16 @@ export function useAgentsWorkspaceModel({
   const activeRuntime = focusedWorkspaceReviewConversationId
     ? runtimeForWorkspaceReviewFocus(
         workspaceRuntime,
-        runtimeByConversationId[focusedWorkspaceReviewConversationId] ??
-          runtimeFromConversation(focusedWorkspaceReviewConversation),
+        runtimeFromConversation(focusedWorkspaceReviewConversation) ??
+          runtimeByConversationId[focusedWorkspaceReviewConversationId] ??
+          null,
         workspaceReviewerRuntime,
+        focusedWorkspaceReviewRuntimeHint,
       )
     : workspaceRuntime;
+  const focusedWorkspaceReviewServiceTier = serviceTierFromConversation(
+    focusedWorkspaceReviewConversation,
+  );
   const normalizedActiveRuntime = normalizeRuntimeForPersistence(
     activeRuntime,
     modelRegistry,
@@ -134,9 +142,24 @@ export function useAgentsWorkspaceModel({
     activeConversationModeLocked,
     activeWorkspace,
     activeWorkspaceFreshness,
+    focusedWorkspaceReviewServiceTier,
     normalizedActiveRuntime,
     publishShortcutLabel,
     terminalArchivedReason,
     terminalUnavailableReason,
   };
+}
+
+function serviceTierFromConversation(
+  conversation: AgentConversation | null,
+): ManualServiceTier | null {
+  const serviceTier = conversation?.serviceTier?.trim().toLowerCase();
+  if (
+    serviceTier === "provider_default" ||
+    serviceTier === "standard" ||
+    serviceTier === "fast"
+  ) {
+    return serviceTier;
+  }
+  return null;
 }

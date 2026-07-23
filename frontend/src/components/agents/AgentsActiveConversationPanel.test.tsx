@@ -23,6 +23,7 @@ import type { AgentConversation } from "./agentConversations";
 import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import type { ComposerRuntimeSpeedField } from "./composer/runtime/runtimeSelectorTypes";
 
 const {
   getSessionPlanMock,
@@ -646,6 +647,7 @@ vi.mock("./AgentComposerSurface", () => ({
     dataTestId,
     personaControl,
     runtimeDefault,
+    speed,
   }: {
     provider: {
       value: string;
@@ -691,11 +693,15 @@ vi.mock("./AgentComposerSurface", () => ({
       disabled?: boolean;
       onReset: () => Promise<unknown> | void;
     };
+    speed?: ComposerRuntimeSpeedField;
   }) => (
     <div data-testid={dataTestId}>
       <div data-testid="workspace-provider-value">{provider.value}</div>
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
+      {speed ? (
+        <div data-testid={speed.testId}>{speed.value}</div>
+      ) : null}
       <div data-testid="workspace-helper-enabled">{String(showHelperText !== false)}</div>
       <div data-testid="workspace-composer-readonly">{String(Boolean(isReadOnly))}</div>
       <div data-testid="workspace-composer-disabled-reason">
@@ -1115,6 +1121,7 @@ function renderPanel(
     chatFocusOptions: [],
     hasAttachedPlanArtifact: false,
     hasAutoOpenArtifacts: false,
+    focusedWorkspaceReviewServiceTier: null,
     normalizedActiveRuntime: {
       provider: "claude",
       modelId: "opus",
@@ -2805,6 +2812,34 @@ describe("AgentsActiveConversationPanel", () => {
       "review-conversation-1",
     );
     expect(panel).toHaveAttribute("data-send-codex-fast-mode", "false");
+  });
+
+  it("uses durable focused Review speed ahead of the client speed projection", () => {
+    useAgentSessionStore.getState().setServiceTierForConversation(
+      "review-conversation-1",
+      "standard",
+    );
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        providerHarness: "codex",
+        serviceTier: "standard",
+      },
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      focusedWorkspaceReviewServiceTier: "fast",
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+    });
+
+    expect(screen.getByTestId("agents-conversation-speed")).toHaveTextContent(
+      "fast",
+    );
   });
 
   it("uses the selectable workspace runtime for chat send options", () => {
