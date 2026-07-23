@@ -847,17 +847,17 @@ describe("AutomationDetailView", () => {
     );
 
     const progressCard = screen.getByTestId("automation-run-run-progress-card");
-    expect(progressCard.style.backgroundColor).toContain("--bg-elevated");
-    expect(progressCard.style.borderColor).toContain("--border-subtle");
+    expect(progressCard.style.backgroundColor).toContain("--accent-muted");
+    expect(progressCard.style.borderColor).toContain("--accent-border");
     expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toEqual(
       expect.stringContaining("--accent-primary"),
     );
 
     const failedCard = screen.getByTestId("automation-run-run-failed-card");
-    expect(failedCard.style.backgroundColor).toContain("--bg-elevated");
-    expect(failedCard.style.borderColor).toContain("--border-subtle");
+    expect(failedCard.style.backgroundColor).toContain("--bg-surface");
+    expect(failedCard.style.borderColor).toContain("--border-default");
     expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toEqual(
-      expect.stringContaining("--text-subtle"),
+      expect.stringContaining("--status-error"),
     );
   });
 

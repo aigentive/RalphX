@@ -165,7 +165,7 @@ describe("RunTimelineItem run deletion", () => {
     expect(expandButton).not.toContainElement(prLink);
   });
 
-  it("uses a centered compact marker and a uniform neutral card edge", () => {
+  it("uses a centered compact marker and a soft darker edge for failed runs", () => {
     renderItem(run());
 
     expect(screen.getByTestId("automation-run-run-10-marker")).toHaveClass(
@@ -174,8 +174,8 @@ describe("RunTimelineItem run deletion", () => {
       "w-2.5",
     );
     const card = screen.getByTestId("automation-run-run-10-card");
-    expect(card.style.backgroundColor).toContain("--bg-elevated");
-    expect(card.style.borderColor).toContain("--border-subtle");
+    expect(card.style.backgroundColor).toContain("--bg-surface");
+    expect(card.style.borderColor).toContain("--border-default");
     expect(card.style.borderStyle).toBe("solid");
     expect(card.style.borderWidth).toBe("1px");
   });

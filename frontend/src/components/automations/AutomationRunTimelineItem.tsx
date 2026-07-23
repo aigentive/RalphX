@@ -30,8 +30,9 @@ const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
 interface RunTimelineHighlight { backgroundColor: string; borderColor: string; markerColor: string }
 
 function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
-  // Merged runs are the success end-state: a green marker + soft success tint.
-  // Every other status stays neutral, with the pill and marker carrying state.
+  // Per-status card treatment: merged = soft green, running/active = soft accent
+  // (orange) bg+border, failed = soft darker surface with an error marker.
+  // Everything else stays neutral.
   if (run.status === "merged") {
     return {
       backgroundColor: "var(--status-success-muted, rgba(63, 191, 127, 0.08))",
@@ -41,12 +42,24 @@ function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
   }
   const isActive =
     isOpenAutomationRun(run) && run.status !== "cancelled" && !describeRunFailure(run);
+  if (isActive) {
+    return {
+      backgroundColor: "var(--accent-muted, rgba(255, 106, 53, 0.08))",
+      borderColor: "var(--accent-border, rgba(255, 106, 53, 0.28))",
+      markerColor: "var(--accent-primary, #ff6a35)",
+    };
+  }
+  if (describeRunFailure(run)) {
+    return {
+      backgroundColor: "var(--bg-surface, #1c1c21)",
+      borderColor: "var(--border-default, #393940)",
+      markerColor: "var(--status-error, #d55e00)",
+    };
+  }
   return {
     backgroundColor: "var(--bg-elevated, #232329)",
     borderColor: "var(--border-subtle, #2e2e36)",
-    markerColor: isActive
-      ? "var(--accent-primary, #ff6a35)"
-      : "var(--text-subtle, #6b6b73)",
+    markerColor: "var(--text-subtle, #6b6b73)",
   };
 }
 function formatDiffStats(value: string | null): string | null {
@@ -469,7 +482,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
                         className="inline-flex"
                         data-testid={`automation-run-${run.id}-conversation-disabled-trigger`}
                       >
-                        <Button type="button" variant="secondary" size="sm" disabled>
+                        <Button type="button" variant="outline" size="sm" disabled>
                           Open conversation
                         </Button>
                       </span>
@@ -479,7 +492,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
                 ) : (
                   <Button
                     type="button"
-                    variant="secondary"
+                    variant="outline"
                     size="sm"
                     disabled={!canOpenConversation}
                     onClick={openConversation}

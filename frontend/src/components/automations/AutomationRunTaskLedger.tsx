@@ -7,7 +7,6 @@ import {
   type AgentTaskSummary,
 } from "@/api/agent-tasks";
 import type { AutomationRunStatus } from "@/api/automations";
-import { StatusPill, type StatusPillTone } from "@/components/ui/status-pill";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
@@ -22,44 +21,83 @@ const STATE_LABELS: Record<AgentTaskState, string> = {
   dropped: "Dropped",
 };
 
-/** Tone for a task state badge — accent for live, success/error when settled. */
-function stateTone(state: AgentTaskState): StatusPillTone {
+const TERMINAL_SUCCESS_RUN_STATUSES: AutomationRunStatus[] = [
+  "merged",
+  "completed",
+  "published",
+];
+
+/**
+ * Keep the ledger in sync with the run's terminal state: once a run has merged /
+ * completed / published, there is no live work left, so a task the agent left as
+ * `active` is shown as `done` rather than a misleading in-progress dot.
+ */
+function effectiveTaskState(
+  state: AgentTaskState,
+  runStatus: AutomationRunStatus,
+): AgentTaskState {
+  if (state === "active" && TERMINAL_SUCCESS_RUN_STATUSES.includes(runStatus)) {
+    return "done";
+  }
+  return state;
+}
+
+/** Small status dot per task state — animated for the live/in-progress task. */
+function stateDotColor(state: AgentTaskState): string {
   switch (state) {
     case "active":
-      return "accent";
+      return "var(--accent-primary, #ff6a35)";
     case "done":
-      return "success";
+      return "var(--status-success, #3fbf7f)";
     case "dropped":
-      return "error";
+      return "var(--status-error, #d55e00)";
     default:
-      return "neutral";
+      return "var(--text-subtle, #6b6b73)";
   }
 }
 
-function TaskStateBadge({ state }: { state: AgentTaskState }) {
+function TaskStateDot({ state }: { state: AgentTaskState }) {
   return (
-    <StatusPill
-      label={STATE_LABELS[state]}
-      tone={stateTone(state)}
-      live={state === "active"}
-      className="shrink-0"
+    <span
+      role="img"
+      aria-label={STATE_LABELS[state]}
+      title={STATE_LABELS[state]}
+      className={`h-2 w-2 shrink-0 rounded-full${state === "active" ? " animate-pulse" : ""}`}
+      style={{ backgroundColor: stateDotColor(state) }}
     />
   );
 }
 
-function TaskRow({ task }: { task: AgentTaskSummary }) {
+function TaskRow({
+  task,
+  state,
+  isFirst,
+}: {
+  task: AgentTaskSummary;
+  state: AgentTaskState;
+  isFirst: boolean;
+}) {
   return (
     <div
-      className="flex items-center gap-2 text-sm"
+      className="flex items-center gap-2.5 px-2.5 py-1.5 text-sm"
+      style={
+        isFirst
+          ? undefined
+          : {
+              borderTopColor: "var(--border-subtle, #2e2e36)",
+              borderTopStyle: "solid",
+              borderTopWidth: "1px",
+            }
+      }
       data-testid="automation-run-task-ledger-row"
     >
       <span
-        className="w-8 shrink-0 text-right font-mono text-xs font-semibold"
+        className="w-7 shrink-0 text-right font-mono text-xs font-semibold"
         style={{ color: "var(--text-muted)" }}
       >
         #{task.taskNumber}
       </span>
-      <TaskStateBadge state={task.state} />
+      <TaskStateDot state={state} />
       <span
         className="min-w-0 flex-1 truncate"
         style={{ color: "var(--text-secondary)" }}
@@ -187,15 +225,29 @@ export function AutomationRunTaskLedger({
           No agent tasks yet.
         </p>
       ) : (
-        <div className="space-y-1.5">
-          {activeTasks.length > 0 ? (
-            activeTasks.map((task) => <TaskRow key={task.taskId} task={task} />)
-          ) : (
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              No active tasks right now.
-            </p>
-          )}
-        </div>
+        activeTasks.length > 0 ? (
+          <div
+            className="overflow-hidden rounded-md"
+            style={{
+              borderColor: "var(--border-subtle, #2e2e36)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            {activeTasks.map((task, index) => (
+              <TaskRow
+                key={task.taskId}
+                task={task}
+                state={effectiveTaskState(task.state, runStatus)}
+                isFirst={index === 0}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+            No active tasks right now.
+          </p>
+        )
       )}
     </div>
   );
