@@ -39,6 +39,9 @@ pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_terminal_cleanup;
 mod agent_workspace_terminal_observation;
 mod agent_workspace_terminalization;
+pub(crate) mod agent_workspace_merge_classification;
+#[cfg(test)]
+mod agent_workspace_merge_classification_tests;
 #[cfg(test)]
 mod agent_workspace_terminal_cleanup_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
@@ -157,6 +160,9 @@ mod persona_prompt_tests;
 #[cfg(test)]
 mod persona_resolver_tests;
 pub(crate) mod plan_artifact_approval;
+pub(crate) mod plan_verdict_history;
+#[cfg(test)]
+mod plan_verdict_history_tests;
 pub mod plan_approval_notification_service;
 #[cfg(test)]
 mod plan_approval_notification_service_tests;

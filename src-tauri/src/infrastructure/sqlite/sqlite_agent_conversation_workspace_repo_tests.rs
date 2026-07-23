@@ -81,6 +81,74 @@ fn set_workspace_updated_at(
 }
 
 #[tokio::test]
+async fn publication_pushed_sha_setter_round_trips_overwrites_and_clears() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("insert workspace");
+
+    repo.set_publication_pushed_sha(
+        &conversation_id,
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    )
+    .await
+    .expect("set SHA");
+    repo.set_publication_pushed_sha(
+        &conversation_id,
+        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    )
+    .await
+    .expect("overwrite SHA");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pushed_sha
+            .as_deref(),
+        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
+
+    repo.set_publication_pushed_sha(&conversation_id, None)
+        .await
+        .expect("clear SHA");
+    assert!(repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .publication_pushed_sha
+        .is_none());
+}
+
+#[tokio::test]
+async fn publication_pushed_sha_setter_rejects_invalid_or_missing_targets() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("insert workspace");
+
+    assert!(repo
+        .set_publication_pushed_sha(&conversation_id, Some("not-a-commit"))
+        .await
+        .is_err());
+    assert!(repo
+        .set_publication_pushed_sha(
+            &ChatConversationId::from_string("missing-workspace"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        )
+        .await
+        .is_err());
+    assert!(repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .publication_pushed_sha
+        .is_none());
+}
+
+#[tokio::test]
 async fn reserved_workspace_review_start_failure_is_exact_and_cannot_clobber_newer_run() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))
@@ -648,6 +716,7 @@ async fn restore_after_restart_reactivates_links_and_clears_cleanup_marker() {
     let (_db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id.clone());
     workspace.status = AgentConversationWorkspaceStatus::Missing;
+    workspace.publication_pushed_sha = Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
     repo.create_or_update(workspace).await.unwrap();
     repo.mark_local_cleanup_status(&conversation_id, "cleaned", chrono::Utc::now())
         .await
@@ -679,6 +748,7 @@ async fn restore_after_restart_reactivates_links_and_clears_cleanup_marker() {
             .unwrap(),
         None
     );
+    assert!(restored.publication_pushed_sha.is_none());
 }
 
 #[tokio::test]

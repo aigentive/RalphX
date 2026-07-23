@@ -10,7 +10,7 @@ use crate::entities::{
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
     AgentWorkspaceReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentWorkspaceLocalCleanupClaim {
@@ -297,6 +297,19 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         pr_status: Option<&str>,
         push_status: Option<&str>,
     ) -> AppResult<()>;
+
+    async fn set_publication_pushed_sha(
+        &self,
+        _conversation_id: &ChatConversationId,
+        pushed_sha: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(pushed_sha) = pushed_sha {
+            validate_publication_pushed_sha(pushed_sha)?;
+        }
+        Err(AppError::Validation(
+            "publication pushed SHA persistence is unavailable".to_string(),
+        ))
+    }
 
     async fn compare_and_set_repair_state(
         &self,
@@ -702,4 +715,17 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         let workspaces = self.get_by_project_id(project_id).await?;
         Ok(workspaces.into_iter().map(|w| w.worktree_path).collect())
     }
+}
+
+pub fn validate_publication_pushed_sha(value: &str) -> AppResult<()> {
+    if value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Ok(());
+    }
+    Err(AppError::Validation(
+        "publication pushed SHA must be a lowercase 40-character commit OID".to_string(),
+    ))
 }

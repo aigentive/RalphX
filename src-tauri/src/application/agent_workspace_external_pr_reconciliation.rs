@@ -8,6 +8,9 @@ use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
+use crate::application::agent_workspace_merge_classification::{
+    classify_merged_workspace_outcome_from_github, MergedWorkspaceOutcome,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
     TerminalPrObservation,
@@ -252,6 +255,18 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             );
         }
     } else {
+        let merged_outcome = if pr_status == "merged" {
+            classify_merged_workspace_outcome_from_github(
+                &deps.workspace_repo,
+                &deps.github,
+                &conversation_id,
+                Path::new(&project.working_directory),
+                pr.number,
+            )
+            .await
+        } else {
+            MergedWorkspaceOutcome::Merged
+        };
         let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
@@ -261,7 +276,11 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             Some(
                 TerminalPrObservation::new(
                     pr.number,
-                    pr_status,
+                    if pr_status == "merged" {
+                        merged_outcome.observation_status()
+                    } else {
+                        pr_status
+                    },
                     terminal_linked_pr_summary(pr_status),
                 )
                 .with_publication_event(event),
@@ -336,6 +355,18 @@ async fn reconcile_linked_agent_workspace_pr(
             Some("pushed"),
         )
         .await?;
+    let merged_outcome = if pr_status == "merged" {
+        classify_merged_workspace_outcome_from_github(
+            &deps.workspace_repo,
+            &deps.github,
+            &workspace.conversation_id,
+            Path::new(&project.working_directory),
+            pr_number,
+        )
+        .await
+    } else {
+        MergedWorkspaceOutcome::Merged
+    };
     let event = AgentConversationWorkspacePublicationEvent::new(
         workspace.conversation_id.clone(),
         format!("pr_{pr_status}"),
@@ -354,8 +385,16 @@ async fn reconcile_linked_agent_workspace_pr(
         deps.chat_service.as_ref().map(Arc::clone),
         Some(Arc::clone(&deps.task_outcome_repo)),
         Some(
-            TerminalPrObservation::new(pr_number, pr_status, terminal_linked_pr_summary(pr_status))
-                .with_publication_event(event),
+            TerminalPrObservation::new(
+                pr_number,
+                if pr_status == "merged" {
+                    merged_outcome.observation_status()
+                } else {
+                    pr_status
+                },
+                terminal_linked_pr_summary(pr_status),
+            )
+            .with_publication_event(event),
         ),
         &workspace.conversation_id,
         project,

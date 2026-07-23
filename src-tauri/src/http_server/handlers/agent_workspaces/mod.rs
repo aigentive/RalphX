@@ -56,7 +56,7 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::publish_resilience::{
-    inspect_publish_branch_freshness_for_source, push_publish_branch,
+    inspect_publish_branch_freshness_for_source, push_agent_workspace_publish_branch,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
@@ -2552,7 +2552,14 @@ async fn complete_ideation_plan_pr_fix_publish(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
 
-    if let Err(error) = push_publish_branch(github, &target.working_dir, &target.branch_name).await
+    if let Err(error) = push_agent_workspace_publish_branch(
+        github,
+        &state.app_state.agent_conversation_workspace_repo,
+        &conversation_id,
+        &target.working_dir,
+        &target.branch_name,
+    )
+    .await
     {
         let message = format!("PR fix push failed: {error}");
         state
@@ -4620,8 +4627,10 @@ pub async fn complete_agent_workspace_repair(
         } else if let (Some(github), Some(published_pr_number)) =
             (state.app_state.github_service.as_ref(), pr_number)
         {
-            match push_publish_branch(
+            match push_agent_workspace_publish_branch(
                 github,
+                &state.app_state.agent_conversation_workspace_repo,
+                &conversation_id,
                 &publish_target.worktree_path,
                 &publish_target.branch_name,
             )

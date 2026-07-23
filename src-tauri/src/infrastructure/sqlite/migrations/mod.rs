@@ -332,6 +332,9 @@ mod v20260723130204_archive_legacy_project_skill_drafts_tests;
 mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints;
 #[cfg(test)]
 mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints_tests;
+mod v20260723170404_agent_workspace_publication_pushed_sha;
+#[cfg(test)]
+mod v20260723170404_agent_workspace_publication_pushed_sha_tests;
 mod v20260616182441_external_issue_links;
 #[cfg(test)]
 mod v20260616182441_external_issue_links_tests;
@@ -633,7 +636,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260723143416;
+pub const SCHEMA_VERSION: i64 = 20260723170404;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1742,6 +1745,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260723143416,
         name: "typed_ledger_sources_classes_failure_fingerprints",
         migrate: v20260723143416_typed_ledger_sources_classes_failure_fingerprints::migrate,
+    },
+    Migration {
+        version: 20260723170404,
+        name: "agent_workspace_publication_pushed_sha",
+        migrate: v20260723170404_agent_workspace_publication_pushed_sha::migrate,
     },
 ];
 

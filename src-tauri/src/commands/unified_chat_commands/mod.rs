@@ -102,7 +102,7 @@ use crate::application::publish_resilience::{
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
     ensure_plan_publish_branch_fresh, ensure_publish_base_pushed, ensure_publish_branch_fresh,
     inspect_publish_branch_freshness_for_source,
-    inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
+    inspect_publish_branch_freshness_for_source_after_fetch, push_agent_workspace_publish_branch,
     remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
     PublishBranchFreshnessStatus, PublishFailureClass,
 };
@@ -6053,8 +6053,10 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                 .await;
                 return Err(message);
             };
-            if let Err(error) = push_publish_branch(
+            if let Err(error) = push_agent_workspace_publish_branch(
                 github,
+                &state.agent_conversation_workspace_repo,
+                &workspace.conversation_id,
                 &publish_target.worktree_path,
                 &publish_target.branch_name,
             )
@@ -6848,8 +6850,10 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
     let push_started = Instant::now();
-    if let Err(error) = push_publish_branch(
+    if let Err(error) = push_agent_workspace_publish_branch(
         github,
+        &state.agent_conversation_workspace_repo,
+        &workspace.conversation_id,
         &publish_target.worktree_path,
         &publish_target.branch_name,
     )
@@ -7508,7 +7512,15 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .map_err(|e| e.to_string())?;
 
     let push_started = Instant::now();
-    if let Err(error) = push_publish_branch(github, &worktree_path, &workspace.branch_name).await {
+    if let Err(error) = push_agent_workspace_publish_branch(
+        github,
+        &state.agent_conversation_workspace_repo,
+        &workspace.conversation_id,
+        &worktree_path,
+        &workspace.branch_name,
+    )
+    .await
+    {
         let error = error.to_string();
         tracing::warn!(
             target: "ralphx_lib::commands::agent_workspace_publish",

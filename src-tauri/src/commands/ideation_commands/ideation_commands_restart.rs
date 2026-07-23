@@ -440,6 +440,7 @@ fn restore_restart_workspace_state(
                      publication_pr_url = NULL,
                      publication_pr_status = NULL,
                      publication_push_status = NULL,
+                     publication_pushed_sha = NULL,
                      pr_supervision_status = NULL,
                      pr_supervision_summary = NULL,
                      pr_supervision_updated_at = ?4,

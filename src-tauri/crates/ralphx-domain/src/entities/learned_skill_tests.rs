@@ -115,6 +115,20 @@ fn task_outcome_classes_preserve_known_unknown_empty_and_null_values() {
 }
 
 #[test]
+fn plan_revision_requested_class_round_trips_canonically() {
+    let class = TaskOutcomeClass::from("plan_mode_revision_requested");
+    assert_eq!(class, TaskOutcomeClass::PlanModeRevisionRequested);
+    assert_eq!(class.as_str(), "plan_mode_revision_requested");
+    assert_eq!(
+        serde_json::from_str::<TaskOutcomeClass>(
+            &serde_json::to_string(&class).expect("serialize class")
+        )
+        .expect("deserialize class"),
+        class
+    );
+}
+
+#[test]
 fn skill_usage_injection_kinds_round_trip_closed_vocabulary() {
     let cases = [
         ("compact_index", SkillUsageInjectionKind::CompactIndex),

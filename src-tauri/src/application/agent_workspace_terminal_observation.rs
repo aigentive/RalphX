@@ -32,6 +32,11 @@ impl TerminalPrObservation {
         self
     }
 
+    pub(crate) fn with_status(mut self, status: &str) -> Self {
+        self.status = status.to_string();
+        self
+    }
+
     pub(crate) fn with_publication_event(
         mut self,
         publication_event: AgentConversationWorkspacePublicationEvent,

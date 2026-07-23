@@ -20,9 +20,9 @@ use crate::domain::entities::{
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
-    AgentWorkspacePrTerminalSettlement,
+    validate_publication_pushed_sha, AgentConversationWorkspaceRepository,
+    AgentWorkspaceLocalCleanupClaim, AgentWorkspacePrReviewActionMutation,
+    AgentWorkspacePrReviewStateTransition, AgentWorkspacePrTerminalSettlement,
 };
 use crate::error::{AppError, AppResult};
 
@@ -525,6 +525,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.linked_ideation_session_id = Some(ideation_session_id.clone());
             workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
             workspace.status = AgentConversationWorkspaceStatus::Active;
+            workspace.publication_pushed_sha = None;
             workspace.updated_at = Utc::now();
         }
         self.local_cleanup_markers
@@ -560,6 +561,23 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             }
             workspace.updated_at = now;
         }
+        Ok(())
+    }
+
+    async fn set_publication_pushed_sha(
+        &self,
+        conversation_id: &ChatConversationId,
+        pushed_sha: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(pushed_sha) = pushed_sha {
+            validate_publication_pushed_sha(pushed_sha)?;
+        }
+        let mut workspaces = self.workspaces.write().await;
+        let workspace = workspaces
+            .get_mut(conversation_id)
+            .ok_or_else(|| AppError::NotFound(format!("Workspace not found: {conversation_id}")))?;
+        workspace.publication_pushed_sha = pushed_sha.map(str::to_string);
+        workspace.updated_at = Utc::now();
         Ok(())
     }
 

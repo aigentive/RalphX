@@ -22,9 +22,9 @@ use crate::domain::entities::{
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
-    AgentWorkspacePrTerminalSettlement,
+    validate_publication_pushed_sha, AgentConversationWorkspaceRepository,
+    AgentWorkspaceLocalCleanupClaim, AgentWorkspacePrReviewActionMutation,
+    AgentWorkspacePrReviewStateTransition, AgentWorkspacePrTerminalSettlement,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -93,6 +93,7 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         publication_pr_url: row.get("publication_pr_url")?,
         publication_pr_status: row.get("publication_pr_status")?,
         publication_push_status: row.get("publication_push_status")?,
+        publication_pushed_sha: row.get("publication_pushed_sha")?,
         auto_publish_enabled: row.get("auto_publish_enabled")?,
         auto_publish_initial_pr_enabled: row.get("auto_publish_initial_pr_enabled")?,
         auto_publish_paused_pr_autofix_enabled: row
@@ -592,6 +593,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let publication_pr_url = workspace.publication_pr_url.clone();
         let publication_pr_status = workspace.publication_pr_status.clone();
         let publication_push_status = workspace.publication_push_status.clone();
+        let publication_pushed_sha = workspace.publication_pushed_sha.clone();
         let auto_publish_enabled = workspace.auto_publish_enabled;
         let auto_publish_initial_pr_enabled = workspace.auto_publish_initial_pr_enabled;
         let auto_publish_paused_pr_autofix_enabled =
@@ -622,14 +624,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         source_pr_number, source_pr_url, source_pr_title,
                         source_pr_head_ref, source_pr_base_ref, source_pr_head_sha,
                         publication_pr_number, publication_pr_url, publication_pr_status,
-                        publication_push_status, auto_publish_enabled,
+                        publication_push_status, publication_pushed_sha, auto_publish_enabled,
                         auto_publish_initial_pr_enabled, auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired, pr_autofix_enabled,
                         pr_auto_merge_desired, pr_auto_merge_method,
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -653,6 +655,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_pr_url=excluded.publication_pr_url,
                         publication_pr_status=excluded.publication_pr_status,
                         publication_push_status=excluded.publication_push_status,
+                        publication_pushed_sha=excluded.publication_pushed_sha,
                         auto_publish_enabled=excluded.auto_publish_enabled,
                         auto_publish_initial_pr_enabled=excluded.auto_publish_initial_pr_enabled,
                         auto_publish_paused_pr_autofix_enabled=excluded.auto_publish_paused_pr_autofix_enabled,
@@ -690,6 +693,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_pr_url,
                         publication_pr_status,
                         publication_push_status,
+                        publication_pushed_sha,
                         auto_publish_enabled,
                         auto_publish_initial_pr_enabled,
                         auto_publish_paused_pr_autofix_enabled,
@@ -1413,6 +1417,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          status = 'active',
                          local_cleanup_status = NULL,
                          local_cleanup_checked_at = NULL,
+                         publication_pushed_sha = NULL,
                          updated_at = ?4
                      WHERE conversation_id = ?1",
                     rusqlite::params![
@@ -1469,6 +1474,36 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         terminal_pr_status
                     ],
                 )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn set_publication_pushed_sha(
+        &self,
+        conversation_id: &ChatConversationId,
+        pushed_sha: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(pushed_sha) = pushed_sha {
+            validate_publication_pushed_sha(pushed_sha)?;
+        }
+        let conversation_id = conversation_id.as_str().to_string();
+        let pushed_sha = pushed_sha.map(str::to_string);
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let rows = conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_pushed_sha = ?2,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, pushed_sha, updated_at],
+                )?;
+                if rows == 0 {
+                    return Err(AppError::NotFound(format!(
+                        "Workspace not found: {conversation_id}"
+                    )));
+                }
                 Ok(())
             })
             .await

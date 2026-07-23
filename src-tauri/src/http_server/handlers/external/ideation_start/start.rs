@@ -493,7 +493,7 @@ async fn clone_plan_approval_if_approved(
     let artifact = cloned_artifact.clone();
     let now = chrono::Utc::now().to_rfc3339();
 
-    if let Err(e) = state
+    match state
         .app_state
         .db
         .run(move |conn| {
@@ -507,7 +507,57 @@ async fn clone_plan_approval_if_approved(
         })
         .await
     {
-        tracing::warn!("Failed to clone plan approval for imported session: {}", e);
+        Ok(()) => {
+            let project_id = state
+                .app_state
+                .ideation_session_repo
+                .get_by_id(&IdeationSessionId::from_string(new_session_id))
+                .await
+                .ok()
+                .flatten()
+                .map(|session| session.project_id);
+            if let Some(project_id) = project_id {
+                let conversation_id = state
+                    .app_state
+                    .agent_conversation_workspace_repo
+                    .get_by_linked_ideation_session_id(&IdeationSessionId::from_string(
+                        new_session_id,
+                    ))
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|workspace| workspace.conversation_id.as_str());
+                if let Err(error) = crate::application::plan_verdict_history::record_plan_verdict(
+                    std::sync::Arc::clone(&state.app_state.task_outcome_repo),
+                    crate::application::plan_verdict_history::PlanVerdictCapture {
+                        project_id,
+                        conversation_id,
+                        session_id: new_session_id.to_string(),
+                        artifact_id: cloned_artifact.id.as_str().to_string(),
+                        artifact_version: cloned_artifact.metadata.version,
+                        actor: crate::domain::repositories::PlanApprovalActor::PlanImport,
+                        verdict: crate::application::plan_verdict_history::PlanVerdict::Accepted,
+                        origin: "external_ideation_plan_import",
+                        summary: None,
+                    },
+                )
+                .await
+                {
+                    tracing::warn!(
+                        session_id = new_session_id,
+                        artifact_id = cloned_artifact.id.as_str(),
+                        error = %error,
+                        "Imported plan approval committed but verdict history capture failed"
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                "Failed to clone plan approval for imported session: {}",
+                error
+            );
+        }
     }
 }
 

@@ -11,6 +11,9 @@ use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::memory_orchestration::{
     schedule_explicit_project_skill_distillation, ProjectSkillDistillationScheduleStatus,
 };
+use crate::application::plan_verdict_history::{
+    record_plan_verdict, PlanVerdict as HistoricalPlanVerdict, PlanVerdictCapture,
+};
 use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
@@ -19,14 +22,11 @@ use crate::commands::unified_chat_commands::{
     SwitchAgentConversationModeInput,
 };
 use crate::commands::ExecutionState;
-use crate::domain::entities::{
-    ChatContextType, ChatConversationId, ProjectId, TaskOutcome, TaskOutcomeClass, TaskOutcomeId,
-    TaskOutcomeSource, TaskOutcomeStatus,
-};
+use crate::domain::entities::{ChatContextType, ChatConversationId, ProjectId};
+use crate::domain::repositories::PlanApprovalActor;
 use crate::domain::services::learned_skill_adapters::{
     capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
 };
-use crate::domain::services::OutcomeLedgerService;
 use crate::domain::services::QueueKey;
 use crate::AppState;
 
@@ -103,6 +103,37 @@ pub(crate) fn accepted_plan_mode_proposal(
     })
 }
 
+pub(crate) fn declined_plan_mode_proposal(
+    question: Option<&PendingQuestionInfo>,
+    answer: &QuestionAnswer,
+) -> Option<AcceptedPlanModeProposal> {
+    if answer.skipped
+        || answer
+            .selected_options
+            .iter()
+            .any(|option| option == PLAN_MODE_PROPOSAL_ACCEPT_VALUE)
+    {
+        return None;
+    }
+    let question = question?;
+    let metadata = question.metadata.as_ref()?;
+    if metadata.get("kind").and_then(|value| value.as_str()) != Some(PLAN_MODE_PROPOSAL_KIND) {
+        return None;
+    }
+    let conversation_id = metadata
+        .get("conversation_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or(question.session_id.as_str())
+        .trim();
+    if conversation_id.is_empty() {
+        return None;
+    }
+    Some(AcceptedPlanModeProposal {
+        conversation_id: ChatConversationId::from_string(conversation_id),
+        reason: answer.text.clone(),
+    })
+}
+
 pub(crate) fn build_plan_mode_proposal_continuation(reason: Option<&str>) -> String {
     match reason.map(str::trim).filter(|value| !value.is_empty()) {
         Some(reason) => {
@@ -130,46 +161,6 @@ pub(crate) fn plan_mode_proposal_continuation_metadata_with_outcome(
     metadata.to_string()
 }
 
-pub(crate) fn task_outcome_from_plan_mode_verdict(
-    outcome: &PlanModeVerdictOutcome,
-) -> Option<TaskOutcome> {
-    let planning_session_id = outcome.refs.get("planning_session_id")?.trim();
-    if planning_session_id.is_empty() {
-        return None;
-    }
-    let status = outcome
-        .status
-        .parse::<TaskOutcomeStatus>()
-        .unwrap_or(TaskOutcomeStatus::Unknown);
-    let source = outcome.source.parse::<TaskOutcomeSource>().ok()?;
-    if !source.is_live() {
-        return None;
-    }
-    let now = chrono::Utc::now();
-    Some(TaskOutcome {
-        id: TaskOutcomeId::new(),
-        project_id: ProjectId::from_string(outcome.project_id.clone()),
-        source,
-        source_ref_kind: "planning_session".to_string(),
-        source_ref_id: planning_session_id.to_string(),
-        task_id: None,
-        conversation_id: outcome.refs.get("conversation_id").cloned(),
-        agent_run_id: None,
-        pull_request_id: None,
-        proposal_id: None,
-        verification_id: None,
-        review_id: None,
-        outcome_class: Some(TaskOutcomeClass::from(outcome.outcome_class.as_str())),
-        status,
-        evidence_json: serde_json::to_value(outcome).unwrap_or_else(|_| serde_json::json!({})),
-        failure_fingerprint: None,
-        provider_harness: None,
-        provider_session_id: None,
-        created_at: now,
-        updated_at: now,
-    })
-}
-
 async fn capture_accepted_plan_mode_proposal_outcome(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -188,27 +179,51 @@ async fn capture_accepted_plan_mode_proposal_outcome(
         .get_by_id(planning_session_id)
         .await
         .ok()
-        .flatten();
-    let plan_artifact_id = planning_session.and_then(|session| {
-        session
-            .plan_artifact_id
-            .or(session.inherited_plan_artifact_id)
-            .map(|artifact_id| artifact_id.as_str().to_string())
-    });
+        .flatten()?;
+    let plan_artifact_id = planning_session
+        .plan_artifact_id
+        .or(planning_session.inherited_plan_artifact_id);
+    let plan_artifact = match plan_artifact_id.as_ref() {
+        Some(artifact_id) => state
+            .artifact_repo
+            .get_by_id(artifact_id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let plan_artifact_id_string = plan_artifact_id
+        .as_ref()
+        .map(|artifact_id| artifact_id.as_str().to_string());
 
     let outcome = capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
         project_id: project_id.to_string(),
         conversation_id: conversation_id.as_str(),
         planning_session_id: Some(planning_session_id.0.clone()),
         accepted_session_id: None,
-        plan_artifact_id,
+        plan_artifact_id: plan_artifact_id_string.clone(),
         verdict: PlanModeVerdict::Accepted,
         reason: reason.map(str::to_string),
     })?;
 
-    if let Some(task_outcome) = task_outcome_from_plan_mode_verdict(&outcome) {
-        let service = OutcomeLedgerService::new(Arc::clone(&state.task_outcome_repo));
-        match service.record_outcome(task_outcome).await {
+    if let (Some(plan_artifact_id), Some(plan_artifact)) = (plan_artifact_id_string, plan_artifact)
+    {
+        match record_plan_verdict(
+            Arc::clone(&state.task_outcome_repo),
+            PlanVerdictCapture {
+                project_id: ProjectId::from_string(project_id.to_string()),
+                conversation_id: Some(conversation_id.as_str()),
+                session_id: planning_session_id.as_str().to_string(),
+                artifact_id: plan_artifact_id,
+                artifact_version: plan_artifact.metadata.version,
+                actor: PlanApprovalActor::User,
+                verdict: HistoricalPlanVerdict::Accepted,
+                origin: "plan_mode_proposal",
+                summary: reason.map(str::to_string),
+            },
+        )
+        .await
+        {
             Ok(recorded_outcome) => {
                 let outcome_id = recorded_outcome.id.clone();
                 let schedule = schedule_explicit_project_skill_distillation(
@@ -244,6 +259,60 @@ async fn capture_accepted_plan_mode_proposal_outcome(
     }
 
     Some(outcome)
+}
+
+async fn capture_declined_plan_mode_proposal_outcome(
+    state: &AppState,
+    proposal: &AcceptedPlanModeProposal,
+) {
+    let workspace = match state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&proposal.conversation_id)
+        .await
+    {
+        Ok(Some(workspace)) => workspace,
+        _ => return,
+    };
+    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return;
+    };
+    let session = match state.ideation_session_repo.get_by_id(session_id).await {
+        Ok(Some(session)) => session,
+        _ => return,
+    };
+    let Some(artifact_id) = session
+        .plan_artifact_id
+        .as_ref()
+        .or(session.inherited_plan_artifact_id.as_ref())
+    else {
+        return;
+    };
+    let artifact = match state.artifact_repo.get_by_id(artifact_id).await {
+        Ok(Some(artifact)) => artifact,
+        _ => return,
+    };
+    if let Err(error) = record_plan_verdict(
+        Arc::clone(&state.task_outcome_repo),
+        PlanVerdictCapture {
+            project_id: session.project_id,
+            conversation_id: Some(proposal.conversation_id.as_str()),
+            session_id: session_id.as_str().to_string(),
+            artifact_id: artifact_id.as_str().to_string(),
+            artifact_version: artifact.metadata.version,
+            actor: PlanApprovalActor::User,
+            verdict: HistoricalPlanVerdict::Declined,
+            origin: "plan_mode_proposal",
+            summary: proposal.reason.clone(),
+        },
+    )
+    .await
+    {
+        tracing::warn!(
+            conversation_id = %proposal.conversation_id,
+            error = %error,
+            "Plan-mode proposal decline committed but verdict history capture failed"
+        );
+    }
 }
 
 async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
@@ -378,6 +447,8 @@ pub async fn resolve_user_question<R: Runtime + 'static>(
         .find(|question| question.request_id == request_id);
     let accepted_plan_mode_proposal =
         accepted_plan_mode_proposal(pending_question.as_ref(), &answer);
+    let declined_plan_mode_proposal =
+        declined_plan_mode_proposal(pending_question.as_ref(), &answer);
 
     let result = state.question_state.resolve(&request_id, answer).await;
 
@@ -387,6 +458,9 @@ pub async fn resolve_user_question<R: Runtime + 'static>(
             .resolve_workflow_notification(&question_notification_key(&request_id))
             .await;
         let mut plan_mode_proposal_handled = false;
+        if let Some(proposal) = declined_plan_mode_proposal.as_ref() {
+            capture_declined_plan_mode_proposal_outcome(state.inner(), proposal).await;
+        }
         if let Some(proposal) = accepted_plan_mode_proposal {
             match handle_accepted_plan_mode_proposal(
                 state.inner(),

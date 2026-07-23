@@ -1141,6 +1141,7 @@ struct ParkedPlanGateScenario {
     session_repo: Arc<MemoryIdeationSessionRepository>,
     approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
     artifact_repo: Arc<MemoryArtifactRepository>,
+    task_outcome_repo: Arc<MemoryTaskOutcomeRepository>,
     resumer: Arc<RecordingResumer>,
     automation_id: AutomationId,
     conversation_id: ChatConversationId,
@@ -1163,6 +1164,7 @@ impl ParkedPlanGateScenario {
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
         let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
         let artifact_repo = Arc::new(MemoryArtifactRepository::new());
+        let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
         let resumer = Arc::new(RecordingResumer::default());
         let automation_id = AutomationId::from_string("automation-1");
         let mut automation = automation(automation_id.as_str(), automation_status);
@@ -1193,6 +1195,7 @@ impl ParkedPlanGateScenario {
             session_repo,
             approval_repo,
             artifact_repo,
+            task_outcome_repo,
             resumer,
             automation_id,
             conversation_id,
@@ -1211,6 +1214,7 @@ impl ParkedPlanGateScenario {
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
         let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
         let artifact_repo = Arc::new(MemoryArtifactRepository::new());
+        let task_outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
         let resumer = Arc::new(RecordingResumer::default());
         let automation_id = AutomationId::from_string("automation-1");
         automation_repo
@@ -1242,6 +1246,7 @@ impl ParkedPlanGateScenario {
             session_repo,
             approval_repo,
             artifact_repo,
+            task_outcome_repo,
             resumer,
             automation_id,
             conversation_id,
@@ -1498,7 +1503,7 @@ impl ParkedPlanGateScenario {
             agent_run_repo,
             conversation_repo,
             workspace_repo,
-            Arc::new(MemoryTaskOutcomeRepository::new()),
+            self.task_outcome_repo.clone(),
             session_repo,
             plan_approval_repo,
             plan_approval_writer,
@@ -6611,6 +6616,22 @@ async fn automation_scheduler_stored_approve_verdict_recovers_missing_approval_r
         .unwrap();
     assert_eq!(delivered.status, AutomationRunStatus::Running);
     assert_eq!(scenario.resumer.prompts().len(), 1);
+    let outcomes = scenario
+        .task_outcome_repo
+        .list_by_project(
+            &ProjectId::from_string("project-1".to_string()),
+            TaskOutcomeListOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some("plan_mode_accepted")
+    );
 }
 
 #[tokio::test]
@@ -6760,6 +6781,26 @@ async fn automation_scheduler_plan_judge_retries_invalid_json_once_then_applies_
         .await
         .unwrap()
         .is_some());
+    let outcomes = scenario
+        .task_outcome_repo
+        .list_by_project(
+            &ProjectId::from_string("project-1".to_string()),
+            TaskOutcomeListOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some("plan_mode_accepted")
+    );
+    assert_eq!(
+        outcomes[0].evidence_json["identity"]["actor"],
+        serde_json::json!("judge")
+    );
 }
 
 #[tokio::test]
@@ -6800,6 +6841,22 @@ async fn automation_scheduler_plan_judge_revise_sets_pending_instructions_and_ba
         .await
         .unwrap()
         .is_none());
+    let outcomes = scenario
+        .task_outcome_repo
+        .list_by_project(
+            &ProjectId::from_string("project-1".to_string()),
+            TaskOutcomeListOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some("plan_mode_revision_requested")
+    );
 }
 
 #[tokio::test]

@@ -2,8 +2,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, ChatConversation, IdeationAnalysisBaseRefKind,
+    AgentConversationWorkspace, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
 };
+use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::GithubServiceTrait;
 use crate::domain::state_machine::transition_handler::{
     classify_commit_hook_failure_text, update_plan_from_main_isolated, update_source_from_target,
@@ -150,6 +151,23 @@ pub async fn push_publish_branch(
     branch: &str,
 ) -> AppResult<()> {
     github.push_branch(repo_path, branch).await
+}
+
+pub async fn push_agent_workspace_publish_branch(
+    github: &Arc<dyn GithubServiceTrait>,
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+    repo_path: &Path,
+    branch: &str,
+) -> AppResult<()> {
+    workspace_repo
+        .set_publication_pushed_sha(conversation_id, None)
+        .await?;
+    github.push_branch(repo_path, branch).await?;
+    let pushed_sha = GitService::get_branch_sha(repo_path, branch).await?;
+    workspace_repo
+        .set_publication_pushed_sha(conversation_id, Some(&pushed_sha))
+        .await
 }
 
 /// Lazily publish an automation run's local-only base branch to origin before the
@@ -721,8 +739,7 @@ mod tests {
                 "base-sha",
             ),
             PublishBranchFreshnessOutcome::NeedsAgent {
-                message: "Merge conflict updating plan branch from main: unknown files"
-                    .to_string(),
+                message: "Merge conflict updating plan branch from main: unknown files".to_string(),
                 conflict_files: Vec::new(),
                 base_commit: "base-sha".to_string(),
                 target_ref: "main".to_string(),
@@ -811,9 +828,7 @@ mod tests {
         kind: IdeationAnalysisBaseRefKind,
         automation: bool,
     ) -> (ChatConversation, AgentConversationWorkspace) {
-        use crate::domain::entities::{
-            AgentConversationWorkspaceMode, AutomationId, ProjectId,
-        };
+        use crate::domain::entities::{AgentConversationWorkspaceMode, AutomationId, ProjectId};
         let project_id = ProjectId::from_string("project-b1".to_string());
         let mut conversation = ChatConversation::new_project(project_id.clone());
         if automation {
@@ -840,11 +855,8 @@ mod tests {
         setup_repo(&repo);
         let base = "ralphx/ralphx/automation-abc";
         git(&repo, &["branch", base]);
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -853,7 +865,10 @@ mod tests {
             .expect("base push succeeds");
 
         let state = github.state();
-        assert_eq!(state.push_branch_calls, 1, "automation base should be pushed once");
+        assert_eq!(
+            state.push_branch_calls, 1,
+            "automation base should be pushed once"
+        );
         assert_eq!(state.last_push_branch_name.as_deref(), Some(base));
     }
 
@@ -865,12 +880,12 @@ mod tests {
         let base = "ralphx/ralphx/automation-present";
         git(&repo, &["branch", base]);
         // Seed the remote-tracking ref so origin/<base> already exists.
-        git(&repo, &["update-ref", &format!("refs/remotes/origin/{base}"), "HEAD"]);
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
+        git(
+            &repo,
+            &["update-ref", &format!("refs/remotes/origin/{base}"), "HEAD"],
         );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -878,7 +893,11 @@ mod tests {
             .await
             .expect("idempotent skip succeeds");
 
-        assert_eq!(github.state().push_branch_calls, 0, "present origin base must not be re-pushed");
+        assert_eq!(
+            github.state().push_branch_calls,
+            0,
+            "present origin base must not be re-pushed"
+        );
     }
 
     #[tokio::test]
@@ -890,11 +909,8 @@ mod tests {
         setup_repo(&repo);
         let base = "feature/local-only";
         git(&repo, &["branch", base]);
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            false,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, false);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -902,7 +918,11 @@ mod tests {
             .await
             .expect("no-op succeeds");
 
-        assert_eq!(github.state().push_branch_calls, 0, "non-automation base must not be pushed");
+        assert_eq!(
+            github.state().push_branch_calls,
+            0,
+            "non-automation base must not be pushed"
+        );
     }
 
     #[tokio::test]
@@ -910,11 +930,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
         setup_repo(&repo);
-        let (conversation, workspace) = automation_publish_fixture(
-            "main",
-            IdeationAnalysisBaseRefKind::ProjectDefault,
-            true,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture("main", IdeationAnalysisBaseRefKind::ProjectDefault, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -935,14 +952,12 @@ mod tests {
         let base = "ralphx/ralphx/automation-fail";
         git(&repo, &["branch", base]);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        github.state().push_branch_result =
-            Some(Err(crate::error::AppError::Infrastructure("push denied".to_string())));
+        github.state().push_branch_result = Some(Err(crate::error::AppError::Infrastructure(
+            "push denied".to_string(),
+        )));
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
 
         let result =
             ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace).await;
@@ -960,12 +975,16 @@ mod tests {
         setup_repo(&repo);
         let head_base = "ralphx/ralphx/task-run1-head";
         git(&repo, &["branch", head_base]);
-        git(&repo, &["update-ref", &format!("refs/remotes/origin/{head_base}"), "HEAD"]);
-        let (conversation, workspace) = automation_publish_fixture(
-            head_base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
+        git(
+            &repo,
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/{head_base}"),
+                "HEAD",
+            ],
         );
+        let (conversation, workspace) =
+            automation_publish_fixture(head_base, IdeationAnalysisBaseRefKind::LocalBranch, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
