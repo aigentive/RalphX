@@ -901,9 +901,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const rememberedPublishSubTab = conversationId
     ? publishSubTabByConversation[conversationId]
     : null;
-  const publishSubTab = nestsWorkspaceReview
-    ? (rememberedPublishSubTab ?? (activeTab === "review" ? "review" : "changes"))
-    : "changes";
+  const publishSubTab = rememberedPublishSubTab
+    ? rememberedPublishSubTab === "review" && !nestsWorkspaceReview
+      ? "changes"
+      : rememberedPublishSubTab
+    : nestsWorkspaceReview && activeTab === "review"
+      ? "review"
+      : "changes";
   const selectPublishSubTab = useCallback(
     (tab: AgentPublishSubTab) => {
       if (!conversationId) return;
@@ -916,8 +920,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   useEffect(() => {
     if (
-      !nestsWorkspaceReview ||
+      !showPublishTab ||
       publishSubTabRequest?.conversationId !== conversationId ||
+      (publishSubTabRequest.tab === "review" && !nestsWorkspaceReview) ||
       publishSubTabRequest.requestId <=
         lastHandledPublishSubTabRequestIdRef.current
     ) {
@@ -936,6 +941,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     nestsWorkspaceReview,
     publishSubTabRequest,
     selectPublishSubTab,
+    showPublishTab,
   ]);
   useEffect(() => {
     if (!nestsWorkspaceReview || activeTab !== "review") {
@@ -1884,9 +1890,28 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         handleOpenReview();
         return;
       }
-      handleOpenPublish();
+      if (tab === "changes") {
+        handleOpenPublish();
+        return;
+      }
+      selectPublishSubTab(tab);
+      setPendingReviewFocusConversationId(null);
+      if (onOpenPublish) {
+        onOpenPublish();
+        return;
+      }
+      if (activeTab !== "publish") {
+        onTabChange("publish");
+      }
     },
-    [handleOpenPublish, handleOpenReview],
+    [
+      activeTab,
+      handleOpenPublish,
+      handleOpenReview,
+      onOpenPublish,
+      onTabChange,
+      selectPublishSubTab,
+    ],
   );
   const handleAddArtifactExcerpt = useCallback(
     (reference: Parameters<typeof stageComposerExcerptReference>[1]) => {

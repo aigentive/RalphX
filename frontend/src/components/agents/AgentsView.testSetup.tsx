@@ -1,5 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import { vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -1079,6 +1079,21 @@ vi.mock("./AgentsArtifactPane", async () => {
   const { AgentPublishPanel } = await vi.importActual<
     typeof import("./AgentsPublishPanel")
   >("./AgentsPublishPanel");
+  function ControlledPublishPanel(
+    props: ComponentProps<typeof AgentPublishPanel>,
+  ) {
+    const [activeSubTab, setActiveSubTab] = useState(props.activeSubTab);
+    useEffect(() => {
+      setActiveSubTab(props.activeSubTab);
+    }, [props.activeSubTab]);
+    return (
+      <AgentPublishPanel
+        {...props}
+        activeSubTab={activeSubTab}
+        onSubTabChange={setActiveSubTab}
+      />
+    );
+  }
   artifactPaneModuleLoadedMock();
   return {
     AgentsArtifactPane: ({
@@ -1139,7 +1154,7 @@ vi.mock("./AgentsArtifactPane", async () => {
             Close
           </button>
         ) : null}
-        <AgentPublishPanel
+        <ControlledPublishPanel
           workspace={workspace ?? null}
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch ?? null}
