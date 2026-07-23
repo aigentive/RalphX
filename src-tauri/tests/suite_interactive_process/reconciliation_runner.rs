@@ -2371,7 +2371,7 @@ async fn update_heartbeat_sets_last_active_at_in_memory_registry() {
 
     // Write a heartbeat
     let ts = chrono::Utc::now();
-    registry.update_heartbeat(&key, ts).await;
+    registry.update_heartbeat(&key, "run-hb", ts).await.unwrap();
 
     let info = registry.get(&key).await.unwrap();
     assert!(
@@ -2390,7 +2390,10 @@ async fn update_heartbeat_noops_for_unknown_key() {
     let registry = MemoryRunningAgentRegistry::new();
     let key = RunningAgentKey::new("merge", "nonexistent-task");
     // Should not panic — just silently does nothing
-    registry.update_heartbeat(&key, chrono::Utc::now()).await;
+    registry
+        .update_heartbeat(&key, "missing-run", chrono::Utc::now())
+        .await
+        .unwrap();
     assert!(!registry.is_running(&key).await);
 }
 
@@ -2431,8 +2434,9 @@ async fn reconcile_merging_not_stale_when_heartbeat_is_recent() {
     let recent_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(10);
     app_state
         .running_agent_registry
-        .update_heartbeat(&merge_key, recent_heartbeat)
-        .await;
+        .update_heartbeat(&merge_key, "run-merge", recent_heartbeat)
+        .await
+        .unwrap();
 
     // Reconcile — recent heartbeat means effective_age < timeout, so NOT stale
     reconciler
@@ -2501,8 +2505,9 @@ async fn reconcile_merging_stale_when_heartbeat_is_old() {
     let old_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(1300);
     app_state
         .running_agent_registry
-        .update_heartbeat(&merge_key, old_heartbeat)
-        .await;
+        .update_heartbeat(&merge_key, "run-merge-old", old_heartbeat)
+        .await
+        .unwrap();
 
     // Reconcile — old heartbeat should trigger staleness
     reconciler

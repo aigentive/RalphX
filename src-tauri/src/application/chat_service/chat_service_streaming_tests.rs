@@ -372,6 +372,27 @@ async fn spawn_jsonl_process_with_exit_status(
         .expect("spawn codex jsonl fixture with exit status")
 }
 
+async fn spawn_jsonl_process_with_delayed_exit(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s' \"$RALPHX_STREAM_LINES\"; exec 1>&-; sleep 1; exit 1")
+        .env("RALPHX_STREAM_LINES", payload)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command
+        .spawn()
+        .expect("spawn Codex fixture with delayed terminal exit")
+}
+
 async fn spawn_jsonl_process_with_stderr(
     lines: &[&str],
     stderr: &str,
@@ -789,6 +810,48 @@ async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
         ),
         "a terminal success without text, tool output, or completion signal must not settle as success"
     );
+}
+
+#[tokio::test]
+async fn codex_owned_cancellation_outranks_empty_terminal_exit() {
+    let child = spawn_jsonl_process_with_delayed_exit(&[
+        r#"{"type":"thread.started","thread_id":"cancelled-empty-thread"}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let cancellation_token = CancellationToken::new();
+    let terminal_cancellation = cancellation_token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        terminal_cancellation.cancel();
+    });
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        cancellation_token,
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(matches!(result, Err(StreamError::Cancelled { .. })));
 }
 
 #[tokio::test]

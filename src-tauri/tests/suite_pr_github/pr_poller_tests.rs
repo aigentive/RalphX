@@ -21,7 +21,8 @@ use ralphx_lib::domain::repositories::{
     AgentConversationWorkspaceRepository, PlanBranchRepository,
 };
 use ralphx_lib::domain::services::github_service::{
-    GithubServiceTrait, PrReviewCommentFeedback, PrReviewFeedback, PrStatus,
+    GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
+    PrReviewFeedback, PrStatus, PrSyncState,
 };
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER;
 use ralphx_lib::infrastructure::memory::{
@@ -127,6 +128,19 @@ fn requested_changes_feedback(review_id: &str) -> PrReviewFeedback {
     }
 }
 
+fn current_head_sync_state() -> PrSyncState {
+    PrSyncState {
+        status: PrStatus::Open,
+        merge_state_status: Some(PrMergeStateStatus::Clean),
+        mergeable: Some(PrMergeableState::Mergeable),
+        is_draft: false,
+        head_ref_name: "feature/agent-screen".to_string(),
+        base_ref_name: "main".to_string(),
+        head_ref_oid: Some("head-sha".to_string()),
+        base_ref_oid: Some("base-sha".to_string()),
+    }
+}
+
 fn initialize_git_workspace(path: &Path, branch_name: &str) {
     let status = std::process::Command::new("git")
         .arg("init")
@@ -207,6 +221,8 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
     let github = Arc::new(MockGithubService::new());
     let feedback = requested_changes_feedback("review-1");
     github.will_return_review_feedback(feedback.clone());
+    github.will_return_sync_state(current_head_sync_state());
+    github.will_return_sync_state(current_head_sync_state());
 
     let registry = PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
@@ -265,9 +281,14 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
         .await
         .unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].classification.as_deref(),
-        Some("github_pr_review:review-1")
+    assert!(
+        events[0]
+            .classification
+            .as_deref()
+            .is_some_and(|classification| {
+                classification.starts_with("github_pr_autofix:72:headsha:")
+            }),
+        "review routing must record the head-scoped autofix classification"
     );
 
     github.will_return_review_feedback(feedback);
