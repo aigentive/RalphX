@@ -3,13 +3,13 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -1097,6 +1097,76 @@ async fn pr_description_round_trips_and_clears() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn pr_metadata_decisions_decode_legacy_reject_invalid_and_clear() {
+    let (db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let cases = [
+        AgentWorkspacePrMetadataDecision::Preserve,
+        AgentWorkspacePrMetadataDecision::patch(Some("title".to_string()), None).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(None, Some("body".to_string())).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(
+            Some("title".to_string()),
+            Some("body".to_string()),
+        )
+        .unwrap(),
+    ];
+    for decision in cases {
+        repo.save_pr_metadata_decision(&conversation_id, decision.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_pr_metadata_decision(&conversation_id)
+                .await
+                .unwrap(),
+            Some(decision)
+        );
+    }
+
+    let id = conversation_id.as_str().to_string();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_conversation_workspaces SET publication_pr_metadata_decision = NULL, publication_pr_title = 'legacy title', publication_pr_body = 'legacy body' WHERE conversation_id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        Some(AgentWorkspacePrMetadataDecision::Patch {
+            title: Some("legacy title".to_string()),
+            body_markdown: Some("legacy body".to_string()),
+        })
+    );
+
+    let id = conversation_id.as_str().to_string();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_conversation_workspaces SET publication_pr_metadata_decision = 'invalid' WHERE conversation_id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+    });
+    assert!(repo
+        .get_pr_metadata_decision(&conversation_id)
+        .await
+        .is_err());
+
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]

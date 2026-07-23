@@ -69,8 +69,9 @@ use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };
 use crate::application::agent_workspace_pr_description::{
-    draft_agent_workspace_pr_description, get_or_draft_agent_workspace_pr_description,
+    draft_agent_workspace_pr_metadata_decision, get_or_draft_agent_workspace_pr_metadata_decision,
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
+    ExistingPrMetadataSnapshot, ResolvedAgentWorkspacePrTarget,
 };
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
@@ -127,18 +128,20 @@ use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
-    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
-    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId,
-    Task, TaskCategory, TeamIntent, TeamMessageTarget,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
+    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
+    TaskCategory, TeamIntent, TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
     elapsed_seconds_for_status, RunningIdeationSession, RunningProcess,
 };
+use crate::domain::services::github_service::GithubServiceTrait;
+use crate::domain::services::pr_publish_service::AgentWorkspacePrPublishOutcome;
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
@@ -147,8 +150,8 @@ use crate::domain::services::{
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::error::AppError;
-use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::agent_personas_enabled;
+use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::{git_runtime_config, ui_feature_flags_config};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
@@ -6338,6 +6341,169 @@ async fn resolve_agent_workspace_pr_description_review_base(
     ))
 }
 
+async fn resolve_agent_workspace_pr_metadata_target(
+    github: Option<&dyn GithubServiceTrait>,
+    worktree_path: &Path,
+    workspace: &AgentConversationWorkspace,
+) -> Result<ResolvedAgentWorkspacePrTarget, String> {
+    let github = github.ok_or_else(|| {
+        "GitHub integration is required to update metadata for an existing pull request".to_string()
+    })?;
+    let pr_number = match workspace.publication_pr_number {
+        Some(pr_number) => pr_number,
+        None => match github
+            .find_pr_by_head_branch(worktree_path, &workspace.branch_name)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            Some((pr_number, _)) => pr_number,
+            None => return Ok(ResolvedAgentWorkspacePrTarget::NewPr),
+        },
+    };
+    let detail = github
+        .fetch_pr_detail(worktree_path, pr_number)
+        .await
+        .map_err(|error| error.to_string())?;
+    if detail.number != pr_number {
+        return Err(format!(
+            "pull request lookup returned #{}, expected #{pr_number}",
+            detail.number
+        ));
+    }
+    if !matches!(detail.state, crate::domain::services::PrStatus::Open) {
+        return Err(format!("pull request #{pr_number} is not open"));
+    }
+    if detail.head_ref_name != workspace.branch_name {
+        return Err(format!(
+            "pull request #{pr_number} head branch does not match workspace branch"
+        ));
+    }
+    Ok(ResolvedAgentWorkspacePrTarget::Existing(Box::new(
+        ExistingPrMetadataSnapshot::from_detail(detail),
+    )))
+}
+
+async fn normalize_drafted_agent_workspace_pr_metadata_decision(
+    state: &AppState,
+    conversation: &ChatConversation,
+    workspace: &AgentConversationWorkspace,
+    target: &ResolvedAgentWorkspacePrTarget,
+    mut decision: AgentWorkspacePrMetadataDecision,
+) -> AgentWorkspacePrMetadataDecision {
+    let Some(token) =
+        primary_clickup_token_for_conversation(state, &workspace.conversation_id).await
+    else {
+        return decision;
+    };
+    let AgentWorkspacePrMetadataDecision::Patch { title, .. } = &mut decision else {
+        return decision;
+    };
+    if let Some(title) = title {
+        *title = normalize_title_with_clickup_token(title, &token);
+    } else if matches!(target, ResolvedAgentWorkspacePrTarget::NewPr) {
+        let fallback_title = conversation.title.as_deref().unwrap_or("RalphX changes");
+        *title = Some(normalize_title_with_clickup_token(fallback_title, &token));
+    }
+    decision
+}
+
+async fn confirm_agent_workspace_existing_pr_metadata_target(
+    github: &dyn GithubServiceTrait,
+    worktree_path: &Path,
+    workspace: &AgentConversationWorkspace,
+    expected_fingerprint: &str,
+) -> Result<ExistingPrMetadataSnapshot, String> {
+    let target =
+        resolve_agent_workspace_pr_metadata_target(Some(github), worktree_path, workspace).await?;
+    let ResolvedAgentWorkspacePrTarget::Existing(snapshot) = target else {
+        return Err("existing pull request disappeared before metadata mutation".to_string());
+    };
+    if snapshot.authority_fingerprint() != expected_fingerprint {
+        return Err("pull request changed again before metadata mutation".to_string());
+    }
+    Ok(*snapshot)
+}
+
+async fn recover_duplicate_agent_workspace_pr_publish(
+    state: &AppState,
+    github: &dyn GithubServiceTrait,
+    publisher: &AgentWorkspacePrPublisher<'_>,
+    conversation: &ChatConversation,
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    worktree_path: &Path,
+    review_base: &str,
+    conversation_id: ChatConversationId,
+    branch_head_sha: &str,
+    reviewable_commit_count: u32,
+) -> crate::AppResult<AgentWorkspacePrPublishOutcome> {
+    let duplicate_target =
+        resolve_agent_workspace_pr_metadata_target(Some(github), worktree_path, workspace)
+            .await
+            .map_err(AppError::Validation)?;
+    let ResolvedAgentWorkspacePrTarget::Existing(snapshot) = &duplicate_target else {
+        return Err(AppError::Validation(
+            "duplicate PR creation was not recoverable from the remote target".to_string(),
+        ));
+    };
+    let cache_key = AgentWorkspacePrDescriptionCacheKey::for_target(
+        conversation_id,
+        review_base.to_string(),
+        branch_head_sha.to_string(),
+        reviewable_commit_count,
+        &duplicate_target,
+    )
+    .ok_or_else(|| AppError::Validation("unable to bind duplicate PR target".to_string()))?;
+    let decision = get_or_draft_agent_workspace_pr_metadata_decision(
+        state,
+        conversation,
+        project,
+        workspace,
+        worktree_path,
+        review_base,
+        &duplicate_target,
+        cache_key,
+    )
+    .await?
+    .decision;
+    let decision = normalize_drafted_agent_workspace_pr_metadata_decision(
+        state,
+        conversation,
+        workspace,
+        &duplicate_target,
+        decision,
+    )
+    .await;
+    if matches!(decision, AgentWorkspacePrMetadataDecision::Preserve) {
+        return publisher
+            .publish_existing_pr_metadata_decision(
+                worktree_path,
+                conversation,
+                snapshot.number,
+                snapshot.url.as_deref(),
+                &decision,
+            )
+            .await;
+    }
+    let confirmed_snapshot = confirm_agent_workspace_existing_pr_metadata_target(
+        github,
+        worktree_path,
+        workspace,
+        snapshot.authority_fingerprint(),
+    )
+    .await
+    .map_err(AppError::Validation)?;
+    publisher
+        .publish_existing_pr_metadata_decision(
+            worktree_path,
+            conversation,
+            confirmed_snapshot.number,
+            confirmed_snapshot.url.as_deref(),
+            &decision,
+        )
+        .await
+}
+
 async fn precompute_agent_conversation_workspace_pr_description_inner(
     state: &AppState,
     conversation_id: ChatConversationId,
@@ -6417,22 +6583,34 @@ async fn precompute_agent_conversation_workspace_pr_description_inner(
         let branch_head_sha = GitService::get_head_sha(&worktree_path)
             .await
             .map_err(|e| e.to_string())?;
-        let Some(cache_key) = AgentWorkspacePrDescriptionCacheKey::new(
+        let target = match resolve_agent_workspace_pr_metadata_target(
+            state.github_service.as_deref(),
+            &worktree_path,
+            &workspace,
+        )
+        .await
+        {
+            Ok(target) => target,
+            Err(_) => return Ok(skip("existing_pr_target_unavailable")),
+        };
+        let Some(cache_key) = AgentWorkspacePrDescriptionCacheKey::for_target(
             conversation_id.clone(),
             review_base.clone(),
             branch_head_sha,
             reviewable_commit_count,
+            &target,
         ) else {
             return Ok(skip("uncacheable_key"));
         };
 
-        let outcome = get_or_draft_agent_workspace_pr_description(
+        let outcome = get_or_draft_agent_workspace_pr_metadata_decision(
             state,
             &conversation,
             &project,
             &workspace,
             &worktree_path,
             &review_base,
+            &target,
             cache_key,
         )
         .await
@@ -7370,32 +7548,47 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             }
         },
     };
-    let pr_description_cache_key = AgentWorkspacePrDescriptionCacheKey::new(
+    let mut pr_target = match resolve_agent_workspace_pr_metadata_target(
+        Some(github.as_ref()),
+        &worktree_path,
+        &workspace,
+    )
+    .await
+    {
+        Ok(target) => target,
+        Err(error) => {
+            mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+            return Err(error);
+        }
+    };
+    let pr_description_cache_key = AgentWorkspacePrDescriptionCacheKey::for_target(
         conversation_id.clone(),
         review_base.to_string(),
-        branch_head_sha,
+        branch_head_sha.clone(),
         reviewable_commit_count,
+        &pr_target,
     );
 
     mark_agent_workspace_publish_status(state, &workspace, "describing")
         .await
         .map_err(|e| e.to_string())?;
     let describe_started = Instant::now();
-    let mut pr_description = match if let Some(cache_key) = pr_description_cache_key {
-        get_or_draft_agent_workspace_pr_description(
+    let mut pr_metadata_decision = match if let Some(cache_key) = pr_description_cache_key {
+        get_or_draft_agent_workspace_pr_metadata_decision(
             state,
             &conversation,
             &project,
             &workspace,
             &worktree_path,
             review_base,
+            &pr_target,
             cache_key,
         )
         .await
         .map(|outcome| {
             tracing::info!(
                 target: "ralphx_lib::commands::agent_workspace_publish",
-                operation = "draft_pr_description",
+                operation = "draft_pr_metadata_decision",
                 conversation_id = %workspace.conversation_id,
                 project_id = %workspace.project_id,
                 branch = %workspace.branch_name,
@@ -7403,24 +7596,25 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                 cache_age_ms = ?outcome.cache_age_ms,
                 cache_wait_ms = outcome.cache_wait_ms,
                 elapsed_ms = describe_started.elapsed().as_millis(),
-                "Resolved agent workspace PR description"
+                "Resolved agent workspace PR metadata decision"
             );
-            outcome.description
+            outcome.decision
         })
     } else {
-        draft_agent_workspace_pr_description(
+        draft_agent_workspace_pr_metadata_decision(
             state,
             &conversation,
             &project,
             &workspace,
             &worktree_path,
             review_base,
+            &pr_target,
         )
         .await
         .inspect(|_| {
             tracing::info!(
                 target: "ralphx_lib::commands::agent_workspace_publish",
-                operation = "draft_pr_description",
+                operation = "draft_pr_metadata_decision",
                 conversation_id = %workspace.conversation_id,
                 project_id = %workspace.project_id,
                 branch = %workspace.branch_name,
@@ -7428,29 +7622,25 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                 cache_age_ms = ?Option::<u128>::None,
                 cache_wait_ms = 0_u128,
                 elapsed_ms = describe_started.elapsed().as_millis(),
-                "Resolved agent workspace PR description"
+                "Resolved agent workspace PR metadata decision"
             );
         })
     } {
-        Ok(description) => description,
+        Ok(decision) => decision,
         Err(error) => {
             let error = error.to_string();
             mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
             return Err(error);
         }
     };
-    if let Some(token) =
-        primary_clickup_token_for_conversation(state, &workspace.conversation_id).await
-    {
-        let title = pr_description
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .or(conversation.title.as_deref())
-            .unwrap_or("RalphX changes");
-        pr_description.title = Some(normalize_title_with_clickup_token(title, &token));
-    }
+    pr_metadata_decision = normalize_drafted_agent_workspace_pr_metadata_decision(
+        state,
+        &conversation,
+        &workspace,
+        &pr_target,
+        pr_metadata_decision,
+    )
+    .await;
 
     // B1/B2/B5: for automation runs whose base is a local-only automation branch,
     // publish that base to origin BEFORE the PR references it as `--base`. Both
@@ -7523,15 +7713,156 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
+    // The draft is bound to the fetched remote target. Re-read it after the
+    // branch push, immediately before mutation, so a concurrent PR edit cannot
+    // receive a decision drafted from stale authority.
+    if let (
+        ResolvedAgentWorkspacePrTarget::Existing(snapshot),
+        AgentWorkspacePrMetadataDecision::Patch { .. },
+    ) = (&pr_target, &pr_metadata_decision)
+    {
+        let refreshed_target = match resolve_agent_workspace_pr_metadata_target(
+            Some(github.as_ref()),
+            &worktree_path,
+            &workspace,
+        )
+        .await
+        {
+            Ok(target @ ResolvedAgentWorkspacePrTarget::Existing(_)) => target,
+            Ok(ResolvedAgentWorkspacePrTarget::NewPr) => {
+                let error =
+                    "existing pull request disappeared before metadata mutation".to_string();
+                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                return Err(error);
+            }
+            Err(error) => {
+                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                return Err(error);
+            }
+        };
+        let ResolvedAgentWorkspacePrTarget::Existing(refreshed_snapshot) = &refreshed_target else {
+            unreachable!("existing target branch handled above");
+        };
+        if refreshed_snapshot.authority_fingerprint() != snapshot.authority_fingerprint() {
+            let cache_key = AgentWorkspacePrDescriptionCacheKey::for_target(
+                conversation_id.clone(),
+                review_base.to_string(),
+                branch_head_sha.clone(),
+                reviewable_commit_count,
+                &refreshed_target,
+            )
+            .ok_or_else(|| "unable to bind refreshed existing PR target".to_string())?;
+            pr_metadata_decision = match get_or_draft_agent_workspace_pr_metadata_decision(
+                state,
+                &conversation,
+                &project,
+                &workspace,
+                &worktree_path,
+                review_base,
+                &refreshed_target,
+                cache_key,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    normalize_drafted_agent_workspace_pr_metadata_decision(
+                        state,
+                        &conversation,
+                        &workspace,
+                        &refreshed_target,
+                        outcome.decision,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    mark_agent_workspace_publish_description_failure(state, &workspace, &error)
+                        .await;
+                    return Err(error);
+                }
+            };
+            match confirm_agent_workspace_existing_pr_metadata_target(
+                github.as_ref(),
+                &worktree_path,
+                &workspace,
+                refreshed_snapshot.authority_fingerprint(),
+            )
+            .await
+            {
+                Ok(confirmed_snapshot) => {
+                    pr_target =
+                        ResolvedAgentWorkspacePrTarget::Existing(Box::new(confirmed_snapshot));
+                }
+                Err(error) => {
+                    mark_agent_workspace_publish_description_failure(state, &workspace, &error)
+                        .await;
+                    return Err(error);
+                }
+            }
+        } else {
+            pr_target = refreshed_target;
+        }
+    }
+
     let plan_markdown = resolve_linked_plan_markdown(state, &workspace).await;
     let mut publisher = AgentWorkspacePrPublisher::new(github);
     if let Some(markdown) = plan_markdown {
         publisher = publisher.with_plan_markdown(markdown);
     }
     let publish_pr_started = Instant::now();
-    let pr_result = publisher
-        .publish_draft_pr(&worktree_path, &conversation, &workspace, &pr_description)
-        .await;
+    let pr_result = match (&pr_target, &pr_metadata_decision) {
+        (
+            ResolvedAgentWorkspacePrTarget::NewPr,
+            AgentWorkspacePrMetadataDecision::Patch {
+                title,
+                body_markdown: Some(body_markdown),
+            },
+        ) => {
+            let description =
+                AgentWorkspacePrDescription::new(title.clone(), body_markdown.clone());
+            match publisher
+                .publish_draft_pr_without_duplicate_recovery(
+                    &worktree_path,
+                    &conversation,
+                    &workspace,
+                    &description,
+                )
+                .await
+            {
+                Err(AppError::DuplicatePr) => {
+                    recover_duplicate_agent_workspace_pr_publish(
+                        state,
+                        github.as_ref(),
+                        &publisher,
+                        &conversation,
+                        &project,
+                        &workspace,
+                        &worktree_path,
+                        review_base,
+                        conversation_id.clone(),
+                        &branch_head_sha,
+                        reviewable_commit_count,
+                    )
+                    .await
+                }
+                result => result,
+            }
+        }
+        (ResolvedAgentWorkspacePrTarget::NewPr, _) => Err(AppError::Validation(
+            "new pull requests require a complete metadata body patch".to_string(),
+        )),
+        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => {
+            publisher
+                .publish_existing_pr_metadata_decision(
+                    &worktree_path,
+                    &conversation,
+                    snapshot.number,
+                    snapshot.url.as_deref(),
+                    decision,
+                )
+                .await
+        }
+    };
     let outcome = match pr_result {
         Ok(result) => {
             tracing::info!(

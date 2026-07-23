@@ -510,8 +510,7 @@ export const AGENT_WORKSPACE_TOOLS = [
     },
     {
         name: "submit_agent_workspace_pr_description",
-        description: "Submit the completed pull request title/body for an agent workspace publish. " +
-            "Call this exactly once after writing a reviewer-focused body that follows the supplied pull request template.",
+        description: "Submit a preserve-or-patch decision for an agent workspace pull request's metadata.",
         inputSchema: {
             type: "object",
             properties: {
@@ -521,14 +520,19 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 title: {
                     type: "string",
-                    description: "Optional pull request title. Omit unless the prompt context supports a better title.",
+                    description: "Optional improved pull request title; only valid for a patch decision.",
                 },
                 body_markdown: {
                     type: "string",
-                    description: "Complete Markdown pull request body following the supplied template",
+                    description: "Optional improved Markdown pull request body; only valid for a patch decision.",
+                },
+                decision: {
+                    type: "string",
+                    enum: ["preserve", "patch"],
+                    description: "Preserve existing metadata, or patch one or both fields.",
                 },
             },
-            required: ["conversation_id", "body_markdown"],
+            required: ["conversation_id", "decision"],
         },
     },
 ];
@@ -776,8 +780,9 @@ export async function callCompleteAgentWorkspaceRepairTool(callTauri, args) {
     });
 }
 export async function callSubmitAgentWorkspacePrDescriptionTool(callTauri, args) {
-    const { conversation_id, title, body_markdown } = args;
+    const { conversation_id, decision, title, body_markdown } = args;
     return callTauri(`agent-workspaces/${conversation_id}/pr-description`, {
+        decision,
         title,
         body_markdown,
     });
