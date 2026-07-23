@@ -2013,6 +2013,108 @@
     }
 
     #[tokio::test]
+    async fn complete_pr_fix_old_fingerprint_cannot_settle_new_issue_claim() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "stale-fingerprint-superseded",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let original_workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let original_claim = AgentWorkspaceRepairClaim {
+            conversation_id: fixture.conversation_id.clone(),
+            guard: AgentWorkspaceRepairStateGuard::from_workspace(&original_workspace),
+        };
+        assert!(
+            crate::application::agent_workspace_publish_repair_state::settle_agent_workspace_repair_failure(
+                Arc::clone(&fixture.app_state.agent_conversation_workspace_repo),
+                &original_claim,
+                "The routed PR issue changed.",
+            )
+            .await
+            .expect("original claim settlement should succeed")
+        );
+        crate::application::agent_workspace_publish_repair_state::claim_agent_workspace_repair(
+            Arc::clone(&fixture.app_state.agent_conversation_workspace_repo),
+            &fixture.conversation_id,
+            "Routing the replacement PR issue.",
+            original_workspace.pr_auto_merge_current,
+        )
+        .await
+        .expect("replacement claim should persist")
+        .expect("replacement claim should win");
+        let mut replacement_run = AgentRun::new(fixture.conversation_id.clone());
+        replacement_run.action_kind = Some(crate::domain::entities::AgentRunActionKind::PrAutofix);
+        replacement_run.action_context_id = Some("267".to_string());
+        replacement_run.action_target_id =
+            Some("github_pr_autofix:267:new-issue-fingerprint".to_string());
+        fixture
+            .app_state
+            .agent_run_repo
+            .create(replacement_run)
+            .await
+            .expect("replacement PR autofix run should persist");
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "The old issue fixer must not settle the new claim".to_string(),
+                blocker: None,
+                fix_commit_sha: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("old fingerprint should be acknowledged as superseded");
+
+        assert_eq!(response.status, "superseded");
+        assert!(response.workspace.is_none());
+        assert_eq!(fixture.github.state().check_pr_status_calls, 0);
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        assert_eq!(fixture.github.state().enable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().disable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().submit_pr_review_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after, before);
+        assert_eq!(
+            fixture
+                .app_state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&fixture.conversation_id)
+                .await
+                .expect("events should load")
+                .len(),
+            events_before
+        );
+    }
+
+    #[tokio::test]
     async fn complete_pr_fix_already_completed_is_a_side_effect_free_noop() {
         let fixture = setup_pr_fix_workspace_with_review_gate(
             "already-completed-noop",
