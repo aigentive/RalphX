@@ -43,6 +43,44 @@ export interface AgentWorkspaceChangeSummaryState {
   worktreeChangeSignature?: string | undefined;
 }
 
+export interface AgentWorkspaceChangeFacts {
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
+export function getAgentWorkspaceChangeFacts(
+  liveSummary: AgentWorkspaceChangeSummary | null | undefined,
+  review: AgentWorkspaceReview | null | undefined,
+): AgentWorkspaceChangeFacts | null {
+  if (liveSummary?.supportsWorktreeModes) {
+    return {
+      fileCount:
+        liveSummary.staged.fileCount +
+        liveSummary.unstaged.fileCount +
+        (liveSummary.conflicted?.fileCount ?? 0),
+      additions:
+        liveSummary.staged.additions + liveSummary.unstaged.additions,
+      deletions:
+        liveSummary.staged.deletions + liveSummary.unstaged.deletions,
+    };
+  }
+  if (!review) {
+    return null;
+  }
+  return {
+    fileCount: review.changes.length,
+    additions: review.changes.reduce(
+      (sum, file) => sum + file.additions,
+      0,
+    ),
+    deletions: review.changes.reduce(
+      (sum, file) => sum + file.deletions,
+      0,
+    ),
+  };
+}
+
 function liveBucketSignature(
   bucket: AgentWorkspaceChangeBucketSummary,
 ): string {
@@ -374,11 +412,7 @@ export function useAgentWorkspaceChangeSummary({
     supportsWorktreeModes,
     workspaceChangeCount: !enabled
       ? 0
-      : liveSummary != null
-        ? liveSummary.staged.fileCount +
-          liveSummary.unstaged.fileCount +
-          (liveSummary.conflicted?.fileCount ?? 0)
-        : review?.changes.length ?? 0,
+      : (getAgentWorkspaceChangeFacts(liveSummary, review)?.fileCount ?? 0),
     currentFileCount,
     conflictedCount,
     stagedCount,

@@ -10,7 +10,10 @@ import type {
   FileChange,
 } from "@/api/diff";
 
-import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
+import {
+  getAgentWorkspaceChangeFacts,
+  useAgentWorkspaceChangeSummary,
+} from "./useAgentWorkspaceChangeSummary";
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -406,5 +409,52 @@ describe("useAgentWorkspaceChangeSummary", () => {
       expect(state.currentFilesError).toBeNull();
       expect(state.isCurrentFilesLoading).toBe(false);
     }
+  });
+});
+
+describe("getAgentWorkspaceChangeFacts", () => {
+  it("aggregates live staged, unstaged, and conflicted files without fabricating conflict deltas", () => {
+    expect(
+      getAgentWorkspaceChangeFacts(
+        makeLiveSummary({
+          staged: { fileCount: 2, additions: 6, deletions: 2 },
+          unstaged: { fileCount: 1, additions: 3, deletions: 1 },
+          conflicted: { fileCount: 2, files: ["a.ts", "b.ts"] },
+        }),
+        makeReview(),
+      ),
+    ).toEqual({
+      fileCount: 5,
+      additions: 9,
+      deletions: 3,
+    });
+  });
+
+  it("falls back to loaded review changes when live worktree facts are unavailable", () => {
+    expect(
+      getAgentWorkspaceChangeFacts(
+        makeLiveSummary({
+          supportsWorktreeModes: false,
+          staged: { fileCount: 9, additions: 90, deletions: 9 },
+        }),
+        makeReview([
+          {
+            path: "src/review.ts",
+            status: "modified",
+            additions: 4,
+            deletions: 2,
+            isGenerated: false,
+          },
+        ]),
+      ),
+    ).toEqual({
+      fileCount: 1,
+      additions: 4,
+      deletions: 2,
+    });
+  });
+
+  it("returns null while neither live nor review facts are known", () => {
+    expect(getAgentWorkspaceChangeFacts(null, null)).toBeNull();
   });
 });
