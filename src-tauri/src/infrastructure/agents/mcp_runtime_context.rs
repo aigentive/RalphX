@@ -11,6 +11,7 @@ pub struct McpRuntimeContext {
     pub task_id: Option<String>,
     pub task_state: Option<String>,
     pub project_id: Option<String>,
+    pub pipeline_role: Option<String>,
     pub working_directory: Option<PathBuf>,
     pub filesystem_read_roots: Vec<PathBuf>,
     pub enforce_filesystem_roots: bool,
@@ -36,6 +37,7 @@ impl McpRuntimeContext {
             task_id,
             task_state: non_blank_env(env, "RALPHX_TASK_STATE"),
             project_id: Some(project_id),
+            pipeline_role: non_blank_env(env, "RALPHX_PIPELINE_ROLE"),
             working_directory: Some(working_directory.to_path_buf()),
             parent_conversation_id: non_blank_env(env, "RALPHX_PARENT_CONVERSATION_ID"),
             ..Default::default()
@@ -74,6 +76,9 @@ pub fn append_mcp_runtime_query(url: &mut String, runtime_context: Option<&McpRu
     }
     if let Some(project_id) = runtime_context.project_id.as_deref() {
         params.push(("project_id", project_id));
+    }
+    if let Some(pipeline_role) = runtime_context.pipeline_role.as_deref() {
+        params.push(("pipeline_role", pipeline_role));
     }
     if let Some(task_state) = runtime_context.task_state.as_deref() {
         params.push(("task_state", task_state));
@@ -136,6 +141,10 @@ pub fn append_mcp_runtime_args(
     if let Some(project_id) = runtime_context.project_id.as_deref() {
         args.push("--project-id".to_string());
         args.push(project_id.to_string());
+    }
+    if let Some(pipeline_role) = runtime_context.pipeline_role.as_deref() {
+        args.push("--pipeline-role".to_string());
+        args.push(pipeline_role.to_string());
     }
     if let Some(working_directory) = runtime_context.working_directory.as_ref() {
         args.push("--working-directory".to_string());

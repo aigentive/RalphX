@@ -487,6 +487,7 @@ async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
         State(test_state(app_state.clone())),
         ProjectScope(Some(vec![project_id.clone()])),
         Json(GetProjectSkillRequest {
+            project_id: project_id.as_str().to_string(),
             project_skill_id: "missing-skill".to_string(),
         }),
     )
@@ -495,12 +496,24 @@ async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
     .0;
     assert!(missing.skill.is_none());
 
+    let other_project = ProjectId::from_string("other-project".to_string());
+    let mismatch = get_project_skill(
+        State(test_state(app_state.clone())),
+        ProjectScope(Some(vec![project_id.clone(), other_project.clone()])),
+        Json(GetProjectSkillRequest {
+            project_id: other_project.as_str().to_string(),
+            project_skill_id: skill_id.as_str().to_string(),
+        }),
+    )
+    .await
+    .expect_err("requested project must own the skill");
+    assert_eq!(mismatch.status, StatusCode::FORBIDDEN);
+
     let error = get_project_skill(
         State(test_state(app_state)),
-        ProjectScope(Some(vec![ProjectId::from_string(
-            "other-project".to_string(),
-        )])),
+        ProjectScope(Some(vec![other_project])),
         Json(GetProjectSkillRequest {
+            project_id: project_id.as_str().to_string(),
             project_skill_id: skill_id.as_str().to_string(),
         }),
     )

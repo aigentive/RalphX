@@ -1675,12 +1675,50 @@ pub struct ProcessConversationProjectSkillsResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GetProjectSkillRequest {
+    pub project_id: String,
     pub project_skill_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GetProjectSkillResponse {
     pub skill: Option<ProjectSkillResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpsertProjectSkillRequest {
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PatchProjectSkillRequest {
+    pub project_skill_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetireProjectSkillRequest {
+    pub project_id: String,
+    pub project_skill_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillPipelineResponse {
+    pub skill: ProjectSkillResponse,
+    pub outcome: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

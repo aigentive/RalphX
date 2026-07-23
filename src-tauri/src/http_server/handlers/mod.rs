@@ -27,6 +27,9 @@ pub mod issues;
 pub mod learned_skills;
 #[cfg(test)]
 mod learned_skills_tests;
+pub mod learned_skill_pipeline;
+#[cfg(test)]
+mod learned_skill_pipeline_tests;
 pub mod learned_skills_export;
 #[cfg(test)]
 mod learned_skills_export_tests;
@@ -70,6 +73,7 @@ pub use ideation::*;
 pub use internal::*;
 pub use issues::*;
 pub use learned_skills::*;
+pub use learned_skill_pipeline::*;
 pub use learned_skills_export::*;
 pub use memory::*;
 pub use permissions::*;

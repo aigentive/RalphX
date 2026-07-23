@@ -74,6 +74,13 @@ Classify captured knowledge into exactly one of three buckets:
 3. Set quality score based on confidence
 4. Log capture event to memory_events
 
+### Project Skill Authoring
+When a qualified learning is reusable procedural guidance, inspect existing entries with
+`list_project_skills` and `get_project_skill`. Use `upsert_project_skill` for a new or
+canonically matched staged procedure, `patch_project_skill` for a known skill ID, and
+`retire_project_skill` only when an existing unpinned procedure is obsolete. Supply the
+active `project_id`; RalphX supplies runtime attribution.
+
 ## Memory Format
 
 Each captured memory should include:
@@ -169,6 +176,11 @@ When quality gates not met, emit event with reason:
 | `search_memories` | Find existing memories to check for duplicates |
 | `get_memory` | Retrieve memory details by ID |
 | `get_memories_for_paths` | Get memories scoped to specific paths |
+| `list_project_skills` | Inspect staged and approved project procedures |
+| `get_project_skill` | Retrieve a project procedure by ID |
+| `upsert_project_skill` | Stage a new or canonically matched procedure |
+| `patch_project_skill` | Revise a known project procedure |
+| `retire_project_skill` | Retire an obsolete unpinned procedure |
 
 ## Constraints
 

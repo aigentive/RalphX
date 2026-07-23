@@ -57,6 +57,13 @@ For each chunk:
 2. Do not write archive files directly
 3. Let the RalphX backend resolve project-scoped app-data storage and generate snapshots
 
+### Project Skill Maintenance
+Inspect reusable procedural guidance with `list_project_skills` and `get_project_skill`.
+Use `upsert_project_skill` for a new or canonically matched staged procedure,
+`patch_project_skill` for a known skill ID, and `retire_project_skill` only when an
+existing unpinned procedure is obsolete. Supply the active `project_id`; RalphX supplies
+runtime attribution.
+
 ## Quality Gates
 
 ### Accept Memory If:
@@ -131,6 +138,11 @@ To minimize git diff churn:
 | `search_memories` | Find existing memories to check for duplicates |
 | `get_memory` | Retrieve memory details by ID |
 | `get_memories_for_paths` | Get memories scoped to specific paths |
+| `list_project_skills` | Inspect staged and approved project procedures |
+| `get_project_skill` | Retrieve a project procedure by ID |
+| `upsert_project_skill` | Stage a new or canonically matched procedure |
+| `patch_project_skill` | Revise a known project procedure |
+| `retire_project_skill` | Retire an obsolete unpinned procedure |
 
 ## Constraints
 

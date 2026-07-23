@@ -18,7 +18,9 @@ use crate::domain::repositories::{
     ProjectSkillResolutionOutcome, ProjectSkillResolutionResult, SkillUsageEventRepository,
     SkillUsageListOptions,
 };
-use crate::domain::services::project_skill_resolution::evaluate_project_skill_resolution;
+use crate::domain::services::project_skill_resolution::{
+    enforce_project_skill_staging_policy, evaluate_project_skill_resolution,
+};
 use crate::error::{AppError, AppResult};
 
 pub struct SqliteProjectSkillRepository {
@@ -324,6 +326,7 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
             .run_transaction(move |conn| {
                 let candidates =
                     load_project_skill_candidates(conn, &command.candidate.project_id)?;
+                let staging_policy = command.staging_policy.clone();
                 let plan = evaluate_project_skill_resolution(command, &candidates)?;
                 if plan.outcome == ProjectSkillResolutionOutcome::Duplicate {
                     return Ok(ProjectSkillResolutionResult {
@@ -332,6 +335,7 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
                         version: None,
                     });
                 }
+                enforce_project_skill_staging_policy(staging_policy.as_ref(), &candidates, &plan)?;
                 validate_sqlite_companion(conn, &plan.skill)?;
                 match plan.outcome {
                     ProjectSkillResolutionOutcome::CreateNew => {

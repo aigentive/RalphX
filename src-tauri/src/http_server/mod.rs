@@ -308,6 +308,9 @@ pub async fn start_http_server(
             post(process_conversation_project_skills),
         )
         .route("/api/project_skills/get", post(get_project_skill))
+        .route("/api/project_skills/upsert", post(upsert_project_skill))
+        .route("/api/project_skills/patch", post(patch_project_skill))
+        .route("/api/project_skills/retire", post(retire_project_skill))
         .route("/api/project_skills/approve", post(approve_project_skill))
         .route("/api/project_skills/reject", post(reject_project_skill))
         .route("/api/project_skills/archive", post(archive_project_skill))

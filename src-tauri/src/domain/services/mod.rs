@@ -28,6 +28,9 @@ pub mod project_validation;
 pub mod project_skill_resolution;
 #[cfg(test)]
 mod project_skill_resolution_tests;
+pub mod project_skill_pipeline;
+#[cfg(test)]
+mod project_skill_pipeline_tests;
 pub mod research_service;
 pub mod rule_ingestion_service;
 pub mod rule_parser;
@@ -70,6 +73,12 @@ pub use learned_skill_substrate::{
 pub use project_skill_resolution::{
     import_title_resolution_identity, project_skill_resolution_identities,
     ProjectSkillResolutionService,
+};
+pub use project_skill_pipeline::{
+    ProjectSkillPipelineContext, ProjectSkillPipelineInput, ProjectSkillPipelineRetireResult,
+    ProjectSkillPipelineService, PROJECT_SKILL_BODY_MAX_CHARS,
+    PROJECT_SKILL_COMPACT_GUIDANCE_MAX_CHARS, PROJECT_SKILL_PREDICTED_EFFECT_MAX_CHARS,
+    PROJECT_SKILL_PIPELINE_PROJECT_SCOPE_ERROR, PROJECT_SKILL_TITLE_MAX_CHARS,
 };
 pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,

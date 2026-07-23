@@ -64,6 +64,7 @@ fn upsert_command(
             matched_mutation: mutation,
         },
         evidence_markdown: None,
+        staging_policy: None,
     }
 }
 
@@ -167,6 +168,7 @@ async fn patch_and_append_evidence_create_monotonic_matching_snapshots() {
                 matched_mutation: ProjectSkillMatchedMutation::AppendEvidence,
             },
             evidence_markdown: Some("## Additional evidence\n\n- second".to_string()),
+            staging_policy: None,
         })
         .await
         .unwrap();
@@ -189,6 +191,7 @@ async fn patch_and_append_evidence_create_monotonic_matching_snapshots() {
                 matched_mutation: ProjectSkillMatchedMutation::AppendEvidence,
             },
             evidence_markdown: Some("## Additional evidence\n\n- second".to_string()),
+            staging_policy: None,
         })
         .await
         .unwrap();
@@ -227,6 +230,7 @@ async fn approved_patch_creates_and_then_reuses_a_staged_pending_revision() {
                 target_id: approved.id.clone(),
             },
             evidence_markdown: None,
+            staging_policy: None,
         })
         .await
         .unwrap();
@@ -251,6 +255,7 @@ async fn approved_patch_creates_and_then_reuses_a_staged_pending_revision() {
                 target_id: approved.id.clone(),
             },
             evidence_markdown: None,
+            staging_policy: None,
         })
         .await
         .unwrap();
