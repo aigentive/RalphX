@@ -53,6 +53,9 @@ export function TextBubble({ text, isUser, isStreaming = false }: TextBubbleProp
       )}
       style={{
         maxWidth: isUser ? "min(85%, 620px)" : undefined,
+        // The bubble already caps its own width; re-capping markdown blocks
+        // against the fit-content bubble width breaks short messages mid-word.
+        ...(isUser ? { ["--chat-prose-max-width" as string]: "none" } : {}),
         background: isUser ? "var(--chat-user-bubble-bg)" : "transparent",
         color: isUser ? "var(--chat-user-bubble-text)" : "var(--text-primary)",
         borderWidth: isUser ? "1px" : "0",
