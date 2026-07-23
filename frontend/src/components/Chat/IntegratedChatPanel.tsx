@@ -370,12 +370,8 @@ export function IntegratedChatPanel({
     null,
   );
   const ideationSessionsById = useIdeationStore((s) => s.sessions);
-  const globalSelectedTaskId = useUiStore((s) => s.selectedTaskId);
-  const selectedTaskId =
-    selectedTaskIdOverride === undefined
-      ? globalSelectedTaskId
-      : selectedTaskIdOverride;
-  // History state from store - shared with TaskDetailOverlay for time-travel feature
+  const selectedTaskId = selectedTaskIdOverride ?? null;
+  // History state from store - shared with Agents task detail for time-travel feature
   const taskHistoryState = useUiStore((s) => s.taskHistoryState);
   const isHistoryMode = !!taskHistoryState;
   const hasHistoryConversation = !!taskHistoryState?.conversationId;
@@ -388,7 +384,7 @@ export function IntegratedChatPanel({
     enabled: Boolean(projectId && selectedTaskId),
   });
 
-  // Read from Zustand store (event-updated, sync) — same pattern as TaskDetailOverlay
+  // Read from Zustand store (event-updated, sync) — same pattern as Agents task detail
   const taskFromStore = useTaskStore((state) =>
     selectedTaskId ? state.tasks[selectedTaskId] : undefined,
   );

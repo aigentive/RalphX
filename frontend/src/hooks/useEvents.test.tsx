@@ -73,7 +73,7 @@ describe("useTaskEvents", () => {
     );
 
     // Reset the task store
-    useTaskStore.setState({ tasks: {}, selectedTaskId: null });
+    useTaskStore.setState({ tasks: {} });
   });
 
   afterEach(() => {

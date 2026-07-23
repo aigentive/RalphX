@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { dismissProviderCliUpdateToasts } from "../../../fixtures/setup.fixtures";
 import { AgentsPublishPage } from "../../../pages/views/agents-publish.page";
 
 test.describe("Agents terminal publish history", () => {
@@ -12,6 +13,7 @@ test.describe("Agents terminal publish history", () => {
   test("merged workspace renders historical paged diffs without live changes", async ({
     page,
   }) => {
+    await dismissProviderCliUpdateToasts(page);
     const publish = new AgentsPublishPage(page);
     await publish.openMergedPublishScenario();
 

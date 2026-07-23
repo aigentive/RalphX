@@ -230,4 +230,4 @@ Any new tokens must maintain at least AA on `--bg-elevated` + `--bg-base` and pa
 ## 8. Known limitations (2026-04-18)
 
 - **Diff viewer syntax tokens** (`globals.css` Prism/Dracula colours) are pinned to the Dark palette. Light-theme users will see the old dark syntax palette until a shared `syntax-*` token family ships.
-- **WelcomeScreen** and `BattleModeV2Overlay` are intentionally fixed-palette regardless of theme. Documented exclusions.
+- **WelcomeScreen** is intentionally fixed-palette regardless of theme. Documented exclusion.

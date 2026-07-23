@@ -11,10 +11,10 @@ RalphX is a native Mac application for AI-driven software development. You descr
 | What do I need to install? | macOS, Node.js 18+, Rust 1.70+, and at least one supported agent harness CLI |
 | How do I run RalphX? | `cd frontend && npm install && npm run tauri dev` |
 | What is a project? | A git repository you've registered with RalphX |
-| How do I start building a feature? | Open **Ideation**, click **New Session**, describe what you want |
-| Where do I watch tasks run? | **Kanban** — tasks move left-to-right through the execution pipeline |
+| How do I start building a feature? | Open **Agents**, start a conversation, and choose **Plan** to describe what you want |
+| Where do I watch tasks run? | Open **Agents → Tasks** and use the **Kanban** mode — tasks move left-to-right through the execution pipeline |
 | Do agents touch my files? | Never — all execution happens in isolated git worktrees |
-| What's an Active Plan? | A filter that scopes Kanban and Graph to one ideation session's tasks |
+| What's an Active Plan? | A filter that scopes the **Tasks** artifact's Kanban and Graph modes to one plan's tasks |
 | What happens after I approve a task? | It enters the merge pipeline and is merged to your base branch automatically |
 
 ---
@@ -144,24 +144,31 @@ Click **Create Project**. RalphX validates the repository, creates its internal 
 
 ## Navigating the Interface
 
-RalphX has six main views, accessible from the left sidebar.
+RalphX has eight main root views, accessible from the left sidebar. Task and
+planning surfaces are artifacts inside **Agents**, rather than separate roots.
 
 | View | Path | Purpose |
 |------|------|---------|
-| **Kanban** | `/kanban` | Primary task board — columns track execution state |
-| **Graph** | `/graph` | Dependency graph — see how tasks relate and block each other |
-| **Ideation** | `/ideation` | Create features — describe what to build, get a structured plan |
-| **Team** | `/team` | Agent activity — see running agents, spawn counts, live output |
-| **Activity** | `/activity` | Audit log — full history of every state change and event |
-| **Settings** | `/settings` | Project config — merge strategy, concurrency, validation, and agent harness settings |
+| **Agents** | `agents` | Conversations plus Plan and Tasks artifacts; Kanban and Graph are Tasks modes |
+| **Automations** | `automations` | Automation runs and configuration |
+| **Ticketing** | `ticketing` | Tickets and linked work |
+| **GitHub** | `github` | Repository and pull-request workflows |
+| **Granola** | `granola` | Meeting and note integrations |
+| **Extensibility** | `extensibility` | Plugins and project extensions |
+| **Activity** | `activity` | Audit log — history of state changes and events |
+| **Insights** | `insights` | Project metrics and operational summaries |
 
 ### Sidebar
 
-The left sidebar shows your projects. Click a project to make it active — Kanban and Graph filter to that project's tasks. The active project is shown in the header.
+The left sidebar shows your projects. Click a project to make it active — the
+Agents **Tasks** artifact filters to that project's tasks. The active project is
+shown in the header.
 
 ### Header
 
-The header shows the current project and, if you've selected an Active Plan, its name. The Active Plan filter scopes Kanban and Graph to only the tasks from that ideation session.
+The header shows the current project and, if you've selected an Active Plan,
+its name. The Active Plan filter scopes the Agents **Tasks** artifact's Graph
+and Kanban modes to only the tasks from that plan.
 
 ---
 
@@ -204,7 +211,7 @@ Agents run via the configured harness for each lane. Claude is still the default
 
 ### Plans and Active Plan
 
-An ideation session produces a **plan**: an ordered set of tasks with dependencies. When you accept a plan, RalphX creates the tasks and lets you set it as the **Active Plan**. The Active Plan filter scopes Kanban and Graph to just those tasks, giving you a focused view of one feature's progress.
+An ideation session produces a **plan**: an ordered set of tasks with dependencies. When you choose **Start Tasks**, RalphX creates the tasks in the **Tasks** artifact and lets you set it as the **Active Plan**. The Active Plan filter scopes that artifact's Kanban and Graph modes to just those tasks, giving you a focused view of one feature's progress.
 
 ### Merge Strategies
 
@@ -225,9 +232,9 @@ Change the strategy in **Settings → Git**. It applies to all future merges.
 
 This is the end-to-end path from idea to merged code.
 
-### 1. Open Ideation
+### 1. Open Agents and Plan
 
-Navigate to **Ideation** and click **New Session**.
+Navigate to **Agents**, start a conversation, and choose **Plan**.
 
 Choose a mode:
 
@@ -243,20 +250,20 @@ Type a description of the feature. Be specific: include the expected behavior, a
 
 Example: *"Add keyboard shortcut Cmd+K to open the task search panel. Should work from any view and close on Escape or when focus leaves the panel."*
 
-### 3. Review and accept the plan
+### 3. Review the plan and create Tasks
 
 When the orchestrator finishes, a plan artifact appears with:
 - A list of proposed tasks in dependency order
 - Estimated scope for each task
 - A summary of what will change
 
-If the plan looks correct, click **Accept Plan**. RalphX creates the tasks and offers to set this as your Active Plan.
+If the plan looks correct, approve the current draft and choose **Create Proposals** to enter the conversation's **Tasks** artifact. Review the decomposition there, then choose **Start Tasks** when you are ready to begin execution.
 
 If the plan needs changes, type feedback in the chat. The orchestrator revises and re-proposes.
 
-### 4. Watch execution on Kanban
+### 4. Watch execution in Tasks
 
-Navigate to **Kanban**. Your tasks appear in the **Backlog** or **Ready** column (depending on dependencies). RalphX schedules up to 10 tasks concurrently by default. As agents work, tasks move right:
+In the conversation's **Tasks** artifact, choose the **Kanban** mode. Your tasks appear in the **Backlog** or **Ready** column (depending on dependencies). Switch to **Graph** mode when you want to inspect dependencies. RalphX schedules up to 10 tasks concurrently by default. As agents work, tasks move right:
 
 ```
 Backlog → Ready → Executing → Reviewing → ReviewPassed → Approved → PendingMerge → Merged
@@ -293,8 +300,8 @@ The task moves to **Merged**. The merge commit SHA is shown in the task detail v
 | Guide | What it covers |
 |-------|---------------|
 | [Ideation Studio](ideation-studio.md) | Session modes, team configuration, plan artifacts, task creation |
-| [Kanban Board](kanban.md) | Board layout, task cards, drag-and-drop transitions, filtering |
-| [Graph View](graph-view.md) | Dependency graph, critical path, timeline panel, battle mode |
+| [Kanban Board](kanban.md) | Tasks artifact's Kanban mode: board layout, task cards, transitions, and filtering |
+| [Graph View](graph-view.md) | Tasks artifact's Graph mode: dependency graph, critical path, and timeline panel |
 | [Execution Pipeline](execution.md) | Worker/coder/reviewer agents, concurrency, revision cycles, recovery |
 | [Merge Pipeline](merge.md) | Merge strategies, validation, conflict resolution, recovery |
 | [Task State Machine](task-state-machine.md) | All 24 states, transitions, and state invariants |

@@ -13,8 +13,7 @@ RalphX's Kanban board is the primary workspace for managing tasks through their 
 | What are the valid moves from a given state? | The drag-and-drop system only allows valid transitions. See [Valid Transitions](#valid-transitions). |
 | How do I filter by plan? | Use the **Plan Switcher** in the top bar to activate a plan — the board shows only tasks for that plan. |
 | How do I see only certain states? | Use the **Filters** panel (funnel icon) to filter by status, assignee, or other criteria. |
-| What happens when I click a task card? | The **Task Detail overlay** opens, showing the 12 specialized views for the task's current state. |
-| What does the split panel do? | The split layout adds a chat panel alongside the board for agent communication without leaving the Kanban. |
+| What happens when I click a task card? | The **Agents task detail overlay** opens, showing the state-specific views for the task. |
 | How do I change the columns? | Columns are driven by your project's active **workflow/methodology**. Configure it in project settings. |
 
 ---
@@ -39,15 +38,17 @@ RalphX's Kanban board is the primary workspace for managing tasks through their 
 7. [Filtering and Search](#filtering-and-search)
    - [Filter Panel](#filter-panel)
 8. [Active Plan](#active-plan)
-9. [Split Chat Panel](#split-chat-panel)
-10. [Workflows and Methodologies](#workflows-and-methodologies)
-11. [Tips and Best Practices](#tips-and-best-practices)
+9. [Workflows and Methodologies](#workflows-and-methodologies)
+10. [Tips and Best Practices](#tips-and-best-practices)
 
 ---
 
 ## Overview
 
-The Kanban board (`/kanban`) is your real-time view of every task in the project. Each column represents a group of task states; cards move through columns as work progresses. The board is live — it updates automatically as agents execute, review, and merge tasks.
+The Kanban board is the task artifact inside **Agents**. It is the real-time
+view of every task in the project. Each column represents a group of task
+states; cards move through columns as work progresses. The board is live — it
+updates automatically as agents execute, review, and merge tasks.
 
 ### High-Level Lifecycle
 
@@ -237,7 +238,7 @@ Right-click any card (or open the card's context menu) for quick actions without
 
 ## Task Detail Views
 
-Click any task card to open the **Task Detail overlay** — a full-screen panel showing all task context and state-specific controls.
+Click any task card to open the **Agents task detail overlay** — a full-screen panel showing all task context and state-specific controls.
 
 ### The 12 Specialized Views
 
@@ -294,7 +295,7 @@ The Active Plan feature lets you focus the board on a single ideation session's 
 
 ### How It Works
 
-1. **Activate a plan** — Use the PlanQuickSwitcher or Graph view to set a plan as active.
+1. **Activate a plan** — Use the plan switcher in the Agents Tasks artifact or Graph tab.
 2. **Board filters automatically** — Only tasks linked to that plan appear on the Kanban.
 3. **Column counts reflect the plan** — Task counts in column headers are scoped to the active plan.
 4. **Deactivate** — Switch to "All Plans" to return to the full board.
@@ -304,37 +305,6 @@ The Active Plan feature lets you focus the board on a single ideation session's 
 Within an active plan, tasks progress from execution on individual task branches through to a **plan-merge task** that merges the entire plan branch into `main`. The plan-merge task appears as a special card in the Merging column when all plan tasks are complete.
 
 For a full explanation of plan branching and plan-merge tasks, see the [Merge Pipeline User Guide](merge.md#branch-management).
-
----
-
-## Split Chat Panel
-
-The **KanbanSplitLayout** divides the board into two panels side-by-side:
-
-```
-┌─────────────────────────────┬────────────────────┐
-│                             │                    │
-│        Kanban Board         │    Chat Panel      │
-│                             │                    │
-│  [Backlog] [Ready] [Exec]   │  Agent: "I've      │
-│                             │  finished the      │
-│                             │  auth module..."   │
-└─────────────────────────────┴────────────────────┘
-```
-
-### Using the Split Panel
-
-- **Toggle** — Click the split layout button in the top-right toolbar to enter/exit split mode.
-- **Resize** — Drag the divider between panels to adjust the split ratio.
-- **Chat context** — The chat panel shows the conversation for the currently selected task. Click a different card to switch the chat context.
-- **Send messages** — You can type messages to the active agent directly from the chat panel without leaving the board.
-
-### When to Use It
-
-The split layout is ideal when:
-- Monitoring an actively executing task while keeping the board visible
-- Reviewing agent output and approving tasks without navigating away
-- Watching merge progress while other tasks are still executing
 
 ---
 

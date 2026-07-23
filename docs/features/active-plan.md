@@ -2,7 +2,10 @@
 
 ## Overview
 
-The **Active Plan** feature allows you to focus your work by selecting a single ideation session (plan) to view across RalphX. When you select an active plan, both the Kanban board and Graph view filter to show only tasks from that plan, helping you maintain focus and avoid context switching.
+The **Active Plan** feature allows you to focus your work by selecting a single
+plan to view across RalphX. Plan selection is project-scoped and is surfaced
+inside the Agents Tasks artifact: its Kanban and Graph tabs filter to tasks
+from the active plan, helping you maintain focus and avoid context switching.
 
 ## Key Concepts
 
@@ -12,7 +15,7 @@ An active plan is an ideation session that has been "accepted" and converted to 
 
 - **Persists across app restarts** — Your selection is saved in the database
 - **Is project-scoped** — Each project has its own active plan
-- **Filters both Graph and Kanban** — Both views show only tasks from the active plan
+- **Filters the Agents task views** — The embedded Graph and Kanban tabs show only tasks from the active plan
 - **Can be changed anytime** — Switch plans quickly using the inline selector or keyboard shortcut
 
 ### Plan Eligibility
@@ -27,7 +30,8 @@ Only **accepted** ideation sessions can be selected as active plans:
 
 ### Method 1: Inline Plan Selector
 
-The inline plan selector appears in both the Kanban toolbar and Graph controls area.
+The inline plan selector appears in the Agents Tasks artifact's Kanban and
+Graph controls.
 
 **Features:**
 - Shows current plan title and task count badge
@@ -106,7 +110,7 @@ The active plan selection is **globally synchronized** across all views:
 1. Select a plan in the **Kanban inline selector** → Graph updates immediately
 2. Select a plan in the **Graph inline selector** → Kanban updates immediately
 3. Select a plan via **quick switcher** → Both views update immediately
-4. Accept a plan in **Ideation view** → Becomes active plan, both views filter on navigation
+4. Accept a plan in the Agents **Plan** artifact → Becomes active plan; embedded task views filter on navigation
 
 All selection events are tracked with a "source" label (`kanban_inline`, `graph_inline`, `quick_switcher`, `ideation`) for analytics and to power the interaction ranking.
 
@@ -137,7 +141,7 @@ If you try to open the selector but have no accepted plans yet:
 
 ```
 📄  No accepted plans found
-Create and accept a plan in the Ideation view first.
+Create and accept a plan in the Agents **Plan** artifact first.
 ```
 
 ## Keyboard Shortcuts
@@ -202,7 +206,7 @@ Remember that active plan is scoped by project. If you work on multiple projects
 2. Database connection issue
 
 **Solution:**
-1. Check that the session still exists in the Ideation view
+1. Check that the session still exists in the owning Agents conversation
 2. Try reselecting the plan
 3. Restart the app if persistence fails
 
@@ -237,7 +241,7 @@ Remember that active plan is scoped by project. If you work on multiple projects
 
 **Solution:**
 1. Toggle "Show Archived" to reveal archived tasks
-2. Check the Ideation view to verify tasks were created
+2. Check the owning Agents conversation's Tasks artifact to verify tasks were created
 3. Select a different plan with active tasks
 
 ### Problem: Ranking seems incorrect

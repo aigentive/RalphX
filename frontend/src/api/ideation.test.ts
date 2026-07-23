@@ -187,6 +187,35 @@ describe("ideationApi.sessions", () => {
     });
   });
 
+  describe("resolveAgentWorkspace", () => {
+    it("resolves the linked Agent workspace through the typed command", async () => {
+      mockInvoke.mockResolvedValue({
+        conversation_id: "conversation-1",
+        project_id: "project-1",
+        title: "Agent workspace",
+      });
+
+      await expect(
+        ideationApi.sessions.resolveAgentWorkspace("session-1"),
+      ).resolves.toEqual({
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        title: "Agent workspace",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("get_ideation_agent_workspace", {
+        sessionId: "session-1",
+      });
+    });
+
+    it("returns null when no active linked workspace exists", async () => {
+      mockInvoke.mockResolvedValue(null);
+
+      await expect(
+        ideationApi.sessions.resolveAgentWorkspace("missing-session"),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe("getWithData", () => {
     it("should call get_ideation_session_with_data with id", async () => {
       const data = {

@@ -17,7 +17,6 @@
 #
 # Excluded paths (documented in specs/design/styleguide.md §12):
 #   - src/components/WelcomeScreen/** — marketing splash
-#   - src/components/TaskGraph/battle-v2/BattleModeV2Overlay.tsx — game canvas
 #   - *.test.tsx / *.test.ts — tests pin class/token names
 #   - src/styles/** — token sources
 
@@ -32,7 +31,6 @@ EXCLUDE_PATHS=(
   --exclude='*.snap'
   --exclude-dir='__snapshots__'
   --exclude-dir='WelcomeScreen'
-  --exclude-dir='battle-v2'
   # Lightbox component intentionally paints black/white gradients regardless
   # of theme — it's a media viewer chrome, not a themed surface.
   --exclude-dir='ScreenshotGallery'

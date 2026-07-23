@@ -132,51 +132,9 @@ function buildDependencyDetails(
 
   const details: DependencyDetail[] = [];
 
-  // Find edges where this proposal is the dependent (edge.from = this proposal)
-  // Edge semantics: edge.from depends on edge.to
-  // Wait - looking at IdeationView.tsx line 130-142, the edge semantics are:
-  // edge.to depends on edge.from (from → to in graph direction)
-  // So if we want "what does this proposal depend on", we need edges where edge.from = proposalId
-  // Actually looking closer at line 131: "edge.from = the proposal that depends on edge.to"
-  // That's backwards from the typical graph direction. Let me check the edge building...
-
-  // From IdeationView line 130-142, the edge loop shows:
-  // for edge in edges: details[edge.from] gets edge.to as a dependency
-  // This means: edge.from depends on edge.to
-  // So to get what proposalId depends on, we look for edges where edge.from === proposalId
-
   for (const edge of dependencyGraph.edges) {
-    // Find proposals that this proposal depends on (this = edge.from)
-    // Wait, need to re-check the semantics. Let me trace through:
-    // In the graph, edge {from: A, to: B} means A → B
-    // In dependency terms: A depends on B (A needs B to be done first)
-    // So if we're looking for what proposal X depends on, we want edges where from = X
-    // The to value is what X depends on
-
-    // Actually looking at line 131 comment: "edge.from = the proposal that depends on edge.to"
-    // So edge.from depends on edge.to. To find what proposalId depends on:
-    // We want edges where edge.from === proposalId, and edge.to is the dependency
-
-    // But wait, looking at useDependencyGraph.ts line 192-193:
-    // edge.to depends on edge.from
-    // That's the opposite! The codebase has inconsistent semantics.
-
-    // Let me check the actual data flow. In computeDependencyTiers:
-    // Line 192: deps.add(edge.from) where deps = dependsOn.get(edge.to)
-    // This means: edge.to's dependencies include edge.from
-    // So: edge.to depends on edge.from
-
-    // And in IdeationView line 131-142:
-    // details[edge.from] includes edge.to
-    // So if A = edge.from, B = edge.to, then A's dependency details include B
-    // Which means: A depends on B
-    // This is OPPOSITE to what useDependencyGraph says!
-
-    // Let me look at the actual backend to understand the true semantics...
-    // Actually, let me just follow what IdeationView does since that's the existing working code.
-    // IdeationView builds details[edge.from] = edge.to's info
-    // So edge.from depends on edge.to
-
+    // Dependency-detail payloads store the dependent in `from` and its
+    // prerequisite in `to`; preserve that persisted presentation contract.
     if (edge.from === proposalId) {
       const targetProposal = proposals.find(p => p.id === edge.to);
       if (targetProposal) {
