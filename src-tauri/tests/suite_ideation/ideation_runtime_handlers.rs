@@ -1287,10 +1287,10 @@ async fn test_post_verification_status_records_recurring_gap_outcome() {
         .unwrap();
     assert_eq!(outcomes.len(), 1);
     let outcome = &outcomes[0];
-    assert_eq!(outcome.source, "verification");
+    assert_eq!(outcome.source.as_str(), "verification");
     assert_eq!(outcome.source_ref_kind, "gap_recurrence");
     assert_eq!(
-        outcome.outcome_class.as_deref(),
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
         Some("verification_gap_recurring")
     );
     assert_eq!(outcome.status, TaskOutcomeStatus::Eligible);

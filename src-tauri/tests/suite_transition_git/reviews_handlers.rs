@@ -904,10 +904,10 @@ async fn test_complete_review_needs_changes_creates_first_class_review_issues() 
         .expect("task outcomes query should succeed");
     assert_eq!(outcomes.len(), 1);
     let outcome = &outcomes[0];
-    assert_eq!(outcome.source, "review");
+    assert_eq!(outcome.source.as_str(), "review");
     assert_eq!(outcome.source_ref_kind, "review_note");
     assert_eq!(
-        outcome.outcome_class.as_deref(),
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
         Some("review_changes_requested")
     );
     assert_eq!(outcome.status, TaskOutcomeStatus::Failed);

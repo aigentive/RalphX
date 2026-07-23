@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::domain::entities::{
     MemoryActorType, MemoryEvent, ProjectId, ProjectSkillEvidenceBatch,
     ProjectSkillEvidenceBatchStatus, ProjectSkillLifecycleStatus, TaskOutcome, TaskOutcomeId,
-    TaskOutcomeStatus, PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS,
+    TaskOutcomeSource, TaskOutcomeStatus, PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS,
 };
 use crate::domain::repositories::{
     MemoryEventRepository, ProjectSkillEvidenceBatchRepository, ProjectSkillListOptions,
@@ -30,7 +30,7 @@ pub enum ProjectSkillDistillationTrigger {
 #[derive(Debug, Clone)]
 pub enum ProjectSkillDistillationSelection {
     EligibleOutcomes {
-        source: Option<String>,
+        source: Option<TaskOutcomeSource>,
         limit: usize,
     },
     ExactOutcomes(Vec<TaskOutcomeId>),
@@ -343,14 +343,14 @@ impl ProjectSkillDistillationService {
                 self.batch_repo
                     .insert_if_absent(build_batch(
                         project_id,
-                        bucket_for_outcome_source(&outcome.source),
+                        bucket_for_outcome_source(outcome.source),
                         std::slice::from_ref(&outcome),
                     ))
                     .await?;
                 continue;
             }
             by_bucket
-                .entry(bucket_for_outcome_source(&outcome.source).to_string())
+                .entry(bucket_for_outcome_source(outcome.source).to_string())
                 .or_default()
                 .push(outcome);
         }

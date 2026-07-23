@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::entities::{TaskOutcomeClass, TaskOutcomeSource};
 
 async fn record_verification_gap_recurrence_outcomes(
     state: &HttpServerState,
@@ -32,7 +33,7 @@ async fn record_verification_gap_recurrence_outcomes(
     for recurring in report.recurring_gaps {
         let mut outcome = new_empty_task_outcome(
             session.project_id.clone(),
-            "verification",
+            TaskOutcomeSource::Verification,
             "gap_recurrence",
             format!(
                 "{}:{}:{}",
@@ -40,7 +41,7 @@ async fn record_verification_gap_recurrence_outcomes(
             ),
         );
         outcome.verification_id = Some(session_id.to_string());
-        outcome.outcome_class = Some("verification_gap_recurring".to_string());
+        outcome.outcome_class = Some(TaskOutcomeClass::VerificationGapRecurring);
         outcome.status = crate::domain::entities::TaskOutcomeStatus::Eligible;
         outcome.evidence_json = serde_json::json!({
             "session_id": session_id,

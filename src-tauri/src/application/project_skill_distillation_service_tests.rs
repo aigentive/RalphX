@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 
+use super::project_skill_distillation_batching::bucket_for_outcome_source;
 use super::project_skill_distillation_service::{
     ProjectSkillDistillationSelection, ProjectSkillDistillationService,
     ProjectSkillDistillationTrigger,
 };
 use crate::domain::entities::{
-    ProjectId, ProjectSkillSettings, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
-    PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS, PROJECT_SKILL_EVIDENCE_DIGEST_MAX_CHARS,
+    ProjectId, ProjectSkillSettings, TaskOutcome, TaskOutcomeClass, TaskOutcomeId,
+    TaskOutcomeSource, TaskOutcomeStatus, PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS,
+    PROJECT_SKILL_EVIDENCE_DIGEST_MAX_CHARS,
 };
 use crate::domain::repositories::{
     MemoryEventRepository, ProjectSkillEvidenceBatchRepository, ProjectSkillSettingsRepository,
@@ -30,7 +32,7 @@ fn eligible_outcome(
     TaskOutcome {
         id: TaskOutcomeId::from_string(format!("outcome-{id:02}")),
         project_id: project_id.clone(),
-        source: "task_pipeline".to_string(),
+        source: TaskOutcomeSource::TaskPipeline,
         source_ref_kind: "task".to_string(),
         source_ref_id: format!("task-{id:02}"),
         task_id: Some(format!("task-{id:02}")),
@@ -40,14 +42,40 @@ fn eligible_outcome(
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: Some("completed".to_string()),
+        outcome_class: Some(TaskOutcomeClass::Other("completed".to_string())),
         status: TaskOutcomeStatus::Eligible,
         evidence_json: serde_json::json!({ "summary": "é".repeat(evidence_chars) }),
+        failure_fingerprint: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some(format!("session-{id:02}")),
         created_at,
         updated_at: created_at,
     }
+}
+
+#[test]
+fn typed_outcome_source_buckets_preserve_pre_d3_live_source_behavior() {
+    assert_eq!(
+        bucket_for_outcome_source(TaskOutcomeSource::Verification),
+        "verification"
+    );
+    assert_eq!(
+        bucket_for_outcome_source(TaskOutcomeSource::Review),
+        "review"
+    );
+    assert_eq!(bucket_for_outcome_source(TaskOutcomeSource::Merge), "merge");
+    assert_eq!(
+        bucket_for_outcome_source(TaskOutcomeSource::PlanMode),
+        "planning"
+    );
+    assert_eq!(
+        bucket_for_outcome_source(TaskOutcomeSource::GithubPrReview),
+        "execution"
+    );
+    assert_eq!(
+        bucket_for_outcome_source(TaskOutcomeSource::MergeValidation),
+        "execution"
+    );
 }
 
 async fn service_fixture(
@@ -317,7 +345,7 @@ async fn verification_gap_batch_uses_the_trusted_gap_fingerprint() {
     let (service, outcomes, _batches, _settings, _events) = service_fixture(&project_id).await;
     let mut gap = eligible_outcome(&project_id, 1, 0, 20);
     let fingerprint = "b".repeat(64);
-    gap.source = "verification".to_string();
+    gap.source = TaskOutcomeSource::Verification;
     gap.source_ref_kind = "gap_recurrence".to_string();
     gap.evidence_json = serde_json::json!({
         "fingerprint": fingerprint,

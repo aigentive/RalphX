@@ -9,7 +9,7 @@ use crate::application::AppState;
 use crate::domain::entities::{
     ChatConversation, ChatMessage, MemoryBucket, MemoryEntry, Project, ProjectId, ProjectSkill,
     ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
-    TaskOutcomeStatus,
+    SkillUsageInjectionKind, TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{ProjectSkillListOptions, UpsertTaskOutcomeInput};
 use crate::domain::services::{
@@ -864,7 +864,7 @@ async fn list_conversation_project_skills_scopes_generated_and_used_skills() {
             provider_harness: Some("codex".to_string()),
             stage: Some("review".to_string()),
             bucket: Some("review".to_string()),
-            injection_kind: "composer_directive".to_string(),
+            injection_kind: SkillUsageInjectionKind::ComposerDirective,
             outcome_id: None,
             metadata_json: json!({}),
             created_at: now,
@@ -883,7 +883,7 @@ async fn list_conversation_project_skills_scopes_generated_and_used_skills() {
             provider_harness: Some("claude".to_string()),
             stage: Some("review".to_string()),
             bucket: Some("review".to_string()),
-            injection_kind: "composer_directive".to_string(),
+            injection_kind: SkillUsageInjectionKind::ComposerDirective,
             outcome_id: None,
             metadata_json: json!({}),
             created_at: now,
@@ -1056,10 +1056,14 @@ async fn pin_project_skill_handler_updates_pin_state() {
 async fn distill_project_skills_queues_eligible_outcomes_without_staging() {
     let app_state = Arc::new(AppState::new_test());
     let project_id = ProjectId::from_string("project-distill".to_string());
-    let mut outcome =
-        new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-1");
+    let mut outcome = new_empty_task_outcome(
+        project_id.clone(),
+        TaskOutcomeSource::Review,
+        "review_note",
+        "review-1",
+    );
     outcome.status = TaskOutcomeStatus::Eligible;
-    outcome.outcome_class = Some("review_changes_requested".to_string());
+    outcome.outcome_class = Some(TaskOutcomeClass::ReviewChangesRequested);
     app_state
         .task_outcome_repo
         .upsert(UpsertTaskOutcomeInput { outcome })
@@ -1149,15 +1153,23 @@ async fn list_project_skill_report_cards_returns_descriptive_counts() {
     let skill_id = skill.id.clone();
     app_state.project_skill_repo.create(skill).await.unwrap();
 
-    let mut outcome =
-        new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-1");
+    let mut outcome = new_empty_task_outcome(
+        project_id.clone(),
+        TaskOutcomeSource::Review,
+        "review_note",
+        "review-1",
+    );
     outcome.status = TaskOutcomeStatus::Succeeded;
     let outcome = app_state
         .task_outcome_repo
         .upsert(UpsertTaskOutcomeInput { outcome })
         .await
         .unwrap();
-    let mut usage = new_skill_usage_event(project_id.clone(), skill_id.clone(), "compact_index");
+    let mut usage = new_skill_usage_event(
+        project_id.clone(),
+        skill_id.clone(),
+        SkillUsageInjectionKind::CompactIndex,
+    );
     usage.outcome_id = Some(outcome.id);
     app_state
         .skill_usage_event_repo

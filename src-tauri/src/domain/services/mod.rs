@@ -11,6 +11,9 @@ pub mod artifact_flow_service;
 pub mod artifact_service;
 pub mod bucket_classifier;
 pub mod composer_selection_snapshot;
+pub(crate) mod failure_fingerprint;
+#[cfg(test)]
+mod failure_fingerprint_tests;
 pub mod gap_fingerprint;
 pub mod github_generated_markdown;
 pub mod github_service;
@@ -21,6 +24,9 @@ pub mod learned_skill_substrate;
 #[cfg(test)]
 mod learned_skill_substrate_tests;
 pub mod message_queue;
+pub(crate) mod merge_failure_outcomes;
+#[cfg(test)]
+mod merge_failure_outcomes_tests;
 pub mod methodology_service;
 pub mod payload_enrichment;
 pub mod pr_publish_service;

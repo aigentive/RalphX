@@ -662,6 +662,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&execution_settings_repo),
             Some(Arc::clone(&plan_branch_repo)),
         )
+        .with_task_outcome_repo(Arc::clone(&task_outcome_repo))
         .with_task_scheduler(Arc::clone(&task_scheduler))
         .with_app_handle(app_handle.clone())
         .with_review_repo(Arc::clone(&review_repo))
@@ -885,6 +886,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     let reconcile_runner = Arc::new(build_startup_reconciliation_runner(
         StartupReconciliationDeps {
             task_repo: Arc::clone(&task_repo),
+            task_outcome_repo: Arc::clone(&task_outcome_repo),
             task_dependency_repo: Arc::clone(&task_dependency_repo),
             project_repo: Arc::clone(&project_repo),
             artifact_repo: Arc::clone(&artifact_repo),

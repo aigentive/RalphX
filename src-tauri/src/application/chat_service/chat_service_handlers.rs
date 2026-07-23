@@ -33,8 +33,9 @@ use crate::domain::entities::{
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
     MergeRecoverySource, MergeRecoveryState, PersonaDirective, ReviewNote, ReviewOutcome,
-    ReviewerType, SessionPurpose, Task, TaskId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
-    TaskStepStatus, ValidationCacheMetadata, VerificationGap, VerificationStatus,
+    ReviewerType, SessionPurpose, Task, TaskId, TaskOutcome, TaskOutcomeClass, TaskOutcomeId,
+    TaskOutcomeSource, TaskOutcomeStatus, TaskStepStatus, ValidationCacheMetadata, VerificationGap,
+    VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -192,7 +193,7 @@ async fn record_task_execution_outcome<R: Runtime>(
     conversation_id: &ChatConversationId,
     agent_run_id: &str,
     status: TaskOutcomeStatus,
-    outcome_class: &str,
+    outcome_class: TaskOutcomeClass,
     evidence_json: serde_json::Value,
 ) {
     let Some(app_state) = app_handle
@@ -211,7 +212,7 @@ async fn record_task_execution_outcome<R: Runtime>(
     let outcome = TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: task.project_id.clone(),
-        source: "agent_session".to_string(),
+        source: TaskOutcomeSource::AgentSession,
         source_ref_kind: "agent_run".to_string(),
         source_ref_id: agent_run_id.to_string(),
         task_id: Some(task.id.as_str().to_string()),
@@ -221,9 +222,10 @@ async fn record_task_execution_outcome<R: Runtime>(
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: Some(outcome_class.to_string()),
+        outcome_class: Some(outcome_class.clone()),
         status,
         evidence_json,
+        failure_fingerprint: None,
         provider_harness: agent_run
             .as_ref()
             .and_then(|run| run.harness)
@@ -238,7 +240,7 @@ async fn record_task_execution_outcome<R: Runtime>(
         tracing::warn!(
             task_id = task.id.as_str(),
             agent_run_id,
-            outcome_class,
+            outcome_class = outcome_class.as_str(),
             error = %error,
             "Failed to record task execution outcome"
         );
@@ -1873,7 +1875,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 conversation_id,
                                 agent_run_id,
                                 TaskOutcomeStatus::Succeeded,
-                                "task_execution_completed",
+                                TaskOutcomeClass::TaskExecutionCompleted,
                                 serde_json::json!({
                                     "completion_action": "pending_review",
                                     "has_output": has_output,
@@ -1916,7 +1918,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 conversation_id,
                                 agent_run_id,
                                 TaskOutcomeStatus::Succeeded,
-                                "task_execution_completed",
+                                TaskOutcomeClass::TaskExecutionCompleted,
                                 serde_json::json!({
                                     "completion_action": "pending_review",
                                     "has_output": has_output,
@@ -2022,7 +2024,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 conversation_id,
                                 agent_run_id,
                                 TaskOutcomeStatus::Failed,
-                                "task_execution_no_output",
+                                TaskOutcomeClass::TaskExecutionNoOutput,
                                 serde_json::json!({
                                     "reason": "Agent ended without completing all task steps",
                                     "has_output": has_output,
@@ -3756,7 +3758,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 &conversation_id,
                                 agent_run_id,
                                 TaskOutcomeStatus::Succeeded,
-                                "task_execution_completed",
+                                TaskOutcomeClass::TaskExecutionCompleted,
                                 serde_json::json!({
                                     "completion_action": "pending_review",
                                     "target_status": target_status.to_string(),
@@ -3772,7 +3774,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 &conversation_id,
                                 agent_run_id,
                                 TaskOutcomeStatus::Failed,
-                                "task_execution_failed",
+                                TaskOutcomeClass::TaskExecutionFailed,
                                 serde_json::json!({
                                     "target_status": target_status.to_string(),
                                     "error": redacted_error,
@@ -3795,7 +3797,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 &conversation_id,
                                 agent_run_id,
                                 TaskOutcomeStatus::Succeeded,
-                                "task_execution_completed",
+                                TaskOutcomeClass::TaskExecutionCompleted,
                                 serde_json::json!({
                                     "completion_action": "pending_review",
                                     "target_status": target_status.to_string(),
@@ -3811,7 +3813,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 &conversation_id,
                                 agent_run_id,
                                 TaskOutcomeStatus::Failed,
-                                "task_execution_failed",
+                                TaskOutcomeClass::TaskExecutionFailed,
                                 serde_json::json!({
                                     "target_status": target_status.to_string(),
                                     "error": redacted_error,

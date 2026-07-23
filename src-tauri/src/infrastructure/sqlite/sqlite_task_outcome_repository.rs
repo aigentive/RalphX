@@ -8,7 +8,9 @@ use tokio::sync::Mutex;
 use super::sqlite_learned_skill_repos::{db_parse_error, parse_datetime};
 use super::DbConnection;
 use crate::domain::entities::types::ProjectId;
-use crate::domain::entities::{TaskOutcome, TaskOutcomeId, TaskOutcomeStatus};
+use crate::domain::entities::{
+    TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
+};
 use crate::domain::repositories::{
     resolve_task_outcome_upsert, TaskOutcomeListOptions, TaskOutcomeRepository,
     UpsertTaskOutcomeInput,
@@ -38,10 +40,17 @@ fn outcome_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskOutcome> {
                 "invalid task_outcomes evidence_json: {error}"
             )))
         })?;
+    let source = row
+        .get::<_, String>("source")?
+        .parse::<TaskOutcomeSource>()
+        .map_err(db_parse_error)?;
+    let outcome_class = row
+        .get::<_, Option<String>>("outcome_class")?
+        .map(|value| TaskOutcomeClass::from(value.as_str()));
     Ok(TaskOutcome {
         id: TaskOutcomeId::from_string(row.get::<_, String>("id")?),
         project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
-        source: row.get("source")?,
+        source,
         source_ref_kind: row.get("source_ref_kind")?,
         source_ref_id: row.get("source_ref_id")?,
         task_id: row.get("task_id")?,
@@ -51,9 +60,10 @@ fn outcome_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskOutcome> {
         proposal_id: row.get("proposal_id")?,
         verification_id: row.get("verification_id")?,
         review_id: row.get("review_id")?,
-        outcome_class: row.get("outcome_class")?,
+        outcome_class,
         status,
         evidence_json: evidence,
+        failure_fingerprint: row.get("failure_fingerprint")?,
         provider_harness: row.get("provider_harness")?,
         provider_session_id: row.get("provider_session_id")?,
         created_at: parse_datetime(&row.get::<_, String>("created_at")?),
@@ -64,7 +74,8 @@ fn outcome_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskOutcome> {
 fn select_outcome_columns() -> &'static str {
     "id, project_id, source, source_ref_kind, source_ref_id, task_id, conversation_id,
      agent_run_id, pull_request_id, proposal_id, verification_id, review_id, outcome_class,
-     status, evidence_json, provider_harness, provider_session_id, created_at, updated_at"
+     status, evidence_json, failure_fingerprint, provider_harness, provider_session_id,
+     created_at, updated_at"
 }
 
 fn get_by_dedupe_from_connection(
@@ -98,7 +109,7 @@ impl TaskOutcomeRepository for SqliteTaskOutcomeRepository {
                 let existing = get_by_dedupe_from_connection(
                     conn,
                     incoming.project_id.as_str(),
-                    &incoming.source,
+                    incoming.source.as_str(),
                     &incoming.source_ref_kind,
                     &incoming.source_ref_id,
                 )?;
@@ -114,10 +125,11 @@ impl TaskOutcomeRepository for SqliteTaskOutcomeRepository {
                         id, project_id, source, source_ref_kind, source_ref_id, task_id,
                         conversation_id, agent_run_id, pull_request_id, proposal_id,
                         verification_id, review_id, outcome_class, status, evidence_json,
-                        provider_harness, provider_session_id, created_at, updated_at
+                        failure_fingerprint, provider_harness, provider_session_id,
+                        created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                     )
                     ON CONFLICT(project_id, source, source_ref_kind, source_ref_id)
                     DO UPDATE SET
@@ -131,13 +143,14 @@ impl TaskOutcomeRepository for SqliteTaskOutcomeRepository {
                         outcome_class = excluded.outcome_class,
                         status = excluded.status,
                         evidence_json = excluded.evidence_json,
+                        failure_fingerprint = excluded.failure_fingerprint,
                         provider_harness = excluded.provider_harness,
                         provider_session_id = excluded.provider_session_id,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         saved.id.as_str(),
                         saved.project_id.as_str(),
-                        saved.source,
+                        saved.source.to_string(),
                         saved.source_ref_kind,
                         saved.source_ref_id,
                         saved.task_id,
@@ -147,9 +160,10 @@ impl TaskOutcomeRepository for SqliteTaskOutcomeRepository {
                         saved.proposal_id,
                         saved.verification_id,
                         saved.review_id,
-                        saved.outcome_class,
+                        saved.outcome_class.as_ref().map(ToString::to_string),
                         saved.status.to_string(),
                         evidence_json,
+                        saved.failure_fingerprint,
                         saved.provider_harness,
                         saved.provider_session_id,
                         saved.created_at.to_rfc3339(),
@@ -164,7 +178,7 @@ impl TaskOutcomeRepository for SqliteTaskOutcomeRepository {
     async fn get_by_dedupe(
         &self,
         project_id: &ProjectId,
-        source: &str,
+        source: TaskOutcomeSource,
         source_ref_kind: &str,
         source_ref_id: &str,
     ) -> AppResult<Option<TaskOutcome>> {
@@ -207,7 +221,7 @@ impl TaskOutcomeRepository for SqliteTaskOutcomeRepository {
         options: TaskOutcomeListOptions,
     ) -> AppResult<Vec<TaskOutcome>> {
         let project_id = project_id.as_str().to_string();
-        let source = options.source;
+        let source = options.source.map(|source| source.to_string());
         let status = options.status.map(|status| status.to_string());
         self.db
             .run(move |conn| {

@@ -520,6 +520,7 @@ async fn record_merger_spawn_failure(
     let mut recovery = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
         .unwrap_or(None)
         .unwrap_or_default();
+    let attempt = recovery.active_attempt();
 
     let spawn_failure_count = recovery
         .events
@@ -544,7 +545,8 @@ async fn record_merger_spawn_failure(
         MergeRecoveryReasonCode::GitError,
         format!("Merger agent failed to spawn: {}", error),
     )
-    .with_failure_source(spawn_failure_source);
+    .with_failure_source(spawn_failure_source)
+    .with_attempt(attempt);
 
     recovery.append_event_with_state(event, MergeRecoveryState::Failed);
 

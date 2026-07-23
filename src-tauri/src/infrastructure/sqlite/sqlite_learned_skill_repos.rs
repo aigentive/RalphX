@@ -11,7 +11,7 @@ use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     validate_project_skill_hash, validate_project_skill_pipeline_role, ProjectSkill,
     ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus, ProjectSkillVersion,
-    SkillUsageEvent, SkillUsageEventId, TaskOutcomeId,
+    SkillUsageEvent, SkillUsageEventId, SkillUsageInjectionKind, TaskOutcomeId,
 };
 use crate::domain::repositories::{
     ProjectSkillListOptions, ProjectSkillRepository, ProjectSkillResolutionCommand,
@@ -149,6 +149,10 @@ fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillUsageEvent> 
                 "invalid skill_usage_events metadata_json: {error}"
             )))
         })?;
+    let injection_kind = row
+        .get::<_, String>("injection_kind")?
+        .parse::<SkillUsageInjectionKind>()
+        .map_err(db_parse_error)?;
     Ok(SkillUsageEvent {
         id: SkillUsageEventId::from_string(row.get::<_, String>("id")?),
         project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
@@ -158,7 +162,7 @@ fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillUsageEvent> 
         provider_harness: row.get("provider_harness")?,
         stage: row.get("stage")?,
         bucket: row.get("bucket")?,
-        injection_kind: row.get("injection_kind")?,
+        injection_kind,
         outcome_id: row
             .get::<_, Option<String>>("outcome_id")?
             .map(TaskOutcomeId::from_string),
@@ -601,7 +605,7 @@ impl SkillUsageEventRepository for SqliteSkillUsageEventRepository {
                         saved.provider_harness,
                         saved.stage,
                         saved.bucket,
-                        saved.injection_kind,
+                        saved.injection_kind.to_string(),
                         saved.outcome_id.as_ref().map(|id| id.as_str().to_string()),
                         metadata_json,
                         saved.created_at.to_rfc3339(),

@@ -1226,12 +1226,12 @@ async fn test_poller_changes_requested_creates_plan_correction_task() {
         .expect("task outcomes query should succeed");
     assert_eq!(outcomes.len(), 1);
     let outcome = &outcomes[0];
-    assert_eq!(outcome.source, "github_pr_review");
+    assert_eq!(outcome.source.as_str(), "github_pr_review");
     assert_eq!(outcome.source_ref_kind, "github_review");
     assert_eq!(outcome.source_ref_id, "4136652897");
     assert_eq!(outcome.task_id.as_deref(), Some(merge_task.id.as_str()));
     assert_eq!(
-        outcome.outcome_class.as_deref(),
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
         Some("github_pr_changes_requested")
     );
     assert_eq!(outcome.status, TaskOutcomeStatus::Failed);

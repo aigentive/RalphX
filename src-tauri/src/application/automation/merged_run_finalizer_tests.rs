@@ -162,7 +162,7 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
@@ -170,7 +170,10 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
         .expect("merged finalizer outcomes should be readable");
     assert_eq!(pr_outcomes.len(), 1);
     assert_eq!(
-        pr_outcomes[0].outcome_class.as_deref(),
+        pr_outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_PR_MERGED_CLASS)
     );
     assert_eq!(pr_outcomes[0].pull_request_id.as_deref(), Some("42"));
@@ -179,14 +182,15 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
         .await
         .expect("merged finalizer no-PR outcomes should be readable");
     assert!(no_pr_outcomes.iter().all(|outcome| {
-        outcome.outcome_class.as_deref() != Some(WORKSPACE_SESSION_ABANDONED_CLASS)
+        outcome.outcome_class.as_ref().map(|class| class.as_str())
+            != Some(WORKSPACE_SESSION_ABANDONED_CLASS)
     }));
 }
 

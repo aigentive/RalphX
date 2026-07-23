@@ -29,17 +29,7 @@ pub(super) fn append_source_update_failure_recovery_event(
     let mut recovery = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
         .unwrap_or(None)
         .unwrap_or_else(MergeRecoveryMetadata::new);
-    let attempt = recovery
-        .events
-        .iter()
-        .filter(|event| {
-            matches!(
-                event.kind,
-                MergeRecoveryEventKind::AutoRetryTriggered | MergeRecoveryEventKind::AttemptFailed
-            )
-        })
-        .count() as u32
-        + 1;
+    let attempt = recovery.active_attempt();
     let event = MergeRecoveryEvent::new(
         MergeRecoveryEventKind::AttemptFailed,
         MergeRecoverySource::System,

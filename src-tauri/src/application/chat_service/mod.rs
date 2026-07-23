@@ -83,7 +83,8 @@ use crate::domain::entities::{
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, CoordinationMode,
     IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective, PersonaId,
-    PersonaStatus, ProjectId, ProjectSkill, TaskId, TeamIntent, TeamMessageTarget,
+    PersonaStatus, ProjectId, ProjectSkill, SkillUsageInjectionKind, TaskId, TeamIntent,
+    TeamMessageTarget,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -4457,8 +4458,11 @@ impl<R: Runtime> AppChatService<R> {
         let project_id = ProjectId::from_string(project_id.to_string());
         let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
         for skill in selected_skills {
-            let mut event =
-                new_skill_usage_event(project_id.clone(), skill.id.clone(), "composer_directive");
+            let mut event = new_skill_usage_event(
+                project_id.clone(),
+                skill.id.clone(),
+                SkillUsageInjectionKind::ComposerDirective,
+            );
             event.conversation_id = Some(conversation_id.as_str().to_string());
             event.agent_run_id = Some(agent_run_id.to_string());
             event.provider_harness = Some(harness.to_string());
@@ -4504,7 +4508,7 @@ impl<R: Runtime> AppChatService<R> {
             let mut event = new_skill_usage_event(
                 project_id.clone(),
                 skill.id.clone(),
-                "interactive_stdin_unattributed",
+                SkillUsageInjectionKind::InteractiveStdinUnattributed,
             );
             event.conversation_id = Some(conversation_id.as_str().to_string());
             event.stage = Some(skill.stage.clone());

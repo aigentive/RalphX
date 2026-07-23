@@ -38,8 +38,8 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentRunRepository, AppStateRepository, ChatConversationRepository,
     ExecutionSettingsRepository, IdeationSessionRepository, NotificationRepository,
-    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
-    ORPHANED_AGENT_RUN_ON_APP_RESTART,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskOutcomeRepository,
+    TaskRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::services::TaskScheduler;
@@ -560,6 +560,11 @@ impl StartupJobRunner {
     /// agent-active tasks, allowing queued Ready tasks to start execution.
     pub fn with_task_scheduler(mut self, scheduler: Arc<dyn TaskScheduler>) -> Self {
         self.task_scheduler = Some(scheduler);
+        self
+    }
+
+    pub fn with_task_outcome_repo(mut self, repo: Arc<dyn TaskOutcomeRepository>) -> Self {
+        self.reconciler = self.reconciler.with_task_outcome_repo(repo);
         self
     }
 

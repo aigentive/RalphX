@@ -187,7 +187,8 @@ pub use ideation::{
 };
 pub use learned_skill::{
     ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
-    TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+    SkillUsageInjectionKind, TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource,
+    TaskOutcomeStatus,
 };
 pub use memory_archive::{
     ArchiveJobPayload, ArchiveJobStatus, ArchiveJobType, FullRebuildPayload, MemoryArchiveJob,
