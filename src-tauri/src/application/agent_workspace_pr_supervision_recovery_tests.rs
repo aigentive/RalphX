@@ -1929,3 +1929,88 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
     assert_eq!(updated_plan.pr_push_status, PlanPrPushStatus::Pushed);
     assert_eq!(github.state().check_pr_sync_state_calls, 1);
 }
+
+#[tokio::test]
+async fn pending_review_handoff_without_monitor_aborts_fail_closed_without_publishing() {
+    // Falsification coverage for the crash window between the PR-fix completion
+    // CAS (which persists `refreshed`/`reviewing` plus the pending
+    // `pr_autofix_workspace_review` event atomically) and the Workspace Review
+    // start that would create the review monitor. Recovery must not publish and
+    // must not invoke the review-publish resumer; it aborts the orphaned
+    // handoff to `failed`/`blocked` so a fresh repair attempt stays possible.
+    let (_temp_dir, project, mut workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-review-pending-no-monitor").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha.clone());
+    workspace.publication_push_status = Some("refreshed".to_string());
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR fix verified; Workspace Review must finish before publishing resumes.".to_string(),
+    );
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_workspace_review",
+            "pending",
+            "PR fix verified; Workspace Review handoff is pending.",
+            Some("workspace_review_pending".to_string()),
+        ))
+        .await
+        .expect("seed pending review handoff event");
+
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    let resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
+        &workspace_repo,
+    )));
+
+    let mut deps = recovery_deps(
+        Arc::clone(&workspace_repo),
+        project_repo,
+        Arc::clone(&github),
+        agent_run_repo,
+    );
+    deps.pr_fix_review_publish_resumer =
+        Some(Arc::clone(&resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>);
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("recovery should settle without error");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
+    );
+    assert_eq!(resumer.calls(), 0);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.step == "pr_autofix_workspace_review_aborted"));
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event.step.as_str(),
+            "published" | "pr_autofix_workspace_review_passed" | "pr_supervision_recovered"
+        )
+    }));
+}
