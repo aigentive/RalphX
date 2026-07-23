@@ -420,7 +420,7 @@ describe("AutomationsView", () => {
     expect(screen.queryByText("current_branch")).not.toBeInTheDocument();
     expect(screen.getAllByText("0/25").length).toBeGreaterThan(0);
     expect(screen.getByTestId("automation-row-running-runs-progress-fill")).toHaveStyle({
-      backgroundColor: "var(--accent-primary, #ff6b35)",
+      backgroundColor: "var(--accent-primary)",
       width: "4%",
     });
     expect(screen.queryByTestId("automation-row-draft-runs-progress")).not.toBeInTheDocument();
