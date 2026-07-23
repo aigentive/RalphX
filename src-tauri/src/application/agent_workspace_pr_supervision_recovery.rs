@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter};
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_and_reload_with_review_target;
+use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_with_project_repo;
 use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, PrFixReviewPublishResumeOutcome,
@@ -183,18 +183,56 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
     }
 
     if workspace.mode == AgentConversationWorkspaceMode::Edit
-        && workspace.publication_push_status.as_deref() == Some("needs_agent")
+        && matches!(
+            (
+                workspace.publication_push_status.as_deref(),
+                workspace.pr_supervision_status.as_deref(),
+            ),
+            (Some("needs_agent"), _) | (Some("refreshed"), Some("reviewing"))
+        )
     {
-        let current_review_target = resolve_review_target(&workspace, &project).await?;
-        let (recovered_workspace, _was_recovered) =
-            recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
+        let (recovered_workspace, was_recovered) =
+            recover_stale_publish_repair_for_workspace_with_project_repo(
                 Arc::clone(&deps.workspace_repo),
                 Arc::clone(&deps.agent_run_repo),
+                Arc::clone(&deps.project_repo),
                 workspace,
-                current_review_target.as_ref(),
             )
             .await?;
         workspace = recovered_workspace;
+        if was_recovered {
+            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "stale_repair_recovered",
+            ));
+        }
+    }
+
+    if workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("reviewing")
+    {
+        if deps
+            .agent_run_repo
+            .get_active_for_conversation(&conversation_id)
+            .await?
+            .is_some()
+        {
+            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "active_agent_run",
+            ));
+        }
+        if let Some(outcome) = resume_passed_pr_fix_review_handoff_if_ready(
+            &deps,
+            &conversation_id,
+            &workspace,
+            &project,
+        )
+        .await?
+        {
+            return Ok(outcome);
+        }
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "workspace_review_pending",
+        ));
     }
 
     if let Some(reason) = blocked_pr_supervision_recovery_skip_reason(&workspace) {
@@ -755,8 +793,10 @@ pub(crate) fn pr_supervision_recovery_schedule_skip_reason(
     }
     let blocked_failed = workspace.publication_push_status.as_deref() == Some("failed")
         && workspace.pr_supervision_status.as_deref() == Some("blocked");
+    let pending_review_handoff = workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("reviewing");
     let stale_candidate = workspace.publication_push_status.as_deref() == Some("needs_agent");
-    if blocked_failed || stale_candidate {
+    if blocked_failed || pending_review_handoff || stale_candidate {
         None
     } else {
         Some("workspace_push_not_recoverable")

@@ -595,6 +595,69 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(true)
     }
 
+    async fn compare_and_set_repair_state_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: &crate::domain::repositories::AgentWorkspaceRepairStateGuard,
+        transition: &crate::domain::repositories::AgentWorkspaceRepairStateTransition,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        if events
+            .iter()
+            .any(|event| event.conversation_id != *conversation_id)
+        {
+            return Err(AppError::Validation(
+                "repair transition events must belong to the guarded workspace".to_string(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+        #[cfg(test)]
+        {
+            let mut matching_error = self.matching_publication_event_error.lock().unwrap();
+            if let Some((_, _, message)) = matching_error.as_ref().filter(|(step, status, _)| {
+                events
+                    .iter()
+                    .any(|event| event.step == *step && event.status == *status)
+            }) {
+                let message = message.clone();
+                matching_error.take();
+                return Err(AppError::Infrastructure(message));
+            }
+        }
+
+        let mut workspaces = self.workspaces.write().await;
+        let mut publication_events = self.publication_events.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publication_push_status != expected.publication_push_status
+            || workspace.pr_supervision_status != expected.pr_supervision_status
+            || workspace.pr_supervision_updated_at != expected.pr_supervision_updated_at
+        {
+            return Ok(false);
+        }
+
+        workspace.publication_push_status = transition.publication_push_status.clone();
+        workspace.pr_supervision_status = transition.pr_supervision_status.clone();
+        workspace.pr_supervision_summary = transition.pr_supervision_summary.clone();
+        workspace.pr_supervision_updated_at = Some(transition.pr_supervision_updated_at);
+        if let Some(auto_merge_current) = transition.pr_auto_merge_current {
+            workspace.pr_auto_merge_current = Some(auto_merge_current);
+        }
+        if let Some(base_commit) = transition.base_commit.as_ref() {
+            workspace.base_commit = Some(base_commit.clone());
+        }
+        workspace.updated_at = transition.pr_supervision_updated_at;
+        publication_events
+            .entry(conversation_id.clone())
+            .or_default()
+            .extend(events);
+        Ok(true)
+    }
+
     async fn list_worktree_paths_by_project_id(
         &self,
         project_id: &ProjectId,
@@ -2111,8 +2174,13 @@ fn is_active_direct_pr_supervision_recovery_candidate(
         && workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number.is_some()
-        && workspace.publication_push_status.as_deref() == Some("failed")
-        && workspace.pr_supervision_status.as_deref() == Some("blocked")
+        && matches!(
+            (
+                workspace.publication_push_status.as_deref(),
+                workspace.pr_supervision_status.as_deref(),
+            ),
+            (Some("failed"), Some("blocked")) | (Some("refreshed"), Some("reviewing"))
+        )
         && workspace.auto_publish_enabled
         && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)
         && !matches!(

@@ -1320,8 +1320,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND mode = 'edit'
                        AND linked_plan_branch_id IS NULL
                        AND publication_pr_number IS NOT NULL
-                       AND publication_push_status = 'failed'
-                       AND pr_supervision_status = 'blocked'
+                       AND (
+                           (publication_push_status = 'failed' AND pr_supervision_status = 'blocked')
+                           OR (publication_push_status = 'refreshed' AND pr_supervision_status = 'reviewing')
+                       )
                        AND auto_publish_enabled = 1
                        AND (pr_autofix_enabled = 1 OR pr_auto_merge_desired = 1)
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
@@ -1525,6 +1527,112 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     ],
                 )?;
                 Ok(rows == 1)
+            })
+            .await
+    }
+
+    async fn compare_and_set_repair_state_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: &crate::domain::repositories::AgentWorkspaceRepairStateGuard,
+        transition: &crate::domain::repositories::AgentWorkspaceRepairStateTransition,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        if events
+            .iter()
+            .any(|event| event.conversation_id != *conversation_id)
+        {
+            return Err(AppError::Validation(
+                "repair transition events must belong to the guarded workspace".to_string(),
+            ));
+        }
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_push_status = expected.publication_push_status.clone();
+        let expected_supervision_status = expected.pr_supervision_status.clone();
+        let expected_supervision_updated_at = expected
+            .pr_supervision_updated_at
+            .map(|value| value.to_rfc3339());
+        let push_status = transition.publication_push_status.clone();
+        let supervision_status = transition.pr_supervision_status.clone();
+        let supervision_summary = transition.pr_supervision_summary.clone();
+        let supervision_updated_at = transition.pr_supervision_updated_at.to_rfc3339();
+        let auto_merge_current = transition.pr_auto_merge_current;
+        let base_commit = transition.base_commit.clone();
+        let events = events
+            .into_iter()
+            .map(|event| {
+                (
+                    event.id,
+                    event.conversation_id.as_str().to_string(),
+                    event.step,
+                    event.status,
+                    event.summary,
+                    event.classification,
+                    event.created_at.to_rfc3339(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.db
+            .run(move |conn| {
+                let transaction = conn.unchecked_transaction()?;
+                let rows = transaction.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_push_status = ?2,
+                         pr_supervision_status = ?3,
+                         pr_supervision_summary = ?4,
+                         pr_supervision_updated_at = ?5,
+                         pr_auto_merge_current = CASE
+                             WHEN ?6 IS NULL THEN pr_auto_merge_current ELSE ?6
+                         END,
+                         base_commit = COALESCE(?7, base_commit),
+                         updated_at = ?5
+                     WHERE conversation_id = ?1
+                       AND publication_push_status IS ?8
+                       AND pr_supervision_status IS ?9
+                       AND pr_supervision_updated_at IS ?10",
+                    rusqlite::params![
+                        conversation_id,
+                        push_status,
+                        supervision_status,
+                        supervision_summary,
+                        supervision_updated_at,
+                        auto_merge_current,
+                        base_commit,
+                        expected_push_status,
+                        expected_supervision_status,
+                        expected_supervision_updated_at,
+                    ],
+                )?;
+                if rows != 1 {
+                    return Ok(false);
+                }
+                for (
+                    id,
+                    event_conversation_id,
+                    step,
+                    status,
+                    summary,
+                    classification,
+                    created_at,
+                ) in events
+                {
+                    transaction.execute(
+                        "INSERT INTO agent_conversation_workspace_publication_events (
+                            id, conversation_id, step, status, summary, classification, created_at
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        rusqlite::params![
+                            id,
+                            event_conversation_id,
+                            step,
+                            status,
+                            summary,
+                            classification,
+                            created_at,
+                        ],
+                    )?;
+                }
+                transaction.commit()?;
+                Ok(true)
             })
             .await
     }

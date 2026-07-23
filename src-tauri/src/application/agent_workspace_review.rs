@@ -54,6 +54,7 @@ const WORKSPACE_REVIEW_GOAL_POLICY: &str =
     "Goal Wins: explicit parent workspace requests and linked/approved plan artifacts are authoritative unless the diff introduces a concrete security, data-loss, build, or correctness blocker.";
 const WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR: &str =
     "Workspace reviewer completion did not match the current Review target";
+#[cfg(test)]
 pub(crate) const WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR: &str =
     "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review.";
 const WORKSPACE_REVIEW_INTERRUPTED_ON_STARTUP_ERROR: &str =
@@ -1869,6 +1870,47 @@ fn spawn_workspace_review_waiter(
                 "Workspace Review child chat reached a terminal state"
             );
 
+            let durable_monitor = match state
+                .agent_conversation_workspace_repo
+                .get_workspace_review_monitor(&workspace.conversation_id)
+                .await
+            {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    warn!(
+                        target: WORKSPACE_REVIEW_LOG_TARGET,
+                        operation = "child_chat_verify_retry",
+                        conversation_id = %workspace.conversation_id,
+                        run_id = %run_id,
+                        error = %error,
+                        elapsed_ms = wait_started.elapsed().as_millis(),
+                        "Failed to load durable workspace Review completion; retrying"
+                    );
+                    sleep(Duration::from_millis(WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS)).await;
+                    continue;
+                }
+            };
+
+            if let Some(monitor) = durable_monitor.as_ref().filter(|monitor| {
+                workspace_review_monitor_has_typed_completion_for_target(monitor, &target, &run_id)
+            }) {
+                info!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "child_chat_typed_completion_preserved",
+                    conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
+                    run_id = %run_id,
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    run_status = %run.status,
+                    monitor_status = %monitor.status,
+                    review_outcome = %monitor.review_outcome,
+                    review_gate_status = %monitor.review_gate_status,
+                    "Preserved typed workspace Review completion after provider settlement"
+                );
+                return;
+            }
+
             if run.status != AgentRunStatus::Completed {
                 let error = run.error_message.unwrap_or_else(|| {
                     format!("Workspace reviewer ended with status {}", run.status)
@@ -1877,12 +1919,8 @@ fn spawn_workspace_review_waiter(
                 return;
             }
 
-            match state
-                .agent_conversation_workspace_repo
-                .get_workspace_review_monitor(&workspace.conversation_id)
-                .await
-            {
-                Ok(Some(monitor))
+            match durable_monitor {
+                Some(monitor)
                     if monitor.is_current_for_target(
                         target.scope,
                         target.head_sha.as_deref(),
@@ -1912,7 +1950,7 @@ fn spawn_workspace_review_waiter(
                         "Verified workspace Review after child chat completion"
                     );
                 }
-                Ok(Some(monitor))
+                Some(monitor)
                     if workspace_review_monitor_has_terminal_run_failure_for_target(
                         &monitor, &target, &run_id,
                     ) =>
@@ -1934,7 +1972,7 @@ fn spawn_workspace_review_waiter(
                         "Preserved workspace Review run_failed completion from child chat"
                     );
                 }
-                Ok(_) => {
+                _ => {
                     warn!(
                         target: WORKSPACE_REVIEW_LOG_TARGET,
                         operation = "child_chat_missing_review",
@@ -1955,21 +1993,6 @@ fn spawn_workspace_review_waiter(
                         "Workspace reviewer completed without writing a current Review".to_string(),
                     )
                     .await;
-                }
-                Err(error) => {
-                    error!(
-                        target: WORKSPACE_REVIEW_LOG_TARGET,
-                        operation = "child_chat_verify_failed",
-                        conversation_id = %workspace.conversation_id,
-                        project_id = %workspace.project_id,
-                        branch = %workspace.branch_name,
-                        run_id = %run_id,
-                        error = %error,
-                        elapsed_ms = wait_started.elapsed().as_millis(),
-                        target_scope = %target.scope,
-                        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
-                        "Failed to verify workspace Review child chat completion"
-                    );
                 }
             }
             return;
@@ -2106,7 +2129,25 @@ fn workspace_review_block_matches_active_monitor(
         }
         _ => true,
     };
-    run_matches && target_matches
+    monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing && run_matches && target_matches
+}
+
+fn workspace_review_monitor_has_typed_completion_for_target(
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+) -> bool {
+    monitor.last_run_id.as_deref() == Some(run_id)
+        && monitor.review_artifact_id.is_some()
+        && matches!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
+        )
+        && matches!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed | AgentWorkspaceReviewGateStatus::Blocking
+        )
+        && workspace_review_monitor_current_target_matches(monitor, target)
 }
 
 fn workspace_review_monitor_current_target_matches(
@@ -3992,9 +4033,7 @@ async fn ensure_workspace_review_git_is_settled(repo: &Path) -> AppResult<()> {
     let unfinished_operation = GitService::unfinished_operation_state(repo)?;
     let conflict_files = GitService::get_conflict_files(repo).await?;
     if unfinished_operation.is_unfinished() || !conflict_files.is_empty() {
-        return Err(AppError::Conflict(
-            WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR.to_string(),
-        ));
+        return Err(AppError::WorkspaceReviewUnfinishedGitOperation);
     }
     Ok(())
 }

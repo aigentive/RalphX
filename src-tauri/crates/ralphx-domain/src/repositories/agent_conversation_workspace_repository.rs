@@ -308,6 +308,16 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(false)
     }
 
+    async fn compare_and_set_repair_state_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspaceRepairStateGuard,
+        _transition: &AgentWorkspaceRepairStateTransition,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,
