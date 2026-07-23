@@ -2380,6 +2380,12 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
     assert_eq!(payload.logical_effort.as_deref(), Some("high"));
     assert_eq!(payload.approval_policy.as_deref(), Some("never"));
     assert_eq!(payload.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(payload.started_at.as_deref(), Some("2026-04-12T10:00:00Z"));
+    assert_eq!(payload.completed_at, None);
+    assert_eq!(
+        payload.timestamp_provenance.as_deref(),
+        Some("delegation_job")
+    );
     assert_eq!(payload.conversation_id, "parent-conv-1");
     assert_eq!(payload.context_type, "ideation");
     assert_eq!(payload.context_id, "parent-session-1");
@@ -2491,6 +2497,15 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
     assert_eq!(payload.cache_creation_tokens, Some(0));
     assert_eq!(payload.cache_read_tokens, Some(8_837_504));
     assert_eq!(payload.estimated_usd, Some(0.12));
+    assert_eq!(payload.started_at.as_deref(), Some("2026-04-12T10:00:00Z"));
+    assert_eq!(
+        payload.completed_at.as_deref(),
+        Some("2026-04-12T10:00:05Z")
+    );
+    assert_eq!(
+        payload.timestamp_provenance.as_deref(),
+        Some("delegated_run")
+    );
     assert_eq!(
         payload.text_output.as_deref(),
         Some("Delegated reviewer found a blocking issue")

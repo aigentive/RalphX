@@ -252,6 +252,7 @@ const COMPLETION_TOOL_NAMES: &[&str] = &[
     "mcp__ralphx__complete_review",
     "mcp__ralphx__complete_merge",
     "mcp__ralphx__complete_agent_workspace_repair",
+    "mcp__ralphx__complete_workspace_review_run",
     "mcp__ralphx__finalize_proposals",
 ];
 
@@ -270,6 +271,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -281,6 +283,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -1116,7 +1119,7 @@ impl CompletionSignalTracker {
     }
 }
 
-fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
+pub(super) fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
     let Some(result) = result else {
         return true;
     };
@@ -2370,6 +2373,10 @@ pub async fn process_stream_background<R: Runtime>(
                             cache_read_tokens: None,
                             estimated_usd: None,
                             text_output: None,
+                            started_at: None,
+                            completed_at: None,
+                            timestamp_provenance: None,
+                            seq: Some(stream_seq),
                         };
                         streaming_state_cache
                             .add_task(&conversation_id_str, cached_task)
@@ -2400,6 +2407,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2459,6 +2469,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     input_tokens: None,
                                     output_tokens: None,
                                     cache_creation_tokens: None,

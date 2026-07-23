@@ -57,6 +57,10 @@ fn cached_streaming_task_from_started_payload(
         cache_read_tokens: None,
         estimated_usd: None,
         text_output: None,
+        started_at: payload.started_at.clone(),
+        completed_at: payload.completed_at.clone(),
+        timestamp_provenance: payload.timestamp_provenance.clone(),
+        seq: Some(payload.seq),
     }
 }
 
@@ -102,6 +106,10 @@ fn cached_streaming_task_from_completed_payload(
         cache_read_tokens: payload.cache_read_tokens,
         estimated_usd: payload.estimated_usd,
         text_output: payload.text_output.clone(),
+        started_at: payload.started_at.clone(),
+        completed_at: payload.completed_at.clone(),
+        timestamp_provenance: payload.timestamp_provenance.clone(),
+        seq: Some(payload.seq),
     }
 }
 
@@ -172,6 +180,9 @@ pub fn build_delegated_task_started_payload(
             .sandbox_mode
             .clone()
             .or_else(|| sandbox_mode.map(str::to_string)),
+        started_at: Some(snapshot.started_at.clone()),
+        completed_at: snapshot.completed_at.clone(),
+        timestamp_provenance: Some("delegation_job".to_string()),
         conversation_id: parent_conversation_id.clone(),
         context_type: snapshot.parent_context_type.clone(),
         context_id: snapshot.parent_context_id.clone(),
@@ -194,6 +205,19 @@ pub fn build_delegated_task_completed_payload(
         .clone()
         .unwrap_or_else(|| format!("delegate-job:{}", snapshot.job_id));
     let latest_run_id = latest_run.map(|run| run.agent_run_id.clone());
+    let (started_at, completed_at, timestamp_provenance) = if let Some(run) = latest_run {
+        (
+            Some(run.started_at.clone()),
+            run.completed_at.clone(),
+            Some("delegated_run".to_string()),
+        )
+    } else {
+        (
+            Some(snapshot.started_at.clone()),
+            snapshot.completed_at.clone(),
+            Some("delegation_job".to_string()),
+        )
+    };
     Some(AgentTaskCompletedPayload {
         tool_use_id,
         run_id: snapshot.parent_agent_run_id.clone(),
@@ -239,6 +263,9 @@ pub fn build_delegated_task_completed_payload(
         sandbox_mode: latest_run
             .and_then(|run| run.sandbox_mode.clone())
             .or_else(|| snapshot.sandbox_mode.clone()),
+        started_at,
+        completed_at,
+        timestamp_provenance,
         input_tokens: latest_run.and_then(|run| run.input_tokens),
         output_tokens: latest_run.and_then(|run| run.output_tokens),
         cache_creation_tokens: latest_run.and_then(|run| run.cache_creation_tokens),
