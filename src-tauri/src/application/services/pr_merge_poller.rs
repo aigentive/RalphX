@@ -3705,7 +3705,7 @@ async fn route_agent_workspace_review_feedback_if_present(
         }
     };
 
-    let Some(workspace_for_options) =
+    let Some(_workspace_for_options) =
         authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
             .await?
     else {
@@ -3726,13 +3726,29 @@ async fn route_agent_workspace_review_feedback_if_present(
         "GitHub PR #{pr_number} requested changes from @{}",
         feedback.author
     );
+    let Some(workspace_for_dispatch) =
+        authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
+            .await?
+    else {
+        record_agent_workspace_pr_autofix_pre_start_failure(
+            Arc::clone(&github),
+            working_dir,
+            pr_number,
+            workspace_repo.as_ref(),
+            conversation_id,
+            health.auto_merge_request.is_some(),
+            "PR review-fixer authorization changed before dispatch.",
+        )
+        .await?;
+        return Ok(false);
+    };
     dispatch_agent_workspace_pr_autofix(
         workspace_repo,
         agent_run_repo,
         chat_service,
         working_dir,
         conversation_id,
-        &workspace_for_options,
+        &workspace_for_dispatch,
         pr_number,
         &issue.classification,
         Some(auto_merge_current),
@@ -3741,7 +3757,7 @@ async fn route_agent_workspace_review_feedback_if_present(
             publication_status: Some("changes_requested"),
             message: build_agent_workspace_pr_review_message(
                 pr_number,
-                &workspace_for_options,
+                &workspace_for_dispatch,
                 &feedback,
             ),
             audit_step: "github_review",

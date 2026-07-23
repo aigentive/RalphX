@@ -2605,6 +2605,7 @@ async fn ideation_plan_pr_autofix_disabled_during_health_inspection_skips_dispat
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
 
     let routed = super::route_ideation_plan_pr_autofix_if_needed(
         github as Arc<dyn GithubServiceTrait>,
@@ -2612,7 +2613,7 @@ async fn ideation_plan_pr_autofix_disabled_during_health_inspection_skips_dispat
         &plan_branch,
         &conversation_id,
         Arc::clone(&workspace_repo),
-        None,
+        Some(agent_run_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
