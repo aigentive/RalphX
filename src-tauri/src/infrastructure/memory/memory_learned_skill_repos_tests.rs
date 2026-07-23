@@ -1,13 +1,17 @@
 use chrono::Utc;
 use serde_json::json;
 
-use super::MemoryTaskOutcomeRepository;
-use crate::domain::entities::{ProjectId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus};
+use super::{MemoryProjectSkillRepository, MemoryTaskOutcomeRepository};
+use crate::domain::entities::{
+    ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcome,
+    TaskOutcomeId, TaskOutcomeStatus,
+};
 use crate::domain::repositories::{
-    canonical_terminal_pr_source_ref_id, TaskOutcomeRepository, UpsertTaskOutcomeInput,
-    AGENT_WORKSPACE_PR_OUTCOME_SOURCE, TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS,
-    WORKSPACE_PR_FAILED_CLASS, WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
-    WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS, WORKSPACE_PR_TERMINAL_CLASS,
+    canonical_terminal_pr_source_ref_id, ProjectSkillRepository, TaskOutcomeRepository,
+    UpsertTaskOutcomeInput, AGENT_WORKSPACE_PR_OUTCOME_SOURCE, TERMINAL_PR_SOURCE_REF_KIND,
+    WORKSPACE_PR_CLOSED_CLASS, WORKSPACE_PR_FAILED_CLASS, WORKSPACE_PR_MERGED_CLASS,
+    WORKSPACE_PR_MERGED_CLEAN_CLASS, WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS,
+    WORKSPACE_PR_TERMINAL_CLASS,
 };
 
 fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
@@ -145,4 +149,69 @@ async fn noncanonical_outcomes_remain_last_write_wins_and_missing_dedupe_is_none
         .await
         .expect("missing read")
         .is_none());
+}
+
+fn project_skill() -> ProjectSkill {
+    let now = Utc::now();
+    ProjectSkill {
+        id: ProjectSkillId::from_string("memory-skill"),
+        project_id: ProjectId::from_string("project-1".to_string()),
+        title: "Memory versioning".to_string(),
+        bucket: "execution".to_string(),
+        stage: "execution".to_string(),
+        status: ProjectSkillLifecycleStatus::Staged,
+        pinned: false,
+        archived: false,
+        scope_paths: Vec::new(),
+        compact_guidance: "Keep current and snapshots together.".to_string(),
+        body_markdown: "Version one".to_string(),
+        predicted_effect: Some("Prevents split-brain state.".to_string()),
+        provenance_json: json!({"source": "task_outcome"}),
+        companion_of_skill_id: None,
+        content_hash: "caller-controlled".to_string(),
+        evidence_hash: "caller-controlled".to_string(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::Imported,
+        pipeline_role: Some("caller-controlled".to_string()),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[tokio::test]
+async fn memory_project_skill_repository_persists_versions_only_when_explicitly_appended() {
+    let repo = MemoryProjectSkillRepository::new();
+    let created = repo.create(project_skill()).await.unwrap();
+    assert_eq!(
+        created.created_by,
+        crate::domain::entities::ProjectSkillCreatedBy::Imported
+    );
+    assert_ne!(created.content_hash, "caller-controlled");
+    assert_ne!(created.evidence_hash, "caller-controlled");
+    assert!(repo.list_versions(&created.id).await.unwrap().is_empty());
+
+    let v1 =
+        crate::domain::entities::ProjectSkillVersion::from_skill(&created, 1, created.updated_at);
+    repo.append_version(v1.clone()).await.unwrap();
+    assert!(matches!(
+        repo.append_version(v1).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    let mut revised = created.clone();
+    revised.body_markdown = "Version two".to_string();
+    let revised = repo.update_content(revised).await.unwrap().unwrap();
+    assert!(repo
+        .list_versions(&created.id)
+        .await
+        .unwrap()
+        .iter()
+        .all(|row| row.version == 1));
+    repo.append_version(crate::domain::entities::ProjectSkillVersion::from_skill(
+        &revised,
+        2,
+        revised.updated_at,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(repo.list_versions(&created.id).await.unwrap().len(), 2);
 }

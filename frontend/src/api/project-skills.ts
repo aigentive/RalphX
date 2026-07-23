@@ -6,6 +6,7 @@ const ProjectSkillStatusSchema = z.enum([
   "staged",
   "approved",
   "rejected",
+  "stale",
   "archived",
   "retired",
 ]);
@@ -35,6 +36,10 @@ const ProjectSkillResponseSchema = z.object({
   predicted_effect: z.string().nullable().optional(),
   provenance_json: z.unknown(),
   companion_of_skill_id: z.string().nullable().optional(),
+  content_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  evidence_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  created_by: z.enum(["user", "agent", "imported"]),
+  pipeline_role: z.string().trim().min(1).nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -116,6 +121,14 @@ const ProjectSkillExportResponseSchema = z.object({
 
 const ProjectSkillSettingsResponseSchema = z.object({
   project_id: z.string(),
+  enabled: z.boolean(),
+  auto_inject: z.boolean(),
+  auto_distill: z.boolean(),
+  injection_max_skills: z.number().int().positive(),
+  injection_max_chars: z.number().int().positive(),
+  injection_guidance_max_chars: z.number().int().positive(),
+  report_min_outcomes: z.number().int().positive(),
+  verification_corpus_gate: z.number().int().nonnegative(),
   export_enabled: z.boolean(),
 });
 
@@ -200,6 +213,10 @@ export interface ProjectSkill {
   sourceRoot: string | null;
   sourceSyncEnabled: boolean;
   companionOfSkillId: string | null;
+  contentHash: string;
+  evidenceHash: string;
+  createdBy: "user" | "agent" | "imported";
+  pipelineRole: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -289,8 +306,20 @@ export interface ProjectSkillExportResult {
 
 export interface ProjectSkillSettings {
   projectId: string;
+  enabled: boolean;
+  autoInject: boolean;
+  autoDistill: boolean;
+  injectionMaxSkills: number;
+  injectionMaxChars: number;
+  injectionGuidanceMaxChars: number;
+  reportMinOutcomes: number;
+  verificationCorpusGate: number;
   exportEnabled: boolean;
 }
+
+export type ProjectSkillSettingsPatch = Partial<
+  Omit<ProjectSkillSettings, "projectId">
+>;
 
 export interface ProjectSkillReportCard {
   projectSkillId: string;
@@ -442,6 +471,10 @@ function transformProjectSkill(raw: RawProjectSkill): ProjectSkill {
       booleanValue(sourceSnapshot?.source_sync_enabled) ??
       false,
     companionOfSkillId: raw.companion_of_skill_id ?? null,
+    contentHash: raw.content_hash,
+    evidenceHash: raw.evidence_hash,
+    createdBy: raw.created_by,
+    pipelineRole: raw.pipeline_role ?? null,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
   };
@@ -495,6 +528,14 @@ function transformProjectSkillSettings(
 ): ProjectSkillSettings {
   return {
     projectId: raw.project_id,
+    enabled: raw.enabled,
+    autoInject: raw.auto_inject,
+    autoDistill: raw.auto_distill,
+    injectionMaxSkills: raw.injection_max_skills,
+    injectionMaxChars: raw.injection_max_chars,
+    injectionGuidanceMaxChars: raw.injection_guidance_max_chars,
+    reportMinOutcomes: raw.report_min_outcomes,
+    verificationCorpusGate: raw.verification_corpus_gate,
     exportEnabled: raw.export_enabled,
   };
 }
@@ -839,11 +880,35 @@ export const projectSkillsApi = {
 
   async updateSettings(
     projectId: string,
-    settings: Pick<ProjectSkillSettings, "exportEnabled">,
+    settings: ProjectSkillSettingsPatch,
   ): Promise<ProjectSkillSettings> {
     const raw = await postJson<unknown>("project_skills/settings/update", {
       project_id: projectId,
-      export_enabled: settings.exportEnabled,
+      ...(settings.enabled !== undefined ? { enabled: settings.enabled } : {}),
+      ...(settings.autoInject !== undefined
+        ? { auto_inject: settings.autoInject }
+        : {}),
+      ...(settings.autoDistill !== undefined
+        ? { auto_distill: settings.autoDistill }
+        : {}),
+      ...(settings.injectionMaxSkills !== undefined
+        ? { injection_max_skills: settings.injectionMaxSkills }
+        : {}),
+      ...(settings.injectionMaxChars !== undefined
+        ? { injection_max_chars: settings.injectionMaxChars }
+        : {}),
+      ...(settings.injectionGuidanceMaxChars !== undefined
+        ? { injection_guidance_max_chars: settings.injectionGuidanceMaxChars }
+        : {}),
+      ...(settings.reportMinOutcomes !== undefined
+        ? { report_min_outcomes: settings.reportMinOutcomes }
+        : {}),
+      ...(settings.verificationCorpusGate !== undefined
+        ? { verification_corpus_gate: settings.verificationCorpusGate }
+        : {}),
+      ...(settings.exportEnabled !== undefined
+        ? { export_enabled: settings.exportEnabled }
+        : {}),
     });
     return transformProjectSkillSettings(
       ProjectSkillSettingsResponseSchema.parse(raw),

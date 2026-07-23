@@ -10,8 +10,9 @@ use super::{
 };
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
-    ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
-    TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+    ProjectSkill, ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus,
+    ProjectSkillVersion, SkillUsageEvent, SkillUsageEventId, TaskOutcome, TaskOutcomeId,
+    TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
@@ -80,6 +81,10 @@ fn project_skill(
         predicted_effect: Some(format!("{title} reduces repeated work.")),
         provenance_json: json!({ "source": "sqlite-test" }),
         companion_of_skill_id: None,
+        content_hash: String::new(),
+        evidence_hash: String::new(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
+        pipeline_role: None,
         created_at: now,
         updated_at: now,
     }
@@ -175,6 +180,10 @@ async fn project_skill_lifecycle_and_usage_round_trip() {
         predicted_effect: Some("Prevents adapter-only learned skill injection.".to_string()),
         provenance_json: json!({ "source": "test" }),
         companion_of_skill_id: None,
+        content_hash: String::new(),
+        evidence_hash: String::new(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
+        pipeline_role: None,
         created_at: now,
         updated_at: now,
     };
@@ -383,6 +392,112 @@ async fn project_skill_update_content_preserves_provenance_and_scope_filters() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn project_skill_versions_are_appended_explicitly_and_content_updates_refresh_hashes() {
+    let repo = SqliteProjectSkillRepository::from_shared(shared_test_connection());
+    let mut skill = project_skill(
+        "Versioned Skill",
+        "review",
+        "review",
+        ProjectSkillLifecycleStatus::Staged,
+        vec!["src-tauri/".to_string()],
+    );
+    skill.provenance_json = json!({
+        "source": "task_outcome",
+        "additional": {"pipeline_role": "reviewer"}
+    });
+    skill.created_by = ProjectSkillCreatedBy::Agent;
+
+    let created = repo.create(skill).await.unwrap();
+    assert_eq!(created.created_by, ProjectSkillCreatedBy::Agent);
+    assert_eq!(created.pipeline_role.as_deref(), Some("reviewer"));
+    assert_eq!(created.content_hash.len(), 64);
+    assert_eq!(created.evidence_hash.len(), 64);
+    assert!(repo.list_versions(&created.id).await.unwrap().is_empty());
+    let v1 = ProjectSkillVersion::from_skill(&created, 1, created.updated_at);
+    repo.append_version(v1).await.unwrap();
+
+    let no_op = repo.update_content(created.clone()).await.unwrap().unwrap();
+    assert_eq!(no_op.updated_at, created.updated_at);
+    assert_eq!(no_op.content_hash, created.content_hash);
+    assert_eq!(no_op.evidence_hash, created.evidence_hash);
+    assert_eq!(repo.list_versions(&created.id).await.unwrap().len(), 1);
+
+    let mut revision = created.clone();
+    revision.body_markdown = "Revised body".to_string();
+    revision.provenance_json["revision"] = json!(2);
+    let revised = repo.update_content(revision).await.unwrap().unwrap();
+    assert_ne!(revised.content_hash, created.content_hash);
+    assert_ne!(revised.evidence_hash, created.evidence_hash);
+    repo.append_version(ProjectSkillVersion::from_skill(
+        &revised,
+        2,
+        revised.updated_at,
+    ))
+    .await
+    .unwrap();
+    let versions = repo.list_versions(&created.id).await.unwrap();
+    assert_eq!(
+        versions.iter().map(|row| row.version).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(versions[1].body_markdown, revised.body_markdown);
+    assert_eq!(versions[1].provenance_json, revised.provenance_json);
+
+    assert_eq!(repo.list_versions(&revised.id).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn project_skill_versions_cascade_and_malformed_rows_fail_closed() {
+    let conn = shared_test_connection();
+    let repo = SqliteProjectSkillRepository::from_shared(Arc::clone(&conn));
+    let created = repo
+        .create(project_skill(
+            "Cascade Skill",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Approved,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    repo.append_version(ProjectSkillVersion::from_skill(
+        &created,
+        1,
+        created.updated_at,
+    ))
+    .await
+    .unwrap();
+
+    conn.lock()
+        .await
+        .execute(
+            "UPDATE project_skill_versions SET content_hash = 'invalid'
+             WHERE project_skill_id = ?1 AND version = 1",
+            [created.id.as_str()],
+        )
+        .unwrap();
+    assert!(repo.list_versions(&created.id).await.is_err());
+
+    conn.lock()
+        .await
+        .execute(
+            "UPDATE project_skills SET evidence_hash = 'invalid' WHERE id = ?1",
+            [created.id.as_str()],
+        )
+        .unwrap();
+    assert!(repo.get_by_id(&created.id).await.is_err());
+
+    conn.lock()
+        .await
+        .execute(
+            "DELETE FROM project_skills WHERE id = ?1",
+            [created.id.as_str()],
+        )
+        .unwrap();
+    assert!(repo.list_versions(&created.id).await.unwrap().is_empty());
 }
 
 #[tokio::test]

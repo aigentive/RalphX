@@ -59,6 +59,10 @@ function stagedSkill(overrides: Partial<ProjectSkill> = {}): ProjectSkill {
     sourceRoot: null,
     sourceSyncEnabled: false,
     companionOfSkillId: null,
+    contentHash: "content-hash",
+    evidenceHash: "evidence-hash",
+    createdBy: "agent",
+    pipelineRole: "reviewer",
     createdAt: "2026-06-14T10:00:00Z",
     updatedAt: "2026-06-14T10:00:00Z",
     ...overrides,
@@ -119,10 +123,26 @@ describe("ProjectSkillsCuratorPanel", () => {
     );
     mockedProjectSkillsApi.getSettings.mockResolvedValue({
       projectId: "project-1",
+      enabled: true,
+      autoInject: false,
+      autoDistill: false,
+      injectionMaxSkills: 4,
+      injectionMaxChars: 6_000,
+      injectionGuidanceMaxChars: 400,
+      reportMinOutcomes: 5,
+      verificationCorpusGate: 0,
       exportEnabled: false,
     });
     mockedProjectSkillsApi.updateSettings.mockResolvedValue({
       projectId: "project-1",
+      enabled: true,
+      autoInject: false,
+      autoDistill: false,
+      injectionMaxSkills: 4,
+      injectionMaxChars: 6_000,
+      injectionGuidanceMaxChars: 400,
+      reportMinOutcomes: 5,
+      verificationCorpusGate: 0,
       exportEnabled: true,
     });
     mockedProjectSkillsApi.previewExport.mockResolvedValue({
@@ -669,6 +689,14 @@ describe("ProjectSkillsCuratorPanel", () => {
     });
     mockedProjectSkillsApi.getSettings.mockResolvedValue({
       projectId: "project-1",
+      enabled: true,
+      autoInject: false,
+      autoDistill: false,
+      injectionMaxSkills: 4,
+      injectionMaxChars: 6_000,
+      injectionGuidanceMaxChars: 400,
+      reportMinOutcomes: 5,
+      verificationCorpusGate: 0,
       exportEnabled: true,
     });
     await waitFor(() => {

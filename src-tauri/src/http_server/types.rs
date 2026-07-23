@@ -1586,6 +1586,10 @@ pub struct ProjectSkillResponse {
     pub predicted_effect: Option<String>,
     pub provenance_json: Value,
     pub companion_of_skill_id: Option<String>,
+    pub content_hash: String,
+    pub evidence_hash: String,
+    pub created_by: String,
+    pub pipeline_role: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1609,6 +1613,10 @@ impl From<ProjectSkill> for ProjectSkillResponse {
             companion_of_skill_id: skill
                 .companion_of_skill_id
                 .map(|id| id.as_str().to_string()),
+            content_hash: skill.content_hash,
+            evidence_hash: skill.evidence_hash,
+            created_by: skill.created_by.to_string(),
+            pipeline_role: skill.pipeline_role,
             created_at: skill.created_at.to_rfc3339(),
             updated_at: skill.updated_at.to_rfc3339(),
         }
@@ -1939,12 +1947,28 @@ pub struct GetProjectSkillSettingsRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateProjectSkillSettingsRequest {
     pub project_id: String,
-    pub export_enabled: bool,
+    pub enabled: Option<bool>,
+    pub auto_inject: Option<bool>,
+    pub auto_distill: Option<bool>,
+    pub injection_max_skills: Option<i64>,
+    pub injection_max_chars: Option<i64>,
+    pub injection_guidance_max_chars: Option<i64>,
+    pub report_min_outcomes: Option<i64>,
+    pub verification_corpus_gate: Option<i64>,
+    pub export_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectSkillSettingsResponse {
     pub project_id: String,
+    pub enabled: bool,
+    pub auto_inject: bool,
+    pub auto_distill: bool,
+    pub injection_max_skills: i64,
+    pub injection_max_chars: i64,
+    pub injection_guidance_max_chars: i64,
+    pub report_min_outcomes: i64,
+    pub verification_corpus_gate: i64,
     pub export_enabled: bool,
 }
 
