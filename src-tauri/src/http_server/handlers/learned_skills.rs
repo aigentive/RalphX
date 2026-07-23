@@ -423,6 +423,7 @@ pub async fn update_project_skill(
     let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
     let updated = service
         .update_skill_content(UpdateProjectSkillContentInput {
+            project_id: existing.project_id,
             project_skill_id: skill_id,
             title: req.title,
             bucket: req.bucket,
@@ -702,15 +703,6 @@ pub async fn stage_project_skill_from_pull_request(
                 ),
             })?;
 
-    if let Some(existing) =
-        existing_project_skill_for_pull_request(&state, &project_id, pull_request.number).await?
-    {
-        return Ok(Json(StageProjectSkillFromPullRequestResponse {
-            skill: Some(ProjectSkillResponse::from(existing)),
-            skipped_existing: true,
-        }));
-    }
-
     // Enrich from `gh pr view` (files, commits, reviews, labels, body) so the
     // candidate encodes real triggers + scope; fall back to summary-only
     // templating if detail is unavailable (graceful degradation).
@@ -756,8 +748,8 @@ pub async fn stage_project_skill_from_pull_request(
     };
 
     let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
-    let staged = service
-        .stage_skill(skill)
+    let resolution = service
+        .stage_skill_resolved(skill)
         .await
         .map_err(|error| match error {
             AppError::Validation(message) => HttpError {
@@ -774,8 +766,9 @@ pub async fn stage_project_skill_from_pull_request(
         })?;
 
     Ok(Json(StageProjectSkillFromPullRequestResponse {
-        skill: Some(ProjectSkillResponse::from(staged)),
-        skipped_existing: false,
+        skill: Some(ProjectSkillResponse::from(resolution.skill)),
+        skipped_existing: resolution.outcome
+            == crate::domain::repositories::ProjectSkillResolutionOutcome::Duplicate,
     }))
 }
 
@@ -961,49 +954,6 @@ async fn project_working_dir(
             status: StatusCode::BAD_REQUEST,
             message: Some(error.to_string()),
         })
-}
-
-async fn existing_project_skill_for_pull_request(
-    state: &HttpServerState,
-    project_id: &ProjectId,
-    number: i64,
-) -> Result<Option<ProjectSkill>, HttpError> {
-    let source_ref_id = number.to_string();
-    let skills = state
-        .app_state
-        .project_skill_repo
-        .list_by_project(
-            project_id,
-            ProjectSkillListOptions {
-                include_archived: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|error| {
-            error!("failed to list project skills for PR dedupe: {}", error);
-            HttpError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: Some("failed to list project skills".to_string()),
-            }
-        })?;
-    Ok(skills.into_iter().find(|skill| {
-        let provenance = &skill.provenance_json;
-        provenance
-            .get("pull_request_number")
-            .and_then(serde_json::Value::as_i64)
-            == Some(number)
-            || (provenance.get("source").and_then(serde_json::Value::as_str)
-                == Some(GITHUB_PR_DISTILL_SOURCE)
-                && provenance
-                    .get("source_ref_kind")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("pull_request")
-                && provenance
-                    .get("source_ref_id")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(source_ref_id.as_str()))
-    }))
 }
 
 async fn read_recent_github_pull_requests(
@@ -1974,69 +1924,23 @@ pub(super) async fn sync_source_tracked_project_skills(
     project_id: &ProjectId,
     candidates: &[ProjectSkillImportCandidate],
 ) -> AppResult<usize> {
-    let existing_skills = state
-        .app_state
-        .project_skill_repo
-        .list_by_project(
-            project_id,
-            ProjectSkillListOptions {
-                include_archived: true,
-                ..Default::default()
-            },
-        )
-        .await?;
     let service = ProjectSkillService::new(Arc::clone(&state.app_state.project_skill_repo));
     let mut synced_count = 0;
     for candidate in candidates {
-        let Some(external_id) = candidate.external_id.as_deref() else {
-            continue;
-        };
-        let Some(existing) = existing_skills
-            .iter()
-            .find(|skill| project_skill_external_id(skill).as_deref() == Some(external_id))
+        let Some(result) = service
+            .sync_source_candidate(project_id.clone(), candidate.clone())
+            .await?
         else {
             continue;
         };
-        if !project_skill_source_sync_enabled(existing) {
-            continue;
-        }
-        if existing.archived
-            || matches!(
-                existing.status,
-                ProjectSkillLifecycleStatus::Archived | ProjectSkillLifecycleStatus::Retired
-            )
-        {
-            continue;
-        }
-        if service
-            .update_skill_content(UpdateProjectSkillContentInput {
-                project_skill_id: existing.id.clone(),
-                title: candidate.title.clone(),
-                bucket: candidate.bucket.clone(),
-                stage: candidate.stage.clone(),
-                scope_paths: candidate.scope_paths.clone(),
-                compact_guidance: candidate.compact_guidance.clone(),
-                body_markdown: candidate.body_markdown.clone(),
-                predicted_effect: candidate.predicted_effect.clone(),
-                source_sync_enabled: Some(true),
-            })
-            .await?
-            .is_some()
-        {
+        if result.outcome != crate::domain::repositories::ProjectSkillResolutionOutcome::Duplicate {
             synced_count += 1;
         }
     }
     Ok(synced_count)
 }
 
-fn project_skill_external_id(skill: &ProjectSkill) -> Option<String> {
-    skill
-        .provenance_json
-        .get("external_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-}
-
+#[cfg(test)]
 pub(super) fn project_skill_source_sync_enabled(skill: &ProjectSkill) -> bool {
     skill
         .provenance_json

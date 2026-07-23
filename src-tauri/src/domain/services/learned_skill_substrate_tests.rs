@@ -190,6 +190,7 @@ async fn project_skill_service_rejects_unknown_category_on_update() {
 
     let error = service
         .update_skill_content(UpdateProjectSkillContentInput {
+            project_id: skill.project_id.clone(),
             project_skill_id: skill.id,
             title: "Updated skill".to_string(),
             bucket: "execution".to_string(),

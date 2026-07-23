@@ -11,11 +11,17 @@ use crate::domain::entities::{
     TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
-    MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillRepository,
-    SkillUsageEventRepository, SkillUsageListOptions, TaskOutcomeListOptions,
-    TaskOutcomeRepository, UpsertTaskOutcomeInput,
+    MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillMatchedMutation,
+    ProjectSkillRepository, ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
+    ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
+    ProjectSkillResolutionOutcome, ProjectSkillResolutionResult, SkillUsageEventRepository,
+    SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
 use crate::domain::services::learned_skill_adapters::LearnedSkillConstraintCitation;
+use crate::domain::services::project_skill_resolution::{
+    import_title_resolution_identity, project_skill_resolution_identities,
+    ProjectSkillResolutionService,
+};
 use crate::error::{AppError, AppResult};
 
 const PROJECT_SKILL_BUCKET_VALUES: &[&str] =
@@ -98,6 +104,7 @@ pub struct StageProjectSkillFromOutcomeInput {
 }
 
 pub struct UpdateProjectSkillContentInput {
+    pub project_id: ProjectId,
     pub project_skill_id: ProjectSkillId,
     pub title: String,
     pub bucket: String,
@@ -135,6 +142,13 @@ impl ProjectSkillService {
     }
 
     pub async fn stage_skill(&self, skill: ProjectSkill) -> AppResult<ProjectSkill> {
+        Ok(self.stage_skill_resolved(skill).await?.skill)
+    }
+
+    pub async fn stage_skill_resolved(
+        &self,
+        mut skill: ProjectSkill,
+    ) -> AppResult<ProjectSkillResolutionResult> {
         validate_project_skill(&skill)?;
         if skill
             .predicted_effect
@@ -147,22 +161,49 @@ impl ProjectSkillService {
                 "staged project skills require predicted_effect".to_string(),
             ));
         }
-        self.repo.create(skill).await
+        crate::domain::entities::refresh_project_skill_metadata(&mut skill);
+        let mut identities = project_skill_resolution_identities(&skill);
+        if skill.provenance_json.get("source").and_then(Value::as_str)
+            == Some("project_skill_import")
+        {
+            identities.push(import_title_resolution_identity(
+                &skill.title,
+                &skill.bucket,
+                &skill.stage,
+            ));
+        }
+        ProjectSkillResolutionService::new(Arc::clone(&self.repo))
+            .resolve(ProjectSkillResolutionCommand {
+                candidate: skill,
+                intent: ProjectSkillResolutionIntent::Upsert {
+                    identities,
+                    matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
+                },
+                evidence_markdown: None,
+            })
+            .await
     }
 
     pub async fn stage_skill_from_outcome(
         &self,
         input: StageProjectSkillFromOutcomeInput,
     ) -> AppResult<ProjectSkill> {
-        self.stage_skill_from_outcome_with_companion(input, None)
-            .await
+        Ok(self
+            .stage_skill_from_outcome_resolved(
+                input,
+                ProjectSkillMatchedMutation::PatchExisting,
+                None,
+            )
+            .await?
+            .skill)
     }
 
-    async fn stage_skill_from_outcome_with_companion(
+    async fn stage_skill_from_outcome_resolved(
         &self,
         input: StageProjectSkillFromOutcomeInput,
-        companion_of_skill_id: Option<ProjectSkillId>,
-    ) -> AppResult<ProjectSkill> {
+        matched_mutation: ProjectSkillMatchedMutation,
+        evidence_markdown: Option<String>,
+    ) -> AppResult<ProjectSkillResolutionResult> {
         if input.outcome.status != TaskOutcomeStatus::Eligible {
             return Err(AppError::Validation(
                 "project skill distillation requires an eligible task outcome".to_string(),
@@ -170,6 +211,15 @@ impl ProjectSkillService {
         }
         validate_non_empty("predicted_effect", &input.predicted_effect)?;
 
+        let identity = verification_gap_fingerprint_from_outcome(&input.outcome)
+            .map(|fingerprint| ProjectSkillResolutionIdentity {
+                kind: ProjectSkillResolutionIdentityKind::VerificationGap,
+                value: fingerprint.to_string(),
+            })
+            .unwrap_or_else(|| ProjectSkillResolutionIdentity {
+                kind: ProjectSkillResolutionIdentityKind::Outcome,
+                value: input.outcome.id.as_str().to_string(),
+            });
         let now = Utc::now();
         let skill = ProjectSkill {
             id: ProjectSkillId::new(),
@@ -196,7 +246,7 @@ impl ProjectSkillService {
                 "review_id": input.outcome.review_id,
                 "additional": input.additional_provenance,
             }),
-            companion_of_skill_id,
+            companion_of_skill_id: None,
             content_hash: String::new(),
             evidence_hash: String::new(),
             created_by: crate::domain::entities::ProjectSkillCreatedBy::Agent,
@@ -205,7 +255,17 @@ impl ProjectSkillService {
             updated_at: now,
         };
 
-        self.stage_skill(skill).await
+        validate_project_skill(&skill)?;
+        ProjectSkillResolutionService::new(Arc::clone(&self.repo))
+            .resolve(ProjectSkillResolutionCommand {
+                candidate: skill,
+                intent: ProjectSkillResolutionIntent::Upsert {
+                    identities: vec![identity],
+                    matched_mutation,
+                },
+                evidence_markdown,
+            })
+            .await
     }
 
     pub async fn get_skill(&self, id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
@@ -231,30 +291,79 @@ impl ProjectSkillService {
         validate_non_empty("project skill body_markdown", &input.body_markdown)?;
         validate_non_empty("predicted_effect", &input.predicted_effect)?;
 
-        let Some(mut skill) = self.repo.get_by_id(&input.project_skill_id).await? else {
+        let now = Utc::now();
+        let mut provenance_json = serde_json::json!({});
+        if let Some(source_sync_enabled) = input.source_sync_enabled {
+            set_project_skill_source_sync_enabled(&mut provenance_json, source_sync_enabled);
+        }
+        let candidate = ProjectSkill {
+            id: ProjectSkillId::new(),
+            project_id: input.project_id,
+            title: input.title,
+            bucket: input.bucket,
+            stage: input.stage,
+            status: ProjectSkillLifecycleStatus::Staged,
+            pinned: false,
+            archived: false,
+            scope_paths: input.scope_paths,
+            compact_guidance: input.compact_guidance,
+            body_markdown: input.body_markdown,
+            predicted_effect: Some(input.predicted_effect),
+            provenance_json,
+            companion_of_skill_id: None,
+            content_hash: String::new(),
+            evidence_hash: String::new(),
+            created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
+            pipeline_role: None,
+            created_at: now,
+            updated_at: now,
+        };
+        match ProjectSkillResolutionService::new(Arc::clone(&self.repo))
+            .resolve(ProjectSkillResolutionCommand {
+                candidate,
+                intent: ProjectSkillResolutionIntent::ExplicitPatch {
+                    target_id: input.project_skill_id,
+                },
+                evidence_markdown: None,
+            })
+            .await
+        {
+            Ok(result) => Ok(Some(result.skill)),
+            Err(AppError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn sync_source_candidate(
+        &self,
+        project_id: ProjectId,
+        candidate: ProjectSkillImportCandidate,
+    ) -> AppResult<Option<ProjectSkillResolutionResult>> {
+        let Some(external_id) = candidate
+            .external_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
             return Ok(None);
         };
-        if skill.archived
-            || matches!(
-                skill.status,
-                ProjectSkillLifecycleStatus::Archived | ProjectSkillLifecycleStatus::Retired
-            )
+        let identity = ProjectSkillResolutionIdentity {
+            kind: ProjectSkillResolutionIdentityKind::SourcePath,
+            value: external_id.to_string(),
+        };
+        let skill = project_skill_from_import_candidate(project_id, candidate);
+        match ProjectSkillResolutionService::new(Arc::clone(&self.repo))
+            .resolve(ProjectSkillResolutionCommand {
+                candidate: skill,
+                intent: ProjectSkillResolutionIntent::SourceSync { identity },
+                evidence_markdown: None,
+            })
+            .await
         {
-            return Err(AppError::Validation(
-                "archived or retired project skills cannot be edited".to_string(),
-            ));
+            Ok(result) => Ok(Some(result)),
+            Err(AppError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
         }
-        skill.title = input.title;
-        skill.bucket = input.bucket;
-        skill.stage = input.stage;
-        skill.scope_paths = input.scope_paths;
-        skill.compact_guidance = input.compact_guidance;
-        skill.body_markdown = input.body_markdown;
-        skill.predicted_effect = Some(input.predicted_effect);
-        if let Some(source_sync_enabled) = input.source_sync_enabled {
-            set_project_skill_source_sync_enabled(&mut skill.provenance_json, source_sync_enabled);
-        }
-        self.repo.update_content(skill).await
     }
 
     pub async fn prompt_selected_citations(
@@ -355,27 +464,6 @@ impl ProjectSkillDistillerService {
                 },
             )
             .await?;
-        let existing_skills = self
-            .skill_service
-            .list_project_skills(
-                &input.project_id,
-                ProjectSkillListOptions {
-                    include_archived: true,
-                    ..Default::default()
-                },
-            )
-            .await?;
-        let existing_outcome_ids = existing_skills
-            .iter()
-            .filter_map(|skill| {
-                skill
-                    .provenance_json
-                    .get("outcome_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .collect::<BTreeSet<_>>();
-
         let mut staged_skills = Vec::new();
         let mut skipped_existing = 0;
         let mut updated_existing = 0;
@@ -383,10 +471,6 @@ impl ProjectSkillDistillerService {
         for outcome in outcomes {
             if staged_skills.len() >= limit {
                 break;
-            }
-            if existing_outcome_ids.contains(outcome.id.as_str()) {
-                skipped_existing += 1;
-                continue;
             }
             match self
                 .distill_eligible_outcome_with_origin(&outcome, input.origin)
@@ -439,131 +523,36 @@ impl ProjectSkillDistillerService {
         if outcome.status != TaskOutcomeStatus::Eligible {
             return Ok(OutcomeDistillationAction::Skipped);
         }
-        let existing_skills = self
+        let candidate = build_distilled_skill_candidate(outcome, origin);
+        let is_verification_recurrence =
+            verification_gap_fingerprint_from_outcome(outcome).is_some();
+        let evidence_markdown = is_verification_recurrence.then(|| {
+            let mut appendix = String::new();
+            append_verification_gap_evidence(&mut appendix, outcome);
+            appendix.trim().to_string()
+        });
+        let result = self
             .skill_service
-            .list_project_skills(
-                &outcome.project_id,
-                ProjectSkillListOptions {
-                    include_archived: true,
-                    ..Default::default()
+            .stage_skill_from_outcome_resolved(
+                candidate,
+                if is_verification_recurrence {
+                    ProjectSkillMatchedMutation::AppendEvidence
+                } else {
+                    ProjectSkillMatchedMutation::PatchExisting
                 },
+                evidence_markdown,
             )
             .await?;
-        let already_staged = existing_skills.iter().any(|skill| {
-            skill
-                .provenance_json
-                .get("outcome_id")
-                .and_then(Value::as_str)
-                == Some(outcome.id.as_str())
-        });
-        if already_staged {
-            return Ok(OutcomeDistillationAction::Skipped);
-        }
-
-        if let Some(fingerprint) = verification_gap_fingerprint_from_outcome(outcome) {
-            if let Some(action) = self
-                .update_or_stage_matching_verification_gap_skill(
-                    outcome,
-                    origin,
-                    &existing_skills,
-                    fingerprint,
-                )
-                .await?
-            {
-                return Ok(action);
+        Ok(match result.outcome {
+            ProjectSkillResolutionOutcome::Duplicate => OutcomeDistillationAction::Skipped,
+            ProjectSkillResolutionOutcome::CreateNew => {
+                OutcomeDistillationAction::Staged(result.skill)
             }
-        }
-
-        let candidate = build_distilled_skill_candidate(outcome, origin);
-        let staged = self
-            .skill_service
-            .stage_skill_from_outcome(candidate)
-            .await
-            .map(OutcomeDistillationAction::Staged)?;
-        Ok(staged)
-    }
-
-    async fn update_or_stage_matching_verification_gap_skill(
-        &self,
-        outcome: &TaskOutcome,
-        origin: ProjectSkillDistillationOrigin,
-        existing_skills: &[ProjectSkill],
-        fingerprint: &str,
-    ) -> AppResult<Option<OutcomeDistillationAction>> {
-        let matching_skills = existing_skills
-            .iter()
-            .filter(|skill| project_skill_verification_fingerprint(skill) == Some(fingerprint))
-            .filter(|skill| {
-                !skill.archived
-                    && !matches!(
-                        skill.status,
-                        ProjectSkillLifecycleStatus::Archived
-                            | ProjectSkillLifecycleStatus::Retired
-                            | ProjectSkillLifecycleStatus::Rejected
-                    )
-            })
-            .collect::<Vec<_>>();
-
-        if let Some(staged) = matching_skills
-            .iter()
-            .find(|skill| skill.status == ProjectSkillLifecycleStatus::Staged)
-        {
-            if staged
-                .provenance_json
-                .get("outcome_id")
-                .and_then(Value::as_str)
-                == Some(outcome.id.as_str())
-                || staged
-                    .body_markdown
-                    .contains(outcome.source_ref_id.as_str())
-            {
-                return Ok(Some(OutcomeDistillationAction::Skipped));
+            ProjectSkillResolutionOutcome::PatchExisting
+            | ProjectSkillResolutionOutcome::AppendEvidence => {
+                OutcomeDistillationAction::Updated(result.skill)
             }
-            let mut updated_body = staged.body_markdown.clone();
-            append_verification_gap_evidence(&mut updated_body, outcome);
-            let updated = self
-                .skill_service
-                .update_skill_content(UpdateProjectSkillContentInput {
-                    project_skill_id: staged.id.clone(),
-                    title: staged.title.clone(),
-                    bucket: staged.bucket.clone(),
-                    stage: staged.stage.clone(),
-                    scope_paths: staged.scope_paths.clone(),
-                    compact_guidance: staged.compact_guidance.clone(),
-                    body_markdown: updated_body,
-                    predicted_effect: staged.predicted_effect.clone().unwrap_or_else(|| {
-                        "Reduces repeated verification gaps after review approval.".to_string()
-                    }),
-                    source_sync_enabled: None,
-                })
-                .await?
-                .ok_or_else(|| {
-                    AppError::NotFound(format!("project skill {} not found", staged.id.as_str()))
-                })?;
-            return Ok(Some(OutcomeDistillationAction::Updated(updated)));
-        }
-
-        if let Some(approved) = matching_skills
-            .iter()
-            .find(|skill| skill.status == ProjectSkillLifecycleStatus::Approved)
-        {
-            let has_pending_companion = existing_skills.iter().any(|skill| {
-                skill.status == ProjectSkillLifecycleStatus::Staged
-                    && skill.companion_of_skill_id.as_ref() == Some(&approved.id)
-                    && project_skill_verification_fingerprint(skill) == Some(fingerprint)
-            });
-            if has_pending_companion {
-                return Ok(Some(OutcomeDistillationAction::Skipped));
-            }
-            let candidate = build_distilled_skill_candidate(outcome, origin);
-            let staged = self
-                .skill_service
-                .stage_skill_from_outcome_with_companion(candidate, Some(approved.id.clone()))
-                .await?;
-            return Ok(Some(OutcomeDistillationAction::Staged(staged)));
-        }
-
-        Ok(None)
+        })
     }
 }
 
@@ -934,34 +923,7 @@ impl ProjectSkillImportPreviewService {
             if !eligible_indexes.contains(&index) {
                 continue;
             }
-            let now = Utc::now();
-            let skill = ProjectSkill {
-                id: ProjectSkillId::new(),
-                project_id: input.project_id.clone(),
-                title: candidate.title,
-                bucket: candidate.bucket,
-                stage: candidate.stage,
-                status: ProjectSkillLifecycleStatus::Staged,
-                pinned: false,
-                archived: false,
-                scope_paths: candidate.scope_paths,
-                compact_guidance: candidate.compact_guidance,
-                body_markdown: candidate.body_markdown,
-                predicted_effect: Some(candidate.predicted_effect),
-                provenance_json: serde_json::json!({
-                    "source": "project_skill_import",
-                    "external_id": candidate.external_id,
-                    "import_provenance": candidate.provenance_json,
-                    "source_snapshot": candidate.source_snapshot_json,
-                }),
-                companion_of_skill_id: None,
-                content_hash: String::new(),
-                evidence_hash: String::new(),
-                created_by: crate::domain::entities::ProjectSkillCreatedBy::Imported,
-                pipeline_role: None,
-                created_at: now,
-                updated_at: now,
-            };
+            let skill = project_skill_from_import_candidate(input.project_id.clone(), candidate);
             imported_skills.push(skill_service.stage_skill(skill).await?);
         }
 
@@ -969,6 +931,40 @@ impl ProjectSkillImportPreviewService {
             preview,
             imported_skills,
         })
+    }
+}
+
+fn project_skill_from_import_candidate(
+    project_id: ProjectId,
+    candidate: ProjectSkillImportCandidate,
+) -> ProjectSkill {
+    let now = Utc::now();
+    ProjectSkill {
+        id: ProjectSkillId::new(),
+        project_id,
+        title: candidate.title,
+        bucket: candidate.bucket,
+        stage: candidate.stage,
+        status: ProjectSkillLifecycleStatus::Staged,
+        pinned: false,
+        archived: false,
+        scope_paths: candidate.scope_paths,
+        compact_guidance: candidate.compact_guidance,
+        body_markdown: candidate.body_markdown,
+        predicted_effect: Some(candidate.predicted_effect),
+        provenance_json: serde_json::json!({
+            "source": "project_skill_import",
+            "external_id": candidate.external_id,
+            "import_provenance": candidate.provenance_json,
+            "source_snapshot": candidate.source_snapshot_json,
+        }),
+        companion_of_skill_id: None,
+        content_hash: String::new(),
+        evidence_hash: String::new(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::Imported,
+        pipeline_role: None,
+        created_at: now,
+        updated_at: now,
     }
 }
 
@@ -1385,16 +1381,6 @@ fn verification_gap_fingerprint_from_outcome(outcome: &TaskOutcome) -> Option<&s
     outcome
         .evidence_json
         .get("fingerprint")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn project_skill_verification_fingerprint(skill: &ProjectSkill) -> Option<&str> {
-    skill
-        .provenance_json
-        .get("additional")
-        .and_then(|additional| additional.get("verification_gap_fingerprint"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

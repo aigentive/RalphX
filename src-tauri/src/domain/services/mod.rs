@@ -25,6 +25,9 @@ pub mod methodology_service;
 pub mod payload_enrichment;
 pub mod pr_publish_service;
 pub mod project_validation;
+pub mod project_skill_resolution;
+#[cfg(test)]
+mod project_skill_resolution_tests;
 pub mod research_service;
 pub mod rule_ingestion_service;
 pub mod rule_parser;
@@ -63,6 +66,10 @@ pub use learned_skill_substrate::{
     ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
     PromoteMemoryToProjectSkillInput, PromoteMemoryToProjectSkillResult, SkillUsageService,
     StageProjectSkillFromOutcomeInput, UpdateProjectSkillContentInput,
+};
+pub use project_skill_resolution::{
+    import_title_resolution_identity, project_skill_resolution_identities,
+    ProjectSkillResolutionService,
 };
 pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,
