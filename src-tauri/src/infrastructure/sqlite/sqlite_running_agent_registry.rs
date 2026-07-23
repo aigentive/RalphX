@@ -7,24 +7,31 @@
 // to prevent blocking the tokio async runtime / timer driver.
 
 use async_trait::async_trait;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::DbConnection;
-use crate::AppError;
 use crate::domain::services::{
-    is_process_alive, kill_process, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    is_process_alive, kill_process, AttachProcessResult, RunningAgentInfo, RunningAgentKey,
+    RunningAgentRegistry, TryRegisterError,
 };
+use crate::AppError;
+
+#[derive(Clone)]
+struct OwnedCancellationToken {
+    agent_run_id: String,
+    token: CancellationToken,
+}
 
 /// SQLite-backed implementation of RunningAgentRegistry.
 /// Persists agent PIDs across app restarts for orphan cleanup.
 pub struct SqliteRunningAgentRegistry {
     db: DbConnection,
     /// In-memory map for cancellation tokens (not persisted to SQLite)
-    tokens: Arc<Mutex<HashMap<RunningAgentKey, CancellationToken>>>,
+    tokens: Arc<Mutex<HashMap<RunningAgentKey, OwnedCancellationToken>>>,
 }
 
 impl SqliteRunningAgentRegistry {
@@ -115,7 +122,7 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
                     {
                         let mut tokens = self.tokens.lock().await;
                         if let Some(old_token) = tokens.remove(&key) {
-                            old_token.cancel();
+                            old_token.token.cancel();
                         }
                     }
                     kill_process(old_pid);
@@ -126,6 +133,7 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         let ctx_type = key.context_type.clone();
         let ctx_id = key.context_id.clone();
         let wt_path = worktree_path;
+        let token_owner_run_id = agent_run_id.clone();
         let _ = self
             .db
             .run(move |conn| {
@@ -150,7 +158,13 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         // Store cancellation token in memory (not persisted to SQLite)
         if let Some(token) = cancellation_token {
             let mut tokens = self.tokens.lock().await;
-            tokens.insert(key, token);
+            tokens.insert(
+                key,
+                OwnedCancellationToken {
+                    agent_run_id: token_owner_run_id,
+                    token,
+                },
+            );
         }
     }
 
@@ -198,6 +212,7 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
                             error = %e,
                             "unregister: DELETE failed"
                         );
+                        return Ok(None);
                     }
                 }
 
@@ -207,9 +222,16 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
             .unwrap_or(None);
 
         // Attach cancellation token from in-memory map
-        let token = {
+        let token = if info.is_some() {
             let mut tokens = self.tokens.lock().await;
-            tokens.remove(key)
+            match tokens.get(key) {
+                Some(entry) if entry.agent_run_id == agent_run_id => {
+                    tokens.remove(key).map(|entry| entry.token)
+                }
+                _ => None,
+            }
+        } else {
+            None
         };
 
         info.map(|mut i| {
@@ -239,7 +261,10 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         // Attach cancellation token from in-memory map
         let tokens = self.tokens.lock().await;
         info.map(|mut i| {
-            i.cancellation_token = tokens.get(key).cloned();
+            i.cancellation_token = tokens
+                .get(key)
+                .filter(|entry| entry.agent_run_id == i.agent_run_id)
+                .map(|entry| entry.token.clone());
             i
         })
     }
@@ -280,7 +305,15 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
             .await
             .unwrap_or_default();
 
-        let info = self.unregister(key, &agent_run_id).await;
+        self.stop_if_owned(key, &agent_run_id).await
+    }
+
+    async fn stop_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        let info = self.unregister(key, agent_run_id).await;
 
         if let Some(ref agent_info) = info {
             // Cancel the async task before killing the process
@@ -293,6 +326,57 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
             // kill_worktree_processes_async (with timeout + kill_on_drop). stop() only needs
             // to send SIGTERM — sufficient for cooperative cancellation.
             kill_process(agent_info.pid);
+        }
+
+        Ok(info)
+    }
+
+    async fn quiesce_if_owned(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+    ) -> Result<Option<RunningAgentInfo>, String> {
+        let ctx_type = key.context_type.clone();
+        let ctx_id = key.context_id.clone();
+        let run_id = agent_run_id.to_string();
+        let info = self
+            .db
+            .run(move |conn| {
+                let info = match conn.query_row(
+                    "SELECT pid, conversation_id, agent_run_id, started_at, worktree_path, last_active_at, model FROM running_agents WHERE context_type = ?1 AND context_id = ?2 AND agent_run_id = ?3",
+                    rusqlite::params![&ctx_type, &ctx_id, &run_id],
+                    parse_running_agent_row,
+                ) {
+                    Ok(info) => info,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                };
+                let renewed_at = chrono::Utc::now().to_rfc3339();
+                let updated = conn.execute(
+                    "UPDATE running_agents SET pid = 0, last_active_at = ?4 WHERE context_type = ?1 AND context_id = ?2 AND agent_run_id = ?3",
+                    rusqlite::params![&ctx_type, &ctx_id, &run_id, renewed_at],
+                )?;
+                Ok((updated == 1).then_some(info))
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if let Some(ref info) = info {
+            let token = {
+                let mut tokens = self.tokens.lock().await;
+                if tokens
+                    .get(key)
+                    .is_some_and(|entry| entry.agent_run_id == agent_run_id)
+                {
+                    tokens.remove(key)
+                } else {
+                    None
+                }
+            };
+            if let Some(token) = token {
+                token.token.cancel();
+            }
+            kill_process(info.pid);
         }
 
         Ok(info)
@@ -381,7 +465,10 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         // Attach cancellation tokens from in-memory map
         let tokens = self.tokens.lock().await;
         for (key, info) in &mut results {
-            info.cancellation_token = tokens.get(key).cloned();
+            info.cancellation_token = tokens
+                .get(key)
+                .filter(|entry| entry.agent_run_id == info.agent_run_id)
+                .map(|entry| entry.token.clone());
         }
 
         results
@@ -452,7 +539,10 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         // Attach cancellation tokens from in-memory map
         let tokens = self.tokens.lock().await;
         for (key, info) in &mut results {
-            info.cancellation_token = tokens.get(key).cloned();
+            info.cancellation_token = tokens
+                .get(key)
+                .filter(|entry| entry.agent_run_id == info.agent_run_id)
+                .map(|entry| entry.token.clone());
         }
 
         Ok(results)
@@ -463,7 +553,7 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         {
             let mut tokens = self.tokens.lock().await;
             for token in tokens.values() {
-                token.cancel();
+                token.token.cancel();
             }
             tokens.clear();
         }
@@ -534,7 +624,7 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
                     tokens.remove(&key)
                 };
                 if let Some(token) = token {
-                    token.cancel();
+                    token.token.cancel();
                 }
                 stopped.push(key);
             }
@@ -543,21 +633,27 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         stopped
     }
 
-    async fn update_heartbeat(&self, key: &RunningAgentKey, at: chrono::DateTime<chrono::Utc>) {
+    async fn update_heartbeat(
+        &self,
+        key: &RunningAgentKey,
+        agent_run_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, String> {
         let at_str = at.to_rfc3339();
         let ctx_type = key.context_type.clone();
         let ctx_id = key.context_id.clone();
+        let run_id = agent_run_id.to_string();
 
-        let _ = self
+        self
             .db
             .run(move |conn| {
-                conn.execute(
-                    "UPDATE running_agents SET last_active_at = ?1 WHERE context_type = ?2 AND context_id = ?3",
-                    rusqlite::params![at_str, ctx_type, ctx_id],
-                )?;
-                Ok(())
+                Ok(conn.execute(
+                    "UPDATE running_agents SET last_active_at = ?1 WHERE context_type = ?2 AND context_id = ?3 AND agent_run_id = ?4",
+                    rusqlite::params![at_str, ctx_type, ctx_id, run_id],
+                )? > 0)
             })
-            .await;
+            .await
+            .map_err(|error| error.to_string())
     }
 
     async fn try_register(
@@ -565,7 +661,7 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
         key: RunningAgentKey,
         conversation_id: String,
         agent_run_id: String,
-    ) -> Result<(), RunningAgentInfo> {
+    ) -> Result<(), TryRegisterError> {
         let ctx_type = key.context_type.clone();
         let ctx_id = key.context_id.clone();
         let conv_id = conversation_id;
@@ -582,130 +678,116 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
                         rusqlite::params![&ctx_type, &ctx_id],
                         parse_running_agent_row,
                     )
-                    .ok();
+                    .optional()?;
 
                 if let Some(info) = existing {
-                    return Ok(Err(info));
+                    return Ok(Err(TryRegisterError::Occupied(info)));
                 }
 
                 // Insert placeholder registration (pid=0, no worktree)
-                let started_at = chrono::Utc::now().to_rfc3339();
-                if let Err(e) = conn.execute(
-                    "INSERT INTO running_agents (context_type, context_id, pid, conversation_id, agent_run_id, started_at, worktree_path, last_active_at) VALUES (?1, ?2, 0, ?3, ?4, ?5, NULL, NULL)",
-                    rusqlite::params![&ctx_type, &ctx_id, &conv_id, &run_id, &started_at],
-                ) {
-                    tracing::error!(
-                        context_type = %ctx_type,
-                        context_id = %ctx_id,
-                        error = %e,
-                        "try_register: INSERT failed — agent slot may not be reserved"
-                    );
-                }
+                let now = chrono::Utc::now().to_rfc3339();
+                conn.execute(
+                    "INSERT INTO running_agents (context_type, context_id, pid, conversation_id, agent_run_id, started_at, worktree_path, last_active_at) VALUES (?1, ?2, 0, ?3, ?4, ?5, NULL, ?5)",
+                    rusqlite::params![&ctx_type, &ctx_id, &conv_id, &run_id, &now],
+                )?;
 
                 Ok(Ok(()))
             })
-            .await;
-
-        // Handle spawn_blocking join error — degrade gracefully
-        let inner_result = match result {
-            Ok(inner) => inner,
-            Err(app_err) => {
-                tracing::error!("try_register: spawn_blocking failed: {app_err}");
-                Ok(())
-            }
-        };
+            .await
+            .map_err(|error| TryRegisterError::Storage(error.to_string()))?;
 
         // Attach cancellation token if existing agent was found
-        match inner_result {
-            Err(mut info) => {
+        match result {
+            Err(TryRegisterError::Occupied(mut info)) => {
                 let tokens = self.tokens.lock().await;
-                info.cancellation_token = tokens.get(&key).cloned();
-                Err(info)
+                info.cancellation_token = tokens
+                    .get(&key)
+                    .filter(|entry| entry.agent_run_id == info.agent_run_id)
+                    .map(|entry| entry.token.clone());
+                Err(TryRegisterError::Occupied(info))
             }
+            Err(error) => Err(error),
             Ok(()) => Ok(()),
         }
     }
 
-    async fn update_agent_process(
+    async fn renew_reservation(
         &self,
         key: &RunningAgentKey,
-        pid: u32,
-        conversation_id: &str,
         agent_run_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, String> {
+        let at_str = at.to_rfc3339();
+        let ctx_type = key.context_type.clone();
+        let ctx_id = key.context_id.clone();
+        let run_id = agent_run_id.to_string();
+        self.db
+            .run(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE running_agents SET last_active_at = ?1 WHERE context_type = ?2 AND context_id = ?3 AND agent_run_id = ?4 AND pid = 0",
+                    rusqlite::params![at_str, ctx_type, ctx_id, run_id],
+                )? > 0)
+            })
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn attach_process(
+        &self,
+        key: &RunningAgentKey,
+        expected_agent_run_id: &str,
+        pid: u32,
         worktree_path: Option<String>,
         cancellation_token: Option<CancellationToken>,
         model: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<AttachProcessResult, String> {
         let ctx_type = key.context_type.clone();
         let ctx_id = key.context_id.clone();
-        let conv_id = conversation_id.to_string();
-        let run_id = agent_run_id.to_string();
+        let run_id = expected_agent_run_id.to_string();
         let wt_path = worktree_path;
+        // Serialize DB attachment with token installation. Other registry mutations release the
+        // DB connection before taking this lock, so a replaced owner cannot have its token
+        // overwritten by a late attachment from the prior owner.
+        let mut tokens = self.tokens.lock().await;
 
-        let db_result = self
+        let attached = self
             .db
             .run(move |conn| {
-                Ok(match conn.execute(
-                    "UPDATE running_agents SET pid = ?1, worktree_path = ?2, agent_run_id = ?3, model = ?4 WHERE context_type = ?5 AND context_id = ?6",
-                    rusqlite::params![pid, &wt_path, &run_id, &model, &ctx_type, &ctx_id],
-                ) {
-                    Ok(0) => {
-                        // TOCTOU recovery: the placeholder row was pruned between try_register
-                        // and this call. Re-insert the full registration so the agent is tracked.
-                        tracing::warn!(
-                            context_type = %ctx_type,
-                            context_id = %ctx_id,
-                            pid,
-                            "update_agent_process: 0 rows affected — re-inserting full registration"
-                        );
-                        let started_at = chrono::Utc::now().to_rfc3339();
-                        conn.execute(
-                            "INSERT OR REPLACE INTO running_agents (context_type, context_id, pid, conversation_id, agent_run_id, started_at, worktree_path, last_active_at, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
-                            rusqlite::params![&ctx_type, &ctx_id, pid, &conv_id, &run_id, &started_at, &wt_path, &model],
-                        ).map(|_| ()).map_err(|e| {
-                            tracing::error!(
-                                context_type = %ctx_type,
-                                context_id = %ctx_id,
-                                error = %e,
-                                "update_agent_process: INSERT OR REPLACE failed after pruned row"
-                            );
-                            e.to_string()
-                        })
-                    }
-                    Ok(_) => Ok(()),
-                    Err(e) => {
-                        tracing::error!(
-                            context_type = %ctx_type,
-                            context_id = %ctx_id,
-                            error = %e,
-                            "update_agent_process: UPDATE failed"
-                        );
-                        Err(e.to_string())
-                    }
-                })
+                Ok(conn.execute(
+                    "UPDATE running_agents SET pid = ?1, worktree_path = ?2, model = ?3 WHERE context_type = ?4 AND context_id = ?5 AND agent_run_id = ?6 AND pid = 0",
+                    rusqlite::params![pid, &wt_path, &model, &ctx_type, &ctx_id, &run_id],
+                )? > 0)
             })
             .await
-            .unwrap_or_else(|e| Err(e.to_string()));
+            .map_err(|error| error.to_string())?;
 
-        // Always store the cancellation token regardless of DB result —
-        // the in-memory token is needed to cancel the process even if DB is inconsistent.
-        if let Some(token) = cancellation_token {
-            let mut tokens = self.tokens.lock().await;
-            tokens.insert(key.clone(), token);
+        if attached {
+            if let Some(token) = cancellation_token {
+                tokens.insert(
+                    key.clone(),
+                    OwnedCancellationToken {
+                        agent_run_id: expected_agent_run_id.to_string(),
+                        token,
+                    },
+                );
+            }
+            Ok(AttachProcessResult::Attached)
+        } else {
+            Ok(AttachProcessResult::ClaimLost)
         }
-
-        db_result
     }
 
     async fn cleanup_stale_entry(
         &self,
         key: &RunningAgentKey,
+        expected_agent_run_id: &str,
     ) -> Result<Option<RunningAgentInfo>, String> {
         // Read the current entry (if any)
         let info = self.get(key).await;
         let info = match info {
-            Some(i) => i,
+            Some(i) if i.agent_run_id == expected_agent_run_id => i,
             None => return Ok(None),
+            Some(_) => return Ok(None),
         };
 
         // Only remove if the process is actually dead (Proof Obligation 7):
@@ -720,37 +802,34 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
             return Ok(None);
         }
 
-        // Process is dead — delete the row unconditionally (no agent_run_id guard,
-        // because stale cleanup is intentionally scoped to dead processes only).
+        // Process is dead — compare-and-delete the exact owner observed above.
         let ctx_type = key.context_type.clone();
         let ctx_id = key.context_id.clone();
-        let ctx_type_log = key.context_type.clone();
-        let ctx_id_log = key.context_id.clone();
-        let delete_result = self
+        let run_id = expected_agent_run_id.to_string();
+        let deleted = self
             .db
             .run(move |conn| {
-                conn.execute(
-                    "DELETE FROM running_agents WHERE context_type = ?1 AND context_id = ?2",
-                    rusqlite::params![ctx_type, ctx_id],
-                )?;
-                Ok(())
+                Ok(conn.execute(
+                    "DELETE FROM running_agents WHERE context_type = ?1 AND context_id = ?2 AND agent_run_id = ?3",
+                    rusqlite::params![ctx_type, ctx_id, run_id],
+                )? > 0)
             })
-            .await;
+            .await
+            .map_err(|error| error.to_string())?;
 
-        if let Err(e) = delete_result {
-            tracing::error!(
-                context_type = %ctx_type_log,
-                context_id = %ctx_id_log,
-                error = %e,
-                "cleanup_stale_entry: DELETE failed"
-            );
-            return Err(e.to_string());
+        if !deleted {
+            return Ok(None);
         }
 
         // Remove the in-memory cancellation token (already cancelled since process is dead)
         let token = {
             let mut tokens = self.tokens.lock().await;
-            tokens.remove(key)
+            match tokens.get(key) {
+                Some(entry) if entry.agent_run_id == expected_agent_run_id => {
+                    tokens.remove(key).map(|entry| entry.token)
+                }
+                _ => None,
+            }
         };
 
         tracing::info!(

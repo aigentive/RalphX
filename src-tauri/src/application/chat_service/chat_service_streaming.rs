@@ -2853,8 +2853,12 @@ pub async fn process_stream_background<R: Runtime>(
 
         // Throttled heartbeat: write last_active_at every 5s on any parsed event
         if lines_parsed > 0 && last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-            if let (Some(ref registry), Some(ref key)) = (&running_agent_registry, &heartbeat_key) {
-                registry.update_heartbeat(key, chrono::Utc::now()).await;
+            if let (Some(ref registry), Some(ref key), Some(ref run_id)) =
+                (&running_agent_registry, &heartbeat_key, &agent_run_id)
+            {
+                let _ = registry
+                    .update_heartbeat(key, run_id, chrono::Utc::now())
+                    .await;
             }
             last_heartbeat = std::time::Instant::now();
         }
@@ -3713,8 +3717,12 @@ async fn process_codex_stream_background<R: Runtime>(
         }
 
         if lines_parsed > 0 && last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-            if let (Some(ref registry), Some(ref key)) = (&running_agent_registry, &heartbeat_key) {
-                registry.update_heartbeat(key, chrono::Utc::now()).await;
+            if let (Some(ref registry), Some(ref key), Some(ref run_id)) =
+                (&running_agent_registry, &heartbeat_key, &agent_run_id)
+            {
+                let _ = registry
+                    .update_heartbeat(key, run_id, chrono::Utc::now())
+                    .await;
             }
             last_heartbeat = std::time::Instant::now();
         }
@@ -3795,6 +3803,12 @@ async fn process_codex_stream_background<R: Runtime>(
         },
     )
     .await;
+    if cancellation_token.is_cancelled() {
+        return Err(StreamError::Cancelled {
+            turns_finalized: 0,
+            completion_tool_called: false,
+        });
+    }
     if let Some(stream_error) = super::chat_service_errors::classify_codex_stream_failure(
         &runtime_errors,
         &local_tool_errors,
@@ -3866,13 +3880,6 @@ async fn process_codex_stream_background<R: Runtime>(
         {
             return Err(provider_error);
         }
-    }
-
-    if cancellation_token.is_cancelled() {
-        return Err(StreamError::Cancelled {
-            turns_finalized: 0,
-            completion_tool_called: false,
-        });
     }
 
     Ok(outcome)
