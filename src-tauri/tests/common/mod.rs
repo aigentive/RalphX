@@ -9,7 +9,9 @@ use ralphx_lib::domain::agents::{
     AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
     ClientCapabilities, ResponseChunk,
 };
-use ralphx_lib::domain::entities::{AgentWorkspacePrDescription, ChatConversationId};
+use ralphx_lib::domain::entities::{
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, ChatConversationId,
+};
 use ralphx_lib::domain::repositories::AgentConversationWorkspaceRepository;
 use tokio::sync::Mutex;
 
@@ -57,16 +59,27 @@ impl AgenticClient for SubmittingPlanPrAgentClient {
             tag_value(&prompt, "conversation_id")
                 .expect("plan PR describer prompt should include conversation_id"),
         );
-        self.workspace_repo
-            .save_pr_description(
-                &conversation_id,
-                AgentWorkspacePrDescription::new(
-                    None,
-                    "## Summary\n\nDrafted by the PR-mode integration test describer".to_string(),
-                ),
-            )
-            .await
-            .expect("test PR describer should submit a description");
+        if prompt.contains("<publication_target kind=\"existing_pr\"") {
+            self.workspace_repo
+                .save_pr_metadata_decision(
+                    &conversation_id,
+                    AgentWorkspacePrMetadataDecision::Preserve,
+                )
+                .await
+                .expect("test PR describer should preserve existing PR metadata");
+        } else {
+            self.workspace_repo
+                .save_pr_description(
+                    &conversation_id,
+                    AgentWorkspacePrDescription::new(
+                        None,
+                        "## Summary\n\nDrafted by the PR-mode integration test describer"
+                            .to_string(),
+                    ),
+                )
+                .await
+                .expect("test PR describer should submit a description");
+        }
 
         Ok(AgentOutput::success("completed"))
     }

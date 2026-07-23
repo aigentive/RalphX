@@ -28,7 +28,6 @@ use axum::{
 
 use super::*;
 use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
-use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
@@ -80,7 +79,7 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrSta
 use crate::domain::entities::{
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
@@ -117,8 +116,9 @@ pub struct CompleteAgentWorkspaceRepairResponse {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct SubmitAgentWorkspacePrDescriptionRequest {
+    pub decision: String,
     pub title: Option<String>,
-    pub body_markdown: String,
+    pub body_markdown: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1085,8 +1085,33 @@ pub async fn submit_agent_workspace_pr_description(
     Path(conversation_id): Path<String>,
     Json(req): Json<SubmitAgentWorkspacePrDescriptionRequest>,
 ) -> Result<Json<SubmitAgentWorkspacePrDescriptionResponse>, JsonError> {
-    validate_agent_workspace_pr_description_body(&req.body_markdown)
-        .map_err(|error| json_error(StatusCode::BAD_REQUEST, error.to_string(), None))?;
+    let decision = match req.decision.as_str() {
+        "preserve" if req.title.is_none() && req.body_markdown.is_none() => {
+            AgentWorkspacePrMetadataDecision::Preserve
+        }
+        "patch" => AgentWorkspacePrMetadataDecision::patch(req.title, req.body_markdown)
+            .ok_or_else(|| {
+                json_error(
+                    StatusCode::BAD_REQUEST,
+                    "PR metadata patch requires a non-empty title or body",
+                    None,
+                )
+            })?,
+        "preserve" => {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "preserve cannot include title or body",
+                None,
+            ))
+        }
+        _ => {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "PR metadata decision must be preserve or patch",
+                None,
+            ))
+        }
+    };
 
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = state
@@ -1100,10 +1125,7 @@ pub async fn submit_agent_workspace_pr_description(
     state
         .app_state
         .agent_conversation_workspace_repo
-        .save_pr_description(
-            &workspace.conversation_id,
-            AgentWorkspacePrDescription::new(req.title, req.body_markdown),
-        )
+        .save_pr_metadata_decision(&workspace.conversation_id, decision)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
 

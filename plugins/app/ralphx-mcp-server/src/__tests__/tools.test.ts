@@ -1254,13 +1254,14 @@ describe('agent workspace PR description tool', () => {
     expect(tool).toBeDefined();
   });
 
-  it('should require conversation and body fields', () => {
+  it('should require conversation and decision fields', () => {
     expect(tool?.inputSchema.type).toBe('object');
     expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
     expect(tool?.inputSchema.properties).toHaveProperty('title');
     expect(tool?.inputSchema.properties).toHaveProperty('body_markdown');
+    expect(tool?.inputSchema.properties).toHaveProperty('decision');
     expect(tool?.inputSchema.required).toEqual(
-      expect.arrayContaining(['conversation_id', 'body_markdown'])
+      expect.arrayContaining(['conversation_id', 'decision'])
     );
   });
 
@@ -1270,6 +1271,7 @@ describe('agent workspace PR description tool', () => {
     await expect(
       callSubmitAgentWorkspacePrDescriptionTool(callTauri, {
         conversation_id: 'conversation-1',
+        decision: 'patch',
         title: 'Generated title',
         body_markdown: '## Summary\n\nGenerated body',
       })
@@ -1278,6 +1280,7 @@ describe('agent workspace PR description tool', () => {
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/pr-description', {
       title: 'Generated title',
       body_markdown: '## Summary\n\nGenerated body',
+      decision: 'patch',
     });
   });
 });
