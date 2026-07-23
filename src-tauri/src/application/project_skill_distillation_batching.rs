@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::domain::entities::{
     ProjectId, ProjectSkillEvidenceBatch, ProjectSkillEvidenceBatchId,
-    ProjectSkillEvidenceBatchItem, ProjectSkillEvidenceBatchStatus, TaskOutcome,
+    ProjectSkillEvidenceBatchItem, ProjectSkillEvidenceBatchStatus, TaskOutcome, TaskOutcomeSource,
     PROJECT_SKILL_EVIDENCE_DIGEST_MAX_CHARS,
 };
 
@@ -53,7 +53,9 @@ pub(super) fn build_batch(
 }
 
 pub(super) fn verification_gap_fingerprint(outcome: &TaskOutcome) -> Option<&str> {
-    if outcome.source != "verification" || outcome.source_ref_kind != "gap_recurrence" {
+    if outcome.source != TaskOutcomeSource::Verification
+        || outcome.source_ref_kind != "gap_recurrence"
+    {
         return None;
     }
     outcome
@@ -69,12 +71,12 @@ pub(super) fn verification_gap_fingerprint(outcome: &TaskOutcome) -> Option<&str
         })
 }
 
-pub(super) fn bucket_for_outcome_source(source: &str) -> &'static str {
+pub(super) fn bucket_for_outcome_source(source: TaskOutcomeSource) -> &'static str {
     match source {
-        "verification" | "qa" => "verification",
-        "review" | "workspace_review" => "review",
-        "merge" => "merge",
-        "ideation" | "plan_mode" => "planning",
+        TaskOutcomeSource::Verification => "verification",
+        TaskOutcomeSource::Review => "review",
+        TaskOutcomeSource::Merge => "merge",
+        TaskOutcomeSource::PlanMode => "planning",
         _ => "execution",
     }
 }

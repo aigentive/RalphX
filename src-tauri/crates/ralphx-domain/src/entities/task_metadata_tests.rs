@@ -693,6 +693,40 @@ fn rate_limit_retry_after_roundtrip_through_task_metadata() {
 }
 
 #[test]
+fn merge_recovery_active_attempt_prefers_explicit_identity_and_handles_legacy_events() {
+    let mut recovery = MergeRecoveryMetadata::new();
+    assert_eq!(recovery.active_attempt(), 1);
+
+    recovery.append_event(MergeRecoveryEvent::new(
+        MergeRecoveryEventKind::AutoRetryTriggered,
+        MergeRecoverySource::Auto,
+        MergeRecoveryReasonCode::GitError,
+        "legacy retry without explicit attempt",
+    ));
+    assert_eq!(recovery.active_attempt(), 2);
+
+    recovery.append_event(
+        MergeRecoveryEvent::new(
+            MergeRecoveryEventKind::AttemptStarted,
+            MergeRecoverySource::System,
+            MergeRecoveryReasonCode::GitError,
+            "explicit attempt",
+        )
+        .with_attempt(7),
+    );
+    recovery.append_event(
+        MergeRecoveryEvent::new(
+            MergeRecoveryEventKind::AttemptFailed,
+            MergeRecoverySource::System,
+            MergeRecoveryReasonCode::GitError,
+            "stale lower attempt",
+        )
+        .with_attempt(3),
+    );
+    assert_eq!(recovery.active_attempt(), 7);
+}
+
+#[test]
 fn rate_limit_cleared_after_expiry() {
     let mut meta = MergeRecoveryMetadata::new();
     meta.rate_limit_retry_after = Some("2026-02-20T15:00:00+00:00".to_string());

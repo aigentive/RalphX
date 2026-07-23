@@ -20,7 +20,8 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    ChatContextType, ChatConversationId, ProjectId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+    ChatContextType, ChatConversationId, ProjectId, TaskOutcome, TaskOutcomeClass, TaskOutcomeId,
+    TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::services::learned_skill_adapters::{
     capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
@@ -140,11 +141,15 @@ pub(crate) fn task_outcome_from_plan_mode_verdict(
         .status
         .parse::<TaskOutcomeStatus>()
         .unwrap_or(TaskOutcomeStatus::Unknown);
+    let source = outcome.source.parse::<TaskOutcomeSource>().ok()?;
+    if !source.is_live() {
+        return None;
+    }
     let now = chrono::Utc::now();
     Some(TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: ProjectId::from_string(outcome.project_id.clone()),
-        source: outcome.source.clone(),
+        source,
         source_ref_kind: "planning_session".to_string(),
         source_ref_id: planning_session_id.to_string(),
         task_id: None,
@@ -154,9 +159,10 @@ pub(crate) fn task_outcome_from_plan_mode_verdict(
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: Some(outcome.outcome_class.clone()),
+        outcome_class: Some(TaskOutcomeClass::from(outcome.outcome_class.as_str())),
         status,
         evidence_json: serde_json::to_value(outcome).unwrap_or_else(|_| serde_json::json!({})),
+        failure_fingerprint: None,
         provider_harness: None,
         provider_session_id: None,
         created_at: now,

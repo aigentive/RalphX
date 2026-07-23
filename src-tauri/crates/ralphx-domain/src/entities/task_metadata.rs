@@ -60,6 +60,27 @@ impl MergeRecoveryMetadata {
         self.last_state = state;
     }
 
+    /// Return the authoritative attempt represented by the recovery log.
+    ///
+    /// Explicit attempt identities win. Legacy logs without them derive the
+    /// current attempt from retry-trigger events without counting failure
+    /// observations as additional attempts.
+    pub fn active_attempt(&self) -> u32 {
+        self.events
+            .iter()
+            .filter_map(|event| event.attempt)
+            .max()
+            .unwrap_or_else(|| {
+                self.events
+                    .iter()
+                    .filter(|event| {
+                        matches!(event.kind, MergeRecoveryEventKind::AutoRetryTriggered)
+                    })
+                    .count() as u32
+                    + 1
+            })
+    }
+
     /// Trim events if count exceeds MAX_EVENTS
     /// Removes oldest events (from the beginning of the vector)
     fn trim_if_needed(&mut self) {

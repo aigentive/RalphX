@@ -16,7 +16,7 @@ use crate::domain::entities::{
     AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewMonitor, ArtifactId, ChatContextType, ChatConversationId,
     IdeationAnalysisBaseRefKind, IdeationSessionId, InterruptedConversation, PlanBranch,
-    PlanBranchId, Project, ProjectId, TaskOutcome, TaskOutcomeId,
+    PlanBranchId, Project, ProjectId, TaskOutcome, TaskOutcomeId, TaskOutcomeSource,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceLocalCleanupClaim,
@@ -48,7 +48,7 @@ impl TaskOutcomeRepository for FailingTaskOutcomeRepository {
     async fn get_by_dedupe(
         &self,
         _project_id: &ProjectId,
-        _source: &str,
+        _source: TaskOutcomeSource,
         _source_ref_kind: &str,
         _source_ref_id: &str,
     ) -> AppResult<Option<TaskOutcome>> {

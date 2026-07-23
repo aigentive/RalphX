@@ -234,14 +234,20 @@ async fn c1_autofix_validation_failure_transitions_to_merging_and_spawns_agent()
         .list_by_project(&updated.project_id, TaskOutcomeListOptions::default())
         .await
         .expect("task outcome query should succeed");
-    assert_eq!(outcomes.len(), 1);
-    let outcome = &outcomes[0];
-    assert_eq!(outcome.source, "merge_validation");
+    assert_eq!(outcomes.len(), 2);
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| {
+            outcome.outcome_class.as_ref().map(|class| class.as_str())
+                == Some("merge_validation_failed")
+        })
+        .expect("legacy merge validation observation should remain");
+    assert_eq!(outcome.source.as_str(), "merge_validation");
     assert_eq!(outcome.source_ref_kind, "task");
     assert_eq!(outcome.source_ref_id, updated.id.as_str());
     assert_eq!(outcome.task_id.as_deref(), Some(updated.id.as_str()));
     assert_eq!(
-        outcome.outcome_class.as_deref(),
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
         Some("merge_validation_failed")
     );
     assert_eq!(outcome.status, TaskOutcomeStatus::Failed);
@@ -249,6 +255,24 @@ async fn c1_autofix_validation_failure_transitions_to_merging_and_spawns_agent()
     assert_eq!(
         outcome.evidence_json["validation_mode"].as_str(),
         Some("auto_fix")
+    );
+
+    let attempt_outcome = outcomes
+        .iter()
+        .find(|outcome| {
+            outcome.outcome_class.as_ref().map(|class| class.as_str()) == Some("merge_qa_failed")
+        })
+        .expect("attempt-scoped QA failure should be recorded");
+    assert_eq!(attempt_outcome.source.as_str(), "merge");
+    assert_eq!(attempt_outcome.source_ref_kind, "merge_attempt");
+    assert_eq!(
+        attempt_outcome.source_ref_id,
+        format!("{}:attempt:1", updated.id.as_str())
+    );
+    assert_eq!(attempt_outcome.evidence_json["attempt"], 1);
+    assert_eq!(
+        attempt_outcome.failure_fingerprint.as_deref().map(str::len),
+        Some(64)
     );
 }
 

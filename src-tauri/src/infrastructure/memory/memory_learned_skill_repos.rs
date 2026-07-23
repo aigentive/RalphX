@@ -6,7 +6,7 @@ use chrono::Utc;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, ProjectSkillVersion,
-    SkillUsageEvent, TaskOutcome, TaskOutcomeId,
+    SkillUsageEvent, TaskOutcome, TaskOutcomeId, TaskOutcomeSource,
 };
 use crate::domain::repositories::{
     resolve_task_outcome_upsert, ProjectSkillListOptions, ProjectSkillRepository,
@@ -57,7 +57,7 @@ impl TaskOutcomeRepository for MemoryTaskOutcomeRepository {
     async fn get_by_dedupe(
         &self,
         project_id: &ProjectId,
-        source: &str,
+        source: TaskOutcomeSource,
         source_ref_kind: &str,
         source_ref_id: &str,
     ) -> AppResult<Option<TaskOutcome>> {
@@ -96,12 +96,7 @@ impl TaskOutcomeRepository for MemoryTaskOutcomeRepository {
             .unwrap()
             .iter()
             .filter(|row| &row.project_id == project_id)
-            .filter(|row| {
-                options
-                    .source
-                    .as_deref()
-                    .map_or(true, |source| row.source == source)
-            })
+            .filter(|row| options.source.map_or(true, |source| row.source == source))
             .filter(|row| options.status.map_or(true, |status| row.status == status))
             .cloned()
             .collect::<Vec<_>>();

@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ProjectId, TaskOutcome, TaskOutcomeId,
-    TaskOutcomeStatus,
+    TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::entities::{AgentRunStatus, ChatConversationId, IdeationAnalysisBaseRefKind};
 use crate::domain::repositories::{
@@ -47,7 +47,7 @@ impl TaskOutcomeRepository for TestTaskOutcomeRepository {
     async fn get_by_dedupe(
         &self,
         project_id: &ProjectId,
-        source: &str,
+        source: TaskOutcomeSource,
         source_ref_kind: &str,
         source_ref_id: &str,
     ) -> AppResult<Option<TaskOutcome>> {
@@ -89,8 +89,8 @@ impl TaskOutcomeRepository for TestTaskOutcomeRepository {
             .filter(|row| {
                 options
                     .source
-                    .as_deref()
-                    .is_none_or(|source| row.source == source)
+                    .as_ref()
+                    .is_none_or(|source| row.source == *source)
             })
             .filter(|row| options.status.is_none_or(|status| row.status == status))
             .cloned()
@@ -132,7 +132,7 @@ async fn records_direct_workspace_turn_with_conversation_dedupe() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 status: Some(TaskOutcomeStatus::Eligible),
             },
         )
@@ -144,7 +144,10 @@ async fn records_direct_workspace_turn_with_conversation_dedupe() {
     assert_eq!(second.source_ref_id, "11111111-1111-1111-1111-111111111111");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some("workspace_code_changes")
     );
 }
@@ -223,7 +226,10 @@ async fn terminal_pr_retries_converge_without_stale_downgrade() {
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].pull_request_id.as_deref(), Some("42"));
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some("workspace_pr_merged")
     );
     assert_eq!(outcomes[0].status, TaskOutcomeStatus::Succeeded);
@@ -294,7 +300,7 @@ async fn no_pr_terminal_outcomes_replace_the_conversation_row_and_link_the_agent
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
@@ -304,13 +310,16 @@ async fn no_pr_terminal_outcomes_replace_the_conversation_row_and_link_the_agent
     assert_eq!(abandoned.source_ref_kind, "conversation");
     assert_eq!(abandoned.status, TaskOutcomeStatus::Failed);
     assert_eq!(
-        abandoned.outcome_class.as_deref(),
+        abandoned.outcome_class.as_ref().map(|class| class.as_str()),
         Some(WORKSPACE_SESSION_ABANDONED_CLASS)
     );
     assert_eq!(publish_failed.id, abandoned.id);
     assert_eq!(publish_failed.status, TaskOutcomeStatus::Failed);
     assert_eq!(
-        publish_failed.outcome_class.as_deref(),
+        publish_failed
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_PUBLISH_FAILED_CLASS)
     );
     assert_eq!(publish_failed.agent_run_id, Some(run.id.as_str()));

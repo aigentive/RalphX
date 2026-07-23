@@ -8134,7 +8134,7 @@ async fn automation_scheduler_marks_no_changes_publish_outcome_as_agent_failed()
         .list_by_project(
             &project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
@@ -8142,7 +8142,10 @@ async fn automation_scheduler_marks_no_changes_publish_outcome_as_agent_failed()
         .expect("scheduler abandonment outcome should be readable");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_SESSION_ABANDONED_CLASS)
     );
     assert_eq!(outcomes[0].evidence_json["reason"], "no_changes");
@@ -8773,7 +8776,7 @@ async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
         .list_by_project(
             &project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
@@ -8781,7 +8784,10 @@ async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
         .expect("scheduler publish failure outcome should be readable");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_PUBLISH_FAILED_CLASS)
     );
     assert_eq!(

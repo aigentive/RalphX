@@ -4,7 +4,7 @@ use serde_json::json;
 use super::{MemoryProjectSkillRepository, MemoryTaskOutcomeRepository};
 use crate::domain::entities::{
     ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcome,
-    TaskOutcomeId, TaskOutcomeStatus,
+    TaskOutcomeClass, TaskOutcomeId, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     canonical_terminal_pr_source_ref_id, ProjectSkillMatchedMutation, ProjectSkillRepository,
@@ -21,7 +21,7 @@ fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
     TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: ProjectId::from_string("project-1".to_string()),
-        source: AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string(),
+        source: AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
         source_ref_kind: TERMINAL_PR_SOURCE_REF_KIND.to_string(),
         source_ref_id: canonical_terminal_pr_source_ref_id("42"),
         task_id: None,
@@ -31,9 +31,10 @@ fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: Some(outcome_class.to_string()),
+        outcome_class: Some(TaskOutcomeClass::from(outcome_class)),
         status: TaskOutcomeStatus::Eligible,
         evidence_json: json!({ "summary": evidence }),
+        failure_fingerprint: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some("session-1".to_string()),
         created_at: now,
@@ -80,7 +81,7 @@ async fn canonical_terminal_lattice_preserves_identity_context_and_lower_winner(
     equal.provider_session_id = None;
     let equal = upsert(&repo, equal).await;
     assert_eq!(
-        equal.outcome_class.as_deref(),
+        equal.outcome_class.as_ref().map(TaskOutcomeClass::as_str),
         Some(WORKSPACE_PR_FAILED_CLASS)
     );
     assert_eq!(equal.evidence_json, json!({ "summary": "failed detail" }));
@@ -112,7 +113,10 @@ async fn canonical_terminal_lattice_preserves_identity_context_and_lower_winner(
     .await;
     assert_eq!(followups.id.as_str(), clean.id.as_str());
     assert_eq!(
-        followups.outcome_class.as_deref(),
+        followups
+            .outcome_class
+            .as_ref()
+            .map(TaskOutcomeClass::as_str),
         Some(WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS)
     );
     assert_eq!(followups.evidence_json, json!({ "summary": "followups" }));
@@ -130,7 +134,10 @@ async fn noncanonical_outcomes_remain_last_write_wins_and_missing_dedupe_is_none
     second.source_ref_id = "42:terminal:legacy".to_string();
     second.status = TaskOutcomeStatus::Eligible;
     let saved = upsert(&repo, second).await;
-    assert_eq!(saved.outcome_class.as_deref(), Some("second"));
+    assert_eq!(
+        saved.outcome_class.as_ref().map(TaskOutcomeClass::as_str),
+        Some("second")
+    );
     assert_eq!(saved.status, TaskOutcomeStatus::Eligible);
 
     let unknown = upsert(&repo, terminal_outcome("unrecognized", "unknown")).await;

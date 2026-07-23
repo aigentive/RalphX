@@ -147,7 +147,10 @@ async fn restart_closes_open_remote_pr_without_clearing_local_pointers() {
         .expect("restart outcomes should be readable");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_PR_CLOSED_CLASS)
     );
     assert_eq!(
@@ -229,7 +232,7 @@ async fn restart_reconciles_distinct_plan_and_workspace_pr_numbers() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
                 ..Default::default()
             },
         )
@@ -279,7 +282,7 @@ async fn restart_without_pr_records_one_abandonment_outcome() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
@@ -287,7 +290,10 @@ async fn restart_without_pr_records_one_abandonment_outcome() {
         .expect("restart abandonment outcome should be readable");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_SESSION_ABANDONED_CLASS)
     );
     assert_eq!(

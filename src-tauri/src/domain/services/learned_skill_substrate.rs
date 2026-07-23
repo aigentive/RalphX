@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     MemoryEntry, MemoryEntryId, MemoryStatus, ProjectSkill, ProjectSkillId,
-    ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId, TaskOutcome, TaskOutcomeId,
-    TaskOutcomeStatus,
+    ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId, SkillUsageInjectionKind,
+    TaskOutcome, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillMatchedMutation,
@@ -38,7 +38,12 @@ impl OutcomeLedgerService {
     }
 
     pub async fn record_outcome(&self, outcome: TaskOutcome) -> AppResult<TaskOutcome> {
-        validate_non_empty("outcome source", &outcome.source)?;
+        if !outcome.source.is_live() {
+            return Err(AppError::Validation(format!(
+                "{} is read-only compatibility data and cannot be recorded",
+                outcome.source
+            )));
+        }
         validate_non_empty("outcome source_ref_kind", &outcome.source_ref_kind)?;
         validate_non_empty("outcome source_ref_id", &outcome.source_ref_id)?;
         self.repo.upsert(UpsertTaskOutcomeInput { outcome }).await
@@ -771,7 +776,6 @@ impl SkillUsageService {
     }
 
     pub async fn record_usage(&self, event: SkillUsageEvent) -> AppResult<SkillUsageEvent> {
-        validate_non_empty("skill usage injection_kind", &event.injection_kind)?;
         self.repo.record(event).await
     }
 
@@ -786,7 +790,7 @@ impl SkillUsageService {
 
 pub fn new_empty_task_outcome(
     project_id: ProjectId,
-    source: impl Into<String>,
+    source: TaskOutcomeSource,
     source_ref_kind: impl Into<String>,
     source_ref_id: impl Into<String>,
 ) -> TaskOutcome {
@@ -794,7 +798,7 @@ pub fn new_empty_task_outcome(
     TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id,
-        source: source.into(),
+        source,
         source_ref_kind: source_ref_kind.into(),
         source_ref_id: source_ref_id.into(),
         task_id: None,
@@ -807,6 +811,7 @@ pub fn new_empty_task_outcome(
         outcome_class: None,
         status: TaskOutcomeStatus::Unknown,
         evidence_json: serde_json::json!({}),
+        failure_fingerprint: None,
         provider_harness: None,
         provider_session_id: None,
         created_at: now,
@@ -817,7 +822,7 @@ pub fn new_empty_task_outcome(
 pub fn new_skill_usage_event(
     project_id: ProjectId,
     project_skill_id: ProjectSkillId,
-    injection_kind: impl Into<String>,
+    injection_kind: SkillUsageInjectionKind,
 ) -> SkillUsageEvent {
     SkillUsageEvent {
         id: SkillUsageEventId::new(),
@@ -828,7 +833,7 @@ pub fn new_skill_usage_event(
         provider_harness: None,
         stage: None,
         bucket: None,
-        injection_kind: injection_kind.into(),
+        injection_kind,
         outcome_id: None,
         metadata_json: serde_json::json!({}),
         created_at: Utc::now(),

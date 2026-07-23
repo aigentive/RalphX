@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 
 use crate::domain::entities::types::ProjectId;
-use crate::domain::entities::{TaskOutcome, TaskOutcomeId, TaskOutcomeStatus};
+use crate::domain::entities::{
+    TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
+};
 use crate::error::AppResult;
 
-pub const AGENT_WORKSPACE_PR_OUTCOME_SOURCE: &str = "agent_workspace_pr";
+pub const AGENT_WORKSPACE_PR_OUTCOME_SOURCE: TaskOutcomeSource =
+    TaskOutcomeSource::AgentWorkspacePr;
 pub const TERMINAL_PR_SOURCE_REF_KIND: &str = "pull_request";
 pub const WORKSPACE_PR_TERMINAL_CLASS: &str = "workspace_pr_terminal";
 pub const WORKSPACE_PR_CLOSED_CLASS: &str = "workspace_pr_closed";
@@ -25,23 +28,28 @@ pub fn canonical_terminal_pr_source_ref_id(pull_request_id: &str) -> String {
     format!("{pull_request_id}:terminal")
 }
 
-pub fn terminal_pr_status_for_class(outcome_class: Option<&str>) -> TaskOutcomeStatus {
+pub fn terminal_pr_status_for_class(outcome_class: Option<&TaskOutcomeClass>) -> TaskOutcomeStatus {
     match outcome_class {
-        Some(WORKSPACE_PR_CLOSED_CLASS | WORKSPACE_PR_FAILED_CLASS) => TaskOutcomeStatus::Failed,
+        Some(TaskOutcomeClass::WorkspacePrClosed | TaskOutcomeClass::WorkspacePrFailed) => {
+            TaskOutcomeStatus::Failed
+        }
         Some(
-            WORKSPACE_PR_MERGED_CLASS
-            | WORKSPACE_PR_MERGED_CLEAN_CLASS
-            | WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS,
+            TaskOutcomeClass::WorkspacePrMerged
+            | TaskOutcomeClass::WorkspacePrMergedClean
+            | TaskOutcomeClass::WorkspacePrMergedWithFollowups,
         ) => TaskOutcomeStatus::Succeeded,
         _ => TaskOutcomeStatus::Unknown,
     }
 }
 
-fn terminal_pr_class_rank(outcome_class: Option<&str>) -> u8 {
+fn terminal_pr_class_rank(outcome_class: Option<&TaskOutcomeClass>) -> u8 {
     match outcome_class {
-        Some(WORKSPACE_PR_CLOSED_CLASS | WORKSPACE_PR_FAILED_CLASS) => 1,
-        Some(WORKSPACE_PR_MERGED_CLASS) => 2,
-        Some(WORKSPACE_PR_MERGED_CLEAN_CLASS | WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS) => 3,
+        Some(TaskOutcomeClass::WorkspacePrClosed | TaskOutcomeClass::WorkspacePrFailed) => 1,
+        Some(TaskOutcomeClass::WorkspacePrMerged) => 2,
+        Some(
+            TaskOutcomeClass::WorkspacePrMergedClean
+            | TaskOutcomeClass::WorkspacePrMergedWithFollowups,
+        ) => 3,
         _ => 0,
     }
 }
@@ -117,7 +125,7 @@ pub fn resolve_task_outcome_upsert(
 ) -> ResolvedTaskOutcomeUpsert {
     let incoming_is_terminal = is_canonical_terminal_pr_outcome(&incoming);
     if incoming_is_terminal {
-        incoming.status = terminal_pr_status_for_class(incoming.outcome_class.as_deref());
+        incoming.status = terminal_pr_status_for_class(incoming.outcome_class.as_ref());
     }
 
     let Some(existing) = existing else {
@@ -128,8 +136,8 @@ pub fn resolve_task_outcome_upsert(
     };
 
     if incoming_is_terminal && is_canonical_terminal_pr_outcome(existing) {
-        if terminal_pr_class_rank(incoming.outcome_class.as_deref())
-            < terminal_pr_class_rank(existing.outcome_class.as_deref())
+        if terminal_pr_class_rank(incoming.outcome_class.as_ref())
+            < terminal_pr_class_rank(existing.outcome_class.as_ref())
         {
             return ResolvedTaskOutcomeUpsert {
                 outcome: existing.clone(),
@@ -154,7 +162,7 @@ pub struct UpsertTaskOutcomeInput {
 
 #[derive(Debug, Clone, Default)]
 pub struct TaskOutcomeListOptions {
-    pub source: Option<String>,
+    pub source: Option<TaskOutcomeSource>,
     pub status: Option<TaskOutcomeStatus>,
 }
 
@@ -165,7 +173,7 @@ pub trait TaskOutcomeRepository: Send + Sync {
     async fn get_by_dedupe(
         &self,
         project_id: &ProjectId,
-        source: &str,
+        source: TaskOutcomeSource,
         source_ref_kind: &str,
         source_ref_id: &str,
     ) -> AppResult<Option<TaskOutcome>>;

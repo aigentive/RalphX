@@ -10,9 +10,10 @@ use crate::domain::entities::{
     task_metadata::StopRetryingReason, ChatContextType, ExecutionFailureSource,
     ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
     ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus,
-    NotificationCategory, NotificationSeverity, NotificationTargetKind, Project, Task,
+    MergeRecoveryMetadata, NotificationCategory, NotificationSeverity, NotificationTargetKind,
+    Project, Task,
 };
-use crate::domain::repositories::NotificationRepository;
+use crate::domain::repositories::{NotificationRepository, TaskOutcomeListOptions};
 use crate::domain::services::RunningAgentKey;
 use crate::infrastructure::memory::MemoryNotificationRepository;
 
@@ -72,6 +73,52 @@ async fn seed_execution_task(app_state: &AppState, status: InternalStatus) -> Ta
     task.internal_status = status;
     app_state.task_repo.create(task.clone()).await.unwrap();
     task
+}
+
+#[tokio::test]
+async fn merge_timeout_persists_authority_before_attempt_scoped_outcome() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state)
+        .with_task_outcome_repo(Arc::clone(&app_state.task_outcome_repo));
+    let task = seed_execution_task(&app_state, InternalStatus::Merging).await;
+
+    reconciler
+        .record_merge_timeout_event(&task, Duration::minutes(10))
+        .await;
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = MergeRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovery.active_attempt(), 1);
+
+    let outcomes = app_state
+        .task_outcome_repo
+        .list_by_project(&task.project_id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    let timeout = &outcomes[0];
+    assert_eq!(timeout.source_ref_kind, "merge_attempt");
+    assert_eq!(
+        timeout.source_ref_id,
+        format!("{}:attempt:1", task.id.as_str())
+    );
+    assert_eq!(
+        timeout.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("merge_timeout")
+    );
+    assert_eq!(timeout.evidence_json["attempt"], 1);
+    assert_eq!(
+        timeout.failure_fingerprint.as_deref().map(str::len),
+        Some(64)
+    );
 }
 
 #[tokio::test]

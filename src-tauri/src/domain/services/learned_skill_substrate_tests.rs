@@ -7,7 +7,8 @@ use serde_json::json;
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     MemoryBucket, MemoryEntry, MemoryEntryId, ProjectSkill, ProjectSkillId,
-    ProjectSkillLifecycleStatus, SkillUsageEventId, TaskOutcomeId, TaskOutcomeStatus,
+    ProjectSkillLifecycleStatus, SkillUsageEventId, SkillUsageInjectionKind, TaskOutcomeId,
+    TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     MemoryEntryRepository, ProjectSkillListOptions, ProjectSkillRepository,
@@ -16,11 +17,11 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::learned_skill_substrate::{
     new_empty_task_outcome, new_skill_usage_event, MemoryToProjectSkillPromotionService,
-    ProjectSkillAgingStatus, ProjectSkillEvidenceLevel, ProjectSkillImportApplyInput,
-    ProjectSkillImportCandidate, ProjectSkillImportDecision, ProjectSkillImportPreviewInput,
-    ProjectSkillImportPreviewService, ProjectSkillReportOptions, ProjectSkillReportService,
-    ProjectSkillService, PromoteMemoryToProjectSkillInput, SkillUsageService,
-    UpdateProjectSkillContentInput,
+    OutcomeLedgerService, ProjectSkillAgingStatus, ProjectSkillEvidenceLevel,
+    ProjectSkillImportApplyInput, ProjectSkillImportCandidate, ProjectSkillImportDecision,
+    ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
+    ProjectSkillReportService, ProjectSkillService, PromoteMemoryToProjectSkillInput,
+    SkillUsageService, UpdateProjectSkillContentInput,
 };
 use crate::testing::{
     InMemoryMemoryEntryRepository, MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
@@ -257,7 +258,7 @@ async fn project_skill_service_lifecycle_and_usage_services_work_together() {
         .record_usage(new_skill_usage_event(
             project_id.clone(),
             approved.id,
-            "compact_index",
+            SkillUsageInjectionKind::CompactIndex,
         ))
         .await
         .unwrap();
@@ -266,6 +267,30 @@ async fn project_skill_service_lifecycle_and_usage_services_work_together() {
         .await
         .unwrap();
     assert_eq!(usage.len(), 1);
+}
+
+#[tokio::test]
+async fn outcome_ledger_rejects_compatibility_source_without_writing() {
+    let repo = Arc::new(MemoryTaskOutcomeRepository::new());
+    let service = OutcomeLedgerService::new(repo.clone());
+    let project_id = ProjectId::from_string("project-compat".to_string());
+
+    let error = service
+        .record_outcome(new_empty_task_outcome(
+            project_id.clone(),
+            TaskOutcomeSource::TaskPipeline,
+            "task",
+            "task-1",
+        ))
+        .await
+        .expect_err("compatibility-only source must not be emitted");
+
+    assert!(error.to_string().contains("read-only compatibility"));
+    assert!(repo
+        .list_by_project(&project_id, Default::default())
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -604,8 +629,12 @@ async fn project_skill_report_cards_are_descriptive_until_min_n_is_met() {
     skill.created_at = now - Duration::days(10);
     let skill = skill_repo.create(skill).await.unwrap();
 
-    let mut success =
-        new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-1");
+    let mut success = new_empty_task_outcome(
+        project_id.clone(),
+        TaskOutcomeSource::Review,
+        "review_note",
+        "review-1",
+    );
     success.status = TaskOutcomeStatus::Succeeded;
     outcome_repo
         .upsert(UpsertTaskOutcomeInput {
@@ -613,8 +642,12 @@ async fn project_skill_report_cards_are_descriptive_until_min_n_is_met() {
         })
         .await
         .unwrap();
-    let mut failure =
-        new_empty_task_outcome(project_id.clone(), "review", "review_note", "review-2");
+    let mut failure = new_empty_task_outcome(
+        project_id.clone(),
+        TaskOutcomeSource::Review,
+        "review_note",
+        "review-2",
+    );
     failure.status = TaskOutcomeStatus::Failed;
     outcome_repo
         .upsert(UpsertTaskOutcomeInput {
@@ -627,8 +660,11 @@ async fn project_skill_report_cards_are_descriptive_until_min_n_is_met() {
         .into_iter()
         .enumerate()
     {
-        let mut event =
-            new_skill_usage_event(project_id.clone(), skill.id.clone(), "compact_index");
+        let mut event = new_skill_usage_event(
+            project_id.clone(),
+            skill.id.clone(),
+            SkillUsageInjectionKind::CompactIndex,
+        );
         event.outcome_id = outcome_id;
         event.created_at = now - Duration::days(index as i64);
         usage_repo.record(event).await.unwrap();

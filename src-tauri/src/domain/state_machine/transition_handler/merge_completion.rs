@@ -15,7 +15,8 @@ use crate::domain::entities::{
         CleanupPhase, MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind,
         MergeRecoveryMetadata, MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
     },
-    InternalStatus, Project, Task, TaskCategory, TaskId, TaskOutcomeStatus,
+    InternalStatus, Project, Task, TaskCategory, TaskId, TaskOutcomeClass, TaskOutcomeSource,
+    TaskOutcomeStatus,
 };
 use crate::domain::repositories::{TaskOutcomeRepository, TaskRepository};
 use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
@@ -54,12 +55,12 @@ async fn record_merge_completion_outcome(
 
     let mut outcome = new_empty_task_outcome(
         project.id.clone(),
-        "merge",
+        TaskOutcomeSource::Merge,
         "task",
         task.id.as_str().to_string(),
     );
     outcome.task_id = Some(task.id.as_str().to_string());
-    outcome.outcome_class = Some("merge_completed".to_string());
+    outcome.outcome_class = Some(TaskOutcomeClass::MergeCompleted);
     outcome.status = TaskOutcomeStatus::Succeeded;
     outcome.evidence_json = serde_json::json!({
         "task_id": task.id.as_str(),
@@ -425,13 +426,7 @@ async fn complete_merge_internal_impl(
         .unwrap_or(None)
         .unwrap_or_else(MergeRecoveryMetadata::new);
 
-    // Count total retry attempts
-    let attempt_count = recovery
-        .events
-        .iter()
-        .filter(|e| matches!(e.kind, MergeRecoveryEventKind::AutoRetryTriggered))
-        .count() as u32
-        + 1;
+    let attempt_count = recovery.active_attempt();
 
     let success_event = MergeRecoveryEvent::new(
         MergeRecoveryEventKind::AttemptSucceeded,

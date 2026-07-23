@@ -11,8 +11,8 @@ use super::{
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     ProjectSkill, ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus,
-    ProjectSkillVersion, SkillUsageEvent, SkillUsageEventId, TaskOutcome, TaskOutcomeId,
-    TaskOutcomeStatus,
+    ProjectSkillVersion, SkillUsageEvent, SkillUsageEventId, SkillUsageInjectionKind, TaskOutcome,
+    TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
@@ -42,7 +42,7 @@ fn task_outcome(status: TaskOutcomeStatus, outcome_class: Option<&str>) -> TaskO
     TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: ProjectId::from_string("project-1".to_string()),
-        source: "task_pipeline".to_string(),
+        source: TaskOutcomeSource::TaskPipeline,
         source_ref_kind: "task".to_string(),
         source_ref_id: "task-1".to_string(),
         task_id: Some("task-1".to_string()),
@@ -52,9 +52,10 @@ fn task_outcome(status: TaskOutcomeStatus, outcome_class: Option<&str>) -> TaskO
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: outcome_class.map(str::to_string),
+        outcome_class: outcome_class.map(TaskOutcomeClass::from),
         status,
         evidence_json: json!({ "summary": "evidence" }),
+        failure_fingerprint: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some("session-1".to_string()),
         created_at: now,
@@ -385,7 +386,10 @@ async fn task_outcome_upsert_upgrades_class_without_duplicate() {
         .unwrap();
 
     assert_eq!(updated.status, TaskOutcomeStatus::Eligible);
-    assert_eq!(updated.outcome_class.as_deref(), Some("merge_passed"));
+    assert_eq!(
+        updated.outcome_class.as_ref().map(TaskOutcomeClass::as_str),
+        Some("merge_passed")
+    );
 
     let rows = repo
         .list_by_project(
@@ -401,7 +405,7 @@ async fn task_outcome_upsert_upgrades_class_without_duplicate() {
 async fn task_outcomes_filter_by_source_and_status_and_get_missing() {
     let repo = SqliteTaskOutcomeRepository::from_shared(shared_test_connection());
     let mut failed = task_outcome(TaskOutcomeStatus::Failed, Some("review_failed"));
-    failed.source = "github_pr_review".to_string();
+    failed.source = TaskOutcomeSource::GithubPrReview;
     failed.source_ref_kind = "pull_request".to_string();
     failed.source_ref_id = "42:review".to_string();
     let failed_id = failed.id.clone();
@@ -410,7 +414,7 @@ async fn task_outcomes_filter_by_source_and_status_and_get_missing() {
         .unwrap();
 
     let mut succeeded = task_outcome(TaskOutcomeStatus::Succeeded, Some("merge_passed"));
-    succeeded.source = "agent_workspace_pr".to_string();
+    succeeded.source = TaskOutcomeSource::AgentWorkspacePr;
     succeeded.source_ref_kind = "pull_request".to_string();
     succeeded.source_ref_id = "42:terminal:merged".to_string();
     repo.upsert(UpsertTaskOutcomeInput { outcome: succeeded })
@@ -421,7 +425,7 @@ async fn task_outcomes_filter_by_source_and_status_and_get_missing() {
         .list_by_project(
             &ProjectId::from_string("project-1".to_string()),
             TaskOutcomeListOptions {
-                source: Some("github_pr_review".to_string()),
+                source: Some(TaskOutcomeSource::GithubPrReview),
                 status: Some(TaskOutcomeStatus::Failed),
             },
         )
@@ -497,7 +501,7 @@ async fn project_skill_lifecycle_and_usage_round_trip() {
         provider_harness: Some("claude".to_string()),
         stage: Some("execution".to_string()),
         bucket: Some("execution".to_string()),
-        injection_kind: "compact_index".to_string(),
+        injection_kind: SkillUsageInjectionKind::CompactIndex,
         outcome_id: None,
         metadata_json: json!({ "selected": true }),
         created_at: Utc::now(),
@@ -825,7 +829,7 @@ async fn usage_events_filter_by_skill_and_run() {
                 provider_harness: Some("codex".to_string()),
                 stage: Some("execution".to_string()),
                 bucket: Some("execution".to_string()),
-                injection_kind: "compact_index".to_string(),
+                injection_kind: SkillUsageInjectionKind::CompactIndex,
                 outcome_id: Some(TaskOutcomeId::from_string("outcome-1".to_string())),
                 metadata_json: json!({ "run_id": run_id }),
                 created_at: Utc::now(),

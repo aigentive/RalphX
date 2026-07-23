@@ -329,6 +329,9 @@ mod v20260723111500_project_skill_evidence_batches_tests;
 mod v20260723130204_archive_legacy_project_skill_drafts;
 #[cfg(test)]
 mod v20260723130204_archive_legacy_project_skill_drafts_tests;
+mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints;
+#[cfg(test)]
+mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints_tests;
 mod v20260616182441_external_issue_links;
 #[cfg(test)]
 mod v20260616182441_external_issue_links_tests;
@@ -630,7 +633,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260723130204;
+pub const SCHEMA_VERSION: i64 = 20260723143416;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1734,6 +1737,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260723130204,
         name: "archive_legacy_project_skill_drafts",
         migrate: v20260723130204_archive_legacy_project_skill_drafts::migrate,
+    },
+    Migration {
+        version: 20260723143416,
+        name: "typed_ledger_sources_classes_failure_fingerprints",
+        migrate: v20260723143416_typed_ledger_sources_classes_failure_fingerprints::migrate,
     },
 ];
 

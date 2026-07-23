@@ -212,7 +212,10 @@ async fn archive_closes_workspace_pr_only_when_requested() {
         .expect("archive outcome should be readable");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_PR_CLOSED_CLASS)
     );
     assert_eq!(
@@ -366,7 +369,7 @@ async fn archive_without_pr_records_one_conversation_abandonment_outcome() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
@@ -374,7 +377,10 @@ async fn archive_without_pr_records_one_conversation_abandonment_outcome() {
         .expect("abandonment outcome should be readable");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_SESSION_ABANDONED_CLASS)
     );
 }
@@ -408,7 +414,7 @@ async fn archive_without_pr_preserves_publish_failure_classification() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 ..TaskOutcomeListOptions::default()
             },
         )
@@ -416,7 +422,10 @@ async fn archive_without_pr_preserves_publish_failure_classification() {
         .expect("publish failure outcome should be readable");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some(WORKSPACE_PUBLISH_FAILED_CLASS)
     );
     assert_eq!(
@@ -646,7 +655,7 @@ async fn archive_skips_remote_close_for_terminal_workspace_pr() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
                 ..Default::default()
             },
         )
@@ -919,7 +928,7 @@ async fn archive_without_pr_close_request_preserves_open_workspace_pr() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
                 ..Default::default()
             },
         )

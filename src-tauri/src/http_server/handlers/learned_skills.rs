@@ -19,7 +19,7 @@ use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::ChatConversationId;
 use crate::domain::entities::{
     ChatContextType, MemoryEntryId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus,
-    TaskOutcomeStatus,
+    TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ProjectSkillListOptions, SkillUsageListOptions, UpsertTaskOutcomeInput,
@@ -39,9 +39,9 @@ use crate::infrastructure::tool_paths::{resolve_gh_cli_path, resolve_git_cli_pat
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 const GIT_HISTORY_SCAN_LIMIT: usize = 50;
-const GIT_HISTORY_DISTILL_SOURCE: &str = "git_commit_history";
+const GIT_HISTORY_DISTILL_SOURCE: TaskOutcomeSource = TaskOutcomeSource::GitCommitHistory;
 const GITHUB_PR_HISTORY_SCAN_LIMIT: usize = 25;
-const GITHUB_PR_DISTILL_SOURCE: &str = "github_pr_history";
+const GITHUB_PR_DISTILL_SOURCE: TaskOutcomeSource = TaskOutcomeSource::GithubPrHistory;
 
 #[derive(Debug, Clone, Default)]
 struct GitHistoryIngestSummary {
@@ -258,12 +258,12 @@ pub async fn process_conversation_project_skills(
     let evidence = build_conversation_skill_evidence(&conversation_id, &messages);
     let mut outcome = new_empty_task_outcome(
         project_id.clone(),
-        "agent_conversation",
+        TaskOutcomeSource::AgentConversation,
         "conversation",
         conversation_id.clone(),
     );
     outcome.conversation_id = Some(conversation_id);
-    outcome.outcome_class = Some("conversation_skill_candidate".to_string());
+    outcome.outcome_class = Some(TaskOutcomeClass::ConversationSkillCandidate);
     outcome.status = TaskOutcomeStatus::Eligible;
     outcome.evidence_json = evidence;
     if let Some(harness) = conversation.provider_harness {
@@ -466,7 +466,15 @@ pub async fn distill_project_skills(
 ) -> Result<Json<DistillProjectSkillsResponse>, HttpError> {
     let project_id = ProjectId::from_string(req.project_id);
     assert_project_id_scope(&project_id, &scope)?;
-    let requested_source = req.source.clone();
+    let requested_source = req
+        .source
+        .as_deref()
+        .map(str::parse::<TaskOutcomeSource>)
+        .transpose()
+        .map_err(|error| HttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: Some(error.to_string()),
+        })?;
     let limit = req.limit.unwrap_or(10).clamp(1, 10);
     let include_git_history = req.include_git_history.unwrap_or(false);
     let include_github_pr_history = req.include_github_pr_history.unwrap_or(false);
@@ -678,7 +686,7 @@ async fn ingest_recent_git_history_outcomes(
             commit.sha.clone(),
         );
         outcome.status = TaskOutcomeStatus::Eligible;
-        outcome.outcome_class = Some("git_history_commit".to_string());
+        outcome.outcome_class = Some(TaskOutcomeClass::GitHistoryCommit);
         outcome.evidence_json = serde_json::json!({
             "source": "git_log",
             "commit_sha": commit.sha,
@@ -739,7 +747,7 @@ async fn ingest_recent_github_pr_outcomes(
             Some("CLOSED") => TaskOutcomeStatus::Eligible,
             _ => TaskOutcomeStatus::Eligible,
         };
-        outcome.outcome_class = Some("github_pr_history".to_string());
+        outcome.outcome_class = Some(TaskOutcomeClass::GithubPrHistory);
         // Redact the free-text PR title before it lands in evidence_json: this
         // path feeds the distiller and can reach a committed SKILL.md, so it must
         // be scrubbed just like the enriched single-PR path.
