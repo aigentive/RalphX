@@ -60,6 +60,43 @@ export async function seedMergedWorkspace(
         publicationPushStatus: "pushed",
       };
       seedMockAgentConversationWorkspace(terminalWorkspace);
+      const { prKeys } = await import("/src/hooks/usePullRequestDetail");
+      window.__queryClient.setQueryData(
+        prKeys.detail({
+          projectId: terminalWorkspace.projectId,
+          prNumber: terminalWorkspace.publicationPrNumber,
+        }),
+        {
+          state: "loaded",
+          origin: "ownedOutbound",
+          description: {
+            number: terminalWorkspace.publicationPrNumber,
+            title: "Merged publish history",
+            body: "Historical workspace changes remain available after merge.",
+            author: "ralphx",
+            createdAt,
+            url: terminalWorkspace.publicationPrUrl,
+            state: "merged",
+            isDraft: false,
+            headRefName: terminalWorkspace.branchName,
+            baseRefName: "main",
+          },
+          checks: [],
+          reviewSummary: {
+            reviewDecision: "",
+            latestChangesRequestedAuthor: null,
+            latestChangesRequestedBody: null,
+            latestChangesRequestedSubmittedAt: null,
+            latestChangesRequestedComments: [],
+          },
+          issueComments: [],
+          reviewThread: [],
+          rxConversations: [],
+          linkedTickets: [],
+          sourcesUnavailable: [],
+        },
+        { updatedAt: Date.now() + 60 * 60 * 1000 },
+      );
       window.__queryClient.removeQueries({ queryKey: ["agents", "sidebar-conversations"] });
       window.__queryClient.removeQueries({ queryKey: ["agents", "project-conversations"] });
     },
