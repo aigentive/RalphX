@@ -1,0 +1,149 @@
+name: Stable Release Control
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "promote makes candidate_tag Stable; halt restores restore_tag after demoting bad_tag"
+        required: true
+        type: choice
+        default: promote
+        options:
+          - promote
+          - halt
+      candidate_tag:
+        description: "Promote only: exact vX.Y.Z prerelease tag"
+        required: false
+        type: string
+        default: ""
+      bad_tag:
+        description: "Halt only: exact current Stable vX.Y.Z tag"
+        required: false
+        type: string
+        default: ""
+      restore_tag:
+        description: "Halt only: exact derived prior Stable vX.Y.Z tag"
+        required: false
+        type: string
+        default: ""
+      linux_runner:
+        description: "Runner to use for Stable release control"
+        required: true
+        type: choice
+        default: blacksmith
+        options:
+          - blacksmith
+          - depot
+          - github-hosted
+          - self-hosted
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-mutation-lane
+  cancel-in-progress: false
+
+env:
+  PUBLIC_RELEASES_REPO: ${{ github.repository }}
+  HOMEBREW_TAP_REPO: aigentive/homebrew-ralphx
+
+jobs:
+  reconcile-authorities:
+    name: Reconcile Stable GitHub and pointer authorities
+    runs-on: ${{ fromJSON(inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
+    timeout-minutes: 20
+    outputs:
+      selected_tag: ${{ steps.control.outputs.selected_tag }}
+      operation: ${{ steps.control.outputs.operation }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      CONTROL_OPERATION: ${{ inputs.operation }}
+      CONTROL_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+      CONTROL_BAD_TAG: ${{ inputs.bad_tag }}
+      CONTROL_RESTORE_TAG: ${{ inputs.restore_tag }}
+    steps:
+      - name: Checkout release automation
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-support
+
+      - name: Preflight Homebrew credentials and tap access
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${HOMEBREW_TAP_TOKEN:-}" ]] || {
+            echo "Missing required secret: HOMEBREW_TAP_TOKEN" >&2
+            exit 1
+          }
+          echo "::add-mask::${HOMEBREW_TAP_TOKEN}"
+          git ls-remote --exit-code \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${HOMEBREW_TAP_REPO}.git" \
+            refs/heads/main >/dev/null || {
+              echo "Authenticated Homebrew tap main is unreadable." >&2
+              exit 1
+            }
+
+      - name: Validate and reconcile requested Stable state
+        id: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${GH_TOKEN:-}" ]] || {
+            echo "Missing GitHub token for Stable release control." >&2
+            exit 1
+          }
+          bash workflow-support/scripts/reconcile-stable-release-state.sh \
+            --operation "${CONTROL_OPERATION}" \
+            --candidate-tag "${CONTROL_CANDIDATE_TAG}" \
+            --bad-tag "${CONTROL_BAD_TAG}" \
+            --restore-tag "${CONTROL_RESTORE_TAG}" \
+            --repo "${PUBLIC_RELEASES_REPO}" \
+            --work-dir stable-control \
+            --output stable-control/result.env
+          while IFS='=' read -r key value; do
+            case "${key}" in
+              selected_tag|operation)
+                echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
+                ;;
+              *)
+                echo "Unexpected Stable control result field: ${key}" >&2
+                exit 1
+                ;;
+            esac
+          done < stable-control/result.env
+
+      - name: Reconcile staged Stable Homebrew cask
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${HOMEBREW_TAP_TOKEN:-}" ]] || {
+            echo "Missing required secret: HOMEBREW_TAP_TOKEN" >&2
+            exit 1
+          }
+          echo "::add-mask::${HOMEBREW_TAP_TOKEN}"
+          tag=""
+          while IFS='=' read -r key value; do
+            case "${key}" in
+              selected_tag)
+                tag="${value}"
+                ;;
+              operation)
+                ;;
+              *)
+                echo "Unexpected Stable control result field: ${key}" >&2
+                exit 1
+                ;;
+            esac
+          done < stable-control/result.env
+          [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Stable control returned an invalid selected tag." >&2
+            exit 1
+          }
+          bash workflow-support/scripts/reconcile-homebrew-cask.sh \
+            --repo-url "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${HOMEBREW_TAP_REPO}.git" \
+            --expected-cask stable-control/staged-homebrew-cask.rb \
+            --tag "${tag}" \
+            --work-dir stable-homebrew

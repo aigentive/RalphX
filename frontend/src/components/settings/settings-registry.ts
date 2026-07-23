@@ -18,6 +18,7 @@ export type SettingsSectionId =
   | "clickup"
   | "granola"
   | "mcp"
+  | "updates"
   | "accessibility"
   | "notifications";
 
@@ -66,6 +67,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "granola", groupId: "integrations", label: "Granola" },
   { id: "api-keys", groupId: "access", label: "API Keys" },
   { id: "external-mcp", groupId: "access", label: "External MCP" },
+  { id: "updates", groupId: "preferences", label: "Updates" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },
   { id: "notifications", groupId: "preferences", label: "Notifications" },
 ];

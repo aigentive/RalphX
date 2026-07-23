@@ -118,5 +118,10 @@ assert_contains "${WORKFLOW_FILE}" '--current-version "${current_version}"'
 assert_contains "${WORKFLOW_FILE}" '--previous-tag "${analysis_from}"'
 assert_contains "${ROOT_DIR}/docs/release-process.md" 'release_notes_from'
 assert_contains "${ROOT_DIR}/release-notes/README.md" 'release_notes_from'
+if grep -Fq -- '-f "prerelease=true"' "${WORKFLOW_FILE}"; then
+  fail "Daily Release must not dispatch the removed prerelease input"
+fi
+assert_contains "${ROOT_DIR}/.github/workflows/release.yml" 'raw_prerelease="true"'
+assert_contains "${ROOT_DIR}/.github/workflows/release-publish.yml" 'Release Publish only accepts prerelease build metadata.'
 
 echo "PASS: Daily Release notes-base override is validated and wired"

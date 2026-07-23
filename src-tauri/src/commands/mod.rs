@@ -95,6 +95,9 @@ pub mod test_data_commands;
 pub mod ticketing_commands;
 pub mod ui_commands;
 pub mod unified_chat_commands;
+pub mod update_channel_commands;
+#[cfg(test)]
+mod update_channel_commands_tests;
 pub mod validation_commands;
 pub mod workflow_commands;
 pub mod workspace_open_commands;
@@ -402,6 +405,7 @@ pub use repository_settings_commands::{
     get_repository_settings, update_repository_settings, RepositorySettingsResponse,
     UpdateRepositorySettingsInput,
 };
+pub use update_channel_commands::{get_update_channel, set_update_channel};
 // Git commands (Phase 66 - Per-task branch isolation)
 pub use git_commands::{
     change_project_git_mode, cleanup_task_branch, get_task_commits, get_task_diff_stats,
