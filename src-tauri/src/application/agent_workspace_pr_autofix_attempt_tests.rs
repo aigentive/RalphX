@@ -429,6 +429,31 @@ async fn completion_authority_fails_closed_for_missing_corrupt_or_wrong_owner_id
 }
 
 #[tokio::test]
+async fn completion_authority_fails_closed_for_malformed_pr_autofix_fingerprint() {
+    let repo = MemoryAgentRunRepository::new();
+    let conversation_id = ChatConversationId::new();
+    let caller_id = create_attempt(
+        &repo,
+        conversation_id.clone(),
+        "malformed-fingerprint",
+        AgentRunStatus::Running,
+    )
+    .await;
+
+    assert_eq!(
+        load_pr_autofix_completion_authority(
+            &repo,
+            &conversation_id,
+            42,
+            Some(&caller_id.to_string()),
+        )
+        .await
+        .unwrap(),
+        PrAutofixCompletionAuthority::Invalid
+    );
+}
+
+#[tokio::test]
 async fn completion_authority_propagates_repository_read_failures() {
     let repo = FailingAuthorityReadRepository;
     let conversation_id = ChatConversationId::new();
