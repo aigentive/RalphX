@@ -52,6 +52,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listWorkspaceOpenTargetsMock: vi.fn(),
   openAgentConversationWorkspacePathMock: vi.fn(),
   listConversationsMock: vi.fn(),
+  listAgentConversationWorkspacePublicationEventsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
   setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
@@ -196,6 +197,7 @@ const {
   listWorkspaceOpenTargetsMock,
   openAgentConversationWorkspacePathMock,
   listConversationsMock,
+  listAgentConversationWorkspacePublicationEventsMock,
   publishAgentConversationWorkspaceMock,
   updateWorkspaceFromBaseMock,
   setAgentConversationWorkspaceAutoPublishMock,
@@ -792,6 +794,8 @@ vi.mock("@/api/chat", () => ({
     listAgentConversationWorkspacesByProject: (...args: unknown[]) =>
       listAgentConversationWorkspacesByProjectMock(...args),
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
+    listAgentConversationWorkspacePublicationEvents: (...args: unknown[]) =>
+      listAgentConversationWorkspacePublicationEventsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
     updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
@@ -1090,7 +1094,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       onPublishWorkspace,
       workspace,
       projectBaseBranch,
-      isPublishingWorkspace,
+      publishAttempt,
     }: {
       conversation: AgentConversation | null;
       workspace?: AgentConversationWorkspace | null;
@@ -1100,6 +1104,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       publishSubTabRequest?: AgentPublishSubTabRequest | null;
       projectBaseBranch?: string | null;
       isPublishingWorkspace?: boolean;
+      publishAttempt?: { conversationId: string; startedAtMs: number } | null;
       onClose?: () => void;
       onFocusIdeationSessionForConversation?: (
         conversationId: string,
@@ -1125,12 +1130,21 @@ vi.mock("./AgentsArtifactPane", async () => {
         }
         data-automation-id={conversation?.automationId ?? ""}
       >
+        {onClose ? (
+          <button
+            type="button"
+            data-testid="agents-artifact-pane-close"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        ) : null}
         <AgentPublishPanel
           workspace={workspace ?? null}
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch ?? null}
           onPublishWorkspace={onPublishWorkspace}
-          isPublishingWorkspace={isPublishingWorkspace ?? false}
+          publishAttempt={publishAttempt ?? null}
           publishFocusRequest={publishFocusRequest ?? null}
           reviewContext={
             realPublishPanelState.reviewContext as AgentWorkspaceReviewContext | null
@@ -1512,8 +1526,6 @@ export function mockSessionWithData(
     planArtifactId: null,
     seedTaskId: null,
     parentSessionId: null,
-    teamMode: null,
-    teamConfig: null,
     createdAt: "2026-04-23T09:00:00Z",
     updatedAt: "2026-04-23T09:00:00Z",
     archivedAt: null,
@@ -1610,6 +1622,7 @@ export function setupAgentsViewTest() {
   listWorkspaceOpenTargetsMock.mockReset();
   openAgentConversationWorkspacePathMock.mockReset();
   listConversationsMock.mockReset();
+  listAgentConversationWorkspacePublicationEventsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
   updateWorkspaceFromBaseMock.mockReset();
   setAgentConversationWorkspaceAutoPublishMock.mockReset();
@@ -1864,6 +1877,7 @@ export function setupAgentsViewTest() {
     cacheStatus: null,
     reason: "no_reviewable_commits",
   });
+  listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([]);
   publishAgentConversationWorkspaceMock.mockResolvedValue({
     workspace: {
       conversationId: "conversation-2",
@@ -2177,7 +2191,6 @@ export function setupAgentsViewTest() {
     agentStatus: {},
     agentActivityLabels: {},
     isSending: {},
-    isTeamActive: {},
     lastAgentEventTimestamp: {},
     toolCallStartTimes: {},
     lastToolCallCompletionTimestamp: {},

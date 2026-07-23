@@ -1,35 +1,25 @@
 #!/bin/bash
 
-# find-debug-logs.sh — Search Claude Code debug logs by date, agent name, or ideation session
+# find-debug-logs.sh — Search Claude Code debug logs by date, agent name, or keyword
 # Usage: find-debug-logs.sh [options]
-#
-# Modes:
-#   Content search (default): greps debug log file contents
-#   DB cross-reference (-s):  queries RalphX DB to map agent names -> debug file UUIDs
 #
 # Options:
 #   -d, --date DATE          Search for logs from specific date (YYYY-MM-DD)
 #   -a, --agent NAME         Search for agent name (partial match)
 #   -k, --keywords WORDS     Search for keywords (comma-separated, any match)
 #   -t, --time HH:MM         Filter by file birth time (local, prefix match)
-#   -s, --session TITLE      DB mode: find debug logs for agents in an ideation session (title search)
 #   -v, --verbose            Show context + sample matches
-#   --db PATH                Path to RalphX DB (default: src-tauri/ralphx.db)
 #   -h, --help               Show this help message
 #
 # Examples:
 #   find-debug-logs.sh -d 2026-02-24 -t 12:13        # Files born on date near time
-#   find-debug-logs.sh -s "Block plan acceptance"     # DB lookup by ideation title
 #   find-debug-logs.sh -a "frontend-researcher" -v    # Content grep for agent name
 
 DEBUG_DIR="$HOME/.claude/debug"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DB_PATH="${SCRIPT_DIR}/../src-tauri/ralphx.db"
 DATE=""
 AGENT_NAME=""
 KEYWORDS=""
 TIME_FILTER=""
-SESSION_TITLE=""
 VERBOSE=0
 
 show_help() {
@@ -43,210 +33,17 @@ while [[ $# -gt 0 ]]; do
     -a|--agent) AGENT_NAME="$2"; shift 2 ;;
     -k|--keywords) KEYWORDS="$2"; shift 2 ;;
     -t|--time) TIME_FILTER="$2"; shift 2 ;;
-    -s|--session) SESSION_TITLE="$2"; shift 2 ;;
     -v|--verbose) VERBOSE=1; shift ;;
-    --db) DB_PATH="$2"; shift 2 ;;
     -h|--help) show_help; exit 0 ;;
     *) echo "Error: Unknown option $1"; show_help; exit 1 ;;
   esac
 done
 
-# ── DB cross-reference mode ──────────────────────────────────────────────────
-if [ -n "$SESSION_TITLE" ]; then
-  if [ ! -f "$DB_PATH" ]; then
-    echo "Error: RalphX DB not found at $DB_PATH (use --db to override)"
-    exit 1
-  fi
-
-  echo "Searching ideation sessions for: $SESSION_TITLE"
-  echo ""
-
-  # Find matching ideation sessions
-  SESSIONS=$(sqlite3 "$DB_PATH" "SELECT id, title, created_at FROM ideation_sessions WHERE title LIKE '%${SESSION_TITLE}%' ORDER BY created_at DESC LIMIT 10;")
-  if [ -z "$SESSIONS" ]; then
-    echo "No ideation sessions matching '$SESSION_TITLE'"
-    exit 1
-  fi
-
-  echo "Matching ideation sessions:"
-  echo "$SESSIONS" | while IFS='|' read -r sid stitle screated; do
-    echo "  $sid  $screated  $stitle"
-  done
-  echo ""
-
-  # For each session, find team_sessions with teammate spawn data
-  echo "$SESSIONS" | while IFS='|' read -r sid stitle screated; do
-    TEAM_DATA=$(sqlite3 "$DB_PATH" "SELECT id, team_name, teammate_json, created_at, disbanded_at FROM team_sessions WHERE context_id = '$sid' ORDER BY created_at DESC LIMIT 5;")
-    if [ -z "$TEAM_DATA" ]; then
-      echo "  No team sessions found for ideation $sid"
-      continue
-    fi
-
-    echo "Team sessions for: $stitle"
-    echo "$TEAM_DATA" | while IFS='|' read -r tid tname tjson tcreated tdisbanded; do
-      echo "  Team: $tname (created: $tcreated, disbanded: $tdisbanded)"
-
-      # Parse teammate_json to extract names and spawn times
-      # Uses python3 for reliable JSON parsing
-      echo "$tjson" | python3 -c "
-import json, sys, subprocess, os, re
-from datetime import datetime, timezone, timedelta
-
-data = json.load(sys.stdin)
-debug_dir = os.path.expanduser('~/.claude/debug')
-
-if not data:
-    print('    No teammates in this team session')
-    sys.exit(0)
-
-# Get all debug file birth times
-files = {}
-try:
-    result = subprocess.run(
-        ['stat', '-f', '%SB %N'] + [
-            os.path.join(debug_dir, f)
-            for f in os.listdir(debug_dir) if f.endswith('.txt')
-        ],
-        capture_output=True, text=True, timeout=10
-    )
-    for line in result.stdout.strip().split('\n'):
-        if not line:
-            continue
-        # Parse: 'Mon DD HH:MM:SS YYYY /path/to/file.txt'
-        parts = line.rsplit(' ', 1)
-        if len(parts) == 2:
-            timestr, filepath = parts
-            uuid = os.path.basename(filepath).replace('.txt', '')
-            files[uuid] = timestr
-except Exception as e:
-    print(f'    Warning: could not stat debug files: {e}')
-
-# Build candidate list: (uuid, file_utc_datetime) for all debug files
-candidates = []
-for uuid in files:
-    fpath = os.path.join(debug_dir, uuid + '.txt')
-    try:
-        with open(fpath, 'r') as f:
-            first_line = f.readline()
-        m = re.search(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)Z', first_line)
-        if m:
-            file_dt = datetime.fromisoformat(m.group(1)).replace(tzinfo=timezone.utc)
-            candidates.append((uuid, file_dt))
-    except:
-        pass
-
-# Sort teammates by spawn time for deterministic matching
-sorted_mates = sorted(data, key=lambda m: m.get('spawned_at', ''))
-used_uuids = set()
-
-for mate in sorted_mates:
-    name = mate.get('name', '?')
-    model = mate.get('model', '?')
-    role = mate.get('role', '?')
-    spawned = mate.get('spawned_at', '?')
-    status = mate.get('status', '?')
-    cost = mate.get('cost', {})
-    tokens = cost.get('input_tokens', 0) + cost.get('output_tokens', 0)
-    parent_session = mate.get('parent_session_id', '')
-
-    # Find closest unused debug file by birth time
-    best_match = None
-    best_delta = None
-    try:
-        spawn_dt = datetime.fromisoformat(spawned.replace('+00:00', '+00:00'))
-        for uuid, file_dt in candidates:
-            if uuid in used_uuids:
-                continue
-            delta = abs((file_dt - spawn_dt).total_seconds())
-            if delta < 5 and (best_delta is None or delta < best_delta):
-                best_delta = delta
-                best_match = uuid
-    except:
-        pass
-
-    if best_match:
-        used_uuids.add(best_match)
-
-    match_str = best_match + '.txt' if best_match else '(no match)'
-    delta_str = f' ({best_delta:.1f}s delta)' if best_delta is not None else ''
-    size_str = ''
-    if best_match:
-        fpath = os.path.join(debug_dir, best_match + '.txt')
-        try:
-            sz = os.path.getsize(fpath)
-            if sz > 1048576:
-                size_str = f' [{sz/1048576:.1f}MB]'
-            elif sz > 1024:
-                size_str = f' [{sz/1024:.0f}KB]'
-            else:
-                size_str = f' [{sz}B]'
-        except:
-            pass
-
-    # Find conversation JSONL in subagents directory
-    conv_file = '(not found)'
-    conv_size = ''
-    if parent_session:
-        projects_dir = os.path.expanduser('~/.claude/projects')
-        if os.path.isdir(projects_dir):
-            for proj in os.listdir(projects_dir):
-                sess_dir = os.path.join(projects_dir, proj, parent_session, 'subagents')
-                if os.path.isdir(sess_dir):
-                    # Search for JSONL files containing this agent's name
-                    for jf in sorted(os.listdir(sess_dir)):
-                        if not jf.endswith('.jsonl'):
-                            continue
-                        jpath = os.path.join(sess_dir, jf)
-                        try:
-                            with open(jpath, 'r') as fj:
-                                head = fj.read(4096)
-                            if name in head or role in head:
-                                sz = os.path.getsize(jpath)
-                                if sz > 1048576:
-                                    conv_size = f' [{sz/1048576:.1f}MB]'
-                                elif sz > 1024:
-                                    conv_size = f' [{sz/1024:.0f}KB]'
-                                else:
-                                    conv_size = f' [{sz}B]'
-                                conv_file = jpath
-                                break
-                        except:
-                            pass
-
-    print(f'    {name} ({model}, {status}, {tokens} tokens)')
-    print(f'      Spawned:  {spawned}')
-    print(f'      Debug:    {match_str}{delta_str}{size_str}')
-    print(f'      Convo:    {conv_file}{conv_size}')
-" 2>&1
-      echo ""
-    done
-  done
-
-  # Also check for agent_runs linked to the ideation conversation
-  if [ "$VERBOSE" -eq 1 ]; then
-    echo "Agent runs for this ideation session:"
-    sqlite3 "$DB_PATH" "
-      SELECT ar.id, ar.status, ar.started_at, ar.completed_at
-      FROM agent_runs ar
-      JOIN chat_conversations cc ON ar.conversation_id = cc.id
-      WHERE cc.context_id = (
-        SELECT id FROM ideation_sessions WHERE title LIKE '%${SESSION_TITLE}%' ORDER BY created_at DESC LIMIT 1
-      )
-      ORDER BY ar.started_at DESC LIMIT 10;
-    " | while IFS='|' read -r arid arstatus arstart arcomplete; do
-      echo "  $arid  $arstatus  $arstart -> $arcomplete"
-    done
-    echo ""
-  fi
-
-  exit 0
-fi
-
 # ── Content search mode (original) ──────────────────────────────────────────
 
 # Validate at least one criterion
 if [ -z "$DATE" ] && [ -z "$AGENT_NAME" ] && [ -z "$KEYWORDS" ] && [ -z "$TIME_FILTER" ]; then
-  echo "Error: Specify at least one search criterion (-d, -a, -k, -t, or -s)"
+  echo "Error: Specify at least one search criterion (-d, -a, -k, or -t)"
   show_help
   exit 1
 fi

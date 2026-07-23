@@ -14,7 +14,7 @@ use axum::Json;
 use ralphx_lib::application::plan_verification_service::{
     get_plan_verification_status, PlanVerificationStatusKind,
 };
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentRun, AgentRunActionKind, Artifact, ArtifactContent, ArtifactId, ArtifactMetadata,
@@ -45,13 +45,9 @@ use std::sync::Arc;
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_test());
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -66,13 +62,9 @@ async fn setup_model_native_verification_test_state() -> HttpServerState {
     ));
     let app_state = Arc::new(app_state);
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -82,13 +74,9 @@ async fn setup_disabled_provider_test_state() -> HttpServerState {
     app_state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
     let app_state = Arc::new(app_state);
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }
@@ -163,8 +151,6 @@ fn make_active_session() -> IdeationSession {
         updated_at: chrono::Utc::now(),
         archived_at: None,
         converted_at: None,
-        team_mode: None,
-        team_config_json: None,
         title_source: None,
         verification_status: Default::default(),
         verification_in_progress: false,
@@ -3051,13 +3037,9 @@ async fn test_6c_no_verification_children_returns_ok() {
 async fn setup_freeze_state(registry: Arc<MemoryRunningAgentRegistry>) -> HttpServerState {
     let app_state = Arc::new(AppState::new_sqlite_test_with_registry(registry));
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

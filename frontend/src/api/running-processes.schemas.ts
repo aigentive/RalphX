@@ -21,20 +21,6 @@ export const StepProgressSummarySchema = z.object({
 });
 
 /**
- * Teammate summary schema from Rust (snake_case)
- */
-export const TeammateSummarySchema = z.object({
-  name: z.string(),
-  status: z.string(),
-  step: z.string().optional(),
-  model: z.string().optional(),
-  color: z.string().optional(),
-  steps_completed: z.number().int().nonnegative().optional(),
-  steps_total: z.number().int().nonnegative().optional(),
-  wave: z.number().int().nonnegative().optional(),
-});
-
-/**
  * Running process schema from Rust (snake_case)
  */
 export const RunningProcessSchema = z.object({
@@ -46,10 +32,6 @@ export const RunningProcessSchema = z.object({
   trigger_origin: z.string().nullable(),
   task_branch: z.string().nullable(),
   agent_workspace: ExecutionTaskAgentWorkspaceSchema.nullable().optional(),
-  team_name: z.string().optional(),
-  teammates: z.array(TeammateSummarySchema).optional(),
-  current_wave: z.number().int().nonnegative().optional(),
-  total_waves: z.number().int().nonnegative().optional(),
 });
 
 /**
@@ -59,7 +41,6 @@ export const RunningIdeationSessionSchema = z.object({
   session_id: z.string(),
   title: z.string(),
   elapsed_seconds: z.number().int().nullable(),
-  team_mode: z.string().nullable(),
   is_generating: z.boolean(),
 });
 

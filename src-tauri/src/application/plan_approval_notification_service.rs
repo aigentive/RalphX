@@ -181,6 +181,7 @@ async fn should_defer_on_publish(
             run.action_context_id.as_deref() == Some(session.id.as_str())
                 && run.action_target_id.as_deref() == Some(artifact_id)
         }
+        Some(AgentRunActionKind::PrAutofix | AgentRunActionKind::WorkspaceReviewFixer) => false,
     }
 }
 
@@ -289,9 +290,17 @@ pub async fn release_deferred_plan_approval_for_conversation(
     else {
         return Ok(PlanApprovalNotificationDisposition::Skipped);
     };
+    if workspace.status != AgentConversationWorkspaceStatus::Active
+        || workspace.mode != AgentConversationWorkspaceMode::Plan
+    {
+        return Ok(PlanApprovalNotificationDisposition::Skipped);
+    }
     let Some(session_id) = workspace.linked_ideation_session_id else {
         return Ok(PlanApprovalNotificationDisposition::Skipped);
     };
+    if deferred_artifact_id(state, &session_id).await?.is_none() {
+        return Ok(PlanApprovalNotificationDisposition::Skipped);
+    }
     let status = get_plan_verification_status(state, &session_id).await?;
     if status.in_progress {
         return Ok(PlanApprovalNotificationDisposition::Deferred);

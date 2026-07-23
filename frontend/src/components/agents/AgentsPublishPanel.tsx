@@ -69,7 +69,6 @@ import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
-import { AgentsPublishProgressToast } from "./AgentsPublishProgressToast";
 import {
   PublishWorkspaceDialog,
   type PublishWorkspaceDialogPhase,
@@ -86,6 +85,7 @@ import {
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
   hasPublishedWorkspacePr,
+  isAgentWorkspacePublishActive,
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
@@ -98,15 +98,9 @@ import {
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentPublishSubTab } from "./agentPublishSubTab";
 import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
-import {
-  AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-  agentWorkspaceOperationErrorDetail,
-  agentWorkspaceOperationToastId,
-  agentWorkspaceOperationToastDescription,
-  markAgentWorkspaceOperationToastSettled,
-} from "./agentWorkspaceOperationToast";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
+import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -249,7 +243,7 @@ export function AgentPublishPanel({
   conversationTitle,
   projectBaseBranch,
   onPublishWorkspace,
-  isPublishingWorkspace,
+  publishAttempt,
   publishFocusRequest,
   reviewContext,
   onOpenReview,
@@ -265,7 +259,7 @@ export function AgentPublishPanel({
   conversationTitle?: string | null;
   projectBaseBranch?: string | null;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
-  isPublishingWorkspace: boolean;
+  publishAttempt: AgentWorkspacePublishAttempt | null;
   publishFocusRequest?: AgentPublishFocusRequest | null;
   reviewContext?: AgentWorkspaceReviewContext | null;
   onOpenReview?: () => void;
@@ -286,10 +280,6 @@ export function AgentPublishPanel({
     conversationId: string;
     open: boolean;
     phase: PublishWorkspaceDialogPhase;
-  } | null>(null);
-  const [localPublishState, setLocalPublishState] = useState<{
-    conversationId: string;
-    startedAtMs: number;
   } | null>(null);
   const [prSupervisionResultOverride, setPrSupervisionResultOverride] =
     useState<PrSupervisionResultOverride | null>(null);
@@ -327,15 +317,13 @@ export function AgentPublishPanel({
       };
     });
   }, [activeSubTab, conversationId]);
-  const currentLocalPublishState =
-    localPublishState?.conversationId === conversationId ? localPublishState : null;
-  const localPublishInFlight = currentLocalPublishState !== null;
-  const localPublishStartedAtMs = currentLocalPublishState?.startedAtMs ?? null;
+  const isPublishingWorkspace =
+    publishAttempt !== null || isAgentWorkspacePublishActive(workspace);
+  const publishStartedAtMs = publishAttempt?.startedAtMs ?? null;
   const currentPublishDialogState =
     publishDialogState?.conversationId === conversationId ? publishDialogState : null;
   const publishDialogOpen = currentPublishDialogState?.open ?? false;
   const publishDialogPhase = currentPublishDialogState?.phase ?? "confirm";
-  const toastConversationTitle = conversationTitle?.trim() || null;
   const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate({
     conversationTitle,
   });
@@ -381,14 +369,14 @@ export function AgentPublishPanel({
       chatApi.listAgentConversationWorkspacePublicationEvents(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 0,
-    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 1_500 : false,
+    refetchInterval: isPublishingWorkspace ? 1_500 : false,
   });
   const prAnnotationsQuery = useQuery({
     queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspacePrAnnotations(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId && hasPublishedPr,
     staleTime: 30_000,
-    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
+    refetchInterval: isPublishingWorkspace ? 5_000 : false,
   });
   const workspaceReviewHunkAnnotationsQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
@@ -400,7 +388,7 @@ export function AgentPublishPanel({
       !isRepairPending &&
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
-    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
+    refetchInterval: isPublishingWorkspace ? 5_000 : false,
   });
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
@@ -498,7 +486,6 @@ export function AgentPublishPanel({
       !shouldAutoRefreshFromBase ||
       isRepairPending ||
       isPublishingWorkspace ||
-      localPublishInFlight ||
       isUpdatingFromBase
     ) {
       return;
@@ -527,7 +514,6 @@ export function AgentPublishPanel({
     isPublishingWorkspace,
     isRepairPending,
     isUpdatingFromBase,
-    localPublishInFlight,
     runUpdateFromBase,
     shouldAutoRefreshFromBase,
     workspace,
@@ -704,18 +690,18 @@ export function AgentPublishPanel({
   const isBranchUpdateNeeded =
     !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
-  const isPublishingThisWorkspace = isPublishingWorkspace || localPublishInFlight;
+  const isPublishingThisWorkspace = isPublishingWorkspace;
   const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
   const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
   const latestActivePublishEvent = latestPublicationEventForActivePublish(
     publicationEvents,
-    localPublishStartedAtMs,
+    publishStartedAtMs,
   );
   const eventPipelineStatus = isPublishingThisWorkspace
     ? pipelineStatusFromPublicationEvent(latestActivePublishEvent)
     : null;
   const localPublishFallbackStatus =
-    localPublishStartedAtMs !== null && !eventPipelineStatus ? "checking" : null;
+    publishStartedAtMs !== null && !eventPipelineStatus ? "checking" : null;
   const workspacePipelineStatus =
     isPublishingThisWorkspace &&
     !PUBLISH_PIPELINE_EVENT_STEPS.has(workspace.publicationPushStatus ?? "")
@@ -840,6 +826,7 @@ export function AgentPublishPanel({
     (hasNoDetectedChanges && !isPipelinePrAutomationWorkspace) ||
     workspace.status === "missing";
   const publishButtonLabel = (() => {
+    if (isPublishingThisWorkspace) return "Publishing";
     if (terminalPublicationLabel) return terminalPublicationLabel;
     if (isManagedByTaskPipeline) return "Managed by Tasks";
     if (reviewBlocksPublish && reviewIsRunning) return "Reviewing";
@@ -922,6 +909,13 @@ export function AgentPublishPanel({
           "RalphX routed this workspace to the agent for repair. Publishing will resume after the repair completes.",
       };
     }
+    if (isPublishingThisWorkspace) {
+      return {
+        title: "Publishing workspace",
+        summary:
+          "Follow the publish pipeline below while RalphX commits and publishes this workspace.",
+      };
+    }
     if (hasPrConflict) {
       return {
         title: "Pull request conflicts",
@@ -971,13 +965,6 @@ export function AgentPublishPanel({
         title: "Publishing failed",
         summary:
           "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event.",
-      };
-    }
-    if (isPublishingThisWorkspace) {
-      return {
-        title: "Publishing workspace",
-        summary:
-          "Follow the publish pipeline below while RalphX commits and publishes this workspace.",
       };
     }
     if (hasPublishedPr && !autoPublishEnabled) {
@@ -1141,36 +1128,8 @@ export function AgentPublishPanel({
       open: true,
       phase: "publishing",
     });
-    setLocalPublishState({
-      conversationId: publishConversationId,
-      startedAtMs: Date.now(),
-    });
     void Promise.resolve(onPublishWorkspace!(publishConversationId))
-      .catch((error) => {
-        const publishToastId = agentWorkspaceOperationToastId(
-          publishConversationId,
-          "publish",
-        );
-        const description = agentWorkspaceOperationToastDescription(
-          toastConversationTitle,
-          agentWorkspaceOperationErrorDetail(error, "Failed to publish branch"),
-        );
-        markAgentWorkspaceOperationToastSettled(publishToastId);
-        toast.error(
-          "Failed to publish branch",
-          {
-            closeButton: true,
-            ...(description ? { description } : {}),
-            dismissible: true,
-            duration: AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
-            id: publishToastId,
-          },
-        );
-      })
       .finally(() => {
-        setLocalPublishState((current) =>
-          current?.conversationId === publishConversationId ? null : current,
-        );
         setPublishDialogState((current) =>
           current?.conversationId === publishConversationId ? null : current,
         );
@@ -1209,13 +1168,6 @@ export function AgentPublishPanel({
 
   return (
     <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
-      <AgentsPublishProgressToast
-        active={isPublishingThisWorkspace}
-        conversationTitle={toastConversationTitle}
-        conversationId={conversationId}
-        startedAtMs={localPublishStartedAtMs}
-        status={pipelineStatus}
-      />
       <Tabs
         className="@container flex w-full min-h-0 flex-1 flex-col"
         value={activeSubTab}
@@ -1248,6 +1200,16 @@ export function AgentPublishPanel({
                 >
                   <AlertTriangle className="h-3.5 w-3.5" />
                   Repair pending
+                </Button>
+              ) : isPublishingThisWorkspace ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  disabled
+                  data-testid="agents-publish-confirm"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {publishButtonLabel}
                 </Button>
               ) : hasPrConflict ? (
                 <Button

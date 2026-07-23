@@ -13,7 +13,6 @@ This removes the current mixed inventory (`orchestrator-ideation`, `chat-task`, 
 - All canonical agent names start with `ralphx-`
 - The second segment is the functional domain
 - The remaining segments describe the concrete purpose
-- Team variants append `-team-lead`
 - Read-only variants append `-readonly`
 - Specialist families keep a stable family prefix plus the specialization suffix
 - Runtime aliases may be kept temporarily during migration, but canonical config and generated assets should converge on the normalized names
@@ -37,7 +36,6 @@ This removes the current mixed inventory (`orchestrator-ideation`, `chat-task`, 
 |---|---|
 | `orchestrator-ideation` | `ralphx-ideation` |
 | `orchestrator-ideation-readonly` | `ralphx-ideation-readonly` |
-| `ideation-team-lead` | `ralphx-ideation-team-lead` |
 | `ideation-advocate` | `ralphx-ideation-advocate` |
 | `ideation-critic` | `ralphx-ideation-critic` |
 | `ideation-specialist-backend` | `ralphx-ideation-specialist-backend` |
@@ -47,7 +45,6 @@ This removes the current mixed inventory (`orchestrator-ideation`, `chat-task`, 
 | `chat-project` | `ralphx-chat-project` |
 | `ralphx-worker` | `ralphx-execution-worker` |
 | `ralphx-coder` | `ralphx-execution-coder` |
-| `ralphx-worker-team` | `ralphx-execution-team-lead` |
 | `ralphx-reviewer` | `ralphx-execution-reviewer` |
 | `ralphx-review-chat` | `ralphx-review-chat` |
 | `ralphx-review-history` | `ralphx-review-history` |

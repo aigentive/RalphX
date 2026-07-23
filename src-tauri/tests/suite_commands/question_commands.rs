@@ -2,9 +2,7 @@ use ralphx_lib::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
 };
 use ralphx_lib::application::interactive_notification_producer::question_notification_key;
-use ralphx_lib::application::{
-    AppState, QuestionAnswer, QuestionOption, QuestionState, TeamService, TeamStateTracker,
-};
+use ralphx_lib::application::{AppState, QuestionAnswer, QuestionOption, QuestionState};
 use ralphx_lib::commands::question_commands::{
     resolve_user_question, ResolveQuestionArgs, ResolveQuestionResponse,
 };
@@ -161,9 +159,6 @@ fn build_question_command_app(state: AppState) -> tauri::App<tauri::test::MockRu
     mock_builder()
         .manage(state)
         .manage(Arc::new(ExecutionState::new()))
-        .manage(Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        ))))
         .build(mock_context(noop_assets()))
         .expect("mock app should build")
 }
@@ -203,7 +198,6 @@ async fn resolving_question_marks_its_durable_notification_read() {
     let response = resolve_user_question(
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
-        app.state::<Arc<TeamService>>(),
         app.handle().clone(),
         ResolveQuestionArgs {
             request_id: "question-notification".to_string(),
@@ -305,7 +299,6 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
     let response = resolve_user_question(
         app.state::<AppState>(),
         app.state::<Arc<ExecutionState>>(),
-        app.state::<Arc<TeamService>>(),
         app.handle().clone(),
         ResolveQuestionArgs {
             request_id: "req-plan".to_string(),

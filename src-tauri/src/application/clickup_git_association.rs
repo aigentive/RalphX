@@ -278,20 +278,33 @@ pub async fn reconcile_clickup_pr_to_conversation(
         });
     }
 
+    // PR title and PR body are discovery-only evidence: RalphX's own title
+    // normalizer writes ticket prefixes into workspace PR titles (a title-based
+    // link would validate the normalizer's own output), and PR bodies can
+    // mention tickets as documentation examples. Only workspace-owned signals
+    // (branch name, branch-authored commit subjects) may authorize a
+    // ticket↔conversation link.
+    let link_evidence = ClickUpGitEvidence {
+        branch: input.evidence.branch.clone(),
+        title: String::new(),
+        body: None,
+        commit_subjects: input.evidence.commit_subjects.clone(),
+    };
+
     let mut validated = Vec::new();
     let mut retryable_errors = Vec::new();
     for candidate in candidates {
         match clickup.fetch_task(&candidate.lookup_key).await {
             Ok(task) => {
                 let identity = clickup_identity_from_task(&task);
-                if matching_clickup_evidence(&identity, &input.evidence).is_some()
-                    && !validated.iter().any(
-                        |(existing, _): &(ClickUpTaskContent, ClickUpTaskCandidate)| {
+                if let Some(matched) = matching_clickup_evidence(&identity, &link_evidence) {
+                    if !validated.iter().any(
+                        |(existing, _): &(ClickUpTaskContent, ClickUpGitEvidenceMatch)| {
                             existing.id.eq_ignore_ascii_case(&task.id)
                         },
-                    )
-                {
-                    validated.push((task, candidate));
+                    ) {
+                        validated.push((task, matched));
+                    }
                 }
             }
             Err(error) if clickup_lookup_error_is_retryable(&error) => {
@@ -314,16 +327,10 @@ pub async fn reconcile_clickup_pr_to_conversation(
         task_ids.sort();
         return Ok(ClickUpPrAssociationOutcome::Ambiguous { task_ids });
     }
-    let Some((task, candidate)) = validated.pop() else {
+    let Some((task, matched)) = validated.pop() else {
         return Ok(ClickUpPrAssociationOutcome::NoValidatedCandidate);
     };
 
-    let identity = clickup_identity_from_task(&task);
-    let matched =
-        matching_clickup_evidence(&identity, &input.evidence).unwrap_or(ClickUpGitEvidenceMatch {
-            source: candidate.source,
-            matched_token: candidate.matched_token,
-        });
     let metadata_json = serde_json::json!({
         "source": matched.source.as_str(),
         "matched_token": matched.matched_token,

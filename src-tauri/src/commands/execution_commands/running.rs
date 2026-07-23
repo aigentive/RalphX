@@ -26,6 +26,7 @@ pub(super) async fn prune_stale_execution_registry_entries(
         Arc::clone(&app_state.running_agent_registry),
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.project_repo),
         Some(Arc::clone(&app_state.interactive_process_registry)),
     );
 
@@ -39,15 +40,6 @@ pub(super) async fn prune_stale_execution_registry_entries(
 
         if !uses_execution_slot(context_type) {
             continue;
-        }
-
-        // Age guard: pid=0 entries younger than 30s are in the try_register →
-        // update_agent_process window. The pruner must not race against the spawn.
-        if info.pid == 0 {
-            let age = chrono::Utc::now() - info.started_at;
-            if age < chrono::Duration::seconds(30) {
-                continue;
-            }
         }
 
         // Compute pid liveness once; both the IPR check and staleness evaluation use it.

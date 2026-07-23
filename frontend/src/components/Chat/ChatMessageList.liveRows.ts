@@ -48,6 +48,7 @@ export type LiveTranscriptRow =
     };
 
 export type ShouldHideLiveToolCall = (toolCall: ToolCall) => boolean;
+export type ShouldHideLiveTask = (task: StreamingTask) => boolean;
 
 function blockKeyPart(block: StreamingContentBlock, index: number): string {
   const seq = "seq" in block ? block.seq : undefined;
@@ -80,6 +81,7 @@ export function buildLiveTranscriptRows(
   contentBlocks: StreamingContentBlock[],
   streamingTasks: Map<string, StreamingTask> | undefined,
   shouldHideToolCall: ShouldHideLiveToolCall = () => false,
+  shouldHideTask: ShouldHideLiveTask = () => false,
 ): LiveTranscriptRow[] {
   if (contentBlocks.length === 0) {
     return [];
@@ -118,7 +120,12 @@ export function buildLiveTranscriptRows(
       }
       if (nextBlock.type === "tool_use" && !shouldHideToolCall(nextBlock.toolCall)) {
         entries.push({ block: nextBlock, index: endIndex });
-      } else if (nextBlock.type === "task" && streamingTasks?.has(nextBlock.toolUseId)) {
+      } else if (nextBlock.type === "task") {
+        const task = streamingTasks?.get(nextBlock.toolUseId);
+        if (!task || shouldHideTask(task)) {
+          endIndex += 1;
+          continue;
+        }
         taskEntries.push({
           toolUseId: nextBlock.toolUseId,
           index: endIndex,

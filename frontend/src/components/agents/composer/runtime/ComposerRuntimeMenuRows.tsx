@@ -15,6 +15,7 @@ export type ComposerRuntimeMenuLevel =
   | "models"
   | "effort"
   | "capability"
+  | "persona"
   | "speed";
 
 interface SubmenuRowProps {

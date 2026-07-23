@@ -75,9 +75,8 @@ use crate::domain::repositories::{
     ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
     ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
-    TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
-    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
-    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
+    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -111,10 +110,9 @@ use crate::infrastructure::memory::{
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
     MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
     MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
-    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
-    MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
-    MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
-    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
+    MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
+    MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -148,10 +146,9 @@ use crate::infrastructure::sqlite::{
     SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
     SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
     SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
-    SqliteTicketCanonicalBranchRepository, SqliteTicketingStatusCatalogRepository,
-    SqliteUiFeatureFlagOverridesRepository, SqliteValidationRunRepository,
-    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
+    SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
+    SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -349,10 +346,6 @@ pub struct AppState {
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
     /// Memory archive repository for snapshot generation job queue
     pub memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
-    /// Team session repository for agent team history
-    pub team_session_repo: Arc<dyn TeamSessionRepository>,
-    /// Team message repository for agent team messages
-    pub team_message_repo: Arc<dyn TeamMessageRepository>,
     /// Execution plan repository for tracking plan implementation attempts
     pub execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
     /// Chat attachment repository for file uploads in chat
@@ -901,6 +894,7 @@ impl AppState {
         project_id: Option<&str>,
         project_root: Option<&std::path::Path>,
         role: RoutingRole,
+        runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
         agent_name: &str,
         purpose: &str,
         harness_override: Option<AgentHarnessKind>,
@@ -912,6 +906,7 @@ impl AppState {
                 project_id,
                 project_root,
                 role,
+                runtime_override,
                 harness_override,
                 None,
                 &defaults,
@@ -1080,6 +1075,20 @@ impl AppState {
         agent_name: &str,
         purpose: &str,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_workspace_role_runtime_for_project_with_override(
+            project_id, role, None, agent_name, purpose,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_workspace_role_runtime_for_project_with_override(
+        &self,
+        project_id: &str,
+        role: RoutingRole,
+        runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+        agent_name: &str,
+        purpose: &str,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         let project = self
             .project_repo
             .get_by_id(&ProjectId::from_string(project_id.to_string()))
@@ -1089,6 +1098,7 @@ impl AppState {
             Some(project_id),
             Some(std::path::Path::new(&project.working_directory)),
             role,
+            runtime_override,
             agent_name,
             purpose,
             None,
@@ -1458,12 +1468,6 @@ impl AppState {
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            team_session_repo: Arc::new(SqliteTeamSessionRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
-            team_message_repo: Arc::new(SqliteTeamMessageRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
             execution_plan_repo: Arc::new(SqliteExecutionPlanRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1702,8 +1706,6 @@ impl AppState {
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(
@@ -1896,8 +1898,6 @@ impl AppState {
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(
@@ -2112,8 +2112,6 @@ impl AppState {
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(SqliteExecutionPlanRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2280,8 +2278,6 @@ impl AppState {
                 open_connection(&PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection"),
             )),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(

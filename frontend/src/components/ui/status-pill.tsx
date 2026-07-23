@@ -44,7 +44,7 @@ const TONE_STYLES: Record<StatusPillTone, StatusPillToneStyle> = {
     borderColor: "var(--border-default, #33333b)",
   },
   accent: {
-    color: "var(--accent-primary, #ff6b35)",
+    color: "var(--accent-primary)",
     backgroundColor: "var(--accent-muted, #3a2a22)",
     borderColor: "var(--accent-border, #59392a)",
   },
@@ -59,6 +59,8 @@ export interface StatusPillProps {
   icon?: ReactNode;
   /** Pulsing live dot for in-flight state (implies attention, not success). */
   live?: boolean;
+  /** Accessible name when compact visible content does not carry the full label. */
+  ariaLabel?: string;
   className?: string;
   testId?: string;
 }
@@ -69,6 +71,7 @@ export function StatusPill({
   size = "sm",
   icon,
   live = false,
+  ariaLabel,
   className,
   testId,
 }: StatusPillProps) {
@@ -88,6 +91,8 @@ export function StatusPill({
         borderWidth: "1px",
       }}
       data-tone={tone}
+      {...(ariaLabel ? { role: "img" } : {})}
+      {...(ariaLabel ? { "aria-label": ariaLabel } : {})}
       {...(testId ? { "data-testid": testId } : {})}
     >
       {live ? (

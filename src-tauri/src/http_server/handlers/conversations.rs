@@ -39,28 +39,9 @@ struct DelegatedTaskSnapshot {
     cache_creation_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
     estimated_usd: Option<f64>,
-}
-
-fn delegated_total_tokens(
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cache_creation_tokens: Option<u64>,
-    cache_read_tokens: Option<u64>,
-) -> Option<u64> {
-    let total = input_tokens.unwrap_or(0)
-        + output_tokens.unwrap_or(0)
-        + cache_creation_tokens.unwrap_or(0)
-        + cache_read_tokens.unwrap_or(0);
-    if total == 0
-        && input_tokens.is_none()
-        && output_tokens.is_none()
-        && cache_creation_tokens.is_none()
-        && cache_read_tokens.is_none()
-    {
-        None
-    } else {
-        Some(total)
-    }
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    timestamp_provenance: Option<String>,
 }
 
 fn delegated_duration_ms(
@@ -115,9 +96,19 @@ async fn load_delegated_task_snapshot(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?
     };
+    let Some(delegated_conversation) = delegated_conversation else {
+        return Ok(None);
+    };
+    if delegated_conversation.context_type != ChatContextType::Delegation
+        || delegated_conversation.context_id != delegated_session_id
+    {
+        return Ok(None);
+    }
 
-    let latest_run = if let Some(agent_run_id) = task.delegated_agent_run_id.as_deref() {
-        state
+    let Some(agent_run_id) = task.delegated_agent_run_id.as_deref() else {
+        return Ok(None);
+    };
+    let run = state
             .app_state
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(agent_run_id))
@@ -125,80 +116,48 @@ async fn load_delegated_task_snapshot(
             .map_err(|error| {
                 tracing::error!(delegated_session_id, agent_run_id, %error, "Failed to enrich delegated run state");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?
-    } else if let Some(conversation) = delegated_conversation.as_ref() {
-        state
-            .app_state
-            .agent_run_repo
-            .get_latest_for_conversation(&conversation.id)
-            .await
-            .map_err(|error| {
-                tracing::error!(delegated_session_id, conversation_id = %conversation.id, %error, "Failed to resolve latest delegated run state");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-    } else {
-        None
+            })?;
+    let Some(latest_run) = run else {
+        return Ok(None);
     };
+    if latest_run.conversation_id != delegated_conversation.id {
+        return Ok(None);
+    }
 
-    let status = latest_run
-        .as_ref()
-        .map(|run| run.status.to_string())
-        .unwrap_or_else(|| session.status.clone());
+    let status = latest_run.status.to_string();
 
     Ok(Some(DelegatedTaskSnapshot {
         status,
-        delegated_conversation_id: delegated_conversation
-            .as_ref()
-            .map(|conversation| conversation.id.as_str()),
-        delegated_agent_run_id: latest_run.as_ref().map(|run| run.id.as_str()),
+        delegated_conversation_id: Some(delegated_conversation.id.as_str()),
+        delegated_agent_run_id: Some(latest_run.id.as_str()),
         provider_harness: latest_run
-            .as_ref()
-            .and_then(|run| run.harness.map(|value| value.to_string()))
+            .harness
+            .map(|value| value.to_string())
             .or_else(|| Some(session.harness.to_string())),
         provider_session_id: latest_run
-            .as_ref()
-            .and_then(|run| run.provider_session_id.clone())
+            .provider_session_id
+            .clone()
             .or_else(|| session.provider_session_id.clone()),
-        upstream_provider: latest_run
-            .as_ref()
-            .and_then(|run| run.upstream_provider.clone()),
-        provider_profile: latest_run
-            .as_ref()
-            .and_then(|run| run.provider_profile.clone()),
-        logical_model: latest_run
-            .as_ref()
-            .and_then(|run| run.logical_model.clone()),
-        effective_model_id: latest_run
-            .as_ref()
-            .and_then(|run| run.effective_model_id.clone()),
-        logical_effort: latest_run
-            .as_ref()
-            .and_then(|run| run.logical_effort.map(|value| value.to_string())),
-        effective_effort: latest_run
-            .as_ref()
-            .and_then(|run| run.effective_effort.clone()),
-        approval_policy: latest_run
-            .as_ref()
-            .and_then(|run| run.approval_policy.clone()),
-        sandbox_mode: latest_run.as_ref().and_then(|run| run.sandbox_mode.clone()),
-        total_tokens: latest_run.as_ref().and_then(|run| {
-            delegated_total_tokens(
-                run.input_tokens,
-                run.output_tokens,
-                run.cache_creation_tokens,
-                run.cache_read_tokens,
-            )
-        }),
-        duration_ms: latest_run
-            .as_ref()
-            .and_then(|run| delegated_duration_ms(&run.started_at, run.completed_at)),
-        input_tokens: latest_run.as_ref().and_then(|run| run.input_tokens),
-        output_tokens: latest_run.as_ref().and_then(|run| run.output_tokens),
-        cache_creation_tokens: latest_run
-            .as_ref()
-            .and_then(|run| run.cache_creation_tokens),
-        cache_read_tokens: latest_run.as_ref().and_then(|run| run.cache_read_tokens),
-        estimated_usd: latest_run.as_ref().and_then(|run| run.estimated_usd),
+        upstream_provider: latest_run.upstream_provider.clone(),
+        provider_profile: latest_run.provider_profile.clone(),
+        logical_model: latest_run.logical_model.clone(),
+        effective_model_id: latest_run.effective_model_id.clone(),
+        logical_effort: latest_run.logical_effort.map(|value| value.to_string()),
+        effective_effort: latest_run.effective_effort.clone(),
+        approval_policy: latest_run.approval_policy.clone(),
+        sandbox_mode: latest_run.sandbox_mode.clone(),
+        total_tokens: latest_run.processed_tokens(),
+        duration_ms: delegated_duration_ms(&latest_run.started_at, latest_run.completed_at),
+        input_tokens: latest_run.input_tokens,
+        output_tokens: latest_run.output_tokens,
+        cache_creation_tokens: latest_run.cache_creation_tokens,
+        cache_read_tokens: latest_run.cache_read_tokens,
+        estimated_usd: latest_run.estimated_usd,
+        started_at: Some(latest_run.started_at.to_rfc3339()),
+        completed_at: latest_run
+            .completed_at
+            .map(|timestamp| timestamp.to_rfc3339()),
+        timestamp_provenance: Some("delegated_run".to_string()),
     }))
 }
 
@@ -223,6 +182,11 @@ fn apply_delegated_task_snapshot(task: &mut ActiveStreamingTask, snapshot: &Dele
     task.cache_creation_tokens = snapshot.cache_creation_tokens;
     task.cache_read_tokens = snapshot.cache_read_tokens;
     task.estimated_usd = snapshot.estimated_usd;
+    if snapshot.started_at.is_some() {
+        task.started_at = snapshot.started_at.clone();
+        task.completed_at = snapshot.completed_at.clone();
+        task.timestamp_provenance = snapshot.timestamp_provenance.clone();
+    }
 }
 
 /// GET /api/conversations/:id/active-state

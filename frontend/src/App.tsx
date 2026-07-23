@@ -31,7 +31,6 @@ import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
 import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
-import { TeamSplitView } from "@/components/Team";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
@@ -1204,7 +1203,6 @@ function AppContent() {
                 />
               )}
               {currentView === "insights" && <InsightsView />}
-              {currentView === "team" && <TeamSplitView />}
             </div>
         </div>
 

@@ -22,7 +22,6 @@ use crate::domain::repositories::{
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::metadata_builder::build_restart_metadata;
-use crate::domain::state_machine::transition_handler::parse_metadata;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -327,7 +326,6 @@ pub async fn delete_task(id: String, state: State<'_, AppState>) -> Result<(), S
 pub async fn move_task(
     task_id: String,
     to_status: String,
-    agent_variant: Option<String>,
     note: Option<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
@@ -368,61 +366,19 @@ pub async fn move_task(
     // Terminal→Ready restarts are planned without writes, then committed below with
     // cleanup, failed-step resets, Ready status, and history in one repository transaction.
     let terminal_restart_plan = if old_status.is_terminal() && new_status == InternalStatus::Ready {
-        build_terminal_ready_restart_plan(
-            &state.task_step_repo,
-            &old_task,
-            agent_variant.as_deref(),
-        )
-        .await
-        .map_err(|error| format!("Failed to prepare task restart: {error}"))?
+        build_terminal_ready_restart_plan(&state.task_step_repo, &old_task)
+            .await
+            .map_err(|error| format!("Failed to prepare task restart: {error}"))?
     } else {
         None
     };
-
-    // Always update agent_variant in metadata for ready/executing transitions
-    // so that switching from team→solo properly clears the stale "team" value.
-    // SKIP for terminal→Ready: agent_variant is already handled in the block above
-    // to prevent it from clobbering the execution_recovery reset via update_metadata().
-    if matches!(
-        new_status,
-        InternalStatus::Ready | InternalStatus::Executing
-    ) && !(old_status.is_terminal() && new_status == InternalStatus::Ready)
-    {
-        let mut meta = parse_metadata(&old_task).unwrap_or_else(|| serde_json::json!({}));
-        if let Some(obj) = meta.as_object_mut() {
-            match agent_variant.as_deref() {
-                Some(variant) if !variant.is_empty() => {
-                    obj.insert("agent_variant".to_string(), serde_json::json!(variant));
-                }
-                _ => {
-                    obj.remove("agent_variant");
-                }
-            }
-        }
-        if let Err(e) = state
-            .task_repo
-            .update_metadata(&task_id, Some(meta.to_string()))
-            .await
-        {
-            tracing::error!(
-                task_id = task_id.as_str(),
-                error = %e,
-                "Failed to update agent_variant in metadata"
-            );
-        }
-    }
 
     // Create the task scheduler for auto-scheduling Ready tasks
     let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
 
     // Create the transition service with all required dependencies
-    let is_team_mode = agent_variant.as_deref() == Some("team");
     let mut transition_service = build_transition_service(&state, &execution_state, Some(&app))
         .with_task_scheduler(Arc::clone(&task_scheduler));
-
-    // ALWAYS set team_mode based on explicit UI selection so it overrides
-    // env var defaults and stale metadata. Some(true) = team, Some(false) = solo.
-    transition_service = transition_service.with_team_mode(is_team_mode);
     transition_service = transition_service.with_step_repo(Arc::clone(&state.task_step_repo));
 
     // Transition the task - this triggers entry actions like spawning workers!

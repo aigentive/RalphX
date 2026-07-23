@@ -63,8 +63,7 @@ impl FromStr for EffortLevel {
 /// Used to select the correct effort setting column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffortBucket {
-    /// Primary ideation agents: ralphx-ideation, ralphx-ideation-team-lead,
-    /// ideation-team-member, ralphx-ideation-readonly
+    /// Primary ideation agents: ralphx-ideation and ralphx-ideation-readonly.
     Primary,
     /// Verification agents: ralphx-plan-verifier
     Verifier,

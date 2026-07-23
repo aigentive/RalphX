@@ -113,7 +113,6 @@ pub(crate) fn plan_mode_proposal_continuation_metadata() -> String {
 async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    team_service: Arc<crate::application::TeamService>,
     app: tauri::AppHandle<R>,
     proposal: AcceptedPlanModeProposal,
     delivered_to_waiting_agent: bool,
@@ -138,6 +137,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
+            runtime_override: None,
         },
         state,
         ModeSwitchInitiator::User,
@@ -188,7 +188,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
         return Ok(());
     }
 
-    let service = create_chat_service(state, app, execution_state, Some(team_service));
+    let service = create_chat_service(state, app, execution_state);
     service
         .send_message(
             ChatContextType::Project,
@@ -212,7 +212,6 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
 pub async fn resolve_user_question<R: Runtime + 'static>(
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    team_service: State<'_, Arc<crate::application::TeamService>>,
     app: tauri::AppHandle<R>,
     args: ResolveQuestionArgs,
 ) -> Result<ResolveQuestionResponse, String> {
@@ -243,7 +242,6 @@ pub async fn resolve_user_question<R: Runtime + 'static>(
             match handle_accepted_plan_mode_proposal(
                 state.inner(),
                 execution_state.inner(),
-                Arc::clone(team_service.inner()),
                 app.clone(),
                 proposal,
                 result.delivered_to_waiting_agent,

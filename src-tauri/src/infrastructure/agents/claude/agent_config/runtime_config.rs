@@ -225,12 +225,12 @@ pub struct StreamTimeoutsConfig {
     pub review_parse_stall_secs: u64,
     pub default_line_read_secs: u64,
     pub default_parse_stall_secs: u64,
-    pub team_line_read_secs: u64,
-    pub team_parse_stall_secs: u64,
     #[serde(default = "default_max_wall_clock_secs")]
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
     pub completion_grace_secs: u64,
+    #[serde(default = "default_launch_reservation_lease_secs")]
+    pub launch_reservation_lease_secs: u64,
     #[serde(default = "default_execution_attempt_start_tolerance_secs")]
     pub execution_attempt_start_tolerance_secs: u64,
     #[serde(default = "default_desktop_notification_coalesce_window_secs")]
@@ -246,6 +246,10 @@ fn default_max_wall_clock_secs() -> u64 {
 }
 
 fn default_completion_grace_secs() -> u64 {
+    30
+}
+
+fn default_launch_reservation_lease_secs() -> u64 {
     30
 }
 
@@ -274,10 +278,9 @@ impl Default for StreamTimeoutsConfig {
             review_parse_stall_secs: 120,
             default_line_read_secs: 600,
             default_parse_stall_secs: 180,
-            team_line_read_secs: 3600,
-            team_parse_stall_secs: 3600,
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
+            launch_reservation_lease_secs: 30,
             execution_attempt_start_tolerance_secs: 1,
             desktop_notification_coalesce_window_secs:
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
@@ -767,20 +770,16 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS"
     );
     env_u64!(
-        cfg.stream.team_line_read_secs,
-        "RALPHX_STREAM_TEAM_LINE_READ_SECS"
-    );
-    env_u64!(
-        cfg.stream.team_parse_stall_secs,
-        "RALPHX_STREAM_TEAM_PARSE_STALL_SECS"
-    );
-    env_u64!(
         cfg.stream.max_wall_clock_secs,
         "RALPHX_STREAM_MAX_WALL_CLOCK_SECS"
     );
     env_u64!(
         cfg.stream.completion_grace_secs,
         "RALPHX_STREAM_COMPLETION_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.stream.launch_reservation_lease_secs,
+        "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS"
     );
     env_u64!(
         cfg.stream.execution_attempt_start_tolerance_secs,
@@ -1186,9 +1185,6 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     }
     if let Some(v) = lookup("RALPHX_UI_BATTLE_MODE") {
         cfg.ui_feature_flags.battle_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
-    }
-    if let Some(v) = lookup("RALPHX_UI_TEAM_MODE") {
-        cfg.ui_feature_flags.team_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_ATLASSIAN_OAUTH") {
         cfg.ui_feature_flags.atlassian_oauth = matches!(v.to_lowercase().as_str(), "true" | "1");

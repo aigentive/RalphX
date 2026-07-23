@@ -55,8 +55,13 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
+#[cfg(test)]
+mod team_tests;
 pub mod ticket_canonical_branch;
 pub mod types;
+pub mod usage;
+#[cfg(test)]
+mod usage_tests;
 pub mod validation_run;
 pub mod workflow;
 
@@ -91,7 +96,8 @@ pub use agent_conversation_workspace::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewHunkAnnotation,
     AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState,
@@ -100,7 +106,6 @@ pub use agent_conversation_workspace::{
 };
 pub use agent_run::{
     AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
-    AgentRunUsage,
     InterruptedConversation,
 };
 pub use agent_task::{
@@ -117,7 +122,6 @@ pub use artifact::{
     Artifact, ArtifactBucket, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata,
     ArtifactRelation, ArtifactRelationId, ArtifactRelationType, ArtifactType,
     ParseArtifactRelationTypeError, ParseArtifactTypeError, ProcessId, TeamArtifactMetadata,
-    VerificationFindingGap, VerificationFindingMetadata,
 };
 pub use artifact_flow::{
     create_plan_updated_sync_flow, create_research_to_dev_flow, ArtifactFlow, ArtifactFlowContext,
@@ -215,6 +219,9 @@ pub use review_issue::{
     SeverityBreakdown, SeverityCount,
 };
 pub use status::{InternalStatus, ParseInternalStatusError};
+pub use usage::{
+    processed_tokens, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+};
 pub use task::{Task, TaskCategory};
 pub use task_context::{
     create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
@@ -231,10 +238,8 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId,
-    TeamMessageRecord,
-    TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
-    TeammateSnapshot,
+    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageTarget,
+    TeamMessageTargetKind,
 };
 pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{

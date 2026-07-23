@@ -1,11 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskValidationSummary } from "@/hooks/useTaskValidationSummary";
 import type { Task } from "@/types/task";
 import { CompletedTaskDetail } from "./CompletedTaskDetail";
 
-const { historyState, transitionsState, gitDiffState, validationState } = vi.hoisted(() => ({
+const {
+  historyState,
+  transitionsState,
+  gitDiffState,
+  validationState,
+  moveTask,
+  resumeExecution,
+} = vi.hoisted(() => ({
   historyState: {
     data: [
       {
@@ -34,6 +41,8 @@ const { historyState, transitionsState, gitDiffState, validationState } = vi.hoi
   validationState: {
     display: undefined as TaskValidationSummary | undefined,
   },
+  moveTask: vi.fn(),
+  resumeExecution: vi.fn(),
 }));
 
 vi.mock("@/hooks/useReviews", () => ({
@@ -60,19 +69,34 @@ vi.mock("@/components/reviews/ReviewDetailModal", () => ({
 }));
 
 vi.mock("../TaskRerunDialog", () => ({
-  TaskRerunDialog: () => null,
+  TaskRerunDialog: ({
+    isOpen,
+    onConfirm,
+  }: {
+    isOpen: boolean;
+    onConfirm: (result: { option: "keep_changes"; note: string }) => void;
+  }) =>
+    isOpen ? (
+      <button
+        type="button"
+        data-testid="confirm-rerun"
+        onClick={() => onConfirm({ option: "keep_changes", note: "Review new changes" })}
+      >
+        Confirm rerun
+      </button>
+    ) : null,
 }));
 
 vi.mock("@/lib/tauri", () => ({
   api: {
     tasks: {
-      move: vi.fn(),
+      move: moveTask,
     },
   },
 }));
 
 vi.mock("@/lib/task-actions/resume-execution-if-stopped", () => ({
-  resumeExecutionIfStopped: vi.fn(),
+  resumeExecutionIfStopped: resumeExecution,
 }));
 
 vi.mock("@/hooks/useTaskValidationSummary", () => ({
@@ -139,8 +163,11 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 
 describe("Agents CompletedTaskDetail", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     historyState.isLoading = false;
     validationState.display = validationSummary();
+    moveTask.mockResolvedValue(undefined);
+    resumeExecution.mockResolvedValue(undefined);
   });
 
   it("renders completed stage content, review evidence, and current actions in the one-column shell", () => {
@@ -193,5 +220,17 @@ describe("Agents CompletedTaskDetail", () => {
     expect(evidence).toHaveTextContent("Review History");
     expect(screen.queryByTestId("task-detail-actions")).not.toBeInTheDocument();
     expect(screen.queryByTestId("review-code-button")).not.toBeInTheDocument();
+  });
+
+  it("reopens through the current move contract without a legacy agent variant", async () => {
+    render(<CompletedTaskDetail task={task()} />, { wrapper: TestWrapper });
+
+    fireEvent.click(screen.getByTestId("reopen-task-button"));
+    fireEvent.click(screen.getByTestId("confirm-rerun"));
+
+    await waitFor(() => {
+      expect(moveTask).toHaveBeenCalledWith("task-1", "ready", "Review new changes");
+      expect(resumeExecution).toHaveBeenCalledWith("project-1");
+    });
   });
 });

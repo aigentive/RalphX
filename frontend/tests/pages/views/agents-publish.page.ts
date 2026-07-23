@@ -97,6 +97,11 @@ export class AgentsPublishPage extends BasePage {
     await seedMergedWorkspace(this.page, TERMINAL_CONVERSATION_ID, PROJECT_ID);
     await this.page.getByTestId("nav-agents").click();
     await expect(this.page.getByTestId("agents-view")).toBeVisible();
+    await this.page.evaluate(() =>
+      window.__queryClient?.invalidateQueries({
+        queryKey: ["agents", "sidebar-conversations"],
+      }),
+    );
     const conversation = this.page.getByTestId(
       `agents-session-${TERMINAL_CONVERSATION_ID}`,
     );

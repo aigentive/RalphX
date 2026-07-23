@@ -462,6 +462,11 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     description: "Optional blocker explanation when the PR fix cannot be completed safely",
                 },
+                fix_commit_sha: {
+                    type: "string",
+                    pattern: "^[0-9a-f]{40}$",
+                    description: "Full 40-character SHA of the current committed workspace HEAD. Required when blocker is absent; omit it when reporting a blocker.",
+                },
             },
             required: ["conversation_id", "summary"],
         },
@@ -752,10 +757,11 @@ export async function callReadAgentWorkspacePrCommentTool(callTauriGet, args) {
     return callTauriGet(`agent-workspaces/${conversation_id}/pr-comments/${encodeURIComponent(comment_id)}`);
 }
 export async function callCompleteAgentWorkspacePrFixTool(callTauri, args) {
-    const { conversation_id, summary, blocker } = args;
+    const { conversation_id, summary, blocker, fix_commit_sha } = args;
     return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
         summary,
         blocker,
+        fix_commit_sha,
     });
 }
 export async function callCompleteAgentWorkspaceRepairTool(callTauri, args) {

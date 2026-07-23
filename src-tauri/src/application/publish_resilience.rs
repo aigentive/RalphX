@@ -408,7 +408,45 @@ pub struct AgentWorkspaceRepairCompletionCheck<'a> {
     pub has_uncommitted_changes: bool,
     pub is_merge_in_progress: bool,
     pub is_rebase_in_progress: bool,
+    pub has_conflict_files: bool,
     pub has_conflict_markers: bool,
+}
+
+pub struct AgentWorkspaceSettledHeadCheck<'a> {
+    pub reported_head_sha: &'a str,
+    pub workspace_head_sha: &'a str,
+    pub has_uncommitted_changes: bool,
+    pub is_merge_in_progress: bool,
+    pub is_rebase_in_progress: bool,
+    pub has_conflict_files: bool,
+    pub has_conflict_markers: bool,
+}
+
+pub fn verify_agent_workspace_settled_current_head(
+    check: AgentWorkspaceSettledHeadCheck<'_>,
+) -> Result<(), String> {
+    if check.workspace_head_sha != check.reported_head_sha {
+        return Err(format!(
+            "reported fix commit '{}' is not the current workspace HEAD '{}'",
+            check.reported_head_sha, check.workspace_head_sha
+        ));
+    }
+    if check.has_uncommitted_changes {
+        return Err("workspace has uncommitted changes".to_string());
+    }
+    if check.is_merge_in_progress {
+        return Err("workspace merge is still in progress".to_string());
+    }
+    if check.is_rebase_in_progress {
+        return Err("workspace rebase is still in progress".to_string());
+    }
+    if check.has_conflict_files {
+        return Err("workspace still contains unresolved conflict files".to_string());
+    }
+    if check.has_conflict_markers {
+        return Err("workspace still contains conflict markers".to_string());
+    }
+    Ok(())
 }
 
 pub fn verify_agent_workspace_repair_completion(
@@ -437,30 +475,15 @@ pub fn verify_agent_workspace_repair_completion(
         ));
     }
 
-    if check.workspace_head_sha != check.repair_commit_sha {
-        return Err(format!(
-            "repair_commit_sha '{}' is not the current workspace HEAD '{}'",
-            check.repair_commit_sha, check.workspace_head_sha
-        ));
-    }
-
-    if check.has_uncommitted_changes {
-        return Err("workspace has uncommitted changes".to_string());
-    }
-
-    if check.is_merge_in_progress {
-        return Err("workspace merge is still in progress".to_string());
-    }
-
-    if check.is_rebase_in_progress {
-        return Err("workspace rebase is still in progress".to_string());
-    }
-
-    if check.has_conflict_markers {
-        return Err("workspace still contains conflict markers".to_string());
-    }
-
-    Ok(())
+    verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+        reported_head_sha: check.repair_commit_sha,
+        workspace_head_sha: check.workspace_head_sha,
+        has_uncommitted_changes: check.has_uncommitted_changes,
+        is_merge_in_progress: check.is_merge_in_progress,
+        is_rebase_in_progress: check.is_rebase_in_progress,
+        has_conflict_files: check.has_conflict_files,
+        has_conflict_markers: check.has_conflict_markers,
+    })
 }
 
 pub(crate) fn publish_branch_freshness_outcome_from_source_update(
@@ -721,8 +744,7 @@ mod tests {
                 "base-sha",
             ),
             PublishBranchFreshnessOutcome::NeedsAgent {
-                message: "Merge conflict updating plan branch from main: unknown files"
-                    .to_string(),
+                message: "Merge conflict updating plan branch from main: unknown files".to_string(),
                 conflict_files: Vec::new(),
                 base_commit: "base-sha".to_string(),
                 target_ref: "main".to_string(),
@@ -811,9 +833,7 @@ mod tests {
         kind: IdeationAnalysisBaseRefKind,
         automation: bool,
     ) -> (ChatConversation, AgentConversationWorkspace) {
-        use crate::domain::entities::{
-            AgentConversationWorkspaceMode, AutomationId, ProjectId,
-        };
+        use crate::domain::entities::{AgentConversationWorkspaceMode, AutomationId, ProjectId};
         let project_id = ProjectId::from_string("project-b1".to_string());
         let mut conversation = ChatConversation::new_project(project_id.clone());
         if automation {
@@ -840,11 +860,8 @@ mod tests {
         setup_repo(&repo);
         let base = "ralphx/ralphx/automation-abc";
         git(&repo, &["branch", base]);
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -853,7 +870,10 @@ mod tests {
             .expect("base push succeeds");
 
         let state = github.state();
-        assert_eq!(state.push_branch_calls, 1, "automation base should be pushed once");
+        assert_eq!(
+            state.push_branch_calls, 1,
+            "automation base should be pushed once"
+        );
         assert_eq!(state.last_push_branch_name.as_deref(), Some(base));
     }
 
@@ -865,12 +885,12 @@ mod tests {
         let base = "ralphx/ralphx/automation-present";
         git(&repo, &["branch", base]);
         // Seed the remote-tracking ref so origin/<base> already exists.
-        git(&repo, &["update-ref", &format!("refs/remotes/origin/{base}"), "HEAD"]);
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
+        git(
+            &repo,
+            &["update-ref", &format!("refs/remotes/origin/{base}"), "HEAD"],
         );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -878,7 +898,11 @@ mod tests {
             .await
             .expect("idempotent skip succeeds");
 
-        assert_eq!(github.state().push_branch_calls, 0, "present origin base must not be re-pushed");
+        assert_eq!(
+            github.state().push_branch_calls,
+            0,
+            "present origin base must not be re-pushed"
+        );
     }
 
     #[tokio::test]
@@ -890,11 +914,8 @@ mod tests {
         setup_repo(&repo);
         let base = "feature/local-only";
         git(&repo, &["branch", base]);
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            false,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, false);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -902,7 +923,11 @@ mod tests {
             .await
             .expect("no-op succeeds");
 
-        assert_eq!(github.state().push_branch_calls, 0, "non-automation base must not be pushed");
+        assert_eq!(
+            github.state().push_branch_calls,
+            0,
+            "non-automation base must not be pushed"
+        );
     }
 
     #[tokio::test]
@@ -910,11 +935,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
         setup_repo(&repo);
-        let (conversation, workspace) = automation_publish_fixture(
-            "main",
-            IdeationAnalysisBaseRefKind::ProjectDefault,
-            true,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture("main", IdeationAnalysisBaseRefKind::ProjectDefault, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 
@@ -935,14 +957,12 @@ mod tests {
         let base = "ralphx/ralphx/automation-fail";
         git(&repo, &["branch", base]);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        github.state().push_branch_result =
-            Some(Err(crate::error::AppError::Infrastructure("push denied".to_string())));
+        github.state().push_branch_result = Some(Err(crate::error::AppError::Infrastructure(
+            "push denied".to_string(),
+        )));
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let (conversation, workspace) = automation_publish_fixture(
-            base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
-        );
+        let (conversation, workspace) =
+            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
 
         let result =
             ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace).await;
@@ -960,12 +980,16 @@ mod tests {
         setup_repo(&repo);
         let head_base = "ralphx/ralphx/task-run1-head";
         git(&repo, &["branch", head_base]);
-        git(&repo, &["update-ref", &format!("refs/remotes/origin/{head_base}"), "HEAD"]);
-        let (conversation, workspace) = automation_publish_fixture(
-            head_base,
-            IdeationAnalysisBaseRefKind::LocalBranch,
-            true,
+        git(
+            &repo,
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/{head_base}"),
+                "HEAD",
+            ],
         );
+        let (conversation, workspace) =
+            automation_publish_fixture(head_base, IdeationAnalysisBaseRefKind::LocalBranch, true);
         let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
 

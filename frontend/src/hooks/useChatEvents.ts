@@ -41,6 +41,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { canonicalizeToolName } from "@/components/Chat/tool-widgets/tool-name";
 import {
   extractDelegationMetadata,
+  type ReconcileDelegationTaskInput,
   buildDelegationLifecycleTask,
   findDelegationTaskKey,
   isDelegationControlToolCall,
@@ -623,6 +624,25 @@ export function useChatEvents({
       }
     };
 
+    const commitDelegationLifecycle = (
+      evidence: ReconcileDelegationTaskInput,
+      receivedAt: number,
+    ) => {
+      const reconciliation = reconcileDelegationTaskMap(streamingTasksRef.current, evidence);
+      const blocks = reconcileDelegationTaskMarkers(streamingContentBlocksRef.current, {
+        canonicalKey: reconciliation.canonicalKey,
+        aliasKeys: reconciliation.aliasKeys,
+        ...(evidence.seq != null ? { seq: evidence.seq } : {}),
+        receivedAt,
+      });
+      // Lifecycle state is one transaction: both imperative snapshots advance before
+      // either React commit can trigger a later event handler.
+      streamingTasksRef.current = reconciliation.tasks;
+      streamingContentBlocksRef.current = blocks;
+      setStreamingContentBlocks(() => blocks);
+      setStreamingTasks(() => reconciliation.tasks);
+    };
+
     // ── agent:tool_call ──────────────────────────────────────────────
     // Handles tool call accumulation for streaming display.
     // Routes child tool calls to parent task when supportsSubagentTasks is enabled.
@@ -806,12 +826,14 @@ export function useChatEvents({
 
         if (!parent_tool_use_id && isDelegationStartToolCall(canonicalToolName)) {
           setStreamingContentBlocks((prev) => {
-            return reconcileDelegationTaskMarkers(prev, {
+            const next = reconcileDelegationTaskMarkers(prev, {
               canonicalKey: id,
               aliasKeys: [id],
               ...(payload.seq != null ? { seq: payload.seq } : {}),
               receivedAt,
             });
+            streamingContentBlocksRef.current = next;
+            return next;
           });
           setStreamingTasks((prev) => {
             const delegation = extractDelegationMetadata(args, result);
@@ -846,13 +868,15 @@ export function useChatEvents({
               ...(delegation.sandboxMode ? { sandboxMode: delegation.sandboxMode } : {}),
               ...(payload.seq != null ? { seq: payload.seq } : {}),
             };
-            return reconcileDelegationTaskMap(prev, {
+            const next = reconcileDelegationTaskMap(prev, {
               source: "provider",
               toolUseId: id,
               ...(delegation.jobId ? { jobId: delegation.jobId } : {}),
               ...(payload.seq != null ? { seq: payload.seq } : {}),
               task,
             }).tasks;
+            streamingTasksRef.current = next;
+            return next;
           });
           return;
         }
@@ -1031,6 +1055,9 @@ export function useChatEvents({
           effective_effort?: string;
           approval_policy?: string;
           sandbox_mode?: string;
+          started_at?: string;
+          completed_at?: string;
+          timestamp_provenance?: "delegated_run" | "delegation_job";
           conversation_id: string;
           run_id?: string | null;
           context_id?: string;
@@ -1052,17 +1079,7 @@ export function useChatEvents({
               allowSingleUnresolvedPlaceholder: true,
               task: lifecycleTask,
             };
-            const identity = reconcileDelegationTaskMap(
-              streamingTasksRef.current,
-              evidence,
-            );
-            setStreamingContentBlocks((prev) => reconcileDelegationTaskMarkers(prev, {
-              canonicalKey: identity.canonicalKey,
-              aliasKeys: identity.aliasKeys,
-              ...(payload.seq != null ? { seq: payload.seq } : {}),
-              receivedAt,
-            }));
-            setStreamingTasks((prev) => reconcileDelegationTaskMap(prev, evidence).tasks);
+            commitDelegationLifecycle(evidence, receivedAt);
             return;
           }
           setStreamingContentBlocks((prev) => {
@@ -1183,6 +1200,9 @@ export function useChatEvents({
           estimated_usd?: number;
           text_output?: string;
           error?: string;
+          started_at?: string;
+          completed_at?: string;
+          timestamp_provenance?: "delegated_run" | "delegation_job";
           conversation_id: string;
           run_id?: string | null;
           context_id?: string;
@@ -1219,17 +1239,7 @@ export function useChatEvents({
               allowSingleUnresolvedPlaceholder: true,
               task: terminalTask,
             };
-            const identity = reconcileDelegationTaskMap(
-              streamingTasksRef.current,
-              evidence,
-            );
-            setStreamingContentBlocks((prev) => reconcileDelegationTaskMarkers(prev, {
-              canonicalKey: identity.canonicalKey,
-              aliasKeys: identity.aliasKeys,
-              ...(payload.seq != null ? { seq: payload.seq } : {}),
-              receivedAt: Date.now(),
-            }));
-            setStreamingTasks((prev) => reconcileDelegationTaskMap(prev, evidence).tasks);
+            commitDelegationLifecycle(evidence, Date.now());
             return;
           }
           setStreamingTasks((prev) => {
@@ -1349,8 +1359,8 @@ export function useChatEvents({
     );
 
     // ── agent:chunk (streaming text) ─────────────────────────────────
-    // Chunks are filtered by conversation_id via isRelevant — teammate chunks
-    // match when activeConversationId is the teammate's conversation.
+    // Chunks are filtered by conversation_id via isRelevant, including delegated
+    // conversations when one is active.
     if (supportsStreamingText) {
       unsubscribes.push(
         bus.subscribe<{
@@ -1548,22 +1558,6 @@ export function useChatEvents({
     // Query invalidation is owned by useAgentEvents to avoid duplicate refetches.
     unsubscribes.push(
       bus.subscribe<AgentRunCompletedPayload>("agent:turn_completed", (payload) => {
-        if (!isRelevant(payload)) return;
-
-        queryClient.invalidateQueries({
-          queryKey: conversationStatsKey(payload.conversation_id),
-        });
-      })
-    );
-
-    // ── agent:usage_updated ─────────────────────────────────────────
-    // Usage snapshots are persisted during the live turn; refetch stats immediately.
-    unsubscribes.push(
-      bus.subscribe<{
-        conversation_id: string;
-        context_id?: string;
-        context_type?: string;
-      }>("agent:usage_updated", (payload) => {
         if (!isRelevant(payload)) return;
 
         queryClient.invalidateQueries({

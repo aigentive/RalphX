@@ -6,7 +6,7 @@ Snapshot notes:
 
 - Codex CLI is the terminal interface for local interactive Codex sessions.
 - Current official docs position it alongside CLI features, command-line options, and slash commands.
-- RalphX impact: this is the interactive harness candidate for ideation / verification parity, but not a drop-in replacement for Claude team mode.
+- RalphX impact: Codex is a first-class interactive harness for ideation, verification, execution, and RX-native delegation; vendor-specific process details remain behind adapters.
 
 RalphX notes:
 

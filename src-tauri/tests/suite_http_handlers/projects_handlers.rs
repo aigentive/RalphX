@@ -7,7 +7,7 @@
 
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     ApiKey, ApiKeyId, Project, PERMISSION_CREATE_PROJECT, PERMISSION_MAX, PERMISSION_READ,
@@ -19,8 +19,7 @@ use ralphx_lib::http_server::types::{
     CreateApiKeyRequest, HttpServerState, RegisterProjectExternalRequest, UpdatePermissionsRequest,
 };
 use ralphx_lib::infrastructure::sqlite::{
-    sqlite_api_key_repo::SqliteApiKeyRepository,
-    sqlite_project_repo::SqliteProjectRepository,
+    sqlite_api_key_repo::SqliteApiKeyRepository, sqlite_project_repo::SqliteProjectRepository,
     DbConnection,
 };
 use std::sync::Arc;
@@ -43,20 +42,18 @@ fn setup_sqlite_register_state() -> (ralphx_lib::testing::SqliteTestDb, HttpServ
     let shared_conn = db.shared_conn();
 
     let mut app_state = AppState::new_test();
-    app_state.api_key_repo =
-        Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(&shared_conn)));
-    app_state.project_repo =
-        Arc::new(SqliteProjectRepository::from_shared(Arc::clone(&shared_conn)));
+    app_state.api_key_repo = Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
+        &shared_conn,
+    )));
+    app_state.project_repo = Arc::new(SqliteProjectRepository::from_shared(Arc::clone(
+        &shared_conn,
+    )));
     app_state.db = DbConnection::from_shared(Arc::clone(&shared_conn));
 
     let execution_state = Arc::new(ExecutionState::new());
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     let state = HttpServerState {
         app_state: Arc::new(app_state),
         execution_state,
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     };
     (db, state)
@@ -71,9 +68,7 @@ async fn insert_key(state: &HttpServerState, permissions: i32) -> ApiKeyId {
         key_hash: hash_key(&raw),
         key_prefix: key_prefix(&raw),
         permissions,
-        created_at: chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string(),
+        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         revoked_at: None,
         last_used_at: None,
         grace_expires_at: None,
@@ -230,7 +225,11 @@ async fn test_register_project_home_subdir_accepted() {
     .await;
 
     // Must succeed (not a system or outside-HOME path)
-    assert!(result.is_ok(), "Path under HOME must be accepted: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Path under HOME must be accepted: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
@@ -358,7 +357,10 @@ async fn test_register_project_creating_key_gets_scope() {
         })
         .await
         .unwrap();
-    assert_eq!(creating_has_scope, 1, "Creating key must have scope on new project");
+    assert_eq!(
+        creating_has_scope, 1,
+        "Creating key must have scope on new project"
+    );
 
     // Other key must NOT have scope (least privilege)
     let other_has_scope = state
@@ -375,7 +377,10 @@ async fn test_register_project_creating_key_gets_scope() {
         })
         .await
         .unwrap();
-    assert_eq!(other_has_scope, 0, "Other key must NOT have scope on new project");
+    assert_eq!(
+        other_has_scope, 0,
+        "Other key must NOT have scope on new project"
+    );
 }
 
 // ============================================================================
@@ -389,10 +394,7 @@ async fn test_run_transaction_rolls_back_both_inserts_on_error() {
     let key_id_str = key_id.as_str().to_string();
 
     // Build a project domain object (same as handler would)
-    let project = Project::new(
-        "RollbackTest".to_string(),
-        "/tmp/rollback-test".to_string(),
-    );
+    let project = Project::new("RollbackTest".to_string(), "/tmp/rollback-test".to_string());
     let project_id = project.id.as_str().to_string();
     let project_id_for_scope_check = project_id.clone();
 
@@ -435,7 +437,10 @@ async fn test_run_transaction_rolls_back_both_inserts_on_error() {
         })
         .await;
 
-    assert!(result.is_err(), "Transaction must fail when closure returns Err");
+    assert!(
+        result.is_err(),
+        "Transaction must fail when closure returns Err"
+    );
 
     // Verify project row was rolled back
     let project_row_count = state
@@ -451,7 +456,10 @@ async fn test_run_transaction_rolls_back_both_inserts_on_error() {
         })
         .await
         .unwrap();
-    assert_eq!(project_row_count, 0, "Project row must not exist after rollback");
+    assert_eq!(
+        project_row_count, 0,
+        "Project row must not exist after rollback"
+    );
 
     // Verify no orphaned scope row was created
     let scope_row_count = state
@@ -468,7 +476,10 @@ async fn test_run_transaction_rolls_back_both_inserts_on_error() {
         })
         .await
         .unwrap();
-    assert_eq!(scope_row_count, 0, "Scope row must not exist after rollback");
+    assert_eq!(
+        scope_row_count, 0,
+        "Scope row must not exist after rollback"
+    );
 }
 
 // ============================================================================

@@ -40,7 +40,6 @@ pub struct SourceInstance {
 pub struct SessionData {
     pub title: Option<String>,
     pub status: String,
-    pub team_mode: String,
     pub verification: Option<VerificationExportData>,
 }
 
@@ -139,7 +138,6 @@ impl SessionExportService {
                 struct SessionRow {
                     title: Option<String>,
                     status: String,
-                    team_mode: String,
                     verification_status: String,
                     verification_in_progress: bool,
                     verification_generation: i32,
@@ -155,7 +153,7 @@ impl SessionExportService {
 
                 let maybe_session: Option<SessionRow> = conn
                     .query_row(
-                        "SELECT s.title, s.status, COALESCE(s.team_mode, 'solo'), s.verification_status, \
+                        "SELECT s.title, s.status, s.verification_status, \
                          s.verification_in_progress, s.verification_generation, s.verification_current_round, \
                          s.verification_max_rounds, s.verification_gap_count, s.verification_gap_score, \
                          s.verification_convergence_reason, s.plan_artifact_id, \
@@ -168,18 +166,17 @@ impl SessionExportService {
                             Ok(SessionRow {
                                 title: row.get(0)?,
                                 status: row.get(1)?,
-                                team_mode: row.get(2)?,
-                                verification_status: row.get(3)?,
-                                verification_in_progress: row.get::<_, Option<i64>>(4)?.unwrap_or(0) != 0,
-                                verification_generation: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
-                                verification_current_round: row.get(6)?,
-                                verification_max_rounds: row.get(7)?,
-                                verification_gap_count: row.get::<_, Option<u32>>(8)?.unwrap_or(0),
-                                verification_gap_score: row.get(9)?,
-                                verification_convergence_reason: row.get(10)?,
-                                plan_artifact_id: row.get(11)?,
-                                inherited_plan_artifact_id: row.get(12)?,
-                                project_name: row.get(13)?,
+                                verification_status: row.get(2)?,
+                                verification_in_progress: row.get::<_, Option<i64>>(3)?.unwrap_or(0) != 0,
+                                verification_generation: row.get::<_, Option<i32>>(4)?.unwrap_or(0),
+                                verification_current_round: row.get(5)?,
+                                verification_max_rounds: row.get(6)?,
+                                verification_gap_count: row.get::<_, Option<u32>>(7)?.unwrap_or(0),
+                                verification_gap_score: row.get(8)?,
+                                verification_convergence_reason: row.get(9)?,
+                                plan_artifact_id: row.get(10)?,
+                                inherited_plan_artifact_id: row.get(11)?,
+                                project_name: row.get(12)?,
                             })
                         },
                     )
@@ -196,7 +193,6 @@ impl SessionExportService {
                 let session_data = SessionData {
                     title: session_row.title,
                     status: session_row.status,
-                    team_mode: session_row.team_mode,
                     verification: Some(VerificationExportData {
                         status: session_row.verification_status,
                         in_progress: session_row.verification_in_progress,
@@ -369,7 +365,7 @@ impl SessionExportService {
                 );
 
                 Ok(SessionExport {
-                    schema_version: 1,
+                    schema_version: 2,
                     exported_at: Utc::now().to_rfc3339(),
                     source_instance: SourceInstance {
                         project_name: session_row.project_name.unwrap_or_default(),
@@ -449,10 +445,7 @@ impl SessionExportService {
             });
 
             if versions.len() >= MAX_VERSIONS {
-                warn!(
-                    "Version chain truncated at 1000 for session {}",
-                    session_id
-                );
+                warn!("Version chain truncated at 1000 for session {}", session_id);
                 break;
             }
 
@@ -477,11 +470,7 @@ impl SessionExportService {
 
     /// Import a session from JSON content into the given project.
     /// Returns ImportedSession with the new session_id and counts.
-    pub async fn import(
-        &self,
-        json_content: &str,
-        project_id: &str,
-    ) -> AppResult<ImportedSession> {
+    pub async fn import(&self, json_content: &str, project_id: &str) -> AppResult<ImportedSession> {
         // File size guard (10MB)
         if json_content.len() > 10_485_760 {
             warn!(
@@ -494,14 +483,13 @@ impl SessionExportService {
         }
 
         // Parse JSON
-        let export: SessionExport = serde_json::from_str(json_content).map_err(|e| {
-            AppError::ImportInvalidFormat {
+        let export: SessionExport =
+            serde_json::from_str(json_content).map_err(|e| AppError::ImportInvalidFormat {
                 detail: format!("Invalid JSON: {}", e),
-            }
-        })?;
+            })?;
 
         // Validate schema version
-        if export.schema_version != 1 {
+        if export.schema_version != 2 {
             return Err(AppError::ImportVersionUnsupported {
                 version: export.schema_version,
             });
@@ -568,25 +556,13 @@ impl SessionExportService {
                     "imported"
                 };
 
-                // Validate team_mode
-                let team_mode = match export.session.team_mode.as_str() {
-                    "solo" | "research" | "debate" => export.session.team_mode.clone(),
-                    _ => {
-                        warn!(
-                            "Unknown team_mode '{}' during import, defaulting to 'solo'",
-                            export.session.team_mode
-                        );
-                        "solo".to_string()
-                    }
-                };
-
-                // Insert session (15-column pattern from sqlite_ideation_session_repo.rs:213)
+                // Insert session.
                 conn.execute(
                     "INSERT INTO ideation_sessions \
                      (id, project_id, title, title_source, status, plan_artifact_id, \
                       inherited_plan_artifact_id, seed_task_id, parent_session_id, \
-                      created_at, updated_at, archived_at, converted_at, team_mode, team_config_json) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6, ?7, NULL, NULL, ?8, NULL)",
+                      created_at, updated_at, archived_at, converted_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, ?6, ?7, NULL, NULL)",
                     rusqlite::params![
                         new_session_id,
                         project_id,
@@ -595,7 +571,6 @@ impl SessionExportService {
                         "active",
                         now,
                         now,
-                        team_mode,
                     ],
                 )
                 .map_err(AppError::from)?;

@@ -30,7 +30,6 @@ pub struct RunningIdeationSession {
     pub session_id: String,
     pub title: String,
     pub elapsed_seconds: Option<i64>,
-    pub team_mode: Option<String>,
     pub is_generating: bool,
 }
 
@@ -107,7 +106,6 @@ pub fn build_running_ideation_session(
         session_id,
         title: ideation_session_title(session.title.as_deref()),
         elapsed_seconds: Some(elapsed_seconds_since(session.created_at, now)),
-        team_mode: session.team_mode.clone(),
         is_generating,
     }
 }

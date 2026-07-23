@@ -73,9 +73,6 @@ vi.mock("../StepList", () => ({
 import { useTaskSteps, useStepProgress } from "@/hooks/useTaskSteps";
 import { useTaskStateHistory } from "@/hooks/useReviews";
 import { api } from "@/lib/tauri";
-import { useChatStore } from "@/stores/chatStore";
-import { useTeamStore } from "@/stores/teamStore";
-import { buildStoreKey } from "@/lib/chat-context-registry";
 
 const mockUseTaskSteps = vi.mocked(useTaskSteps);
 const mockUseStepProgress = vi.mocked(useStepProgress);
@@ -552,39 +549,6 @@ describe("ExecutionTaskDetail", () => {
       ).toBeInTheDocument();
     });
 
-    it("renders team progress section with teammate role and activity", () => {
-      const task = createTestTask({ internalStatus: "executing" });
-      const contextKey = buildStoreKey("task_execution", task.id);
-
-      // Activate team mode and seed a teammate with role + activity so the
-      // role-description and current-activity branches render.
-      useChatStore.getState().setTeamActive(contextKey, true);
-      useTeamStore
-        .getState()
-        .createTeam(contextKey, "exec-team", "lead-agent");
-      useTeamStore.getState().addTeammate(contextKey, {
-        name: "researcher",
-        status: "running",
-        color: "#ff6b35",
-        model: "sonnet",
-        roleDescription: "investigates code paths",
-        currentActivity: "scanning auth.ts",
-        tokensUsed: 0,
-        estimatedCostUsd: 0,
-        conversationId: null,
-      });
-
-      render(<ExecutionTaskDetail task={task} />, { wrapper: TestWrapper });
-
-      expect(screen.getByTestId("team-progress-section")).toBeInTheDocument();
-      expect(screen.getByText("researcher")).toBeInTheDocument();
-      expect(screen.getByText("sonnet")).toBeInTheDocument();
-      expect(screen.getByText("investigates code paths")).toBeInTheDocument();
-      expect(screen.getByText("scanning auth.ts")).toBeInTheDocument();
-
-      // Cleanup so other tests don't see the active team state.
-      useChatStore.getState().setTeamActive(contextKey, false);
-    });
 
     it("renders an error paragraph when the stop mutation rejects", async () => {
       const user = userEvent.setup();

@@ -7,8 +7,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -32,6 +33,164 @@ fn setup_repo() -> (
     seed_conversation(&db, &conversation_id);
     let repo = SqliteAgentConversationWorkspaceRepository::from_shared(db.shared_conn());
     (db, repo, conversation_id)
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-claim");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.review_artifact_id = Some(artifact_id.clone());
+    monitor.review_artifact_version = Some(4);
+    monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-claim".to_string(),
+        artifact_id,
+        artifact_version: 4,
+        blocking_fingerprint: "blocker-claim".to_string(),
+    };
+
+    let claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-one",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .expect("exact snapshot should win");
+    assert_eq!(
+        claimed.review_fixer_attempt_id.as_deref(),
+        Some("attempt-one")
+    );
+    assert!(repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-two",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-stale-settle");
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-old".to_string(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 4,
+        blocking_fingerprint: "blocker-old".to_string(),
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(snapshot.target_scope);
+    monitor.reviewed_target_scope = Some(snapshot.target_scope);
+    monitor.current_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.review_artifact_id = Some(artifact_id);
+    monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let mut claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-stale",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut refreshed = claimed.clone();
+    refreshed.current_diff_fingerprint = Some("diff-new".to_string());
+    refreshed.reviewed_diff_fingerprint = Some("diff-new".to_string());
+    refreshed.review_blocking_fingerprint = Some("blocker-new".to_string());
+    repo.upsert_workspace_review_monitor(refreshed.clone())
+        .await
+        .unwrap();
+    claimed.review_fixer_status = Some("running".to_string());
+
+    assert!(repo
+        .settle_workspace_review_fixer_attempt(claimed, "attempt-stale", &snapshot)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_diff_fingerprint,
+        refreshed.current_diff_fingerprint
+    );
+}
+
+#[tokio::test]
+async fn invalid_workspace_review_fixer_attempt_failure_is_attempt_scoped() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = monitor.current_target_scope;
+    monitor.current_diff_fingerprint = Some("diff-current".to_string());
+    monitor.reviewed_diff_fingerprint = monitor.current_diff_fingerprint.clone();
+    monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-current"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_blocking_fingerprint = Some("   ".to_string());
+    monitor.review_fixer_status = Some("routing".to_string());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+
+    assert!(repo
+        .fail_invalid_workspace_review_fixer_attempt(
+            &conversation_id,
+            Some("attempt-stale"),
+            "invalid authority",
+        )
+        .await
+        .unwrap()
+        .is_none());
+    let failed = repo
+        .fail_invalid_workspace_review_fixer_attempt(&conversation_id, None, "invalid authority")
+        .await
+        .unwrap()
+        .expect("the exact malformed attempt without an id should fail");
+    assert_eq!(failed.review_fixer_status.as_deref(), Some("failed"));
+    assert_eq!(failed.last_error.as_deref(), Some("invalid authority"));
 }
 
 fn seed_conversation(db: &SqliteTestDb, conversation_id: &ChatConversationId) {
@@ -230,6 +389,60 @@ async fn repair_state_cas_is_null_safe_atomic_and_preserves_unrelated_fields() {
             .unwrap(),
         claimed
     );
+}
+
+#[tokio::test]
+async fn repair_state_and_events_transaction_rolls_back_on_insert_failure() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+    let workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some("failed".to_string()),
+        pr_supervision_status: Some("blocked".to_string()),
+        pr_supervision_summary: Some("Review handoff aborted.".to_string()),
+        pr_supervision_updated_at: workspace.pr_supervision_updated_at.unwrap()
+            + chrono::Duration::seconds(1),
+        pr_auto_merge_current: None,
+        base_commit: None,
+    };
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id.clone(),
+        "pr_autofix_workspace_review_aborted",
+        "failed",
+        "Review handoff aborted.",
+        Some("workspace_review_aborted".to_string()),
+    );
+    let duplicate = event.clone();
+
+    assert!(repo
+        .compare_and_set_repair_state_with_events(
+            &conversation_id,
+            &AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
+            &transition,
+            vec![event, duplicate],
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        workspace
+    );
+    assert!(repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -3082,6 +3295,16 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
     needs_agent.pr_autofix_enabled = true;
     repo.create_or_update(needs_agent).await.unwrap();
 
+    let handoff_id = ChatConversationId::from_string("89898989-8989-8989-8989-898989898989");
+    seed_conversation(&db, &handoff_id);
+    let mut handoff = make_workspace(handoff_id.clone());
+    handoff.publication_pr_number = Some(87);
+    handoff.publication_pr_status = Some("open".to_string());
+    handoff.publication_push_status = Some("refreshed".to_string());
+    handoff.pr_supervision_status = Some("reviewing".to_string());
+    handoff.pr_autofix_enabled = true;
+    repo.create_or_update(handoff).await.unwrap();
+
     let closed_id = ChatConversationId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     seed_conversation(&db, &closed_id);
     let mut closed = make_workspace(closed_id);
@@ -3097,8 +3320,13 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
         .await
         .unwrap();
 
-    assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].conversation_id, candidate.conversation_id);
+    assert_eq!(workspaces.len(), 2);
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == candidate.conversation_id));
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == handoff_id));
 
     let limited = repo
         .list_active_direct_pr_supervision_recovery_candidates(0)

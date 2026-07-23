@@ -1262,6 +1262,7 @@ describe("chat api", () => {
         output_tokens: 40,
         cache_creation_tokens: 5,
         cache_read_tokens: 8,
+        processed_tokens: 160,
         estimated_usd: 0.42,
       },
       run_usage_totals: {
@@ -1269,6 +1270,7 @@ describe("chat api", () => {
         output_tokens: 111,
         cache_creation_tokens: 0,
         cache_read_tokens: 0,
+        processed_tokens: 1110,
         estimated_usd: 1.25,
       },
       effective_usage_totals: {
@@ -1276,6 +1278,7 @@ describe("chat api", () => {
         output_tokens: 40,
         cache_creation_tokens: 5,
         cache_read_tokens: 8,
+        processed_tokens: 160,
         estimated_usd: 0.42,
       },
       usage_coverage: {
@@ -1283,6 +1286,11 @@ describe("chat api", () => {
         provider_messages_with_usage: 1,
         run_count: 1,
         runs_with_usage: 1,
+        effective_run_conversation_count: 0,
+        effective_message_conversation_count: 1,
+        legacy_estimated_sample_count: 0,
+        fallback_estimated_sample_count: 0,
+        uncounted_sample_count: 0,
         effective_totals_source: "messages",
       },
       attribution_coverage: {
@@ -1300,6 +1308,7 @@ describe("chat api", () => {
             output_tokens: 40,
             cache_creation_tokens: 5,
             cache_read_tokens: 8,
+            processed_tokens: 160,
             estimated_usd: 0.42,
           },
         },
@@ -1323,6 +1332,7 @@ describe("chat api", () => {
       },
       effectiveUsageTotals: {
         inputTokens: 120,
+        processedTokens: 160,
         estimatedUsd: 0.42,
       },
       byHarness: [
@@ -2167,6 +2177,7 @@ describe("chat api", () => {
         outputTokens: 13593,
         cacheCreationTokens: 0,
         cacheReadTokens: 2434048,
+        processedTokens: 2549560,
         estimatedUsd: null,
       },
       runUsageTotals: {
@@ -2174,6 +2185,7 @@ describe("chat api", () => {
         outputTokens: 13593,
         cacheCreationTokens: 0,
         cacheReadTokens: 2434048,
+        processedTokens: 2549560,
         estimatedUsd: null,
       },
       effectiveUsageTotals: {
@@ -2181,6 +2193,7 @@ describe("chat api", () => {
         outputTokens: 13593,
         cacheCreationTokens: 0,
         cacheReadTokens: 2434048,
+        processedTokens: 2549560,
         estimatedUsd: null,
       },
       usageCoverage: {
@@ -2188,6 +2201,11 @@ describe("chat api", () => {
         providerMessagesWithUsage: 1,
         runCount: 1,
         runsWithUsage: 1,
+        effectiveRunConversationCount: 0,
+        effectiveMessageConversationCount: 1,
+        legacyEstimatedSampleCount: 0,
+        fallbackEstimatedSampleCount: 0,
+        uncountedSampleCount: 0,
         effectiveTotalsSource: "messages",
       },
       attributionCoverage: {
@@ -2205,6 +2223,7 @@ describe("chat api", () => {
             outputTokens: 13593,
             cacheCreationTokens: 0,
             cacheReadTokens: 2434048,
+            processedTokens: 2549560,
             estimatedUsd: null,
           },
         },
@@ -2219,6 +2238,7 @@ describe("chat api", () => {
             outputTokens: 13593,
             cacheCreationTokens: 0,
             cacheReadTokens: 2434048,
+            processedTokens: 2549560,
             estimatedUsd: null,
           },
         },
@@ -2232,6 +2252,7 @@ describe("chat api", () => {
             outputTokens: 13593,
             cacheCreationTokens: 0,
             cacheReadTokens: 2434048,
+            processedTokens: 2549560,
             estimatedUsd: null,
           },
         },
@@ -2250,6 +2271,7 @@ describe("chat api", () => {
         inputTokens: 2535967,
         outputTokens: 13593,
         cacheReadTokens: 2434048,
+        processedTokens: 2549560,
       },
       byModel: [{ key: "gpt-5.4" }],
       byEffort: [{ key: "medium" }],
@@ -2760,7 +2782,7 @@ describe("chat api", () => {
       is_new_conversation: true,
     });
 
-    await sendAgentMessage("project", "p1", "Hello", undefined, undefined, {
+    await sendAgentMessage("project", "p1", "Hello", undefined, {
       conversationId: "c1",
       providerHarness: "codex",
       modelId: "gpt-5.4",
@@ -2793,7 +2815,6 @@ describe("chat api", () => {
       "project",
       "p1",
       "Update member",
-      undefined,
       undefined,
       {
         conversationId: "c1",
@@ -2831,7 +2852,7 @@ describe("chat api", () => {
       is_new_conversation: false,
     });
 
-    await sendAgentMessage("project", "p1", "Build a workflow", undefined, undefined, {
+    await sendAgentMessage("project", "p1", "Build a workflow", undefined, {
       conversationId: "c1",
       capabilityIntent: { coordinationMode: "rx_native_workflow" },
     });
@@ -2858,7 +2879,6 @@ describe("chat api", () => {
       "project",
       "p1",
       "Run internally",
-      undefined,
       undefined,
       {
         conversationId: "c1",
@@ -2888,7 +2908,6 @@ describe("chat api", () => {
       "project",
       "p1",
       "Read @src/main.ts",
-      undefined,
       undefined,
       {
         composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
@@ -3724,7 +3743,23 @@ describe("getConversationActiveState", () => {
         }),
     });
 
-    const result = await startAgentWorkspaceReviewFixer("conversation/1");
+    const result = await startAgentWorkspaceReviewFixer("conversation/1", {
+      confirmation: {
+        targetScope: "workspace_delta",
+        diffFingerprint: "fingerprint-1",
+        artifactId: "artifact-1",
+        artifactVersion: 3,
+        blockingFingerprint: "blocking-1",
+      },
+      runtimeOverride: {
+        provider: "codex",
+        model: "gpt-5.5",
+        effort: "high",
+        serviceTier: "standard",
+        coordinationMode: "solo",
+        personaId: null,
+      },
+    });
 
     expect(mockFetch).toHaveBeenCalledWith(
       backendApiUrl(
@@ -3733,6 +3768,23 @@ describe("getConversationActiveState", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          confirmation: {
+            target_scope: "workspace_delta",
+            diff_fingerprint: "fingerprint-1",
+            artifact_id: "artifact-1",
+            artifact_version: 3,
+            blocking_fingerprint: "blocking-1",
+          },
+          runtime_override: {
+            provider: "codex",
+            model: "gpt-5.5",
+            effort: "high",
+            service_tier: "standard",
+            coordination_mode: "solo",
+            persona_id: null,
+          },
+        }),
       },
     );
     expect(result.started).toBe(true);

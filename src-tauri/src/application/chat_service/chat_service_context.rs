@@ -39,7 +39,7 @@ use crate::infrastructure::agents::{
 use crate::utils::truncate_str;
 
 use super::super::agent_lane_resolution::ResolvedAgentSpawnSettings;
-use super::chat_service_helpers::resolve_agent_with_team_mode;
+use super::chat_service_helpers::resolve_agent;
 use super::conversation_launch_security::{
     conversation_launch_security_class, validate_conversation_launch_identity,
 };
@@ -303,7 +303,6 @@ struct BuildHarnessCommandRequest<'a> {
     project_id: Option<&'a str>,
     filesystem_read_roots: &'a [PathBuf],
     app_data_dir: Option<&'a Path>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -334,7 +333,6 @@ struct BuildHarnessResumeCommandRequest<'a> {
     project_id: Option<&'a str>,
     filesystem_read_roots: &'a [PathBuf],
     parent_conversation_id: Option<String>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -370,7 +368,6 @@ struct BuildHarnessLaunchRequest<'a> {
     project_id: Option<&'a str>,
     filesystem_read_roots: &'a [PathBuf],
     app_data_dir: Option<&'a Path>,
-    runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -528,7 +525,6 @@ impl ResolvedChatHarnessCli {
                     request.project_id,
                     request.filesystem_read_roots,
                     request.app_data_dir,
-                    request.team_mode,
                     request.chat_attachment_repo,
                     request.artifact_repo,
                     request.agent_lane_settings_repo,
@@ -574,7 +570,6 @@ impl ResolvedChatHarnessCli {
                         request.project_id,
                         request.filesystem_read_roots,
                         request.app_data_dir,
-                        false,
                         request.chat_attachment_repo,
                         request.artifact_repo,
                         request.session_messages,
@@ -635,7 +630,6 @@ impl ResolvedChatHarnessCli {
                         request.project_id,
                         request.filesystem_read_roots,
                         request.parent_conversation_id.clone(),
-                        request.team_mode,
                         request.chat_attachment_repo,
                         request.artifact_repo,
                         request.agent_lane_settings_repo,
@@ -727,7 +721,6 @@ impl ResolvedChatHarnessCli {
                         request.project_id,
                         request.filesystem_read_roots,
                         request.parent_conversation_id.clone(),
-                        false,
                         request.artifact_repo,
                         request.ideation_session_repo,
                         request.delegated_session_repo,
@@ -775,7 +768,6 @@ impl ResolvedChatHarnessCli {
                     request.project_id,
                     request.filesystem_read_roots,
                     request.app_data_dir,
-                    request.runtime_team_mode,
                     request.chat_attachment_repo,
                     request.artifact_repo,
                     request.session_messages,
@@ -821,7 +813,6 @@ impl ResolvedChatHarnessCli {
                             request.project_id,
                             request.filesystem_read_roots,
                             project_mcp_parent_conversation_id(request.conversation),
-                            request.runtime_team_mode,
                             request.artifact_repo,
                             request.ideation_session_repo,
                             request.delegated_session_repo,
@@ -851,7 +842,6 @@ impl ResolvedChatHarnessCli {
                             request.project_id,
                             request.filesystem_read_roots,
                             request.app_data_dir,
-                            request.runtime_team_mode,
                             request.chat_attachment_repo,
                             request.artifact_repo,
                             request.session_messages,
@@ -2437,7 +2427,6 @@ pub(super) fn apply_ralphx_env_vars(
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
-    team_mode: bool,
     lead_session_id: Option<&str>,
     subagent_model_cap: Option<&str>,
 ) {
@@ -2468,11 +2457,6 @@ pub(super) fn apply_ralphx_env_vars(
         "RALPHX_WORKING_DIRECTORY",
         working_directory.to_string_lossy().as_ref(),
     );
-    // Enable agent teams feature for team lead (without CLAUDECODE which triggers nesting protection).
-    // CLAUDECODE=1 is only set on teammate processes spawned via spawn_teammate_interactive().
-    if team_mode {
-        cmd.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
-    }
     // Pass the lead agent's Claude session ID so the MCP server can forward it
     // to the backend for teammate spawns (avoids unreliable config file reads).
     if let Some(session_id) = lead_session_id {
@@ -2681,7 +2665,6 @@ pub(super) fn project_mcp_parent_conversation_id(
 ///
 /// `entity_status` is optional and enables dynamic agent resolution based on state.
 /// For example, a review context with status "review_passed" will use the review-chat agent.
-/// `team_mode` enables agent teams feature by setting CLAUDECODE=1 and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1.
 /// `session_messages` is injected into the prompt for Ideation context only; pass `&[]` for other contexts.
 /// `total_available` is the true DB count of session messages (from `count_by_session`); pass `0` when `session_messages` is empty.
 /// `effort_override` is an optional model effort level (e.g. `"low"`, `"medium"`, `"high"`) forwarded to
@@ -2697,7 +2680,6 @@ pub async fn build_command(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -2720,7 +2702,6 @@ pub async fn build_command(
         project_id,
         filesystem_read_roots,
         None,
-        team_mode,
         chat_attachment_repo,
         artifact_repo,
         agent_lane_settings_repo,
@@ -2753,7 +2734,6 @@ pub async fn build_command_with_app_data_dir(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     app_data_dir: Option<&Path>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -2765,10 +2745,11 @@ pub async fn build_command_with_app_data_dir(
     model_override: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
-    // Compute agent_name using the resolution system (context type + optional status + team mode)
-    let agent_name = conversation.bound_agent_name.as_deref().unwrap_or_else(|| {
-        resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode)
-    });
+    // Compute agent_name using the resolution system (context type + optional status).
+    let agent_name = conversation
+        .bound_agent_name
+        .as_deref()
+        .unwrap_or_else(|| resolve_agent(&conversation.context_type, entity_status));
     tracing::debug!(
         agent_name,
         context_type = ?conversation.context_type,
@@ -2829,7 +2810,6 @@ pub async fn build_command_with_app_data_dir(
         entity_status,
         project_id,
         filesystem_read_roots,
-        team_mode,
         artifact_repo,
         &attachment_context,
         should_resume,
@@ -2853,7 +2833,6 @@ async fn build_command_from_resolved_settings(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
-    team_mode: bool,
     artifact_repo: Arc<dyn ArtifactRepository>,
     attachment_context: &str,
     should_resume: bool,
@@ -2959,7 +2938,6 @@ async fn build_command_from_resolved_settings(
         working_directory,
         entity_status,
         project_id,
-        team_mode,
         resume_session.as_deref(),
         ideation_subagent_model_cap,
     );
@@ -2984,7 +2962,6 @@ async fn build_recovery_command_from_resolved_settings(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     parent_conversation_id: Option<String>,
-    team_mode: bool,
     artifact_repo: Arc<dyn ArtifactRepository>,
     session_messages: &[ChatMessage],
     total_available: usize,
@@ -3063,7 +3040,6 @@ async fn build_recovery_command_from_resolved_settings(
         working_directory,
         entity_status,
         project_id,
-        team_mode,
         None,
         ideation_subagent_model_cap,
     );
@@ -3086,7 +3062,6 @@ pub async fn build_codex_command(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     app_data_dir: Option<&Path>,
-    _team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     session_messages: &[ChatMessage],
@@ -3097,10 +3072,8 @@ pub async fn build_codex_command(
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let total_started = Instant::now();
-    let codex_team_mode = false;
-    let agent_name = agent_name_override.unwrap_or_else(|| {
-        resolve_agent_with_team_mode(&conversation.context_type, entity_status, codex_team_mode)
-    });
+    let agent_name = agent_name_override
+        .unwrap_or_else(|| resolve_agent(&conversation.context_type, entity_status));
     let ideation_subagent_model_cap = (conversation.context_type == ChatContextType::Ideation)
         .then(|| {
             resolved_spawn_settings
@@ -3285,7 +3258,6 @@ pub async fn build_codex_command(
         working_directory,
         entity_status,
         project_id,
-        codex_team_mode,
         None,
         ideation_subagent_model_cap.as_deref(),
     );
@@ -3331,7 +3303,7 @@ pub(super) fn noninteractive_agent_name(
     agent_name_override: Option<&str>,
 ) -> String {
     agent_name_override
-        .unwrap_or_else(|| resolve_agent_with_team_mode(&context_type, entity_status, false))
+        .unwrap_or_else(|| resolve_agent(&context_type, entity_status))
         .to_string()
 }
 
@@ -3378,7 +3350,6 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     app_data_dir: Option<&Path>,
-    runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -3411,7 +3382,6 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
         project_id,
         filesystem_read_roots,
         app_data_dir,
-        runtime_team_mode,
         chat_attachment_repo,
         artifact_repo,
         ideation_session_repo,
@@ -3448,7 +3418,6 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
-    runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -3481,7 +3450,6 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
         project_id,
         filesystem_read_roots,
         None,
-        runtime_team_mode,
         chat_attachment_repo,
         artifact_repo,
         ideation_session_repo,
@@ -3520,7 +3488,6 @@ pub async fn build_launch_plan_for_harness_with_persona_for_test(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
-    runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -3553,7 +3520,6 @@ pub async fn build_launch_plan_for_harness_with_persona_for_test(
         project_id,
         filesystem_read_roots,
         None,
-        runtime_team_mode,
         chat_attachment_repo,
         artifact_repo,
         ideation_session_repo,
@@ -3591,7 +3557,6 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     app_data_dir: Option<&Path>,
-    runtime_team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -3630,7 +3595,6 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
             project_id,
             filesystem_read_roots,
             app_data_dir,
-            runtime_team_mode,
             chat_attachment_repo,
             artifact_repo,
             ideation_session_repo,
@@ -3661,7 +3625,6 @@ pub async fn build_command_for_harness(
     entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -3688,7 +3651,6 @@ pub async fn build_command_for_harness(
             project_id,
             filesystem_read_roots,
             app_data_dir: None,
-            team_mode,
             chat_attachment_repo,
             artifact_repo,
             agent_lane_settings_repo,
@@ -3719,7 +3681,6 @@ pub async fn build_command_for_harness_with_folder_refs(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     app_data_dir: Option<&Path>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -3746,7 +3707,6 @@ pub async fn build_command_for_harness_with_folder_refs(
             project_id,
             filesystem_read_roots,
             app_data_dir,
-            team_mode,
             chat_attachment_repo,
             artifact_repo,
             agent_lane_settings_repo,
@@ -3786,7 +3746,6 @@ pub async fn build_interactive_command(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     app_data_dir: Option<&Path>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     session_messages: &[ChatMessage],
@@ -3799,9 +3758,8 @@ pub async fn build_interactive_command(
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let agent_started = Instant::now();
-    let agent_name = agent_name_override.unwrap_or_else(|| {
-        resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode)
-    });
+    let agent_name = agent_name_override
+        .unwrap_or_else(|| resolve_agent(&conversation.context_type, entity_status));
     let ideation_subagent_model_cap = (conversation.context_type == ChatContextType::Ideation)
         .then(|| {
             resolved_spawn_settings
@@ -3949,7 +3907,6 @@ pub async fn build_interactive_command(
         working_directory,
         entity_status,
         project_id,
-        team_mode,
         resume_session,
         ideation_subagent_model_cap.as_deref(),
     );
@@ -4027,7 +3984,6 @@ pub async fn get_entity_status_for_resume(
 ///
 /// Like `build_command()`, but always resumes with the given session_id.
 /// Fetches entity status to enable status-aware agent resolution (e.g., readonly for accepted ideation sessions).
-/// `team_mode` enables agent teams feature by setting CLAUDECODE=1 and CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1.
 /// `session_messages` is injected for Ideation context; pass `&[]` for other contexts.
 /// `total_available` is the true DB count of session messages (from `count_by_session`); pass `0` when `session_messages` is empty.
 /// `effort_override` is an optional model effort level forwarded to `build_base_cli_command`. Pass `None` for default.
@@ -4048,7 +4004,6 @@ pub async fn build_resume_command(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     parent_conversation_id: Option<String>,
-    team_mode: bool,
     _chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -4073,9 +4028,8 @@ pub async fn build_resume_command(
     )
     .await;
 
-    let agent_name = agent_name_override.unwrap_or_else(|| {
-        resolve_agent_with_team_mode(&context_type, entity_status.as_deref(), team_mode)
-    });
+    let agent_name = agent_name_override
+        .unwrap_or_else(|| resolve_agent(&context_type, entity_status.as_deref()));
     let resolved_spawn_settings =
         crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
             agent_name,
@@ -4106,7 +4060,6 @@ pub async fn build_resume_command(
         filesystem_read_roots,
         entity_status.as_deref(),
         parent_conversation_id,
-        team_mode,
         artifact_repo,
         session_messages,
         total_available,
@@ -4135,7 +4088,6 @@ async fn build_resume_command_from_resolved_settings(
     filesystem_read_roots: &[PathBuf],
     entity_status: Option<&str>,
     parent_conversation_id: Option<String>,
-    team_mode: bool,
     artifact_repo: Arc<dyn ArtifactRepository>,
     session_messages: &[ChatMessage],
     total_available: usize,
@@ -4202,7 +4154,6 @@ async fn build_resume_command_from_resolved_settings(
                 working_directory,
                 entity_status,
                 project_id,
-                team_mode,
                 Some(session_id),
                 ideation_subagent_model_cap,
             );
@@ -4227,7 +4178,6 @@ async fn build_resume_command_from_resolved_settings(
                 project_id,
                 filesystem_read_roots,
                 parent_conversation_id,
-                team_mode,
                 artifact_repo,
                 session_messages,
                 total_available,
@@ -4259,7 +4209,6 @@ pub async fn build_codex_resume_command(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     parent_conversation_id: Option<String>,
-    _team_mode: bool,
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
@@ -4271,7 +4220,6 @@ pub async fn build_codex_resume_command(
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
-    let codex_team_mode = false;
     let entity_status = get_entity_status_for_resume(
         context_type,
         context_id,
@@ -4280,9 +4228,8 @@ pub async fn build_codex_resume_command(
         task_repo,
     )
     .await;
-    let agent_name = agent_name_override.unwrap_or_else(|| {
-        resolve_agent_with_team_mode(&context_type, entity_status.as_deref(), codex_team_mode)
-    });
+    let agent_name = agent_name_override
+        .unwrap_or_else(|| resolve_agent(&context_type, entity_status.as_deref()));
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
 
     let runtime_context = build_mcp_runtime_context(
@@ -4367,7 +4314,6 @@ pub async fn build_codex_resume_command(
                 working_directory,
                 entity_status.as_deref(),
                 project_id,
-                codex_team_mode,
                 Some(session_id),
                 ideation_subagent_model_cap,
             );
@@ -4438,7 +4384,6 @@ pub async fn build_codex_resume_command(
                 working_directory,
                 entity_status.as_deref(),
                 project_id,
-                codex_team_mode,
                 None,
                 ideation_subagent_model_cap,
             );
@@ -4468,7 +4413,6 @@ pub async fn build_resume_command_for_harness(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     parent_conversation_id: Option<String>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -4503,7 +4447,6 @@ pub async fn build_resume_command_for_harness(
         project_id,
         filesystem_read_roots,
         parent_conversation_id,
-        team_mode,
         chat_attachment_repo,
         artifact_repo,
         agent_lane_settings_repo,
@@ -4544,7 +4487,6 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     parent_conversation_id: Option<String>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -4579,7 +4521,6 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
         project_id,
         filesystem_read_roots,
         parent_conversation_id,
-        team_mode,
         chat_attachment_repo,
         artifact_repo,
         agent_lane_settings_repo,
@@ -4620,7 +4561,6 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     parent_conversation_id: Option<String>,
-    team_mode: bool,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -4658,7 +4598,6 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
             project_id,
             filesystem_read_roots,
             parent_conversation_id,
-            team_mode,
             chat_attachment_repo,
             artifact_repo,
             agent_lane_settings_repo,
@@ -4719,6 +4658,8 @@ pub fn create_user_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Task
@@ -4757,6 +4698,8 @@ pub fn create_user_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
     };
@@ -4810,6 +4753,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Task => {
@@ -4852,6 +4797,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Review => ChatMessage {
@@ -4880,6 +4827,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Merge => ChatMessage {
@@ -4908,6 +4857,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::BranchUpdate => ChatMessage {
@@ -4936,6 +4887,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
         ChatContextType::Standalone => ChatMessage {
@@ -4964,6 +4917,8 @@ pub fn create_assistant_message(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: chrono::Utc::now(),
         },
     };

@@ -145,6 +145,13 @@ fn pending_handoff_state_closes_on_review_pass_publish_failure_or_publish_succes
     assert!(has_pending_pr_fix_workspace_review_publish_handoff(&[
         publication_event(
             "pr_autofix_workspace_review",
+            "pending",
+            Some("workspace_review_pending"),
+        ),
+    ]));
+    assert!(has_pending_pr_fix_workspace_review_publish_handoff(&[
+        publication_event(
+            "pr_autofix_workspace_review",
             "reviewing",
             Some("workspace_review_started"),
         ),
@@ -192,6 +199,19 @@ fn pending_handoff_state_closes_on_review_pass_publish_failure_or_publish_succes
             Some("workspace_review_started"),
         ),
         publication_event("failed", "failed", Some("manual_publish_failed")),
+    ]));
+
+    assert!(!has_pending_pr_fix_workspace_review_publish_handoff(&[
+        publication_event(
+            "pr_autofix_workspace_review",
+            "pending",
+            Some("workspace_review_pending"),
+        ),
+        publication_event(
+            "pr_autofix_workspace_review_aborted",
+            "failed",
+            Some("workspace_review_aborted"),
+        ),
     ]));
 }
 

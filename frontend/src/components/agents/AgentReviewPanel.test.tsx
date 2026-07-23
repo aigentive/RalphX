@@ -314,6 +314,39 @@ describe("AgentReviewPanel", () => {
     expect(await screen.findAllByText(disabledReason)).not.toHaveLength(0);
   });
 
+  it("keeps Review inspectable but disables retry during conflict repair", () => {
+    renderPanel({
+      reviewActionBlocker: {
+        kind: "repair",
+        message: "Finish or abort the current repair, then retry Review.",
+      },
+    });
+
+    expect(screen.getByTestId("mock-plan-display")).toBeInTheDocument();
+    expect(
+      screen.getByText("Finish or abort the current repair, then retry Review."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update review" })).toBeDisabled();
+  });
+
+  it("labels retained output from an interrupted Review as unfinalized", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        monitor: reviewMonitor({
+          status: "blocked",
+          reviewOutcome: "run_failed",
+          reviewGateStatus: "failed",
+          lastError: "Provider exited after saving output",
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText("Review failed; output was saved but not finalized."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry review" })).toBeEnabled();
+  });
+
   it("keeps the outdated Review warning when the action is not runtime-blocked", () => {
     renderPanel();
 

@@ -2,7 +2,6 @@
 paths:
   - "agents/ralphx-ideation/**"
   - "agents/ralphx-ideation-readonly/**"
-  - "agents/ralphx-ideation-team-lead/**"
   - "src-tauri/src/infrastructure/agents/**"
   - "src-tauri/src/application/chat_service/**"
   - "plugins/app/ralphx-mcp-server/src/**"
@@ -21,7 +20,6 @@ Canonical prompt and capability contracts live under `agents/ralphx-ideation*`; 
 | Active ideation | May maintain the plan and proposals using its canonical tool surface. |
 | Accepted ideation | Read-only; mutations require a child session. |
 | Agent conversation Plan profile | Read-only filesystem/research plus linked plan-artifact maintenance; no proposal or implementation pipeline. |
-| Claude team lead | Team-specific coordination applies only when that Claude profile is active; do not project Team/Task semantics onto Codex. |
 
 ## Durable Flow
 

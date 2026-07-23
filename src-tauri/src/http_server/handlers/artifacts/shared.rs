@@ -184,8 +184,8 @@ pub(super) fn resolve_caller_session_id(
 
 #[derive(Debug, Clone)]
 pub(super) struct ArtifactMutationAuthority {
-    agent_run_id: String,
-    conversation_id: String,
+    pub(super) agent_run_id: String,
+    pub(super) conversation_id: String,
 }
 
 impl ArtifactMutationAuthority {

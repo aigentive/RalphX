@@ -168,6 +168,8 @@ async fn seeded_non_builder_with_messages_rejects_conversion_to_persona_builder(
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: Utc::now(),
         })
         .await
