@@ -5,13 +5,21 @@
 
 use crate::application::app_state::ResolvedBackgroundAgentRuntime;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
+use crate::application::project_skill_distillation_service::{
+    claim_outcome_ids, PreparedProjectSkillDistillation, ProjectSkillDistillationService,
+    ProjectSkillDistillationTrigger, SKILL_DISTILLER_PROFILE,
+};
 use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     ChatContextType, ChatConversationId, MemoryActorType, MemoryEvent, ProjectId,
-    ProjectMemorySettings,
+    ProjectMemorySettings, TaskOutcomeId,
 };
-use crate::domain::repositories::{MemoryEventRepository, ProjectMemorySettingsRepository};
+use crate::domain::repositories::{
+    MemoryEventRepository, ProjectMemorySettingsRepository, ProjectSkillEvidenceBatchRepository,
+    ProjectSkillRepository, ProjectSkillSettingsRepository, TaskOutcomeRepository,
+};
 use crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context;
+use crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context_and_profile;
 use crate::infrastructure::agents::claude::SpawnableCommand;
 use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 use std::collections::HashMap;
@@ -20,6 +28,14 @@ use std::sync::Arc;
 
 const MEMORY_MAINTAINER_AGENT: &str = "ralphx:ralphx-memory-maintainer";
 const MEMORY_CAPTURE_AGENT: &str = "ralphx:ralphx-memory-capture";
+
+#[derive(Clone)]
+pub(crate) struct ProjectSkillDistillationDependencies {
+    pub(crate) outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    pub(crate) batch_repo: Arc<dyn ProjectSkillEvidenceBatchRepository>,
+    pub(crate) settings_repo: Arc<dyn ProjectSkillSettingsRepository>,
+    pub(crate) skill_repo: Arc<dyn ProjectSkillRepository>,
+}
 
 /// Memory category derived from chat context type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +182,7 @@ pub(crate) async fn trigger_memory_pipelines(
     memory_event_repo: Option<Arc<dyn MemoryEventRepository>>,
     project_memory_settings_repo: Option<Arc<dyn ProjectMemorySettingsRepository>>,
     memory_agent_runtime: Option<ResolvedBackgroundAgentRuntime>,
+    skill_distillation: Option<ProjectSkillDistillationDependencies>,
 ) {
     tracing::debug!(
         %context_type,
@@ -181,6 +198,24 @@ pub(crate) async fn trigger_memory_pipelines(
             return;
         }
     };
+
+    if !is_memory_agent(agent_name) {
+        if let Some(dependencies) = skill_distillation {
+            trigger_project_skill_distillation(
+                proj_id,
+                context_type,
+                context_id,
+                conversation_id,
+                cli_path,
+                plugin_dir,
+                working_directory,
+                memory_agent_runtime.clone(),
+                memory_event_repo.clone(),
+                dependencies,
+            )
+            .await;
+        }
+    }
 
     let settings = match resolve_project_memory_settings(
         proj_id,
@@ -350,6 +385,139 @@ pub(crate) async fn trigger_memory_pipelines(
 
     // Don't await - fire and forget
     // Tasks will log their own errors
+}
+
+fn is_memory_agent(agent_name: Option<&str>) -> bool {
+    agent_name
+        .map(|name| name.strip_prefix("ralphx:").unwrap_or(name))
+        .is_some_and(|name| matches!(name, "ralphx-memory-maintainer" | "ralphx-memory-capture"))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn trigger_project_skill_distillation(
+    project_id: &ProjectId,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: &ChatConversationId,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    working_directory: &Path,
+    runtime: Option<ResolvedBackgroundAgentRuntime>,
+    memory_event_repo: Option<Arc<dyn MemoryEventRepository>>,
+    dependencies: ProjectSkillDistillationDependencies,
+) {
+    let Some(memory_event_repo) = memory_event_repo else {
+        tracing::warn!(
+            project_id = project_id.as_str(),
+            "Skill distillation skipped because durable event storage is unavailable"
+        );
+        return;
+    };
+    let service = ProjectSkillDistillationService::new(
+        dependencies.outcome_repo,
+        Arc::clone(&dependencies.batch_repo),
+        dependencies.settings_repo,
+        dependencies.skill_repo,
+        Arc::clone(&memory_event_repo),
+    );
+    let stale_after_secs =
+        crate::infrastructure::agents::claude::limits_config().skill_distiller_claim_stale_secs;
+    let prepared = match service
+        .prepare_claim(
+            project_id,
+            ProjectSkillDistillationTrigger::Automatic,
+            stale_after_secs,
+        )
+        .await
+    {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => return,
+        Err(error) => {
+            log_skill_distillation_event(
+                &memory_event_repo,
+                project_id,
+                "skill_distillation_failed",
+                serde_json::json!({ "phase": "prepare", "error": error.to_string() }),
+            )
+            .await;
+            return;
+        }
+    };
+
+    log_skill_distillation_event(
+        &memory_event_repo,
+        project_id,
+        "skill_distillation_spawn_requested",
+        serde_json::json!({
+            "batch_id": prepared.batch.id.as_str(),
+            "fingerprint": prepared.batch.fingerprint,
+            "conversation_id": conversation_id.as_str(),
+            "context_type": context_type.to_string(),
+            "context_id": context_id,
+        }),
+    )
+    .await;
+
+    if let Err(error) = spawn_skill_distiller(
+        &prepared,
+        conversation_id,
+        context_type,
+        context_id,
+        project_id,
+        cli_path,
+        plugin_dir,
+        working_directory,
+        runtime,
+        Arc::clone(&dependencies.batch_repo),
+        Arc::clone(&memory_event_repo),
+    )
+    .await
+    {
+        let released = dependencies
+            .batch_repo
+            .release_claim(
+                &prepared.batch.id,
+                &prepared.claim_token,
+                chrono::Utc::now(),
+            )
+            .await;
+        log_skill_distillation_event(
+            &memory_event_repo,
+            project_id,
+            "skill_distillation_failed",
+            serde_json::json!({
+                "phase": "spawn",
+                "batch_id": prepared.batch.id.as_str(),
+                "error": error,
+                "claim_released": matches!(released, Ok(true)),
+            }),
+        )
+        .await;
+    }
+}
+
+async fn log_skill_distillation_event(
+    repository: &Arc<dyn MemoryEventRepository>,
+    project_id: &ProjectId,
+    event_type: &str,
+    details: serde_json::Value,
+) {
+    if let Err(error) = repository
+        .create(MemoryEvent::new(
+            project_id.clone(),
+            event_type,
+            MemoryActorType::System,
+            details,
+        ))
+        .await
+    {
+        tracing::warn!(
+            project_id = project_id.as_str(),
+            event_type,
+            error = %error,
+            "Failed to persist skill distillation event"
+        );
+    }
 }
 
 async fn log_memory_pipeline_spawn_requested(
@@ -600,17 +768,176 @@ async fn spawn_memory_capture(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn spawn_skill_distiller(
+    prepared: &PreparedProjectSkillDistillation,
+    conversation_id: &ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    project_id: &ProjectId,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    working_directory: &Path,
+    runtime: Option<ResolvedBackgroundAgentRuntime>,
+    batch_repo: Arc<dyn ProjectSkillEvidenceBatchRepository>,
+    memory_event_repo: Arc<dyn MemoryEventRepository>,
+) -> Result<(), String> {
+    if let Some(runtime) = runtime {
+        let mut config = build_memory_agent_config(
+            MemoryAgentKind::Distiller,
+            &runtime,
+            prepared.prompt.clone(),
+            conversation_id,
+            context_type,
+            context_id,
+            project_id,
+            working_directory,
+        )?;
+        apply_distillation_claim_env(&mut config.env, prepared)?;
+        let client = Arc::clone(&runtime.client);
+        let handle = client
+            .spawn_agent(config)
+            .await
+            .map_err(|error| format!("Failed to spawn skill distiller: {error}"))?;
+        let batch_id = prepared.batch.id.clone();
+        let claim_token = prepared.claim_token.clone();
+        let project_id = project_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = client.wait_for_completion(&handle).await {
+                tracing::warn!(
+                    batch_id = batch_id.as_str(),
+                    error = %error,
+                    "Skill distiller failed after spawn; releasing claim"
+                );
+                let released = batch_repo
+                    .release_claim(&batch_id, &claim_token, chrono::Utc::now())
+                    .await;
+                log_skill_distillation_event(
+                    &memory_event_repo,
+                    &project_id,
+                    "skill_distillation_failed",
+                    serde_json::json!({
+                        "phase": "wait",
+                        "batch_id": batch_id.as_str(),
+                        "error": error.to_string(),
+                        "claim_released": matches!(&released, Ok(true)),
+                        "release_error": released.as_ref().err().map(ToString::to_string),
+                    }),
+                )
+                .await;
+            }
+        });
+        return Ok(());
+    }
+
+    let mut launch = prepare_memory_agent_launch(
+        conversation_id,
+        context_type,
+        context_id,
+        project_id,
+        working_directory,
+        Some("skill_distiller"),
+    )?;
+    apply_distillation_claim_env(&mut launch.env, prepared)?;
+    launch.runtime_context = McpRuntimeContext::from_agent_env(&launch.env, working_directory)
+        .ok_or_else(|| "Skill distiller launch requires project scope".to_string())?;
+    let mut command = build_spawnable_command_with_mcp_runtime_context_and_profile(
+        cli_path,
+        plugin_dir,
+        &prepared.prompt,
+        Some(MEMORY_CAPTURE_AGENT),
+        Some(SKILL_DISTILLER_PROFILE),
+        None,
+        None,
+        working_directory,
+        false,
+        None,
+        None,
+        Some(&launch.runtime_context),
+    )?;
+    for (key, value) in &launch.env {
+        command.env(key, value);
+    }
+    let child = command
+        .spawn()
+        .await
+        .map_err(|error| format!("Failed to spawn skill distiller: {error}"))?;
+    let batch_id = prepared.batch.id.clone();
+    let claim_token = prepared.claim_token.clone();
+    let project_id = project_id.clone();
+    tokio::spawn(async move {
+        let failure = match child.wait_with_output().await {
+            Ok(output) if output.status.success() => None,
+            Ok(output) => Some(format!("skill distiller exited with {}", output.status)),
+            Err(error) => Some(format!("failed to wait for skill distiller: {error}")),
+        };
+        if let Some(error) = failure {
+            let released = batch_repo
+                .release_claim(&batch_id, &claim_token, chrono::Utc::now())
+                .await;
+            log_skill_distillation_event(
+                &memory_event_repo,
+                &project_id,
+                "skill_distillation_failed",
+                serde_json::json!({
+                    "phase": "wait",
+                    "batch_id": batch_id.as_str(),
+                    "error": error,
+                    "claim_released": matches!(&released, Ok(true)),
+                    "release_error": released.as_ref().err().map(ToString::to_string),
+                }),
+            )
+            .await;
+        }
+    });
+    Ok(())
+}
+
+fn apply_distillation_claim_env(
+    env: &mut HashMap<String, String>,
+    prepared: &PreparedProjectSkillDistillation,
+) -> Result<(), String> {
+    env.insert(
+        "RALPHX_AGENT_PROFILE".to_string(),
+        SKILL_DISTILLER_PROFILE.to_string(),
+    );
+    env.insert(
+        "RALPHX_SKILL_DISTILLATION_BATCH_ID".to_string(),
+        prepared.batch.id.as_str().to_string(),
+    );
+    env.insert(
+        "RALPHX_SKILL_DISTILLATION_CLAIM_TOKEN".to_string(),
+        prepared.claim_token.clone(),
+    );
+    env.insert(
+        "RALPHX_SKILL_DISTILLATION_FINGERPRINT".to_string(),
+        prepared.batch.fingerprint.clone(),
+    );
+    env.insert(
+        "RALPHX_SKILL_DISTILLATION_OUTCOME_IDS".to_string(),
+        serde_json::to_string(
+            &claim_outcome_ids(&prepared.batch)
+                .iter()
+                .map(TaskOutcomeId::as_str)
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| format!("Failed to serialize skill distillation outcomes: {error}"))?,
+    );
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MemoryAgentKind {
     Maintainer,
     Capture,
+    Distiller,
 }
 
 impl MemoryAgentKind {
     pub(crate) fn agent_name(self) -> &'static str {
         match self {
             Self::Maintainer => MEMORY_MAINTAINER_AGENT,
-            Self::Capture => MEMORY_CAPTURE_AGENT,
+            Self::Capture | Self::Distiller => MEMORY_CAPTURE_AGENT,
         }
     }
 
@@ -618,13 +945,14 @@ impl MemoryAgentKind {
         match self {
             Self::Maintainer => "memory_maintainer",
             Self::Capture => "memory_capture",
+            Self::Distiller => "skill_distiller",
         }
     }
 
     fn short_name(self) -> &'static str {
         match self {
             Self::Maintainer => "ralphx-memory-maintainer",
-            Self::Capture => "ralphx-memory-capture",
+            Self::Capture | Self::Distiller => "ralphx-memory-capture",
         }
     }
 }

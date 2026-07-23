@@ -7,11 +7,13 @@ use axum::{
 };
 use tracing::error;
 
-use crate::domain::entities::{ProjectId, ProjectSkillId};
+use crate::domain::entities::{
+    ProjectId, ProjectSkillEvidenceBatchId, ProjectSkillId, TaskOutcomeId,
+};
 use crate::domain::repositories::ProjectSkillResolutionOutcome;
 use crate::domain::services::{
-    ProjectSkillPipelineContext, ProjectSkillPipelineInput, ProjectSkillPipelineService,
-    PROJECT_SKILL_PIPELINE_PROJECT_SCOPE_ERROR,
+    ProjectSkillDistillationClaim, ProjectSkillPipelineContext, ProjectSkillPipelineInput,
+    ProjectSkillPipelineService, PROJECT_SKILL_PIPELINE_PROJECT_SCOPE_ERROR,
 };
 use crate::error::AppError;
 use crate::http_server::handlers::learned_skills_export::assert_project_id_scope;
@@ -30,9 +32,10 @@ pub async fn upsert_project_skill(
     let context = trusted_pipeline_context(&headers)?;
     let input = pipeline_input(req);
     assert_project_id_scope(&input.project_id, &scope)?;
-    let result = ProjectSkillPipelineService::new(Arc::clone(
-        &state.app_state.project_skill_repo,
-    ))
+    let result = ProjectSkillPipelineService::with_evidence_batches(
+        Arc::clone(&state.app_state.project_skill_repo),
+        Arc::clone(&state.app_state.project_skill_evidence_batch_repo),
+    )
     .upsert(context, input)
     .await
     .map_err(pipeline_error)?;
@@ -62,9 +65,10 @@ pub async fn patch_project_skill(
         body_markdown: req.body_markdown,
         predicted_effect: req.predicted_effect,
     };
-    let result = ProjectSkillPipelineService::new(Arc::clone(
-        &state.app_state.project_skill_repo,
-    ))
+    let result = ProjectSkillPipelineService::with_evidence_batches(
+        Arc::clone(&state.app_state.project_skill_repo),
+        Arc::clone(&state.app_state.project_skill_evidence_batch_repo),
+    )
     .patch(context, target_id, input)
     .await
     .map_err(pipeline_error)?;
@@ -84,9 +88,10 @@ pub async fn retire_project_skill(
     let project_id = ProjectId::from_string(req.project_id);
     assert_project_id_scope(&project_id, &scope)?;
     let target_id = ProjectSkillId::from_string(req.project_skill_id);
-    let result = ProjectSkillPipelineService::new(Arc::clone(
-        &state.app_state.project_skill_repo,
-    ))
+    let result = ProjectSkillPipelineService::with_evidence_batches(
+        Arc::clone(&state.app_state.project_skill_repo),
+        Arc::clone(&state.app_state.project_skill_evidence_batch_repo),
+    )
     .retire(context, &project_id, &target_id)
     .await
     .map_err(pipeline_error)?;
@@ -140,6 +145,23 @@ fn trusted_pipeline_context(headers: &HeaderMap) -> Result<ProjectSkillPipelineC
         conversation_id: required("x-ralphx-conversation-id")?,
         agent_run_id: optional("x-ralphx-agent-run-id"),
         task_id: optional("x-ralphx-task-id"),
+        distillation_claim: match optional("x-ralphx-skill-distillation-batch-id") {
+            Some(batch_id) => {
+                let outcome_ids = required("x-ralphx-skill-distillation-outcome-ids")?;
+                let outcome_ids = serde_json::from_str::<Vec<String>>(&outcome_ids)
+                    .map_err(|_| unauthorized_pipeline())?
+                    .into_iter()
+                    .map(TaskOutcomeId::from_string)
+                    .collect();
+                Some(ProjectSkillDistillationClaim {
+                    batch_id: ProjectSkillEvidenceBatchId::from_string(batch_id),
+                    claim_token: required("x-ralphx-skill-distillation-claim-token")?,
+                    fingerprint: required("x-ralphx-skill-distillation-fingerprint")?,
+                    outcome_ids,
+                })
+            }
+            None => None,
+        },
     };
     context.validate().map_err(|_| unauthorized_pipeline())?;
     Ok(context)

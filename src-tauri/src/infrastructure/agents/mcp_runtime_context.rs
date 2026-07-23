@@ -12,6 +12,10 @@ pub struct McpRuntimeContext {
     pub task_state: Option<String>,
     pub project_id: Option<String>,
     pub pipeline_role: Option<String>,
+    pub skill_distillation_batch_id: Option<String>,
+    pub skill_distillation_claim_token: Option<String>,
+    pub skill_distillation_fingerprint: Option<String>,
+    pub skill_distillation_outcome_ids: Option<String>,
     pub working_directory: Option<PathBuf>,
     pub filesystem_read_roots: Vec<PathBuf>,
     pub enforce_filesystem_roots: bool,
@@ -38,6 +42,19 @@ impl McpRuntimeContext {
             task_state: non_blank_env(env, "RALPHX_TASK_STATE"),
             project_id: Some(project_id),
             pipeline_role: non_blank_env(env, "RALPHX_PIPELINE_ROLE"),
+            skill_distillation_batch_id: non_blank_env(env, "RALPHX_SKILL_DISTILLATION_BATCH_ID"),
+            skill_distillation_claim_token: non_blank_env(
+                env,
+                "RALPHX_SKILL_DISTILLATION_CLAIM_TOKEN",
+            ),
+            skill_distillation_fingerprint: non_blank_env(
+                env,
+                "RALPHX_SKILL_DISTILLATION_FINGERPRINT",
+            ),
+            skill_distillation_outcome_ids: non_blank_env(
+                env,
+                "RALPHX_SKILL_DISTILLATION_OUTCOME_IDS",
+            ),
             working_directory: Some(working_directory.to_path_buf()),
             parent_conversation_id: non_blank_env(env, "RALPHX_PARENT_CONVERSATION_ID"),
             ..Default::default()
@@ -145,6 +162,22 @@ pub fn append_mcp_runtime_args(
     if let Some(pipeline_role) = runtime_context.pipeline_role.as_deref() {
         args.push("--pipeline-role".to_string());
         args.push(pipeline_role.to_string());
+    }
+    if let Some(batch_id) = runtime_context.skill_distillation_batch_id.as_deref() {
+        args.push("--skill-distillation-batch-id".to_string());
+        args.push(batch_id.to_string());
+    }
+    if let Some(claim_token) = runtime_context.skill_distillation_claim_token.as_deref() {
+        args.push("--skill-distillation-claim-token".to_string());
+        args.push(claim_token.to_string());
+    }
+    if let Some(fingerprint) = runtime_context.skill_distillation_fingerprint.as_deref() {
+        args.push("--skill-distillation-fingerprint".to_string());
+        args.push(fingerprint.to_string());
+    }
+    if let Some(outcome_ids) = runtime_context.skill_distillation_outcome_ids.as_deref() {
+        args.push("--skill-distillation-outcome-ids".to_string());
+        args.push(outcome_ids.to_string());
     }
     if let Some(working_directory) = runtime_context.working_directory.as_ref() {
         args.push("--working-directory".to_string());

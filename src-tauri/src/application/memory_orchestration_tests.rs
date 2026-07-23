@@ -153,6 +153,7 @@ async fn test_trigger_memory_pipelines_no_project_id() {
         Some(event_repo.clone()),
         None,
         Some(runtime),
+        None,
     )
     .await;
 
@@ -209,6 +210,7 @@ async fn test_trigger_memory_pipelines_recursion_guard_normalizes_memory_agent_n
             Some(event_repo.clone()),
             None,
             Some(runtime),
+            None,
         )
         .await;
 
@@ -399,6 +401,7 @@ async fn test_trigger_memory_pipelines_uses_repository_settings_and_logs_disable
         Some(event_repo.clone()),
         Some(settings_repo),
         Some(runtime),
+        None,
     )
     .await;
 
@@ -453,6 +456,7 @@ async fn test_trigger_memory_pipelines_logs_no_enabled_category_skip() {
         Some(event_repo.clone()),
         None,
         Some(runtime),
+        None,
     )
     .await;
 
@@ -513,6 +517,7 @@ async fn test_trigger_memory_pipelines_uses_provided_settings_before_repository_
         Some(event_repo.clone()),
         Some(settings_repo),
         None,
+        None,
     )
     .await;
 
@@ -554,6 +559,7 @@ async fn test_trigger_memory_pipelines_logs_enabled_capture_spawn_request() {
             capture_categories: vec!["planning".to_string()],
         }),
         Some(event_repo.clone()),
+        None,
         None,
         None,
     )
@@ -788,6 +794,7 @@ async fn assert_production_trigger_captures(context_type: ChatContextType, conte
         Some(event_repo.clone()),
         None,
         Some(runtime),
+        None,
     )
     .await;
 
@@ -890,6 +897,7 @@ async fn settings_load_failure_is_typed_durable_and_fails_closed() {
         Some(event_repo.clone()),
         Some(Arc::new(FailingSettingsRepository)),
         Some(runtime),
+        None,
     )
     .await;
 
@@ -979,7 +987,7 @@ fn memory_launch_context_propagates_parent_through_env_and_explicit_mcp_args() {
 }
 
 #[test]
-fn memory_runtime_configs_propagate_parent_for_maintainer_and_capture() {
+fn memory_runtime_configs_propagate_parent_for_all_memory_roles() {
     let entry_repo = Arc::new(InMemoryMemoryEntryRepository::new());
     let event_repo = Arc::new(InMemoryMemoryEventRepository::new());
     let (_client, mut runtime) = capture_test_runtime(entry_repo, event_repo);
@@ -994,7 +1002,11 @@ fn memory_runtime_configs_propagate_parent_for_maintainer_and_capture() {
     let conversation_id = ChatConversationId::from_string(parent_conversation_id.to_string());
     let project_id = ProjectId::from_string("project-1".to_string());
 
-    for kind in [MemoryAgentKind::Maintainer, MemoryAgentKind::Capture] {
+    for kind in [
+        MemoryAgentKind::Maintainer,
+        MemoryAgentKind::Capture,
+        MemoryAgentKind::Distiller,
+    ] {
         let config = build_memory_agent_config(
             kind,
             &runtime,

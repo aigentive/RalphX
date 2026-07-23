@@ -5,6 +5,26 @@ const RUNTIME_ARG_ENV_MAPPINGS = [
     { key: "taskState", argName: "task-state", envName: "RALPHX_TASK_STATE" },
     { key: "projectId", argName: "project-id", envName: "RALPHX_PROJECT_ID" },
     { key: "pipelineRole", argName: "pipeline-role", envName: "RALPHX_PIPELINE_ROLE" },
+    {
+        key: "skillDistillationBatchId",
+        argName: "skill-distillation-batch-id",
+        envName: "RALPHX_SKILL_DISTILLATION_BATCH_ID",
+    },
+    {
+        key: "skillDistillationClaimToken",
+        argName: "skill-distillation-claim-token",
+        envName: "RALPHX_SKILL_DISTILLATION_CLAIM_TOKEN",
+    },
+    {
+        key: "skillDistillationFingerprint",
+        argName: "skill-distillation-fingerprint",
+        envName: "RALPHX_SKILL_DISTILLATION_FINGERPRINT",
+    },
+    {
+        key: "skillDistillationOutcomeIds",
+        argName: "skill-distillation-outcome-ids",
+        envName: "RALPHX_SKILL_DISTILLATION_OUTCOME_IDS",
+    },
     { key: "workingDirectory", argName: "working-directory", envName: "RALPHX_WORKING_DIRECTORY" },
     { key: "contextType", argName: "context-type", envName: "RALPHX_CONTEXT_TYPE" },
     { key: "contextId", argName: "context-id", envName: "RALPHX_CONTEXT_ID" },
@@ -123,6 +143,24 @@ export function buildProjectSkillPipelineTransportHeaders(context) {
             : {}),
         ...(context.taskId?.trim()
             ? { "x-ralphx-task-id": context.taskId.trim() }
+            : {}),
+        ...(context.skillDistillationBatchId?.trim()
+            ? { "x-ralphx-skill-distillation-batch-id": context.skillDistillationBatchId.trim() }
+            : {}),
+        ...(context.skillDistillationClaimToken?.trim()
+            ? {
+                "x-ralphx-skill-distillation-claim-token": context.skillDistillationClaimToken.trim(),
+            }
+            : {}),
+        ...(context.skillDistillationFingerprint?.trim()
+            ? {
+                "x-ralphx-skill-distillation-fingerprint": context.skillDistillationFingerprint.trim(),
+            }
+            : {}),
+        ...(context.skillDistillationOutcomeIds?.trim()
+            ? {
+                "x-ralphx-skill-distillation-outcome-ids": context.skillDistillationOutcomeIds.trim(),
+            }
             : {}),
     };
 }

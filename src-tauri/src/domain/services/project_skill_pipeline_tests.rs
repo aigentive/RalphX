@@ -1,18 +1,26 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+
 use crate::domain::entities::{
-    ProjectId, ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus,
+    ProjectId, ProjectSkillCreatedBy, ProjectSkillEvidenceBatch, ProjectSkillEvidenceBatchId,
+    ProjectSkillEvidenceBatchItem, ProjectSkillEvidenceBatchStatus, ProjectSkillId,
+    ProjectSkillLifecycleStatus, TaskOutcomeId,
 };
 use crate::domain::repositories::{
-    ProjectSkillListOptions, ProjectSkillRepository, ProjectSkillResolutionOutcome,
+    ProjectSkillEvidenceBatchRepository, ProjectSkillListOptions, ProjectSkillRepository,
+    ProjectSkillResolutionOutcome,
 };
 use crate::domain::services::project_skill_pipeline::{
-    ProjectSkillPipelineContext, ProjectSkillPipelineInput, ProjectSkillPipelineService,
-    PROJECT_SKILL_BODY_MAX_CHARS, PROJECT_SKILL_COMPACT_GUIDANCE_MAX_CHARS,
-    PROJECT_SKILL_PREDICTED_EFFECT_MAX_CHARS, PROJECT_SKILL_TITLE_MAX_CHARS,
+    ProjectSkillDistillationClaim, ProjectSkillPipelineContext, ProjectSkillPipelineInput,
+    ProjectSkillPipelineService, PROJECT_SKILL_BODY_MAX_CHARS,
+    PROJECT_SKILL_COMPACT_GUIDANCE_MAX_CHARS, PROJECT_SKILL_PREDICTED_EFFECT_MAX_CHARS,
+    PROJECT_SKILL_TITLE_MAX_CHARS,
 };
-use crate::error::AppError;
-use crate::testing::MemoryProjectSkillRepository;
+use crate::error::{AppError, AppResult};
+use crate::testing::{MemoryProjectSkillEvidenceBatchRepository, MemoryProjectSkillRepository};
 
 fn context(role: &str) -> ProjectSkillPipelineContext {
     ProjectSkillPipelineContext {
@@ -29,6 +37,7 @@ fn context(role: &str) -> ProjectSkillPipelineContext {
         conversation_id: "conversation-1".to_string(),
         agent_run_id: Some("run-1".to_string()),
         task_id: None,
+        distillation_claim: None,
     }
 }
 
@@ -53,6 +62,145 @@ fn setup() -> (
     let repository: Arc<dyn ProjectSkillRepository> = repo.clone();
     let service = ProjectSkillPipelineService::new(repository);
     (repo, service)
+}
+
+fn evidence_batch(id: &str, outcome_id: &str) -> ProjectSkillEvidenceBatch {
+    evidence_batch_with_outcomes(id, &[outcome_id])
+}
+
+fn evidence_batch_with_outcomes(id: &str, outcome_ids: &[&str]) -> ProjectSkillEvidenceBatch {
+    let now = Utc::now();
+    ProjectSkillEvidenceBatch {
+        id: ProjectSkillEvidenceBatchId::from_string(id),
+        project_id: ProjectId::from_string("project-1".to_string()),
+        fingerprint: "a".repeat(64),
+        bucket: "execution".to_string(),
+        status: ProjectSkillEvidenceBatchStatus::Pending,
+        claim_token: None,
+        claimed_at: None,
+        completed_project_skill_id: None,
+        resolution_action: None,
+        completed_at: None,
+        created_at: now,
+        updated_at: now,
+        items: outcome_ids
+            .iter()
+            .enumerate()
+            .map(|(ordinal, outcome_id)| ProjectSkillEvidenceBatchItem {
+                outcome_id: TaskOutcomeId::from_string(*outcome_id),
+                ordinal,
+                digest: format!("bounded evidence {ordinal}"),
+            })
+            .collect(),
+    }
+}
+
+fn distiller_context(batch_id: &str, claim_token: &str) -> ProjectSkillPipelineContext {
+    distiller_context_with_outcomes(batch_id, claim_token, &["outcome-1"])
+}
+
+fn distiller_context_with_outcomes(
+    batch_id: &str,
+    claim_token: &str,
+    outcome_ids: &[&str],
+) -> ProjectSkillPipelineContext {
+    let mut runtime = context("skill_distiller");
+    runtime.distillation_claim = Some(ProjectSkillDistillationClaim {
+        batch_id: ProjectSkillEvidenceBatchId::from_string(batch_id),
+        claim_token: claim_token.to_string(),
+        fingerprint: "a".repeat(64),
+        outcome_ids: outcome_ids
+            .iter()
+            .map(|outcome_id| TaskOutcomeId::from_string(*outcome_id))
+            .collect(),
+    });
+    runtime
+}
+
+struct FailFirstCompletionRepository {
+    inner: Arc<MemoryProjectSkillEvidenceBatchRepository>,
+    fail_completion: AtomicBool,
+}
+
+#[async_trait]
+impl ProjectSkillEvidenceBatchRepository for FailFirstCompletionRepository {
+    async fn insert_if_absent(
+        &self,
+        batch: ProjectSkillEvidenceBatch,
+    ) -> AppResult<ProjectSkillEvidenceBatch> {
+        self.inner.insert_if_absent(batch).await
+    }
+
+    async fn list_batched_outcome_ids(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<TaskOutcomeId>> {
+        self.inner.list_batched_outcome_ids(project_id).await
+    }
+
+    async fn claim_oldest_pending(
+        &self,
+        project_id: &ProjectId,
+        claim_token: &str,
+        claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        self.inner
+            .claim_oldest_pending(project_id, claim_token, claimed_at)
+            .await
+    }
+
+    async fn release_claim(
+        &self,
+        batch_id: &ProjectSkillEvidenceBatchId,
+        claim_token: &str,
+        updated_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        self.inner
+            .release_claim(batch_id, claim_token, updated_at)
+            .await
+    }
+
+    async fn complete_claim(
+        &self,
+        batch_id: &ProjectSkillEvidenceBatchId,
+        claim_token: &str,
+        project_id: &ProjectId,
+        project_skill_id: &ProjectSkillId,
+        resolution_action: &str,
+        completed_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        if self.fail_completion.swap(false, Ordering::SeqCst) {
+            return Ok(false);
+        }
+        self.inner
+            .complete_claim(
+                batch_id,
+                claim_token,
+                project_id,
+                project_skill_id,
+                resolution_action,
+                completed_at,
+            )
+            .await
+    }
+
+    async fn requeue_stale_claims(
+        &self,
+        project_id: &ProjectId,
+        stale_before: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> AppResult<usize> {
+        self.inner
+            .requeue_stale_claims(project_id, stale_before, updated_at)
+            .await
+    }
+
+    async fn get_by_id(
+        &self,
+        batch_id: &ProjectSkillEvidenceBatchId,
+    ) -> AppResult<Option<ProjectSkillEvidenceBatch>> {
+        self.inner.get_by_id(batch_id).await
+    }
 }
 
 #[tokio::test]
@@ -390,4 +538,263 @@ async fn pipeline_patch_and_retire_reject_cross_project_and_pinned_targets_uncha
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn skill_distiller_validates_authoritative_claim_and_settles_after_canonical_write() {
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let batch_repo = Arc::new(MemoryProjectSkillEvidenceBatchRepository::new());
+    batch_repo
+        .insert_if_absent(evidence_batch_with_outcomes(
+            "batch-1",
+            &["outcome-1", "outcome-2"],
+        ))
+        .await
+        .expect("insert evidence batch");
+    batch_repo
+        .claim_oldest_pending(
+            &ProjectId::from_string("project-1".to_string()),
+            "claim-1",
+            Utc::now(),
+        )
+        .await
+        .expect("claim evidence batch")
+        .expect("claimed batch");
+    let service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo.clone(), batch_repo.clone());
+
+    let result = service
+        .upsert(
+            distiller_context_with_outcomes("batch-1", "claim-1", &["outcome-1", "outcome-2"]),
+            input("Claim-scoped guidance"),
+        )
+        .await
+        .expect("write and settle claim");
+    assert_eq!(result.outcome, ProjectSkillResolutionOutcome::CreateNew);
+    assert_eq!(
+        result.skill.provenance_json["evidence_batch"]["id"],
+        "batch-1"
+    );
+    assert_eq!(
+        result.skill.provenance_json["evidence_batch"]["outcome_ids"],
+        serde_json::json!(["outcome-1", "outcome-2"])
+    );
+    let settled = batch_repo
+        .get_by_id(&ProjectSkillEvidenceBatchId::from_string("batch-1"))
+        .await
+        .expect("read batch")
+        .expect("batch exists");
+    assert_eq!(
+        settled.completed_project_skill_id.as_ref(),
+        Some(&result.skill.id)
+    );
+    assert_eq!(settled.resolution_action.as_deref(), Some("create_new"));
+    assert!(settled.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn skill_distiller_rejects_mismatched_persisted_claim_before_any_write() {
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let batch_repo = Arc::new(MemoryProjectSkillEvidenceBatchRepository::new());
+    batch_repo
+        .insert_if_absent(evidence_batch("batch-1", "outcome-1"))
+        .await
+        .expect("insert evidence batch");
+    batch_repo
+        .claim_oldest_pending(
+            &ProjectId::from_string("project-1".to_string()),
+            "authoritative-token",
+            Utc::now(),
+        )
+        .await
+        .expect("claim evidence batch")
+        .expect("claimed batch");
+    let service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo.clone(), batch_repo);
+
+    assert!(matches!(
+        service
+            .upsert(
+                distiller_context("batch-1", "spoofed-token"),
+                input("Must not be written"),
+            )
+            .await,
+        Err(AppError::Conflict(_))
+    ));
+    assert!(skill_repo
+        .list_by_project(
+            &ProjectId::from_string("project-1".to_string()),
+            ProjectSkillListOptions::default(),
+        )
+        .await
+        .expect("list project skills")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn skill_distiller_patch_persists_provenance_before_settlement() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let ordinary_service = ProjectSkillPipelineService::new(skill_repo.clone());
+    let created = ordinary_service
+        .upsert(context("memory_capture"), input("Patchable guidance"))
+        .await
+        .expect("create skill");
+    let batch_repo = Arc::new(MemoryProjectSkillEvidenceBatchRepository::new());
+    batch_repo
+        .insert_if_absent(evidence_batch("batch-1", "outcome-1"))
+        .await
+        .expect("insert evidence batch");
+    batch_repo
+        .claim_oldest_pending(&project_id, "claim-1", Utc::now())
+        .await
+        .expect("claim evidence batch")
+        .expect("claimed batch");
+    let distiller_service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo, batch_repo.clone());
+    let mut revised = input("Patchable guidance");
+    revised
+        .body_markdown
+        .push_str("\n2. Preserve batch provenance.");
+
+    let patched = distiller_service
+        .patch(
+            distiller_context("batch-1", "claim-1"),
+            created.skill.id.clone(),
+            revised,
+        )
+        .await
+        .expect("patch and settle");
+    assert_eq!(
+        patched.outcome,
+        ProjectSkillResolutionOutcome::PatchExisting
+    );
+    assert_eq!(
+        patched.skill.provenance_json["evidence_batch"]["id"],
+        "batch-1"
+    );
+    let settled = batch_repo
+        .get_by_id(&ProjectSkillEvidenceBatchId::from_string("batch-1"))
+        .await
+        .expect("read batch")
+        .expect("batch exists");
+    assert_eq!(settled.resolution_action.as_deref(), Some("patch_existing"));
+    assert_eq!(
+        settled.completed_project_skill_id.as_ref(),
+        Some(&patched.skill.id)
+    );
+}
+
+#[tokio::test]
+async fn marker_failure_reports_false_success_and_duplicate_retry_converges() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let batch_repo = Arc::new(MemoryProjectSkillEvidenceBatchRepository::new());
+    batch_repo
+        .insert_if_absent(evidence_batch("batch-1", "outcome-1"))
+        .await
+        .expect("insert evidence batch");
+    batch_repo
+        .claim_oldest_pending(&project_id, "claim-1", Utc::now())
+        .await
+        .expect("claim evidence batch")
+        .expect("claimed batch");
+    let failing_repo = Arc::new(FailFirstCompletionRepository {
+        inner: batch_repo.clone(),
+        fail_completion: AtomicBool::new(true),
+    });
+    let failing_service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo.clone(), failing_repo);
+
+    assert!(matches!(
+        failing_service
+            .upsert(
+                distiller_context("batch-1", "claim-1"),
+                input("Retry-safe guidance"),
+            )
+            .await,
+        Err(AppError::Conflict(_))
+    ));
+    let unmarked = batch_repo
+        .get_by_id(&ProjectSkillEvidenceBatchId::from_string("batch-1"))
+        .await
+        .expect("read unmarked batch")
+        .expect("batch exists");
+    assert!(unmarked.completed_at.is_none());
+    assert_eq!(
+        skill_repo
+            .list_by_project(&project_id, ProjectSkillListOptions::default())
+            .await
+            .expect("list project skills")
+            .len(),
+        1
+    );
+
+    let retry_service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo.clone(), batch_repo.clone());
+    let retried = retry_service
+        .upsert(
+            distiller_context("batch-1", "claim-1"),
+            input("Retry-safe guidance"),
+        )
+        .await
+        .expect("duplicate retry settles");
+    assert_eq!(retried.outcome, ProjectSkillResolutionOutcome::Duplicate);
+    assert_eq!(
+        skill_repo
+            .list_versions(&retried.skill.id)
+            .await
+            .expect("list versions")
+            .len(),
+        1
+    );
+    let settled = batch_repo
+        .get_by_id(&ProjectSkillEvidenceBatchId::from_string("batch-1"))
+        .await
+        .expect("read settled batch")
+        .expect("batch exists");
+    assert_eq!(settled.resolution_action.as_deref(), Some("duplicate"));
+    assert!(settled.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn skill_distiller_retire_does_not_falsely_settle_authoring_claim() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let ordinary_service = ProjectSkillPipelineService::new(skill_repo.clone());
+    let created = ordinary_service
+        .upsert(context("memory_capture"), input("Retirable guidance"))
+        .await
+        .expect("create skill");
+    let batch_repo = Arc::new(MemoryProjectSkillEvidenceBatchRepository::new());
+    batch_repo
+        .insert_if_absent(evidence_batch("batch-1", "outcome-1"))
+        .await
+        .expect("insert evidence batch");
+    batch_repo
+        .claim_oldest_pending(&project_id, "claim-1", Utc::now())
+        .await
+        .expect("claim evidence batch")
+        .expect("claimed batch");
+    let distiller_service =
+        ProjectSkillPipelineService::with_evidence_batches(skill_repo, batch_repo.clone());
+
+    let retired = distiller_service
+        .retire(
+            distiller_context("batch-1", "claim-1"),
+            &project_id,
+            &created.skill.id,
+        )
+        .await
+        .expect("retire and settle");
+    assert!(retired.changed);
+    assert_eq!(retired.skill.status, ProjectSkillLifecycleStatus::Retired);
+    let uncompleted = batch_repo
+        .get_by_id(&ProjectSkillEvidenceBatchId::from_string("batch-1"))
+        .await
+        .expect("read batch")
+        .expect("batch exists");
+    assert!(uncompleted.resolution_action.is_none());
+    assert!(uncompleted.completed_project_skill_id.is_none());
+    assert!(uncompleted.completed_at.is_none());
 }

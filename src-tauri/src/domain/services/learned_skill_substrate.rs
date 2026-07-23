@@ -1515,7 +1515,7 @@ fn project_skill_authoring_body(
     )
 }
 
-fn bucket_for_outcome_source(source: &str) -> &'static str {
+pub(crate) fn bucket_for_outcome_source(source: &str) -> &'static str {
     match source {
         "review" | "github_pr_review" => "review",
         "merge" | "merge_validation" => "merge",

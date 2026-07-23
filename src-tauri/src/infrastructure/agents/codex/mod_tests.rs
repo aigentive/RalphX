@@ -1061,6 +1061,10 @@ role: project_chat
         agent_run_id: None,
         task_state: None,
         pipeline_role: None,
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let composed = compose_codex_prompt_for_profile_with_runtime_context(
@@ -1215,6 +1219,10 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         parent_conversation_id: Some("conversation-abc".to_string()),
         agent_run_id: Some("run-123".to_string()),
         pipeline_role: Some("memory_capture".to_string()),
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1835,6 +1843,10 @@ harnesses:
         parent_conversation_id: Some("conversation 456".to_string()),
         agent_run_id: Some("run 789".to_string()),
         pipeline_role: None,
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let overrides = build_codex_mcp_overrides(

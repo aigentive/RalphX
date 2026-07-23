@@ -78,8 +78,8 @@ pub use project_skill_resolution::{
     ProjectSkillResolutionService,
 };
 pub use project_skill_pipeline::{
-    ProjectSkillPipelineContext, ProjectSkillPipelineInput, ProjectSkillPipelineRetireResult,
-    ProjectSkillPipelineService, PROJECT_SKILL_BODY_MAX_CHARS,
+    ProjectSkillDistillationClaim, ProjectSkillPipelineContext, ProjectSkillPipelineInput,
+    ProjectSkillPipelineRetireResult, ProjectSkillPipelineService, PROJECT_SKILL_BODY_MAX_CHARS,
     PROJECT_SKILL_COMPACT_GUIDANCE_MAX_CHARS, PROJECT_SKILL_PREDICTED_EFFECT_MAX_CHARS,
     PROJECT_SKILL_PIPELINE_PROJECT_SCOPE_ERROR, PROJECT_SKILL_TITLE_MAX_CHARS,
 };

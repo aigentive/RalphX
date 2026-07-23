@@ -458,9 +458,9 @@ fn trusted_canonical_profile_name(profile_name: &str) -> Option<&str> {
         && !profile_name.contains("..")
         && !profile_name.contains('/')
         && !profile_name.contains('\\')
-        && profile_name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        && profile_name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        });
 
     if valid_component {
         Some(profile_name)

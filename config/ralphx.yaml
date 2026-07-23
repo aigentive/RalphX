@@ -274,6 +274,8 @@ supervisor:
 limits:
   # chat_service_errors.rs — max times an agent conversation is auto-resumed after a provider error
   max_resume_attempts: 5 # Env: RALPHX_LIMITS_MAX_RESUME_ATTEMPTS
+  # Agentic skill distiller — retry a claimed evidence batch after an orphaned run.
+  skill_distiller_claim_stale_secs: 1800
 
 ideation:
   # Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".

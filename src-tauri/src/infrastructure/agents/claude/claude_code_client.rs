@@ -430,6 +430,12 @@ impl ClaudeCodeClient {
         let effort_override = config.logical_effort.map(|effort| effort.to_string());
         let cli_path = self.cli_path_for_config(config);
         let mcp_runtime_context = agent_mcp_runtime_context(config);
+        let agent_profile = config
+            .env
+            .get("RALPHX_AGENT_PROFILE")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
 
         let mut spawnable = if enforce_spawn_guard {
             build_spawnable_command_with_mcp_runtime_context_and_profile(
@@ -437,7 +443,7 @@ impl ClaudeCodeClient {
                 plugin_dir,
                 &config.prompt,
                 config.agent.as_deref(),
-                None,
+                agent_profile,
                 None,
                 resume_session_id,
                 &config.working_directory,
@@ -454,7 +460,7 @@ impl ClaudeCodeClient {
                     plugin_dir,
                     &config.prompt,
                     config.agent.as_deref(),
-                    None,
+                    agent_profile,
                     None,
                     resume_session_id,
                     &config.working_directory,
@@ -472,7 +478,7 @@ impl ClaudeCodeClient {
                     plugin_dir,
                     &config.prompt,
                     config.agent.as_deref(),
-                    None,
+                    agent_profile,
                     None,
                     resume_session_id,
                     &config.working_directory,

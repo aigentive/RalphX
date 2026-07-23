@@ -40,6 +40,7 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.scheduler.watchdog_interval_secs, 60);
     assert_eq!(cfg.supervisor.time_threshold_secs, 600);
     assert_eq!(cfg.limits.max_resume_attempts, 5);
+    assert_eq!(cfg.limits.skill_distiller_claim_stale_secs, 1_800);
 }
 
 /// Merge speed overhaul: verify reduced timeout defaults for faster merge pipeline.

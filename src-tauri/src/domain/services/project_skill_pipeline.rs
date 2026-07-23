@@ -3,11 +3,13 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 
 use crate::domain::entities::{
-    ProjectId, ProjectSkill, ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus,
+    ProjectId, ProjectSkill, ProjectSkillCreatedBy, ProjectSkillEvidenceBatchId,
+    ProjectSkillEvidenceBatchStatus, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcomeId,
 };
 use crate::domain::repositories::{
-    ProjectSkillMatchedMutation, ProjectSkillRepository, ProjectSkillResolutionCommand,
-    ProjectSkillResolutionIntent, ProjectSkillResolutionResult, ProjectSkillStagingPolicy,
+    ProjectSkillEvidenceBatchRepository, ProjectSkillMatchedMutation, ProjectSkillRepository,
+    ProjectSkillResolutionCommand, ProjectSkillResolutionIntent, ProjectSkillResolutionOutcome,
+    ProjectSkillResolutionResult, ProjectSkillStagingPolicy,
 };
 use crate::domain::services::project_skill_resolution::{
     import_title_resolution_identity, ProjectSkillResolutionService,
@@ -24,8 +26,7 @@ pub const PROJECT_SKILL_PIPELINE_PROJECT_SCOPE_ERROR: &str =
 const PIPELINE_STAGED_LIMIT: usize = 2;
 const PIPELINE_WINDOW_HOURS: i64 = 24;
 const PIPELINE_SOURCE: &str = "skill_pipeline_mcp";
-const PROJECT_SKILL_VALUES: &[&str] =
-    &["planning", "verification", "review", "execution", "merge"];
+const PROJECT_SKILL_VALUES: &[&str] = &["planning", "verification", "review", "execution", "merge"];
 const LEGACY_TITLE_PREFIXES: &[&str] = &[
     "Draft procedure for ",
     "Draft implementation procedure from ",
@@ -43,6 +44,15 @@ pub struct ProjectSkillPipelineContext {
     pub conversation_id: String,
     pub agent_run_id: Option<String>,
     pub task_id: Option<String>,
+    pub distillation_claim: Option<ProjectSkillDistillationClaim>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSkillDistillationClaim {
+    pub batch_id: ProjectSkillEvidenceBatchId,
+    pub claim_token: String,
+    pub fingerprint: String,
+    pub outcome_ids: Vec<TaskOutcomeId>,
 }
 
 impl ProjectSkillPipelineContext {
@@ -64,7 +74,10 @@ impl ProjectSkillPipelineContext {
 
         let role_allowed = match self.agent_name.as_str() {
             "ralphx-memory-capture" => {
-                matches!(self.pipeline_role.as_str(), "memory_capture" | "skill_distiller")
+                matches!(
+                    self.pipeline_role.as_str(),
+                    "memory_capture" | "skill_distiller"
+                )
             }
             "ralphx-memory-maintainer" => {
                 matches!(
@@ -78,6 +91,52 @@ impl ProjectSkillPipelineContext {
             return Err(AppError::Validation(
                 "project skill pipeline runtime authority is invalid".to_string(),
             ));
+        }
+        match (&self.pipeline_role[..], self.distillation_claim.as_ref()) {
+            ("skill_distiller", Some(claim)) => claim.validate()?,
+            ("skill_distiller", None) => {
+                return Err(AppError::Validation(
+                    "skill distiller runtime claim authority is required".to_string(),
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(AppError::Validation(
+                    "distillation claim authority is restricted to skill_distiller".to_string(),
+                ));
+            }
+            (_, None) => {}
+        }
+        Ok(())
+    }
+}
+
+impl ProjectSkillDistillationClaim {
+    fn validate(&self) -> AppResult<()> {
+        validate_required("skill distillation batch ID", self.batch_id.as_str())?;
+        validate_required("skill distillation claim token", &self.claim_token)?;
+        if self.fingerprint.len() != 64
+            || !self
+                .fingerprint
+                .bytes()
+                .all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase())
+        {
+            return Err(AppError::Validation(
+                "skill distillation fingerprint must be lowercase SHA-256".to_string(),
+            ));
+        }
+        if self.outcome_ids.is_empty() || self.outcome_ids.len() > 8 {
+            return Err(AppError::Validation(
+                "skill distillation claim requires 1 to 8 outcomes".to_string(),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for outcome_id in &self.outcome_ids {
+            validate_required("skill distillation outcome ID", outcome_id.as_str())?;
+            if !seen.insert(outcome_id.as_str()) {
+                return Err(AppError::Validation(
+                    "skill distillation outcome IDs must be unique".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -103,11 +162,25 @@ pub struct ProjectSkillPipelineRetireResult {
 
 pub struct ProjectSkillPipelineService {
     repo: Arc<dyn ProjectSkillRepository>,
+    evidence_batch_repo: Option<Arc<dyn ProjectSkillEvidenceBatchRepository>>,
 }
 
 impl ProjectSkillPipelineService {
     pub fn new(repo: Arc<dyn ProjectSkillRepository>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            evidence_batch_repo: None,
+        }
+    }
+
+    pub fn with_evidence_batches(
+        repo: Arc<dyn ProjectSkillRepository>,
+        evidence_batch_repo: Arc<dyn ProjectSkillEvidenceBatchRepository>,
+    ) -> Self {
+        Self {
+            repo,
+            evidence_batch_repo: Some(evidence_batch_repo),
+        }
     }
 
     /// Create or update a staged project skill through the canonical resolver.
@@ -122,15 +195,13 @@ impl ProjectSkillPipelineService {
         input: ProjectSkillPipelineInput,
     ) -> AppResult<ProjectSkillResolutionResult> {
         context.validate()?;
+        self.validate_distillation_claim(&context).await?;
         assert_context_project(&context, &input.project_id)?;
         validate_input(&input)?;
         let candidate = build_candidate(&context, input);
-        let identity = import_title_resolution_identity(
-            &candidate.title,
-            &candidate.bucket,
-            &candidate.stage,
-        );
-        ProjectSkillResolutionService::new(Arc::clone(&self.repo))
+        let identity =
+            import_title_resolution_identity(&candidate.title, &candidate.bucket, &candidate.stage);
+        let result = ProjectSkillResolutionService::new(Arc::clone(&self.repo))
             .resolve(ProjectSkillResolutionCommand {
                 staging_policy: Some(staging_policy(&context)),
                 candidate,
@@ -140,7 +211,9 @@ impl ProjectSkillPipelineService {
                 },
                 evidence_markdown: None,
             })
-            .await
+            .await?;
+        self.complete_distillation_claim(&context, &result).await?;
+        Ok(result)
     }
 
     /// Patch an existing scoped project skill through the canonical resolver.
@@ -156,6 +229,7 @@ impl ProjectSkillPipelineService {
         input: ProjectSkillPipelineInput,
     ) -> AppResult<ProjectSkillResolutionResult> {
         context.validate()?;
+        self.validate_distillation_claim(&context).await?;
         assert_context_project(&context, &input.project_id)?;
         validate_input(&input)?;
         let target = self
@@ -165,14 +239,16 @@ impl ProjectSkillPipelineService {
             .ok_or_else(|| AppError::NotFound("project skill was not found".to_string()))?;
         assert_same_project(&target.project_id, &input.project_id)?;
         let candidate = build_candidate(&context, input);
-        ProjectSkillResolutionService::new(Arc::clone(&self.repo))
+        let result = ProjectSkillResolutionService::new(Arc::clone(&self.repo))
             .resolve(ProjectSkillResolutionCommand {
                 staging_policy: Some(staging_policy(&context)),
                 candidate,
                 intent: ProjectSkillResolutionIntent::ExplicitPatch { target_id },
                 evidence_markdown: None,
             })
-            .await
+            .await?;
+        self.complete_distillation_claim(&context, &result).await?;
+        Ok(result)
     }
 
     /// Retire an unpinned active project skill without creating a content version.
@@ -188,6 +264,7 @@ impl ProjectSkillPipelineService {
         target_id: &ProjectSkillId,
     ) -> AppResult<ProjectSkillPipelineRetireResult> {
         context.validate()?;
+        self.validate_distillation_claim(&context).await?;
         assert_context_project(&context, project_id)?;
         let target = self
             .repo
@@ -228,6 +305,94 @@ impl ProjectSkillPipelineService {
             changed: true,
         })
     }
+
+    async fn validate_distillation_claim(
+        &self,
+        context: &ProjectSkillPipelineContext,
+    ) -> AppResult<()> {
+        let Some(claim) = context.distillation_claim.as_ref() else {
+            return Ok(());
+        };
+        let repository = self.evidence_batch_repo.as_ref().ok_or_else(|| {
+            AppError::Database(
+                "skill distillation settlement repository is unavailable".to_string(),
+            )
+        })?;
+        let batch = repository
+            .get_by_id(&claim.batch_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict("skill distillation evidence batch was not found".to_string())
+            })?;
+        let persisted_outcome_ids = batch
+            .items
+            .iter()
+            .map(|item| &item.outcome_id)
+            .collect::<Vec<_>>();
+        let claimed_outcome_ids = claim.outcome_ids.iter().collect::<Vec<_>>();
+        if batch.project_id != context.project_id
+            || batch.status != ProjectSkillEvidenceBatchStatus::Consumed
+            || batch.claim_token.as_deref() != Some(claim.claim_token.as_str())
+            || batch.fingerprint != claim.fingerprint
+            || persisted_outcome_ids != claimed_outcome_ids
+            || batch.completed_at.is_some()
+        {
+            return Err(AppError::Conflict(
+                "skill distillation claim does not match the active evidence batch".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn complete_distillation_claim(
+        &self,
+        context: &ProjectSkillPipelineContext,
+        result: &ProjectSkillResolutionResult,
+    ) -> AppResult<()> {
+        if context.distillation_claim.is_none() {
+            return Ok(());
+        }
+        let action = match result.outcome {
+            ProjectSkillResolutionOutcome::Duplicate => "duplicate",
+            ProjectSkillResolutionOutcome::PatchExisting => "patch_existing",
+            ProjectSkillResolutionOutcome::AppendEvidence => "append_evidence",
+            ProjectSkillResolutionOutcome::CreateNew => "create_new",
+        };
+        self.complete_distillation_marker(context, &result.skill.id, action)
+            .await
+    }
+
+    async fn complete_distillation_marker(
+        &self,
+        context: &ProjectSkillPipelineContext,
+        skill_id: &ProjectSkillId,
+        action: &str,
+    ) -> AppResult<()> {
+        let Some(claim) = context.distillation_claim.as_ref() else {
+            return Ok(());
+        };
+        let repository = self.evidence_batch_repo.as_ref().ok_or_else(|| {
+            AppError::Database(
+                "skill distillation settlement repository is unavailable".to_string(),
+            )
+        })?;
+        if !repository
+            .complete_claim(
+                &claim.batch_id,
+                &claim.claim_token,
+                &context.project_id,
+                skill_id,
+                action,
+                Utc::now(),
+            )
+            .await?
+        {
+            return Err(AppError::Conflict(
+                "skill distillation claim is stale or already settled".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn build_candidate(
@@ -235,6 +400,29 @@ fn build_candidate(
     input: ProjectSkillPipelineInput,
 ) -> ProjectSkill {
     let now = Utc::now();
+    let mut provenance_json = serde_json::json!({
+        "source": PIPELINE_SOURCE,
+        "additional": {
+            "agent_name": context.agent_name,
+            "pipeline_role": context.pipeline_role,
+            "context_type": context.context_type,
+            "context_id": context.context_id,
+            "conversation_id": context.conversation_id,
+            "agent_run_id": context.agent_run_id,
+            "task_id": context.task_id,
+        }
+    });
+    if let Some(claim) = context.distillation_claim.as_ref() {
+        provenance_json["evidence_batch"] = serde_json::json!({
+            "id": claim.batch_id.as_str(),
+            "fingerprint": claim.fingerprint,
+            "outcome_ids": claim
+                .outcome_ids
+                .iter()
+                .map(TaskOutcomeId::as_str)
+                .collect::<Vec<_>>(),
+        });
+    }
     ProjectSkill {
         id: ProjectSkillId::new(),
         project_id: input.project_id,
@@ -248,18 +436,7 @@ fn build_candidate(
         compact_guidance: input.compact_guidance,
         body_markdown: input.body_markdown,
         predicted_effect: Some(input.predicted_effect),
-        provenance_json: serde_json::json!({
-            "source": PIPELINE_SOURCE,
-            "additional": {
-                "agent_name": context.agent_name,
-                "pipeline_role": context.pipeline_role,
-                "context_type": context.context_type,
-                "context_id": context.context_id,
-                "conversation_id": context.conversation_id,
-                "agent_run_id": context.agent_run_id,
-                "task_id": context.task_id,
-            }
-        }),
+        provenance_json,
         companion_of_skill_id: None,
         content_hash: String::new(),
         evidence_hash: String::new(),
@@ -279,7 +456,11 @@ fn staging_policy(context: &ProjectSkillPipelineContext) -> ProjectSkillStagingP
 }
 
 fn validate_input(input: &ProjectSkillPipelineInput) -> AppResult<()> {
-    validate_bounded("project skill title", &input.title, PROJECT_SKILL_TITLE_MAX_CHARS)?;
+    validate_bounded(
+        "project skill title",
+        &input.title,
+        PROJECT_SKILL_TITLE_MAX_CHARS,
+    )?;
     validate_enum("project skill bucket", &input.bucket)?;
     validate_enum("project skill stage", &input.stage)?;
     validate_bounded(

@@ -18,8 +18,8 @@ pub use crate::infrastructure::sqlite::{
 
 #[cfg(any(test, feature = "test-utils"))]
 pub use crate::infrastructure::memory::{
-    InMemoryMemoryEntryRepository, MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
-    MemoryTaskOutcomeRepository,
+    InMemoryMemoryEntryRepository, MemoryProjectSkillEvidenceBatchRepository,
+    MemoryProjectSkillRepository, MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
 };
 
 #[cfg(any(test, feature = "test-utils"))]
