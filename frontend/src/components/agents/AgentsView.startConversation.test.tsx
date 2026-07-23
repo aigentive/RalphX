@@ -45,9 +45,7 @@ function enabledFeatureFlags(overrides: Record<string, boolean> = {}) {
   return {
     activityPage: true,
     extensibilityPage: true,
-    ideationPage: false,
     automationsPage: true,
-    battleMode: true,
     atlassianOauth: false,
     ticketingDashboard: false,
     agentPersonas: false,
@@ -1147,9 +1145,7 @@ describe("AgentsView start conversation", () => {
     queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, {
       activityPage: true,
       extensibilityPage: true,
-      ideationPage: false,
       automationsPage: true,
-      battleMode: true,
       atlassianOauth: false,
       ticketingDashboard: false,
       agentPersonas: false,

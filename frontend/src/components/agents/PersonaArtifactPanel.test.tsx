@@ -107,9 +107,7 @@ function createQueryClient() {
 const featureFlags: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
-  ideationPage: false,
   automationsPage: true,
-  battleMode: true,
   atlassianOauth: false,
   ticketingDashboard: false,
   agentPersonas: true,

@@ -943,7 +943,7 @@ describe("IntegratedChatPanel", () => {
   });
 
   describe("task selection override", () => {
-    it("can ignore the global selected task when host surfaces keep chat pinned to project context", () => {
+    it("omits task context when the host keeps chat pinned to project context", () => {
       render(
         <TestWrapper>
           <IntegratedChatPanel
@@ -1517,7 +1517,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1531,7 +1534,10 @@ describe("IntegratedChatPanel", () => {
       // After fix: isAgentRunning prop uses live run state only, not isExecutionMode
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1542,7 +1548,10 @@ describe("IntegratedChatPanel", () => {
     it("hides Stop button when agent is not running and not in execution mode", () => {
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1570,7 +1579,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1710,7 +1722,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1781,7 +1796,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1806,7 +1824,10 @@ describe("IntegratedChatPanel", () => {
     it("does not show active agent badge when no agent is running", () => {
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1823,7 +1844,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1837,7 +1861,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -1859,7 +1886,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -2166,7 +2196,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -2188,7 +2221,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -2238,7 +2274,10 @@ describe("IntegratedChatPanel", () => {
 
       render(
         <TestWrapper>
-          <IntegratedChatPanel projectId="project-1" />
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride="task-1"
+          />
         </TestWrapper>,
       );
 
@@ -2590,7 +2629,10 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
       </TestWrapper>,
     );
 
@@ -2611,7 +2653,10 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
       </TestWrapper>,
     );
 
@@ -2637,7 +2682,10 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
       </TestWrapper>,
     );
 
@@ -2658,7 +2706,10 @@ describe("PreviousRunBanner visibility in IntegratedChatPanel", () => {
 
     render(
       <TestWrapper>
-        <IntegratedChatPanel projectId="project-1" />
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride="task-1"
+        />
       </TestWrapper>,
     );
 

@@ -235,7 +235,7 @@ describe("IntegratedChatPanel — Gap 2 backfill hydration effect", () => {
 
     act(() => {
       useChatStore.setState({ effectiveModel: {} });
-      useUiStore.setState({ selectedTaskId: "task-1", taskHistoryState: null });
+      useUiStore.setState({ taskHistoryState: null });
     });
   });
 

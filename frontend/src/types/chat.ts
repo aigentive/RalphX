@@ -4,6 +4,7 @@
 import { z } from "zod";
 
 import { ContextTypeSchema } from "@/types/chat-conversation";
+import { APP_VIEW_VALUES, type AppView } from "@/types/app-view";
 
 // ============================================================================
 // View Types
@@ -12,37 +13,16 @@ import { ContextTypeSchema } from "@/types/chat-conversation";
 /**
  * View type values for chat context
  */
-export const VIEW_TYPE_VALUES = [
+export const CHAT_CONTEXT_VIEW_VALUES = [
+  ...APP_VIEW_VALUES,
   "kanban",
   "graph",
   "ideation",
-  "agents",
-  "automations",
-  "ticketing",
-  "github",
-  "granola",
-  "extensibility",
-  "activity",
-  "insights",
   "task_detail",
 ] as const;
 
-export const ViewTypeSchema = z.enum(VIEW_TYPE_VALUES);
-export type ViewType = z.infer<typeof ViewTypeSchema>;
-export const DEFAULT_PROJECT_VIEW: ViewType = "agents";
-
-const DEPRECATED_STANDALONE_VIEW_VALUES = new Set<ViewType>([
-  "kanban",
-  "graph",
-  "ideation",
-]);
-
-/** Maps persisted and external standalone routes onto the retained Agents surface. */
-export function normalizeMainView(view: ViewType): ViewType {
-  return DEPRECATED_STANDALONE_VIEW_VALUES.has(view)
-    ? DEFAULT_PROJECT_VIEW
-    : view;
-}
+export const ChatContextViewSchema = z.enum(CHAT_CONTEXT_VIEW_VALUES);
+export type ChatContextView = z.infer<typeof ChatContextViewSchema>;
 
 // ============================================================================
 // Chat Context
@@ -54,7 +34,7 @@ export function normalizeMainView(view: ViewType): ViewType {
  */
 export const ChatContextSchema = z.object({
   /** Current view being displayed */
-  view: ViewTypeSchema,
+  view: ChatContextViewSchema,
   /** Current project ID */
   projectId: z.string().min(1),
   /** Explicit backend conversation context for non-project Agents hosts. */
@@ -186,7 +166,7 @@ export function createTaskDetailContext(
  */
 export function createProjectContext(
   projectId: string,
-  view: "activity" | "insights" | "agents" | "ticketing" | "github" | "granola"
+  view: AppView
 ): ChatContext {
   return {
     view,
