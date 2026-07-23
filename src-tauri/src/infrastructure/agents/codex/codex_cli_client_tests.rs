@@ -6,11 +6,13 @@ fn create_codex_agent_fixture(root: &Path) -> PathBuf {
     let plugin_dir = root.join("plugins/app");
     let agent_dir = root.join("agents/ralphx-execution-worker");
     std::fs::create_dir_all(agent_dir.join("codex")).expect("create Codex agent fixture");
+    std::fs::create_dir_all(agent_dir.join("profiles/skill_distiller/codex"))
+        .expect("create Codex profile fixture");
     std::fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build"))
         .expect("create MCP build fixture");
     std::fs::write(
         agent_dir.join("agent.yaml"),
-        "name: ralphx-execution-worker\nrole: execution_worker\n",
+        "name: ralphx-execution-worker\nrole: execution_worker\nprofiles:\n  skill_distiller:\n    role: skill_distiller\n    capabilities:\n      mcp_tools: [upsert_project_skill, patch_project_skill, retire_project_skill]\n    harnesses:\n      codex:\n        runtime_features:\n          shell_tool: false\n",
     )
     .expect("write shared agent definition");
     std::fs::write(agent_dir.join("codex/agent.yaml"), "runtime_features: {}\n")
@@ -20,6 +22,11 @@ fn create_codex_agent_fixture(root: &Path) -> PathBuf {
         "You are the execution worker.",
     )
     .expect("write Codex prompt");
+    std::fs::write(
+        agent_dir.join("profiles/skill_distiller/codex/prompt.md"),
+        "You are the profile-scoped skill distiller.",
+    )
+    .expect("write Codex profile prompt");
     std::fs::write(
         plugin_dir.join("ralphx-mcp-server/build/index.js"),
         "// fake MCP server",
@@ -115,4 +122,27 @@ fn prepare_spawn_omits_partial_runtime_identity_without_project_scope() {
             "partial runtime identity leaked through {forbidden}: {args:?}"
         );
     }
+}
+
+#[test]
+fn prepare_spawn_uses_backend_selected_agent_profile_for_prompt_and_mcp_surface() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let plugin_dir = create_codex_agent_fixture(temp_dir.path());
+    let config = AgentConfig::worker("Author reusable guidance")
+        .with_agent("ralphx:ralphx-execution-worker")
+        .with_plugin_dir(plugin_dir)
+        .with_working_dir("/trusted/workspace")
+        .with_env("RALPHX_PROJECT_ID", "project-1")
+        .with_env("RALPHX_AGENT_PROFILE", "skill_distiller");
+
+    let preparation = CodexCliClient::new()
+        .prepare_spawn(&config)
+        .expect("profile-aware Codex spawn preparation");
+    let args = codex_mcp_args(&preparation.config_overrides);
+
+    assert!(preparation
+        .prompt
+        .contains("You are the profile-scoped skill distiller."));
+    assert!(preparation.prompt.contains("Author reusable guidance"));
+    assert!(has_arg_pair(&args, "--agent-profile", "skill_distiller"));
 }

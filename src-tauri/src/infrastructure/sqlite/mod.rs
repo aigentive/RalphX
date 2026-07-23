@@ -116,6 +116,9 @@ mod sqlite_project_memory_settings_repo_tests;
 pub mod sqlite_project_skill_settings_repo;
 #[cfg(test)]
 mod sqlite_project_skill_settings_repo_tests;
+pub mod sqlite_project_skill_evidence_batch_repo;
+#[cfg(test)]
+mod sqlite_project_skill_evidence_batch_repo_tests;
 pub mod sqlite_proposal_dependency_repo;
 pub mod sqlite_question_repo;
 pub mod sqlite_queued_message_repo;
@@ -222,6 +225,7 @@ pub use sqlite_process_repo::SqliteProcessRepository;
 pub use sqlite_project_repo::SqliteProjectRepository;
 pub use sqlite_project_memory_settings_repo::SqliteProjectMemorySettingsRepository;
 pub use sqlite_project_skill_settings_repo::SqliteProjectSkillSettingsRepository;
+pub use sqlite_project_skill_evidence_batch_repo::SqliteProjectSkillEvidenceBatchRepository;
 pub use sqlite_proposal_dependency_repo::SqliteProposalDependencyRepository;
 pub use sqlite_question_repo::SqliteQuestionRepository;
 pub use sqlite_queued_message_repo::SqliteQueuedMessageRepository;

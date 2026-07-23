@@ -2572,6 +2572,10 @@ pub(super) fn build_mcp_runtime_context(
         parent_conversation_id,
         task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
         pipeline_role: None,
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     }
 }
 

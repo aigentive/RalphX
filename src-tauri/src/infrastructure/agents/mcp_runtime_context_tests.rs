@@ -24,6 +24,22 @@ fn full_agent_env() -> HashMap<String, String> {
             " memory_capture ".to_string(),
         ),
         (
+            "RALPHX_SKILL_DISTILLATION_BATCH_ID".to_string(),
+            " batch-1 ".to_string(),
+        ),
+        (
+            "RALPHX_SKILL_DISTILLATION_CLAIM_TOKEN".to_string(),
+            " claim-1 ".to_string(),
+        ),
+        (
+            "RALPHX_SKILL_DISTILLATION_FINGERPRINT".to_string(),
+            format!(" {} ", "a".repeat(64)),
+        ),
+        (
+            "RALPHX_SKILL_DISTILLATION_OUTCOME_IDS".to_string(),
+            " [\"outcome-1\"] ".to_string(),
+        ),
+        (
             "RALPHX_PARENT_CONVERSATION_ID".to_string(),
             " conversation-parent ".to_string(),
         ),
@@ -49,6 +65,22 @@ fn from_agent_env_maps_all_a2_fields_and_trusts_the_working_directory_argument()
     assert_eq!(context.task_id.as_deref(), Some("task-1"));
     assert_eq!(context.task_state.as_deref(), Some("executing"));
     assert_eq!(context.pipeline_role.as_deref(), Some("memory_capture"));
+    assert_eq!(
+        context.skill_distillation_batch_id.as_deref(),
+        Some("batch-1")
+    );
+    assert_eq!(
+        context.skill_distillation_claim_token.as_deref(),
+        Some("claim-1")
+    );
+    assert_eq!(
+        context.skill_distillation_fingerprint.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        context.skill_distillation_outcome_ids.as_deref(),
+        Some("[\"outcome-1\"]")
+    );
     assert_eq!(
         context.parent_conversation_id.as_deref(),
         Some("conversation-parent")
@@ -143,4 +175,33 @@ fn pipeline_role_is_additive_in_cli_and_query_transport() {
     let mut url = "http://127.0.0.1/mcp".to_string();
     append_mcp_runtime_query(&mut url, Some(&context));
     assert!(url.contains("pipeline_role=memory_maintainer"));
+}
+
+#[test]
+fn skill_distillation_claim_is_cli_only_transport_context() {
+    let context = McpRuntimeContext {
+        skill_distillation_batch_id: Some("batch-1".to_string()),
+        skill_distillation_claim_token: Some("claim-1".to_string()),
+        skill_distillation_fingerprint: Some("a".repeat(64)),
+        skill_distillation_outcome_ids: Some("[\"outcome-1\"]".to_string()),
+        ..Default::default()
+    };
+
+    let mut args = Vec::new();
+    append_mcp_runtime_args(&mut args, Some(&context));
+    for (option, value) in [
+        ("--skill-distillation-batch-id", "batch-1"),
+        ("--skill-distillation-claim-token", "claim-1"),
+        (
+            "--skill-distillation-fingerprint",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        ("--skill-distillation-outcome-ids", "[\"outcome-1\"]"),
+    ] {
+        assert!(args.windows(2).any(|pair| pair == [option, value]));
+    }
+
+    let mut url = "http://127.0.0.1/mcp".to_string();
+    append_mcp_runtime_query(&mut url, Some(&context));
+    assert_eq!(url, "http://127.0.0.1/mcp");
 }

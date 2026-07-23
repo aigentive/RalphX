@@ -1,4 +1,4 @@
-type RuntimeStringContextKey = "agentType" | "agentProfile" | "taskId" | "taskState" | "projectId" | "pipelineRole" | "workingDirectory" | "filesystemReadRoots" | "contextType" | "contextId" | "conversationId" | "coordinationMode" | "parentConversationId" | "agentRunId" | "leadSessionId" | "tauriApiUrl" | "traceDir";
+type RuntimeStringContextKey = "agentType" | "agentProfile" | "taskId" | "taskState" | "projectId" | "pipelineRole" | "skillDistillationBatchId" | "skillDistillationClaimToken" | "skillDistillationFingerprint" | "skillDistillationOutcomeIds" | "workingDirectory" | "filesystemReadRoots" | "contextType" | "contextId" | "conversationId" | "coordinationMode" | "parentConversationId" | "agentRunId" | "leadSessionId" | "tauriApiUrl" | "traceDir";
 export type RuntimeContext = Partial<Record<RuntimeStringContextKey, string>> & {
     filesystemEnforced: boolean;
 };

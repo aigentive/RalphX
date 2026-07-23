@@ -474,6 +474,10 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         parent_conversation_id: Some("conversation-789".to_string()),
         agent_run_id: Some("run-123".to_string()),
         pipeline_role: Some("memory_capture".to_string()),
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let json = build_mcp_config_with_runtime_context(
@@ -1668,6 +1672,10 @@ role: project_chat
         agent_run_id: None,
         task_state: None,
         pipeline_role: None,
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let spawnable = build_spawnable_command_with_mcp_runtime_context_for_test(

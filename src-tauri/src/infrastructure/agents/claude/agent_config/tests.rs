@@ -1517,6 +1517,28 @@ fn test_memory_capture_has_memory_skills() {
 }
 
 #[test]
+fn skill_distiller_profile_is_write_only_and_has_no_native_cli_surface() {
+    let config = get_agent_config_for_profile("ralphx-memory-capture", Some("skill_distiller"))
+        .expect("skill_distiller profile should resolve");
+    assert_eq!(
+        config.allowed_mcp_tools,
+        vec![
+            "upsert_project_skill",
+            "patch_project_skill",
+            "retire_project_skill",
+        ]
+    );
+    assert!(config.mcp_only);
+    assert!(config.resolved_cli_tools.is_empty());
+    assert!(config.preapproved_cli_tools.is_empty());
+    assert!(
+        get_agent_config_for_profile("ralphx-memory-capture", Some("../skill_distiller"),)
+            .is_none(),
+        "profile path traversal must remain rejected"
+    );
+}
+
+#[test]
 fn test_non_memory_agents_lack_memory_skills() {
     let agents_to_test = vec![
         "ralphx-execution-worker",

@@ -14,7 +14,7 @@ use crate::domain::agents::{
 };
 
 use super::{
-    build_codex_mcp_overrides, build_spawnable_codex_exec_command,
+    build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
     compose_codex_prompt_for_profile_with_runtime_context, normalize_codex_exec_output,
     probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, CodexExecCliConfig,
 };
@@ -125,11 +125,23 @@ impl CodexCliClient {
     pub(super) fn prepare_spawn(&self, config: &AgentConfig) -> AgentResult<CodexSpawnPreparation> {
         let runtime_context =
             McpRuntimeContext::from_agent_env(&config.env, &config.working_directory);
+        let agent_profile = config
+            .env
+            .get("RALPHX_AGENT_PROFILE")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let mut config_overrides = if let (Some(plugin_dir), Some(agent_name)) =
             (config.plugin_dir.as_ref(), config.agent.as_deref())
         {
-            build_codex_mcp_overrides(plugin_dir, agent_name, false, runtime_context.as_ref())
-                .map_err(AgentError::SpawnFailed)?
+            build_codex_mcp_overrides_for_profile(
+                plugin_dir,
+                agent_name,
+                agent_profile,
+                false,
+                runtime_context.as_ref(),
+            )
+            .map_err(AgentError::SpawnFailed)?
         } else {
             Vec::new()
         };
@@ -139,7 +151,7 @@ impl CodexCliClient {
             &config.prompt,
             config.plugin_dir.as_deref(),
             config.agent.as_deref(),
-            None,
+            agent_profile,
             runtime_context.as_ref(),
         );
 

@@ -54,6 +54,7 @@ pub mod persona_repository;
 pub mod process_repo;
 pub mod project_memory_settings_repository;
 pub mod project_skill_settings_repository;
+pub mod project_skill_evidence_batch_repository;
 pub mod project_skill_repository;
 pub mod project_repository;
 pub mod proposal_dependency_repository;
@@ -153,6 +154,7 @@ pub use persona_repository::PersonaRepository;
 pub use process_repo::ProcessRepository;
 pub use project_memory_settings_repository::ProjectMemorySettingsRepository;
 pub use project_skill_settings_repository::ProjectSkillSettingsRepository;
+pub use project_skill_evidence_batch_repository::ProjectSkillEvidenceBatchRepository;
 pub use project_skill_repository::{
     ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
     ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
