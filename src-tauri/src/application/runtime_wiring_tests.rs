@@ -57,3 +57,16 @@ fn traffic_light_centering_reapplies_after_native_layout_events() {
         &WindowEvent::Focused(false)
     ));
 }
+
+#[test]
+fn startup_coordinator_is_pointer_identical_in_paired_app_states() {
+    let source = crate::application::AppState::new_test();
+    let mut target = crate::application::AppState::new_test();
+
+    super::runtime_wiring::share_startup_coordinator(&source, &mut target);
+
+    assert!(std::sync::Arc::ptr_eq(
+        &source.startup_coordinator,
+        &target.startup_coordinator
+    ));
+}

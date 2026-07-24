@@ -113,14 +113,14 @@ impl AutoPublishSkipReason {
 
 /// Register backend-only listeners that publish opted-in agent workspaces after
 /// an agent turn finishes, then keep already-published PRs fresh.
-pub(crate) fn install_agent_workspace_auto_publish_listeners<R>(app: &tauri::App<R>)
+pub(crate) fn install_agent_workspace_auto_publish_listeners<R>(app_handle: tauri::AppHandle<R>)
 where
     R: Runtime,
 {
-    start_agent_workspace_auto_publish_freshness_scan(app.handle().clone());
+    start_agent_workspace_auto_publish_freshness_scan(app_handle.clone());
 
-    let run_completed_handle = app.handle().clone();
-    app.listen_any(AGENT_RUN_COMPLETED, move |event| {
+    let run_completed_handle = app_handle.clone();
+    app_handle.listen_any(AGENT_RUN_COMPLETED, move |event| {
         spawn_auto_publish_from_completion_event(
             run_completed_handle.clone(),
             AGENT_RUN_COMPLETED,
@@ -132,8 +132,8 @@ where
         );
     });
 
-    let turn_completed_handle = app.handle().clone();
-    app.listen_any(AGENT_TURN_COMPLETED, move |event| {
+    let turn_completed_handle = app_handle.clone();
+    app_handle.listen_any(AGENT_TURN_COMPLETED, move |event| {
         spawn_auto_publish_from_completion_event(
             turn_completed_handle.clone(),
             AGENT_TURN_COMPLETED,

@@ -222,7 +222,7 @@ enum GhTokenProbe {
     Failed,
 }
 
-async fn probe_gh_auth_token() -> GhTokenProbe {
+async fn probe_gh_auth_token_with_timeout(deadline: Duration) -> GhTokenProbe {
     let mut command = Command::new(resolve_gh_cli_path());
     apply_git_subprocess_env(&mut command);
     let mut child = match command
@@ -236,13 +236,17 @@ async fn probe_gh_auth_token() -> GhTokenProbe {
         Err(_) => return GhTokenProbe::CliUnavailable,
     };
 
-    let deadline = Duration::from_secs(git_runtime_config().cmd_timeout_secs);
     match timeout(deadline, child.wait()).await {
         Ok(Ok(status)) if status.success() => GhTokenProbe::Present,
         Ok(Ok(_)) => GhTokenProbe::Absent,
         Ok(Err(_)) => GhTokenProbe::Failed,
         Err(_) => GhTokenProbe::TimedOut,
     }
+}
+
+async fn probe_gh_auth_token() -> GhTokenProbe {
+    probe_gh_auth_token_with_timeout(Duration::from_secs(git_runtime_config().cmd_timeout_secs))
+        .await
 }
 
 pub(crate) async fn check_gh_auth_token_available() -> bool {
@@ -254,8 +258,17 @@ pub(crate) async fn check_gh_auth_token_available() -> bool {
 /// The token command's stdout is discarded so credential material never enters
 /// memory. Live validation requests only the public account login.
 pub(crate) async fn probe_github_connection_status() -> GithubConnectionStatus {
+    probe_github_connection_status_with_timeout(Duration::from_secs(
+        git_runtime_config().cmd_timeout_secs,
+    ))
+    .await
+}
+
+pub(crate) async fn probe_github_connection_status_with_timeout(
+    deadline: Duration,
+) -> GithubConnectionStatus {
     let started_at = Instant::now();
-    let status = match probe_gh_auth_token().await {
+    let status = match probe_gh_auth_token_with_timeout(deadline).await {
         GhTokenProbe::Absent => GithubConnectionStatus::unauthenticated(),
         GhTokenProbe::CliUnavailable => GithubConnectionStatus::cli_unavailable(),
         GhTokenProbe::TimedOut => {
@@ -264,7 +277,7 @@ pub(crate) async fn probe_github_connection_status() -> GithubConnectionStatus {
         GhTokenProbe::Failed => {
             GithubConnectionStatus::probe_failed(GithubConnectionDiagnostic::UnexpectedResponse)
         }
-        GhTokenProbe::Present => validate_github_credential().await,
+        GhTokenProbe::Present => validate_github_credential_with_timeout(deadline).await,
     };
 
     tracing::info!(
@@ -277,7 +290,7 @@ pub(crate) async fn probe_github_connection_status() -> GithubConnectionStatus {
     status
 }
 
-async fn validate_github_credential() -> GithubConnectionStatus {
+async fn validate_github_credential_with_timeout(deadline: Duration) -> GithubConnectionStatus {
     let mut command = Command::new(resolve_gh_cli_path());
     apply_git_subprocess_env(&mut command);
     let child = match command
@@ -291,7 +304,6 @@ async fn validate_github_credential() -> GithubConnectionStatus {
         Err(_) => return GithubConnectionStatus::cli_unavailable(),
     };
 
-    let deadline = Duration::from_secs(git_runtime_config().cmd_timeout_secs);
     match timeout(deadline, child.wait_with_output()).await {
         Ok(Ok(output)) if output.status.success() => {
             let account = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -466,9 +478,16 @@ pub(crate) async fn git_auth_error_from_failure(
 pub(crate) async fn inspect_origin_auth_config(
     working_dir: &Path,
 ) -> AppResult<GitRemoteAuthConfig> {
-    let mut config = inspect_origin_topology_config(working_dir).await?;
+    inspect_origin_auth_config_with_timeout(working_dir, Duration::from_secs(5)).await
+}
+
+pub(crate) async fn inspect_origin_auth_config_with_timeout(
+    working_dir: &Path,
+    deadline: Duration,
+) -> AppResult<GitRemoteAuthConfig> {
+    let mut config = inspect_origin_topology_config_with_timeout(working_dir, deadline).await?;
     config.github_https_credential_helper_configured =
-        inspect_github_https_credential_helper_configured(working_dir, &config).await;
+        inspect_github_https_credential_helper_configured(working_dir, &config, deadline).await;
 
     Ok(config)
 }
@@ -477,6 +496,17 @@ pub(crate) async fn inspect_origin_auth_config(
 /// commands. This bounded topology-only path deliberately skips credential
 /// helper inspection, so project list loading never performs auth work.
 async fn inspect_origin_topology_config(working_dir: &Path) -> AppResult<GitRemoteAuthConfig> {
+    inspect_origin_topology_config_with_timeout(
+        working_dir,
+        Duration::from_secs(git_runtime_config().cmd_timeout_secs),
+    )
+    .await
+}
+
+async fn inspect_origin_topology_config_with_timeout(
+    working_dir: &Path,
+    deadline: Duration,
+) -> AppResult<GitRemoteAuthConfig> {
     if let Some(config) = read_origin_auth_config_from_git_config(working_dir)? {
         return Ok(config);
     }
@@ -485,9 +515,17 @@ async fn inspect_origin_topology_config(working_dir: &Path) -> AppResult<GitRemo
     // subprocess. Linked worktrees use a `.git` pointer file, so validate them
     // before falling back to Git's local configuration commands.
     ensure_git_worktree(working_dir).await?;
-    let fetch_url = read_origin_url(working_dir, &["remote", "get-url", "origin"]).await?;
+    let fetch_url =
+        read_origin_url_with_timeout(working_dir, &["remote", "get-url", "origin"], deadline)
+            .await?;
     let push_url = if fetch_url.is_some() {
-        match read_origin_url(working_dir, &["remote", "get-url", "--push", "origin"]).await {
+        match read_origin_url_with_timeout(
+            working_dir,
+            &["remote", "get-url", "--push", "origin"],
+            deadline,
+        )
+        .await
+        {
             Ok(Some(url)) => Some(url),
             _ => fetch_url.clone(),
         }
@@ -666,6 +704,7 @@ fn is_origin_remote_section(section: &str) -> bool {
 async fn inspect_github_https_credential_helper_configured(
     working_dir: &Path,
     config: &GitRemoteAuthConfig,
+    deadline: Duration,
 ) -> bool {
     if !config.has_github_https_remote() {
         return false;
@@ -702,7 +741,7 @@ async fn inspect_github_https_credential_helper_configured(
         }
     };
 
-    let output = match timeout(Duration::from_secs(5), child.wait_with_output()).await {
+    let output = match timeout(deadline, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => {
             tracing::warn!(
@@ -802,7 +841,11 @@ fn format_git_auth_recovery(
     parts.join(" ")
 }
 
-async fn read_origin_url(working_dir: &Path, args: &[&str]) -> AppResult<Option<String>> {
+async fn read_origin_url_with_timeout(
+    working_dir: &Path,
+    args: &[&str],
+    deadline: Duration,
+) -> AppResult<Option<String>> {
     let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
     let started_at = std::time::Instant::now();
     let mut command = Command::new(resolve_git_cli_path());
@@ -816,7 +859,7 @@ async fn read_origin_url(working_dir: &Path, args: &[&str]) -> AppResult<Option<
         .spawn()
         .map_err(|error| AppError::GitOperation(format!("failed to spawn git: {error}")))?;
 
-    let output = timeout(Duration::from_secs(5), child.wait_with_output())
+    let output = timeout(deadline, child.wait_with_output())
         .await
         .map_err(|_| {
             tracing::warn!(

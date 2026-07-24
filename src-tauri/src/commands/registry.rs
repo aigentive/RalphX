@@ -6,6 +6,11 @@ macro_rules! register_tauri_commands {
         tauri::generate_handler![
             greet,
             commands::health::health_check,
+            commands::startup_commands::get_startup_status,
+            commands::startup_commands::get_startup_diagnostics,
+            commands::startup_commands::retry_startup,
+            commands::startup_commands::open_startup_logs,
+            commands::startup_commands::report_startup_frontend_milestone,
             commands::notification_commands::list_attention_items,
             commands::notification_commands::set_dock_badge_count,
             commands::notification_commands::get_notification_settings,

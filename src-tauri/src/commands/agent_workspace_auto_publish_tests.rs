@@ -336,7 +336,7 @@ async fn project_completion_payload_schedules_auto_publish_task() {
 #[tokio::test]
 async fn installed_listeners_handle_completion_events() {
     let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
-    install_agent_workspace_auto_publish_listeners(&app);
+    install_agent_workspace_auto_publish_listeners(app.handle().clone());
 
     app.emit(
         AGENT_RUN_COMPLETED,

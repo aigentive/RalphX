@@ -79,6 +79,8 @@ pub mod app_paths;
 #[cfg(test)]
 mod app_paths_tests;
 pub mod app_setup;
+#[cfg(test)]
+mod app_setup_tests;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
@@ -191,6 +193,8 @@ pub mod review_service;
 pub mod runtime_factory;
 pub mod runtime_wiring;
 pub mod server_boot;
+#[cfg(test)]
+mod server_boot_tests;
 pub mod services;
 pub mod session_export_service;
 pub(crate) mod session_namer_agent;
@@ -210,12 +214,17 @@ mod standalone_workspace_path_safety_tests;
 mod standalone_workspace_tests;
 pub mod startup_background;
 pub mod startup_bootstrap;
+#[cfg(test)]
+mod startup_bootstrap_tests;
 pub mod startup_cleanup;
 pub mod startup_git_auth_preflight;
 pub mod startup_jobs;
 pub mod startup_pipeline;
+#[cfg(test)]
+mod startup_pipeline_tests;
 pub mod startup_pipeline_launch;
 pub mod startup_runtime_builders;
+pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
@@ -472,6 +481,10 @@ mod session_namer_agent_tests;
 mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
+#[cfg(test)]
+mod startup_status_guard_tests;
+#[cfg(test)]
+mod startup_status_tests;
 #[cfg(test)]
 mod task_cleanup_service_tests;
 #[cfg(test)]

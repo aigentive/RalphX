@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::{stream, StreamExt};
@@ -19,10 +19,13 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AppStateRepository, PlanBranchRepository,
     ProjectRepository,
 };
-use crate::domain::services::github_service::{GithubConnectionState, GithubConnectionStatus};
+use crate::domain::services::github_service::{
+    GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus,
+};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::{
-    git_remote_url_kind_label, inspect_origin_auth_config, probe_github_connection_status,
-    suggested_github_ssh_origin, GitRemoteAuthConfig,
+    git_remote_url_kind_label, inspect_origin_auth_config_with_timeout,
+    probe_github_connection_status_with_timeout, suggested_github_ssh_origin, GitRemoteAuthConfig,
 };
 
 pub(crate) const STARTUP_GIT_AUTH_PREFLIGHT_EVENT: &str = "git-auth:startup_preflight";
@@ -81,9 +84,17 @@ pub(crate) struct StartupGitAuthIssue {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StartupGitAuthPreflightSummary {
     pub issues: Vec<StartupGitAuthIssue>,
+    pub failure_code: Option<String>,
 }
 
 impl StartupGitAuthPreflightSummary {
+    fn failed(failure_code: &'static str) -> Self {
+        Self {
+            issues: Vec::new(),
+            failure_code: Some(failure_code.to_string()),
+        }
+    }
+
     pub(crate) fn blocked_project_ids(&self) -> HashSet<ProjectId> {
         self.issues
             .iter()
@@ -92,11 +103,11 @@ impl StartupGitAuthPreflightSummary {
     }
 
     pub(crate) fn active_project_blocked(&self) -> bool {
-        self.issues.iter().any(|issue| issue.active_project)
+        self.failure_code.is_some() || self.issues.iter().any(|issue| issue.active_project)
     }
 
     pub(crate) fn has_blocked_projects(&self) -> bool {
-        !self.issues.is_empty()
+        self.failure_code.is_some() || !self.issues.is_empty()
     }
 }
 
@@ -109,20 +120,29 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
     notification_service: Option<Arc<NotificationService>>,
 ) -> StartupGitAuthPreflightSummary {
     let started_at = Instant::now();
-    let active_project_id = app_state_repo
-        .get()
-        .await
-        .ok()
-        .and_then(|settings| settings.active_project_id);
+    let probe_timeout =
+        Duration::from_secs(git_runtime_config().startup_auth_preflight_timeout_secs);
+    let active_project_id = match app_state_repo.get().await {
+        Ok(settings) => settings.active_project_id,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                failure_code = "startup_app_state_read_failed",
+                "Startup Git auth preflight failed closed while loading active project"
+            );
+            return StartupGitAuthPreflightSummary::failed("startup_app_state_read_failed");
+        }
+    };
 
     let projects = match project_repo.get_all().await {
         Ok(projects) => projects,
         Err(error) => {
             tracing::warn!(
                 error = %error,
+                failure_code = "startup_project_list_read_failed",
                 "Startup Git auth preflight: failed to load projects"
             );
-            return StartupGitAuthPreflightSummary::default();
+            return StartupGitAuthPreflightSummary::failed("startup_project_list_read_failed");
         }
     };
 
@@ -169,9 +189,16 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
     let inspected = stream::iter(candidates)
         .map(|(project, active_project)| async move {
             let project_started_at = Instant::now();
-            let config_result = inspect_origin_auth_config(Path::new(&project.working_directory))
-                .await
-                .map_err(|error| error.to_string());
+            let config_result = tokio::time::timeout(
+                probe_timeout,
+                inspect_origin_auth_config_with_timeout(
+                    Path::new(&project.working_directory),
+                    probe_timeout,
+                ),
+            )
+            .await
+            .map_err(|_| "startup Git origin inspection timed out".to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()));
             let project_elapsed_ms = project_started_at.elapsed().as_millis();
             (project, active_project, config_result, project_elapsed_ms)
         })
@@ -184,7 +211,14 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
         .any(|(project, _, config_result, _)| project_needs_gh_auth_check(project, config_result));
     let gh_started_at = Instant::now();
     let gh_status = if gh_auth_required {
-        probe_github_connection_status().await
+        tokio::time::timeout(
+            probe_timeout,
+            probe_github_connection_status_with_timeout(probe_timeout),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            GithubConnectionStatus::provider_unavailable(GithubConnectionDiagnostic::Timeout)
+        })
     } else {
         GithubConnectionStatus::unauthenticated()
     };
@@ -229,7 +263,10 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
         }
     }
 
-    let summary = StartupGitAuthPreflightSummary { issues };
+    let summary = StartupGitAuthPreflightSummary {
+        issues,
+        failure_code: None,
+    };
     tracing::info!(
         projects_seen,
         projects_considered,
@@ -239,24 +276,29 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
         elapsed_ms = started_at.elapsed().as_millis(),
         "Startup Git auth preflight completed"
     );
-    if !summary.issues.is_empty() {
+    if summary.has_blocked_projects() {
         let _ = app_handle.emit(STARTUP_GIT_AUTH_PREFLIGHT_EVENT, &summary);
         if let Some(notification_service) = notification_service {
+            let body = if summary.failure_code.is_some() {
+                "Git recovery was deferred because startup state could not be verified".to_string()
+            } else {
+                format!(
+                    "{} project{} blocked by Git or GitHub authentication",
+                    summary.issues.len(),
+                    if summary.issues.len() == 1 {
+                        " is"
+                    } else {
+                        "s are"
+                    }
+                )
+            };
             notification_service
                 .record(NewNotification {
                     project_id: None,
                     category: NotificationCategory::GitAuthPreflight,
                     severity: NotificationSeverity::Warning,
                     title: "Git authentication needs attention".to_string(),
-                    body: Some(format!(
-                        "{} project{} blocked by Git or GitHub authentication",
-                        summary.issues.len(),
-                        if summary.issues.len() == 1 {
-                            " is"
-                        } else {
-                            "s are"
-                        }
-                    )),
+                    body: Some(body),
                     target: NotificationTarget::none(),
                     dedupe_key: Some(format!("git-auth-preflight:{}", Utc::now().to_rfc3339())),
                 })
