@@ -3891,6 +3891,7 @@ mod ipc_contract {
         project_id: ProjectId,
         source_session_id: IdeationSessionId,
         source_artifact_id: ArtifactId,
+        source_blueprint_id: ArtifactId,
         _repo_dir: tempfile::TempDir,
         _worktree_parent: tempfile::TempDir,
     }
@@ -3928,16 +3929,27 @@ mod ipc_contract {
             ))
             .await
             .expect("source artifact should persist");
+        let source_blueprint = state
+            .artifact_repo
+            .create(Artifact::new_inline(
+                "Source Blueprint",
+                ArtifactType::Specification,
+                "# Source Blueprint\n\nImplement the selected plan safely.",
+                "test",
+            ))
+            .await
+            .expect("source blueprint should persist");
+        let mut source_session = IdeationSession::builder()
+            .project_id(project_id.clone())
+            .title("Accepted source session")
+            .status(IdeationSessionStatus::Accepted)
+            .plan_artifact_id(source_artifact.id.clone())
+            .plan_contract_version(2)
+            .build();
+        source_session.plan_blueprint_artifact_id = Some(source_blueprint.id.clone());
         let source_session = state
             .ideation_session_repo
-            .create(
-                IdeationSession::builder()
-                    .project_id(project_id.clone())
-                    .title("Accepted source session")
-                    .status(IdeationSessionStatus::Accepted)
-                    .plan_artifact_id(source_artifact.id.clone())
-                    .build(),
-            )
+            .create(source_session)
             .await
             .expect("source session should persist");
         let mut source_proposal = TaskProposal::new(
@@ -3966,6 +3978,7 @@ mod ipc_contract {
             project_id,
             source_session_id: source_session.id,
             source_artifact_id: source_artifact.id,
+            source_blueprint_id: source_blueprint.id,
             _repo_dir: repo_dir,
             _worktree_parent: worktree_parent,
         }
@@ -4061,6 +4074,12 @@ mod ipc_contract {
                 .as_ref()
                 .unwrap_or_else(|| panic!("{mode} should set plan_artifact_id"));
             assert_ne!(cloned_artifact_id, &fix.source_artifact_id);
+            assert_eq!(new_session.plan_contract_version, 2);
+            let cloned_blueprint_id = new_session
+                .plan_blueprint_artifact_id
+                .as_ref()
+                .unwrap_or_else(|| panic!("{mode} should clone the plan blueprint"));
+            assert_ne!(cloned_blueprint_id, &fix.source_blueprint_id);
 
             let cloned_artifact = state
                 .artifact_repo
@@ -4081,6 +4100,18 @@ mod ipc_contract {
                     .derived_from
                     .contains(&fix.source_artifact_id),
                 "{mode} clone should retain source-artifact provenance"
+            );
+            let cloned_blueprint = state
+                .artifact_repo
+                .get_by_id(cloned_blueprint_id)
+                .await
+                .expect("cloned blueprint lookup should succeed")
+                .unwrap_or_else(|| panic!("{mode} cloned blueprint should exist"));
+            assert!(
+                cloned_blueprint
+                    .derived_from
+                    .contains(&fix.source_blueprint_id),
+                "{mode} clone should retain source-blueprint provenance"
             );
 
             let new_proposals = state

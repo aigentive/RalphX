@@ -1655,7 +1655,9 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-artifact-tab-plan")).toBeVisible();
     await expect(page.getByTestId("agents-artifact-tab-verification")).toHaveCount(0);
     await expect(page.getByTestId("agents-artifact-tab-proposal")).toHaveCount(0);
-    await expect(page.getByTestId("plan-proposals-toggle")).toBeVisible();
+    await expect(page.getByTestId("plan-overview-tab")).toBeVisible();
+    await expect(page.getByTestId("plan-blueprint-tab")).toBeVisible();
+    await expect(page.getByTestId("plan-proposals-tab")).toBeVisible();
     await expect(page.getByTestId("agents-artifact-tab-tasks")).toHaveCount(0);
     await expect(page.getByTestId("agents-artifact-tab-publish")).toHaveCount(0);
     await expect(
