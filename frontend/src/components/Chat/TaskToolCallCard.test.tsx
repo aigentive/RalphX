@@ -342,6 +342,31 @@ describe("TaskToolCallCard — RalphX native delegation", () => {
     expect(screen.getByText("gpt-5.4 · high")).toBeInTheDocument();
   });
 
+  it("shows bound work and its current settlement state on the existing delegate card", () => {
+    render(
+      <TaskToolCallCard
+        toolCall={makeDelegateToolCall({
+          result: {
+            job_id: "job-assigned",
+            status: "running",
+            agent_name: "ralphx-execution-reviewer",
+            assignment: {
+              task_number: 6,
+              title: "Review state recovery",
+              task_state: "active",
+              assignment_state: "completion_requested",
+              delegate_agent_name: "ralphx-execution-reviewer",
+            },
+          },
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Assigned work #6 · Review state recovery · completion requested"),
+    ).toBeInTheDocument();
+  });
+
   it("shows provider-correct delegated usage and final output when expanded", async () => {
     const user = userEvent.setup();
     render(<TaskToolCallCard toolCall={makeDelegateToolCall()} />);

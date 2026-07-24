@@ -71,22 +71,22 @@ const STATUS_ACTION_BUTTON_TONE_STYLES: Record<
     color: "var(--text-secondary, #c7c7cc)",
   },
   success: {
-    backgroundColor: "var(--status-success-muted, hsla(164, 100%, 31%, 0.15))",
-    borderColor: "var(--status-success-border, hsla(164, 100%, 31%, 0.35))",
+    backgroundColor: "var(--status-success-muted)",
+    borderColor: "var(--status-success-border)",
     borderStyle: "solid",
     borderWidth: "1px",
     color: "var(--status-success, #3fbf7f)",
   },
   warning: {
-    backgroundColor: "var(--status-warning-muted, hsla(55, 85%, 60%, 0.15))",
-    borderColor: "var(--status-warning-border, hsla(55, 85%, 60%, 0.35))",
+    backgroundColor: "var(--status-warning-muted)",
+    borderColor: "var(--status-warning-border)",
     borderStyle: "solid",
     borderWidth: "1px",
     color: "var(--status-warning, #e0b341)",
   },
   error: {
-    backgroundColor: "var(--status-error-muted, hsla(27, 100%, 42%, 0.15))",
-    borderColor: "var(--status-error-border, hsla(27, 100%, 42%, 0.35))",
+    backgroundColor: "var(--status-error-muted)",
+    borderColor: "var(--status-error-border)",
     borderStyle: "solid",
     borderWidth: "1px",
     color: "var(--status-error, #d55e00)",
@@ -94,6 +94,7 @@ const STATUS_ACTION_BUTTON_TONE_STYLES: Record<
 };
 
 /** Inline style for a non-actionable status button of the given tone. */
+// eslint-disable-next-line react-refresh/only-export-components -- consumed by AgentsPublishPanel.
 export function statusActionButtonStyle(
   tone: AgentsPublishActionTone,
 ): StatusActionButtonStyle {

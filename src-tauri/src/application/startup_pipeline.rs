@@ -936,6 +936,29 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         .await;
     }
 
+    let phase_started_at = startup_phase_started("agent_task_assignment_recovery");
+    let assignment_recovery =
+        crate::application::agent_task_assignment_recovery::AgentTaskAssignmentRecoveryService::new(
+            Arc::clone(&app_state.agent_task_repo),
+            Arc::clone(&app_state.delegated_session_repo),
+            Arc::clone(&conversation_repo),
+            Arc::clone(&agent_run_repo),
+            Arc::clone(&running_agent_registry),
+        );
+    match assignment_recovery.recover().await {
+        Ok(report) => tracing::info!(
+            inspected = report.inspected,
+            settled = report.settled,
+            retained_running = report.retained_running,
+            "Startup delegate assignment recovery completed"
+        ),
+        Err(error) => tracing::error!(
+            %error,
+            "Startup delegate assignment recovery failed closed; unresolved tasks remain unavailable"
+        ),
+    }
+    startup_phase_completed("agent_task_assignment_recovery", phase_started_at);
+
     let phase_started_at = startup_phase_started("reconcile_transition_service_reuse");
     let reconcile_transition_service = Arc::clone(&transition_service);
     startup_phase_completed("reconcile_transition_service_reuse", phase_started_at);

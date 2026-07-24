@@ -1616,6 +1616,95 @@ async fn project_child_launch_plans_pass_parent_and_current_conversation_ids_to_
     }
 }
 
+#[tokio::test]
+async fn delegated_launch_plans_pass_root_lineage_and_current_run_identity_to_mcp() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let plugin_dir = repo_plugin_dir();
+    let project_id = ProjectId::new();
+    let delegated_session_id = DelegatedSessionId::new();
+    let root_conversation_id = ChatConversationId::new().as_str();
+    let delegated_run_id = "delegated-run-current";
+    let agent_name = agent_names::AGENT_GENERAL_WORKER;
+    let harness_clis = [
+        (AgentHarnessKind::Claude, make_fake_claude_cli(&temp)),
+        (AgentHarnessKind::Codex, make_fake_codex_cli(&temp)),
+    ];
+
+    for (harness, cli_path) in harness_clis {
+        let mut conversation = ChatConversation::new_delegation(delegated_session_id.clone());
+        let delegated_conversation_id = conversation.id.as_str();
+        conversation.parent_conversation_id = Some(root_conversation_id.clone());
+        let resolved_spawn_settings =
+            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                agent_name,
+                Some(project_id.as_str()),
+                ChatContextType::Delegation,
+                None,
+                Some(harness),
+                None,
+                None,
+            )
+            .await;
+
+        let launch_plan = build_launch_plan_for_harness_for_test(
+            harness,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "continue delegated work",
+            Some(agent_name),
+            None,
+            ChatContextType::Delegation,
+            delegated_session_id.as_str(),
+            Some(conversation.id.as_str()),
+            Some(delegated_run_id),
+            temp.path(),
+            None,
+            Some(project_id.as_str()),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            false,
+            None,
+            &resolved_spawn_settings,
+            None,
+            None,
+        )
+        .await
+        .expect("delegated launch plan should build");
+
+        let spawnable = launch_spawnable(&launch_plan);
+        let mcp_args = match harness {
+            AgentHarnessKind::Claude => claude_mcp_config_args(spawnable).join("\n"),
+            AgentHarnessKind::Codex => spawnable
+                .get_args_for_test()
+                .into_iter()
+                .filter(|arg| arg.starts_with("mcp_servers."))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+
+        assert!(
+            mcp_args.contains("--parent-conversation-id")
+                && mcp_args.contains(&root_conversation_id),
+            "{harness} delegated launch should retain original root lineage: {mcp_args}"
+        );
+        assert!(
+            mcp_args.contains("--conversation-id") && mcp_args.contains(&delegated_conversation_id),
+            "{harness} delegated launch should retain current conversation authority: {mcp_args}"
+        );
+        assert!(
+            mcp_args.contains("--agent-run-id") && mcp_args.contains(delegated_run_id),
+            "{harness} delegated launch should retain current run authority: {mcp_args}"
+        );
+    }
+}
+
 #[test]
 fn build_resume_initial_prompt_marks_provider_resume_explicitly() {
     let session_id = IdeationSessionId::new();

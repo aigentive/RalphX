@@ -20,6 +20,18 @@ fn delegated_duration_ms(latest_run: &DelegatedRunSummary) -> Option<u64> {
     }
 }
 
+fn delegation_assignment_summary(
+    assignment: &AgentTaskAssignmentView,
+) -> DelegationAssignmentSummary {
+    DelegationAssignmentSummary {
+        task_number: assignment.task.task_number,
+        title: assignment.task.title.clone(),
+        task_state: assignment.task.state.as_str().to_string(),
+        assignment_state: assignment.assignment.state.as_str().to_string(),
+        delegate_agent_name: assignment.assignment.delegate_agent_name.clone(),
+    }
+}
+
 fn cached_streaming_task_from_started_payload(
     payload: &AgentTaskStartedPayload,
 ) -> CachedStreamingTask {
@@ -331,8 +343,20 @@ async fn settle_delegation_from_run(
             return Ok(Some(snapshot));
         }
     }
+    let terminal_status = match run.status {
+        crate::domain::entities::AgentRunStatus::Completed => {
+            AgentTaskAssignmentTerminalStatus::Completed
+        }
+        crate::domain::entities::AgentRunStatus::Failed => {
+            AgentTaskAssignmentTerminalStatus::Failed
+        }
+        crate::domain::entities::AgentRunStatus::Cancelled => {
+            AgentTaskAssignmentTerminalStatus::Cancelled
+        }
+        crate::domain::entities::AgentRunStatus::Running => return Ok(None),
+    };
     let latest_run = delegated_run_summary(run);
-    let Some(candidate) = state
+    let Some(mut candidate) = state
         .delegation_service
         .terminal_candidate(job_id, status, completed_content, error.clone())
         .await
@@ -340,6 +364,24 @@ async fn settle_delegation_from_run(
         return Ok(None);
     };
 
+    let assignment_service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
+    let assignment = if let Some(settlement) = assignment_service
+        .settle_assignment_for_run(
+            &AgentRunId::from_string(latest_run.agent_run_id.clone()),
+            terminal_status,
+            error.as_deref(),
+        )
+        .await?
+    {
+        Some(settlement.assignment)
+    } else {
+        assignment_service
+            .get_assignment_for_run(&AgentRunId::from_string(latest_run.agent_run_id.clone()))
+            .await?
+    };
+    if let Some(assignment) = assignment {
+        candidate.assignment = Some(delegation_assignment_summary(&assignment));
+    }
     persist_terminal_projection(
         &state.app_state.chat_timeline_repo,
         &candidate,
@@ -650,30 +692,44 @@ pub async fn get_delegated_session_status(
     Ok(Json(status))
 }
 
-async fn resolve_trusted_parent_agent_run_id(
+async fn resolve_trusted_caller_agent_run_id(
     state: &HttpServerState,
     parent: &ResolvedDelegateParent,
+    trusted_caller_conversation_id: Option<&str>,
     trusted_parent_run_id: Option<&str>,
 ) -> Result<Option<String>, JsonError> {
-    let Some(parent_conversation_id) = parent.parent_conversation_id.as_deref() else {
+    let caller_conversation_id = match (
+        trusted_caller_conversation_id,
+        parent.caller_conversation_id.as_deref(),
+    ) {
+        (Some(trusted), Some(resolved)) if trusted != resolved => {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "Trusted caller conversation does not match the resolved caller conversation",
+            ));
+        }
+        (Some(trusted), _) => Some(trusted),
+        (None, resolved) => resolved,
+    };
+    let Some(caller_conversation_id) = caller_conversation_id else {
         if trusted_parent_run_id.is_some() {
             return Err(json_error(
                 StatusCode::BAD_REQUEST,
-                "Trusted parent run requires a resolved parent conversation",
+                "Trusted caller run requires a resolved caller conversation",
             ));
         }
         return Ok(None);
     };
-    let parent_conversation_id = ChatConversationId::from_string(parent_conversation_id);
+    let caller_conversation_id = ChatConversationId::from_string(caller_conversation_id);
     let active_run = state
         .app_state
         .agent_run_repo
-        .get_active_for_conversation(&parent_conversation_id)
+        .get_active_for_conversation(&caller_conversation_id)
         .await
         .map_err(|error| {
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve current parent agent run: {error}"),
+                format!("Failed to resolve current caller agent run: {error}"),
             )
         })?;
 
@@ -688,20 +744,20 @@ async fn resolve_trusted_parent_agent_run_id(
         .map_err(|error| {
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to validate trusted parent agent run: {error}"),
+                format!("Failed to validate trusted caller agent run: {error}"),
             )
         })?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Trusted parent agent run not found"))?;
-    if trusted_run.conversation_id != parent_conversation_id {
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Trusted caller agent run not found"))?;
+    if trusted_run.conversation_id != caller_conversation_id {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
-            "Trusted parent agent run does not belong to the parent conversation",
+            "Trusted caller agent run does not belong to the caller conversation",
         ));
     }
     if active_run.as_ref().map(|run| &run.id) != Some(&trusted_run.id) {
         return Err(json_error(
             StatusCode::CONFLICT,
-            "Trusted parent agent run is not the active parent run",
+            "Trusted caller agent run is not the active caller run",
         ));
     }
     Ok(Some(trusted_run.id.as_str()))
@@ -710,6 +766,7 @@ async fn resolve_trusted_parent_agent_run_id(
 pub(crate) async fn start_delegate_impl_with_parent_run(
     state: &HttpServerState,
     req: DelegateStartRequest,
+    trusted_caller_conversation_id: Option<&str>,
     trusted_parent_run_id: Option<&str>,
 ) -> Result<DelegationJobSnapshot, JsonError> {
     let caller_agent_name = req.caller_agent_name.as_deref().ok_or_else(|| {
@@ -719,8 +776,19 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
         )
     })?;
     let parent = resolve_delegate_parent(state, &req).await?;
-    let parent_agent_run_id =
-        resolve_trusted_parent_agent_run_id(state, &parent, trusted_parent_run_id).await?;
+    let parent_agent_run_id = resolve_trusted_caller_agent_run_id(
+        state,
+        &parent,
+        trusted_caller_conversation_id,
+        trusted_parent_run_id,
+    )
+    .await?;
+    if req.task_ref.is_some() && parent_agent_run_id.is_none() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_start task_ref requires a trusted active caller run",
+        ));
+    }
     let requested_session = preflight_requested_delegated_session(state, &req, &parent).await?;
     let requested_harness = requested_session
         .as_ref()
@@ -773,6 +841,42 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     let delegated_session_id =
         resolve_delegated_session_id(state, &req, &parent, requested_session.as_ref(), harness)
             .await?;
+    let delegated_session_entity = DelegatedSessionId::from_string(delegated_session_id.clone());
+    let assignment_service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
+    let reserved_assignment = if let Some(task_ref) = req.task_ref.as_deref() {
+        let Some(caller_run_id) = parent_agent_run_id.as_deref() else {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "delegate_start task_ref requires a trusted active caller run",
+            ));
+        };
+        let caller_scope = resolve_caller_agent_task_scope(&parent, caller_agent_name);
+        match assignment_service
+            .reserve_assignment(
+                &caller_scope,
+                task_ref,
+                &delegated_session_entity,
+                &AgentRunId::from_string(caller_run_id.to_string()),
+                &definition.name,
+            )
+            .await
+        {
+            Ok(Some(reservation)) => Some(reservation.assignment),
+            Ok(None) => {
+                let message =
+                    format!("Agent task '{task_ref}' was not found in the caller's current ledger");
+                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
+                return Err(json_error(StatusCode::NOT_FOUND, message));
+            }
+            Err(error) => {
+                let message = format!("Failed to reserve delegated agent task: {error}");
+                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
+                return Err(json_error(StatusCode::CONFLICT, message));
+            }
+        }
+    } else {
+        None
+    };
     let logical_effort = req.logical_effort.or(resolved_spawn.logical_effort);
     let approval_policy = req
         .approval_policy
@@ -782,7 +886,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
         .sandbox_mode
         .clone()
         .or(resolved_spawn.sandbox_mode.clone());
-    state
+    if let Err(error) = state
         .app_state
         .delegated_session_repo
         .update_status(
@@ -792,12 +896,11 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             None,
         )
         .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to update delegated session status: {error}"),
-            )
-        })?;
+    {
+        let message = format!("Failed to update delegated session status: {error}");
+        mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
+        return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
+    }
 
     let delegated_conversation = match ensure_delegated_conversation(
         state,
@@ -831,6 +934,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
                 parent.parent_conversation_id.as_deref(),
                 req.parent_tool_use_id.as_deref(),
                 &delegated_session_id,
+                reserved_assignment.as_ref(),
                 &req.prompt,
             ),
             SendMessageOptions {
@@ -855,6 +959,43 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
         }
     };
+    let bound_assignment = match assignment_service
+        .bind_assignment_run(
+            &delegated_session_entity,
+            &AgentRunId::from_string(send_result.agent_run_id.clone()),
+        )
+        .await
+    {
+        Ok(assignment) => assignment,
+        Err(error) => {
+            let error_message =
+                format!("Delegated run started but task assignment binding failed: {error}");
+            let _ = chat_service
+                .stop_agent(ChatContextType::Delegation, &delegated_session_id)
+                .await;
+            let _ = state
+                .app_state
+                .agent_run_repo
+                .cancel(&AgentRunId::from_string(send_result.agent_run_id.clone()))
+                .await;
+            mark_delegated_launch_failed(state, &delegated_session_id, &error_message).await?;
+            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
+        }
+    };
+    if reserved_assignment.is_some() && bound_assignment.is_none() {
+        let error_message =
+            "Delegated run started but its reserved task assignment disappeared".to_string();
+        let _ = chat_service
+            .stop_agent(ChatContextType::Delegation, &delegated_session_id)
+            .await;
+        let _ = state
+            .app_state
+            .agent_run_repo
+            .cancel(&AgentRunId::from_string(send_result.agent_run_id.clone()))
+            .await;
+        mark_delegated_launch_failed(state, &delegated_session_id, &error_message).await?;
+        return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
+    }
 
     let launched_run = match state
         .app_state
@@ -889,6 +1030,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             Some(delegated_conversation.id.as_str()),
             Some(send_result.agent_run_id.clone()),
             definition.name.clone(),
+            bound_assignment.as_ref().map(delegation_assignment_summary),
             harness.to_string(),
             launched_run
                 .as_ref()
@@ -1019,7 +1161,7 @@ pub(crate) async fn start_delegate_impl(
     state: &HttpServerState,
     req: DelegateStartRequest,
 ) -> Result<DelegationJobSnapshot, JsonError> {
-    start_delegate_impl_with_parent_run(state, req, None).await
+    start_delegate_impl_with_parent_run(state, req, None, None).await
 }
 
 pub async fn start_delegate(
@@ -1034,6 +1176,11 @@ pub async fn start_delegate_with_runtime_context(
     headers: HeaderMap,
     Json(req): Json<DelegateStartRequest>,
 ) -> Result<Json<DelegationJobSnapshot>, JsonError> {
+    let trusted_caller_conversation_id = headers
+        .get("x-ralphx-conversation-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let trusted_parent_run_id = headers
         .get("x-ralphx-agent-run-id")
         .ok_or_else(|| {
@@ -1057,7 +1204,13 @@ pub async fn start_delegate_with_runtime_context(
         ));
     }
     Ok(Json(
-        start_delegate_impl_with_parent_run(&state, req, Some(trusted_parent_run_id)).await?,
+        start_delegate_impl_with_parent_run(
+            &state,
+            req,
+            trusted_caller_conversation_id,
+            Some(trusted_parent_run_id),
+        )
+        .await?,
     ))
 }
 
@@ -1070,6 +1223,58 @@ pub async fn wait_delegate(
         .snapshot(&req.job_id)
         .await
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegation job not found"))?;
+    if snapshot.status == "running" {
+        if let Some(run_id) = snapshot.delegated_agent_run_id.as_deref() {
+            let run = state
+                .app_state
+                .agent_run_repo
+                .get_by_id(&AgentRunId::from_string(run_id.to_string()))
+                .await
+                .map_err(|error| {
+                    json_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Delegated run reconciliation is pending: {error}"),
+                    )
+                })?;
+            if let Some(run) = run {
+                if run.status != crate::domain::entities::AgentRunStatus::Running {
+                    let completed_content = if run.status
+                        == crate::domain::entities::AgentRunStatus::Completed
+                    {
+                        if let Some(conversation_id) = snapshot.delegated_conversation_id.as_deref()
+                        {
+                            state
+                                .app_state
+                                .chat_message_repo
+                                .get_by_conversation(&ChatConversationId::from_string(
+                                    conversation_id.to_string(),
+                                ))
+                                .await
+                                .ok()
+                                .and_then(latest_delegated_handoff_message)
+                                .map(|message| message.content)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(settled) =
+                        settle_delegation_from_run(&state, &req.job_id, run, completed_content)
+                            .await
+                            .map_err(|error| {
+                                json_error(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    format!("Delegated run settlement is pending: {error}"),
+                                )
+                            })?
+                    {
+                        snapshot = settled;
+                    }
+                }
+            }
+        }
+    }
     if req
         .include_delegated_status
         .or(req.include_child_status)

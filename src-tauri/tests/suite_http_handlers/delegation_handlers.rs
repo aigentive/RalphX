@@ -15,21 +15,21 @@ use ralphx_lib::domain::agents::{
 };
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
-    ChatContextType, ChatConversation, DelegatedSession, DelegatedSessionId,
-    IdeationAnalysisBaseRefKind, IdeationSession, Persona, PersonaId, PersonaStatus, Project,
-    ProjectId, SessionPurpose,
+    AgentTaskCreate, AgentTaskScope, AgentTaskState, ChatContextType, ChatConversation,
+    ChatConversationId, DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind,
+    IdeationSession, Persona, PersonaId, PersonaStatus, Project, ProjectId, SessionPurpose,
 };
 use ralphx_lib::domain::repositories::DelegatedSessionRepository;
 use ralphx_lib::error::{AppError, AppResult};
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
-    get_delegated_session_status, start_delegate, start_delegate_with_runtime_context,
-    wait_delegate,
+    complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
+    start_delegate, start_delegate_with_runtime_context, wait_delegate,
 };
 use ralphx_lib::http_server::types::{
-    DelegateCancelRequest, DelegateStartRequest, DelegateWaitRequest, DelegatedRunSummary,
-    HttpServerState,
+    CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateStartRequest,
+    DelegateWaitRequest, DelegatedRunSummary, HttpServerState,
 };
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -305,6 +305,7 @@ fn routed_delegate_start_request(
         parent_tool_use_id: None,
         delegated_session_id: None,
         child_session_id: None,
+        task_ref: None,
         agent_name: "ralphx-general-explorer".to_string(),
         prompt: "Review the current change.".to_string(),
         title: None,
@@ -441,6 +442,7 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
             parent_tool_use_id: Some("toolu-parent-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the proposal set and summarize the main implementation risks."
                 .to_string(),
@@ -610,6 +612,7 @@ async fn delegate_start_child_command_excludes_bound_project_persona() {
             parent_tool_use_id: Some("toolu-persona-isolation".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Inspect delegated child persona isolation.".to_string(),
             title: Some("Delegated persona isolation".to_string()),
@@ -689,6 +692,7 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
             parent_tool_use_id: Some("toolu-project-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the workspace and summarize the requested evidence.".to_string(),
             title: Some("Delegated Project Workspace Inspection".to_string()),
@@ -739,6 +743,274 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
 }
 
 #[tokio::test]
+async fn bound_delegate_false_success_reopens_exact_parent_task() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create active parent run");
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    for title in ["Inspect delegation", "Validate outcome"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create parent agent task");
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        parent_run.id.as_str().parse().unwrap(),
+    );
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: Some("tool-bound-task".to_string()),
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: Some("1".to_string()),
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the assigned work and return without requesting completion."
+                .to_string(),
+            title: Some("Bound exploration".to_string()),
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("start bound delegate")
+    .0;
+    let assignment = started.assignment.expect("start response assignment");
+    assert_eq!(assignment.task_number, 1);
+    assert_eq!(assignment.title, "Inspect delegation");
+    assert_eq!(assignment.task_state, "active");
+    assert_eq!(assignment.assignment_state, "active");
+
+    let task = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let task = state
+                .app_state
+                .agent_task_repo
+                .get_task(&parent_scope, "1")
+                .await
+                .expect("load parent task")
+                .expect("parent task");
+            if task.state == AgentTaskState::Open {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("false-success settlement should reopen task");
+    assert_eq!(task.owner_agent.as_deref(), Some("ralphx-general-worker"));
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&DelegatedSessionId::from_string(
+            started.delegated_session_id
+        ))
+        .await
+        .expect("load assignment")
+        .is_none());
+}
+
+#[tokio::test]
+async fn assignment_endpoints_bind_trusted_run_and_guard_unfinished_local_tasks() {
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    let project = state
+        .app_state
+        .project_repo
+        .create(Project::new(
+            "Assignment endpoint project".to_string(),
+            repo_root().display().to_string(),
+        ))
+        .await
+        .unwrap();
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let caller_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .unwrap();
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id,
+            "project".to_string(),
+            parent_conversation.context_id.clone(),
+            "ralphx-general-worker".to_string(),
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .unwrap();
+    state
+        .app_state
+        .delegated_session_repo
+        .update_status(&delegated_session.id, "running", None, None)
+        .await
+        .unwrap();
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_delegation(
+            delegated_session.id.clone(),
+        ))
+        .await
+        .unwrap();
+    let delegated_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .unwrap();
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    let local_scope = AgentTaskScope::new("delegation", delegated_session.id.as_str());
+    for (scope, titles) in [
+        (&parent_scope, ["Assigned", "Sibling"]),
+        (&local_scope, ["Local implementation", "Local validation"]),
+    ] {
+        for title in titles {
+            state
+                .app_state
+                .agent_task_repo
+                .create_task(
+                    scope,
+                    AgentTaskCreate {
+                        title: title.to_string(),
+                        details: format!("Requirements for {title}"),
+                        active_label: None,
+                        owner_agent: None,
+                        metadata: None,
+                        blocked_by: Vec::new(),
+                        blocks: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
+    state
+        .app_state
+        .agent_task_repo
+        .reserve_assignment(
+            &parent_scope,
+            "1",
+            &delegated_session.id,
+            &caller_run.id,
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        delegated_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        delegated_run.id.as_str().parse().unwrap(),
+    );
+
+    let inspected = get_delegate_assignment(State(state.clone()), headers.clone())
+        .await
+        .0;
+    assert!(inspected.success);
+    assert_eq!(inspected.assignment.unwrap().assignment_state, "active");
+    let blocked = complete_delegate_assignment(
+        State(state.clone()),
+        headers.clone(),
+        Json(CompleteDelegateAssignmentRequest { metadata: None }),
+    )
+    .await
+    .0;
+    assert!(!blocked.success);
+    assert!(blocked
+        .error
+        .unwrap()
+        .contains("delegate-local tasks must be resolved"));
+
+    for task_ref in ["1", "2"] {
+        state
+            .app_state
+            .agent_task_repo
+            .update_task(
+                &local_scope,
+                task_ref,
+                ralphx_lib::domain::entities::AgentTaskPatch {
+                    state: Some(AgentTaskState::Done),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let requested = complete_delegate_assignment(
+        State(state),
+        headers,
+        Json(CompleteDelegateAssignmentRequest {
+            metadata: Some(serde_json::json!({"verified": true})),
+        }),
+    )
+    .await
+    .0;
+    assert!(requested.success);
+    assert_eq!(
+        requested.assignment.unwrap().assignment_state,
+        "completion_requested"
+    );
+}
+
+#[tokio::test]
 async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
     let _env_lock = codex_cli_env_lock().lock().await;
     let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
@@ -773,6 +1045,7 @@ async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the project using delegated defaults.".to_string(),
             title: Some("Delegated provider defaults".to_string()),
@@ -868,6 +1141,7 @@ async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the project with only a model override.".to_string(),
             title: Some("Delegated partial defaults".to_string()),
@@ -939,6 +1213,7 @@ async fn test_delegate_start_rejects_reused_session_identity_conflicts() {
             parent_tool_use_id: None,
             delegated_session_id: Some(existing.id.as_str().to_string()),
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-worker".to_string(),
             prompt: "This conflicting specialist must not launch.".to_string(),
             title: None,
@@ -970,6 +1245,7 @@ async fn test_delegate_start_rejects_reused_session_identity_conflicts() {
             parent_tool_use_id: None,
             delegated_session_id: Some(existing.id.as_str().to_string()),
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "This conflicting harness must not launch.".to_string(),
             title: None,
@@ -1059,6 +1335,7 @@ async fn test_delegate_start_from_project_without_workspace_uses_project_checkou
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the project checkout.".to_string(),
             title: None,
@@ -1112,6 +1389,7 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-worker".to_string(),
             prompt: "Start the first workspace delegate.".to_string(),
             title: None,
@@ -1128,8 +1406,31 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
     .0;
     wait_for_captured_cwds(&captured_cwd_path, 1).await;
 
-    let _ = start_delegate(
+    let delegated_conversation_id = first
+        .delegated_conversation_id
+        .clone()
+        .expect("first delegate should expose its conversation");
+    let nested_caller_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::from_string(
+            delegated_conversation_id.clone(),
+        )))
+        .await
+        .expect("create active outer delegate run");
+    let mut nested_headers = HeaderMap::new();
+    nested_headers.insert(
+        "x-ralphx-agent-run-id",
+        nested_caller_run.id.as_str().parse().unwrap(),
+    );
+    nested_headers.insert(
+        "x-ralphx-conversation-id",
+        delegated_conversation_id.parse().unwrap(),
+    );
+
+    let _ = start_delegate_with_runtime_context(
         State(state),
+        nested_headers,
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-general-worker".to_string()),
             caller_agent_profile: None,
@@ -1142,6 +1443,7 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the same workspace from the nested delegate.".to_string(),
             title: None,
@@ -1213,6 +1515,7 @@ async fn test_workspace_removed_before_delegate_spawn_marks_session_failed() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "This launch must fail closed.".to_string(),
             title: None,
@@ -1272,6 +1575,7 @@ async fn test_get_delegated_session_status_exposes_parent_context() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Publish a verification finding.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1323,6 +1627,7 @@ async fn test_delegate_start_does_not_invent_child_model_when_model_is_omitted()
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1395,6 +1700,7 @@ async fn test_delegate_start_rejects_unknown_agent_name() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-does-not-exist".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1440,6 +1746,7 @@ async fn test_delegate_start_rejects_standalone_caller_context() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1480,6 +1787,7 @@ async fn test_delegate_start_rejects_missing_caller_agent_name() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1520,6 +1828,7 @@ async fn test_delegate_start_rejects_disallowed_target_for_caller() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1560,6 +1869,7 @@ async fn test_delegate_start_enforces_profile_specific_allowed_targets() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1618,6 +1928,7 @@ async fn test_delegate_start_infers_parent_session_from_verification_child_conte
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1683,6 +1994,7 @@ async fn test_delegate_start_verifier_context_survives_external_generated_plugin
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1761,6 +2073,7 @@ async fn test_legacy_verification_child_uses_ideation_subagent_harness_when_omit
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1882,6 +2195,7 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
             parent_tool_use_id: Some("toolu-ideation-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Analyze the plan intent and summarize any scope drift risks.".to_string(),
             title: Some("Delegated Intent Specialist".to_string()),
@@ -2001,6 +2315,7 @@ async fn test_delegate_start_links_parent_conversation_to_verification_child_cha
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -2023,6 +2338,97 @@ async fn test_delegate_start_links_parent_conversation_to_verification_child_cha
     assert_ne!(
         start.parent_conversation_id.as_deref(),
         Some(parent_conversation_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn verification_child_runtime_uses_current_run_authority_and_root_lineage() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .await
+        .unwrap();
+    let mut verification_child = IdeationSession::builder()
+        .project_id(parent.project_id.clone())
+        .title("Verification Child")
+        .cross_project_checked(true)
+        .build();
+    verification_child.parent_session_id = Some(parent.id.clone());
+    verification_child.session_purpose = SessionPurpose::Verification;
+    let verification_child = state
+        .app_state
+        .ideation_session_repo
+        .create(verification_child)
+        .await
+        .unwrap();
+    let verification_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(
+            verification_child.id.clone(),
+        ))
+        .await
+        .unwrap();
+    let verification_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(verification_conversation.id))
+        .await
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        verification_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        verification_run.id.as_str().parse().unwrap(),
+    );
+
+    let started = start_delegate_with_runtime_context(
+        State(state),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-ideation".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("ideation".to_string()),
+            caller_context_id: Some(verification_child.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
+            prompt: "Inspect the verified plan.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+
+    assert_eq!(
+        started.parent_conversation_id,
+        Some(parent_conversation.id.as_str())
+    );
+    assert_eq!(
+        started.parent_agent_run_id,
+        Some(verification_run.id.as_str())
     );
 }
 
@@ -2060,6 +2466,7 @@ async fn test_delegate_start_rejects_parent_session_mismatch_against_verificatio
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -2161,7 +2568,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     assert!(wrong_error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("does not belong to the parent conversation"));
+        .contains("does not belong to the caller conversation"));
 
     let mut stale_run = AgentRun::new(parent_conversation.id);
     stale_run.status = AgentRunStatus::Completed;
@@ -2197,7 +2604,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     assert!(stale_error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("is not the active parent run"));
+        .contains("is not the active caller run"));
 }
 
 #[tokio::test]
@@ -2264,6 +2671,7 @@ async fn test_delegate_wait_hydrates_the_jobs_exact_run_when_session_has_newer_r
             Some(delegated_conversation.id.as_str()),
             Some(exact_run.id.as_str()),
             "ralphx-general-explorer".to_string(),
+            None,
             "codex",
             None,
             None,
@@ -2316,6 +2724,7 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
         delegated_conversation_id: Some("delegated-conv-1".to_string()),
         delegated_agent_run_id: Some("run-1".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
+        assignment: None,
         harness: "codex".to_string(),
         provider_session_id: Some("provider-thread-start".to_string()),
         upstream_provider: Some("openai".to_string()),
@@ -2407,6 +2816,7 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
         delegated_conversation_id: Some("delegated-conv-2".to_string()),
         delegated_agent_run_id: Some("run-2".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
+        assignment: None,
         harness: "codex".to_string(),
         provider_session_id: None,
         upstream_provider: None,
@@ -2535,6 +2945,7 @@ fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
         delegated_conversation_id: Some("delegated-conversation".to_string()),
         delegated_agent_run_id: Some("delegated-run".to_string()),
         agent_name: "ralphx-general-explorer".to_string(),
+        assignment: None,
         harness: "codex".to_string(),
         provider_session_id: None,
         upstream_provider: Some("openai".to_string()),

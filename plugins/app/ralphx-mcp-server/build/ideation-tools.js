@@ -714,6 +714,10 @@ export const IDEATION_TOOLS = [
                     type: "string",
                     description: "Deprecated alias for delegated_session_id.",
                 },
+                task_ref: {
+                    type: "string",
+                    description: "Optional task number or task_id from the caller's current ledger to assign atomically to this delegate.",
+                },
                 agent_name: {
                     type: "string",
                     description: "Canonical RalphX agent name, for example ralphx-ideation-specialist-backend.",

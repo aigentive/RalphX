@@ -2199,6 +2199,7 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
         "ralphx-ideation",
         "ralphx-execution-worker",
         "ralphx-execution-coder",
+        "ralphx-general-explorer",
         "ralphx-general-worker",
     ] {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
@@ -2301,6 +2302,11 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             "For two or more requested fixes, checks, audit items, or investigation streams"
         ),
         "Claude prompt should include the concrete multi-fix breakdown rule"
+    );
+    assert!(
+        claude_general_worker.contains("<delegate_assignment_contract>")
+            && claude_general_worker.contains("complete_delegate_assignment"),
+        "delegated-capable prompts should distinguish local ledgers from bound assignments"
     );
 
     let session_namer = load_harness_agent_prompt(
