@@ -1,4 +1,101 @@
 use super::*;
+use async_trait::async_trait;
+
+struct ReadFailingAppStateRepository;
+
+#[async_trait]
+impl AppStateRepository for ReadFailingAppStateRepository {
+    async fn get(
+        &self,
+    ) -> Result<crate::domain::entities::app_state::AppSettings, Box<dyn std::error::Error>> {
+        Err(std::io::Error::other("injected app state read failure").into())
+    }
+
+    async fn set_active_project(
+        &self,
+        _project_id: Option<&ProjectId>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn set_execution_halt_mode(
+        &self,
+        _halt_mode: crate::domain::entities::app_state::ExecutionHaltMode,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn set_update_channel(
+        &self,
+        _update_channel: crate::domain::entities::app_state::UpdateChannel,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn set_last_seen_release_notes_version(
+        &self,
+        _version: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    async fn set_remove_inherited_github_cli_tokens(
+        &self,
+        _enabled: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+}
+
+struct ReadFailingProjectRepository;
+
+#[async_trait]
+impl ProjectRepository for ReadFailingProjectRepository {
+    async fn create(&self, _project: Project) -> crate::error::AppResult<Project> {
+        Err(crate::error::AppError::Database(
+            "injected project write failure".to_string(),
+        ))
+    }
+
+    async fn get_by_id(&self, _id: &ProjectId) -> crate::error::AppResult<Option<Project>> {
+        Err(crate::error::AppError::Database(
+            "injected project read failure".to_string(),
+        ))
+    }
+
+    async fn get_all(&self) -> crate::error::AppResult<Vec<Project>> {
+        Err(crate::error::AppError::Database(
+            "injected project list failure".to_string(),
+        ))
+    }
+
+    async fn update(&self, _project: &Project) -> crate::error::AppResult<()> {
+        Err(crate::error::AppError::Database(
+            "injected project write failure".to_string(),
+        ))
+    }
+
+    async fn delete(&self, _id: &ProjectId) -> crate::error::AppResult<()> {
+        Err(crate::error::AppError::Database(
+            "injected project write failure".to_string(),
+        ))
+    }
+
+    async fn get_by_working_directory(
+        &self,
+        _path: &str,
+    ) -> crate::error::AppResult<Option<Project>> {
+        Err(crate::error::AppError::Database(
+            "injected project read failure".to_string(),
+        ))
+    }
+
+    async fn archive(&self, _id: &ProjectId) -> crate::error::AppResult<Project> {
+        Err(crate::error::AppError::Database(
+            "injected project write failure".to_string(),
+        ))
+    }
+}
 
 fn project(github_pr_enabled: bool) -> Project {
     let mut project = Project::new("RalphX".to_string(), "/repo".to_string());
@@ -528,4 +625,52 @@ async fn startup_git_auth_preflight_reports_active_project_missing_origin() {
         notifications[0].category,
         NotificationCategory::GitAuthPreflight
     );
+}
+
+#[tokio::test]
+async fn startup_git_auth_preflight_fails_closed_on_app_state_read_error() {
+    let app_state = crate::application::AppState::new_test();
+    let app = crate::testing::create_mock_app();
+
+    let summary = run_startup_git_auth_preflight_with_notifications(
+        Arc::clone(&app_state.project_repo),
+        Arc::new(ReadFailingAppStateRepository),
+        None,
+        None,
+        app.handle(),
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        summary.failure_code.as_deref(),
+        Some("startup_app_state_read_failed")
+    );
+    assert!(summary.has_blocked_projects());
+    assert!(summary.active_project_blocked());
+    assert!(summary.issues.is_empty());
+}
+
+#[tokio::test]
+async fn startup_git_auth_preflight_fails_closed_on_project_list_error() {
+    let app_state = crate::application::AppState::new_test();
+    let app = crate::testing::create_mock_app();
+
+    let summary = run_startup_git_auth_preflight_with_notifications(
+        Arc::new(ReadFailingProjectRepository),
+        Arc::clone(&app_state.app_state_repo),
+        None,
+        None,
+        app.handle(),
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        summary.failure_code.as_deref(),
+        Some("startup_project_list_read_failed")
+    );
+    assert!(summary.has_blocked_projects());
+    assert!(summary.active_project_blocked());
+    assert!(summary.issues.is_empty());
 }

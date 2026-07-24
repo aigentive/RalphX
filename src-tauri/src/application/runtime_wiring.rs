@@ -3,8 +3,9 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::application::notification_service::WindowFocusState;
+use crate::application::startup_status::StartupCoordinator;
 use crate::infrastructure::ExternalMcpHandle;
-use crate::AppState;
+use crate::{AppError, AppResult, AppState};
 
 /// Visual height of the app's top navbar in points. Must match the frontend
 /// header (`h-12` → 48 in `frontend/src/App.tsx`). Traffic-light centering
@@ -230,6 +231,7 @@ pub fn build_http_app_state(
     http_app_state_inner.notification_service_cache = shared_notification_service_cache;
     // INVARIANT: Tauri commands and HTTP/MCP handlers enforce the same live capability state.
     http_app_state_inner.agent_capability_gate = shared_agent_capability_gate;
+    share_startup_coordinator(app_state, &mut http_app_state_inner);
     share_plan_verification_runtime(app_state, &mut http_app_state_inner);
     // INVARIANT: notification_repo and notification_settings_repo must stay on this shared
     // connection; a per-connection refactor would silently split notification storage.
@@ -242,12 +244,57 @@ pub(crate) fn share_plan_verification_runtime(source: &AppState, target: &mut Ap
     target.plan_verification_admissions = Arc::clone(&source.plan_verification_admissions);
 }
 
-pub fn register_managed_state(app: &mut tauri::App<tauri::Wry>, app_state: AppState) {
+pub(crate) fn share_startup_coordinator(source: &AppState, target: &mut AppState) {
+    // INVARIANT: both managed AppState graphs consult the same startup attempt.
+    target.startup_coordinator = Arc::clone(&source.startup_coordinator);
+}
+
+/// Registers the dynamically constructed AppState exactly once after the
+/// blocking bootstrap worker succeeds.
+pub fn register_managed_state<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    app_state: AppState,
+    coordinator: &StartupCoordinator,
+    attempt_id: u64,
+) -> AppResult<()> {
     let throttled_emitter =
         crate::application::ThrottledEmitter::new(Arc::clone(&app_state.events));
-    app.manage(throttled_emitter);
-    app.manage(Arc::clone(&app_state.window_focus_state));
-    app.manage(app_state);
+    let window_focus_state = Arc::clone(&app_state.window_focus_state);
+    let mut registration_error = None;
+    coordinator
+        .register_app_state(attempt_id, |effects| {
+            if !app_handle.manage(throttled_emitter) {
+                registration_error =
+                    Some("ThrottledEmitter was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
 
-    app.manage(ExternalMcpHandle::new());
+            if !app_handle.manage(window_focus_state) {
+                registration_error =
+                    Some("WindowFocusState was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
+
+            if !app_handle.manage(ExternalMcpHandle::new()) {
+                registration_error =
+                    Some("ExternalMcpHandle was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
+
+            if !app_handle.manage(app_state) {
+                registration_error =
+                    Some("AppState was already registered during startup".to_string());
+                return false;
+            }
+            effects.record_side_effect();
+            true
+        })
+        .map_err(|error| {
+            AppError::Infrastructure(registration_error.unwrap_or_else(|| error.to_string()))
+        })?;
+
+    Ok(())
 }

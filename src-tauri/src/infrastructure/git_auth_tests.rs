@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::git_auth::{
     classify_gh_api_failure, http_status_code, is_valid_github_login,
-    probe_github_connection_status,
+    probe_github_connection_status, probe_github_connection_status_with_timeout,
 };
 use super::tool_paths::TEST_ENV_MUTEX;
 use crate::domain::services::github_service::{
@@ -63,6 +63,43 @@ async fn probe_with_fake_gh(script_body: &str) -> GithubConnectionStatus {
     })
     .await
     .expect("probe task")
+}
+
+async fn probe_with_fake_gh_timeout(
+    script_body: &str,
+    timeout: std::time::Duration,
+) -> GithubConnectionStatus {
+    let script_body = script_body.to_owned();
+
+    tokio::task::spawn_blocking(move || {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let fake_gh = temp_dir.path().join("gh");
+        write_fake_gh(&fake_gh, &script_body);
+        let _path = EnvGuard::set_os("PATH", temp_dir.path().as_os_str());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(probe_github_connection_status_with_timeout(timeout))
+    })
+    .await
+    .expect("probe task")
+}
+
+#[tokio::test]
+async fn startup_probe_timeout_does_not_use_generic_git_command_budget() {
+    let started_at = std::time::Instant::now();
+    let status = probe_with_fake_gh_timeout(
+        "#!/bin/sh\nsleep 2\nexit 0\n",
+        std::time::Duration::from_millis(20),
+    )
+    .await;
+
+    assert!(started_at.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(status.state, GithubConnectionState::ProbeFailed);
+    assert_eq!(status.diagnostic, Some(GithubConnectionDiagnostic::Timeout));
 }
 
 #[test]

@@ -14,10 +14,14 @@
 //! Also covers the Ready (no-op) arm via `handle_run_event` to prove benign
 //! events don't accidentally fire shutdown.
 
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use crate::application::shutdown::{handle_run_event, trigger_http_shutdown};
+use crate::application::shutdown::{
+    handle_run_event, trigger_http_shutdown, trigger_startup_cancellation,
+};
+use crate::application::startup_status::StartupCoordinator;
 use crate::application::HttpShutdownHandle;
 
 fn build_mock_app_with_shutdown() -> (tauri::App<tauri::test::MockRuntime>, HttpShutdownHandle) {
@@ -79,4 +83,17 @@ async fn unrelated_run_event_is_a_no_op() {
         result.is_err(),
         "shutdown waiter should still be pending after Ready event"
     );
+}
+
+#[test]
+fn early_shutdown_cancels_startup_before_app_state_registration() {
+    let coordinator = Arc::new(StartupCoordinator::new());
+    let app = tauri::test::mock_builder()
+        .manage(Arc::clone(&coordinator))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+
+    trigger_startup_cancellation(app.handle());
+
+    assert!(coordinator.is_cancelled());
 }

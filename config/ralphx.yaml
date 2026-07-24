@@ -110,6 +110,9 @@ timeouts:
     # startup_jobs.rs — durable notification history retention (read rows only)
     notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
     notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
+    # db_connection.rs — production warning thresholds for mutex wait and operation hold time
+    db_lock_wait_warn_ms: 100 # Env: RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS
+    db_lock_hold_warn_ms: 250 # Env: RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS
 
 reconciliation:
   # reconciliation.rs — overall deadline for merger agent; triggers MergeIncomplete + auto-retry if exceeded
@@ -181,6 +184,8 @@ reconciliation:
 git:
   # git_service/git_cmd.rs — per-command timeout to prevent hung git processes
   cmd_timeout_secs: 60 # Env: RALPHX_GIT_CMD_TIMEOUT_SECS
+  # startup_git_auth_preflight.rs — total budget for each startup Git/GitHub auth probe
+  startup_auth_preflight_timeout_secs: 10 # Env: RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS
   # git_service/git_cmd.rs — max retry attempts for transient git failures
   max_retries: 3 # Env: RALPHX_GIT_MAX_RETRIES
   # git_service/git_cmd.rs — delay between retries (list, not env-overridable)

@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::application::AppState;
@@ -49,6 +50,18 @@ pub(crate) fn emit_http_event(state: &HttpServerState, event: &str, payload: Val
     emit_app_event(&state.app_state, event, payload);
 }
 
+pub(crate) async fn recover_agent_workflow_runs_for_startup(
+    app_state: Arc<AppState>,
+    execution_state: Arc<ExecutionState>,
+) -> AppResult<usize> {
+    let state = HttpServerState {
+        app_state,
+        execution_state,
+        delegation_service: Arc::new(DelegationService::new()),
+    };
+    handlers::agent_workflows::recover_agent_workflow_runs(&state).await
+}
+
 pub(crate) fn emit_serialized_http_event<T: Serialize + ?Sized>(
     state: &HttpServerState,
     event: &str,
@@ -65,6 +78,17 @@ pub async fn start_http_server(
     app_state: Arc<AppState>,
     execution_state: Arc<ExecutionState>,
     shutdown: crate::application::HttpShutdownHandle,
+) -> AppResult<()> {
+    start_http_server_with_listener_ready(app_state, execution_state, shutdown, None).await
+}
+
+/// Starts the HTTP server and resolves the supplied sender only after the
+/// local listener has bound. The caller owns readiness policy beyond binding.
+pub async fn start_http_server_with_listener_ready(
+    app_state: Arc<AppState>,
+    execution_state: Arc<ExecutionState>,
+    shutdown: crate::application::HttpShutdownHandle,
+    mut listener_ready: Option<oneshot::Sender<AppResult<()>>>,
 ) -> AppResult<()> {
     let state = HttpServerState {
         app_state,
@@ -738,24 +762,26 @@ pub async fn start_http_server(
                 .allow_headers(Any),
         );
 
-    let recovery_state = state.clone();
-    tokio::spawn(async move {
-        match recover_agent_workflow_runs(&recovery_state).await {
-            Ok(count) if count > 0 => {
-                tracing::info!(count, "Recovered Scripted Agent workflow runs")
-            }
-            Ok(_) => {}
-            Err(error) => tracing::error!(%error, "Workflow startup recovery failed closed"),
-        }
-    });
-
     let app = Router::new()
         .merge(internal_routes)
         .merge(public_routes)
         .with_state(state);
 
     let bind_addr = backend_http_bind_addr();
-    let listener = bind_with_retry(&bind_addr, 5, Duration::from_millis(250)).await?;
+    let listener = match bind_with_retry(&bind_addr, 5, Duration::from_millis(250)).await {
+        Ok(listener) => {
+            if let Some(sender) = listener_ready.take() {
+                let _ = sender.send(Ok(()));
+            }
+            listener
+        }
+        Err(error) => {
+            if let Some(sender) = listener_ready.take() {
+                let _ = sender.send(Err(crate::AppError::Infrastructure(error.to_string())));
+            }
+            return Err(error);
+        }
+    };
 
     tracing::info!(url = %backend_http_base_url(), "MCP HTTP server listening");
 

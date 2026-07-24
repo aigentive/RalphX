@@ -30,11 +30,9 @@ import {
 import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
-import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
+import { AgentIssueReportDialog } from "@/components/agents/AgentIssueReportDialog";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
-import { UpdateChecker } from "@/components/UpdateChecker";
-import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
-import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
+import { StartupMaintenance } from "@/components/StartupMaintenance";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { useUiStore } from "@/stores/uiStore";
 import { useTaskStore, selectTasksByStatus } from "@/stores/taskStore";
@@ -55,7 +53,6 @@ import { useProjects, projectKeys } from "@/hooks/useProjects";
 import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
@@ -64,6 +61,7 @@ import {
   navigateToIdeationSession,
 } from "@/lib/navigation";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
+import type { StartupStatus } from "@/api/startup";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import type { RunningWorkspaceSession } from "@/api/running-processes";
@@ -84,6 +82,10 @@ import { preloadAutomationsView } from "@/components/automations/preloadAutomati
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
 const LazyAutomationsView = lazy(() => preloadAutomationsView());
+const LazyAgentsView = lazy(async () => {
+  const { AgentsView } = await import("@/components/agents/AgentsView");
+  return { default: AgentsView };
+});
 
 function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
   const {
@@ -203,7 +205,20 @@ function AutomationsRouteShell() {
   );
 }
 
-function AppContent() {
+function AgentsRouteShell() {
+  return (
+    <div
+      className="flex h-full min-h-0 flex-col p-6"
+      data-testid="agents-view-shell"
+      style={{ backgroundColor: "var(--app-content-bg)" }}
+    >
+      <div className="h-4 w-36 rounded" style={{ backgroundColor: "var(--bg-surface)" }} />
+      <div className="mt-4 h-24 rounded-md" style={{ backgroundColor: "var(--bg-surface)" }} />
+    </div>
+  );
+}
+
+function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   // Check for test page first (must happen before any hooks for ESLint compliance)
   const testPage = useMemo(() => getTestPage(), []);
 
@@ -321,11 +336,6 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings &&
     providerSettings.requiresOnboarding;
-  const postUpdateAppReady =
-    !isLoadingProjects &&
-    !isLoadingProviderSettings &&
-    !isPlaceholderProviderSettings;
-  const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
   const agentIssueReportContext = useMemo(() => {
     if (
       currentView !== "agents" ||
@@ -735,8 +745,6 @@ function AppContent() {
 
   useEffect(() => {
     if (
-      !postUpdateAppReady ||
-      isPostUpdatePreparing ||
       !shouldShowAtlassianAwarenessAfterUpdateRef.current ||
       hasNoProjects ||
       providerSetupRequired
@@ -760,8 +768,6 @@ function AppContent() {
   }, [
     handleOpenIntegrationSettings,
     hasNoProjects,
-    isPostUpdatePreparing,
-    postUpdateAppReady,
     providerSetupRequired,
   ]);
 
@@ -1019,14 +1025,8 @@ function AppContent() {
         className="h-screen flex flex-col overflow-hidden"
         style={{ backgroundColor: "var(--app-content-bg)", color: "var(--text-primary)" }}
       >
-      {/* Update checker - runs on mount, shows toast if update available */}
-      <UpdateChecker />
-      <ProviderCliUpdateChecker />
+      <StartupMaintenance backgroundSettled={backgroundSettled} />
 
-      {isPostUpdatePreparing ? (
-        <PostUpdatePreparingScreen />
-      ) : (
-        <>
           <AppTopBar
             currentView={currentView}
             attentionCount={attentionCount}
@@ -1075,12 +1075,14 @@ function AppContent() {
           <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
             <div className="flex-1 overflow-auto h-full" style={{ backgroundColor: "var(--app-content-bg)" }}>
               {currentView === "agents" && (
-                <AgentsView
-                  footer={executionFooter}
-                  projectId={currentProjectId}
-                  onCreateProject={handleOpenProjectWizard}
-                  onOpenAutomation={handleOpenAutomationDetail}
-                />
+                <Suspense fallback={<AgentsRouteShell />}>
+                  <LazyAgentsView
+                    footer={executionFooter}
+                    projectId={currentProjectId}
+                    onCreateProject={handleOpenProjectWizard}
+                    onOpenAutomation={handleOpenAutomationDetail}
+                  />
+                </Suspense>
               )}
               {currentView === "automations" && (
                 isViewEnabled("automations", featureFlags)
@@ -1203,9 +1205,7 @@ function AppContent() {
 
         </div>
       )}
-      </div>
-        </>
-      )}
+        </div>
 
       {/* Project Creation Wizard */}
       <ProjectCreationWizard
@@ -1248,11 +1248,13 @@ function AppContent() {
   );
 }
 
-function App() {
+function App({ startupStatus }: { startupStatus?: StartupStatus }) {
+  const backgroundSettled = startupStatus?.backgroundComplete ?? true;
+
   return (
     <QueryClientProvider client={queryClient}>
       <EventProvider>
-        <AppContent />
+        <AppContent backgroundSettled={backgroundSettled} />
       </EventProvider>
     </QueryClientProvider>
   );
