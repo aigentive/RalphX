@@ -45,9 +45,6 @@ use crate::application::agent_workspace_publish_repair_state::{
     current_agent_workspace_repair_claim_for_completion,
     settle_agent_workspace_failure_without_repair, AgentWorkspaceRepairClaim,
 };
-use crate::application::agent_workspace_local_commit::{
-    commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
-};
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,

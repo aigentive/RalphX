@@ -71,9 +71,6 @@ use crate::application::agent_workspace_local_commit::{
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };
-use crate::application::agent_workspace_local_commit::{
-    commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
-};
 use crate::application::agent_workspace_pr_description::{
     draft_agent_workspace_pr_metadata_decision, get_or_draft_agent_workspace_pr_metadata_decision,
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
