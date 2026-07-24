@@ -88,6 +88,7 @@ export function PublishWorkspaceDialog({
               autoMergeDesired={autoMergeDesired}
               className="mt-3"
               prSupervisionStatus={prSupervisionStatus}
+              targetPullRequestLabel={targetPullRequestLabel}
               status={status}
               isPublishing={isPublishing}
               testIdPrefix="agents-publish-dialog"

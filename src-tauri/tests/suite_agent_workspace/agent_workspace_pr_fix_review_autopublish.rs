@@ -107,7 +107,7 @@ async fn passed_workspace_review_resumes_pr_fix_publish_after_stale_recovery_blo
     std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
     git(&workspace_path, &["add", "fix.txt"]);
     git(&workspace_path, &["commit", "-m", "fix CI"]);
-    github.will_return_pr_detail(PrDetail {
+    let pr_detail = PrDetail {
         number: 681,
         title: "Existing PR title".to_string(),
         body: Some("Existing PR body".to_string()),
@@ -118,7 +118,9 @@ async fn passed_workspace_review_resumes_pr_fix_publish_after_stale_recovery_blo
         is_draft: false,
         head_ref_name: branch_name.to_string(),
         base_ref_name: "main".to_string(),
-    });
+    };
+    github.will_return_pr_detail(pr_detail.clone());
+    github.will_return_pr_detail(pr_detail);
 
     let mut workspace = AgentConversationWorkspace::new(
         conversation_id,
@@ -200,6 +202,11 @@ async fn passed_workspace_review_resumes_pr_fix_publish_after_stale_recovery_blo
         github.push_calls(),
         1,
         "passed review should resume existing PR publish even after stale recovery blocked supervision"
+    );
+    assert_eq!(
+        github.fetch_pr_detail_calls(),
+        2,
+        "existing PR publication should revalidate the target after pushing"
     );
     let updated = app_state
         .agent_conversation_workspace_repo

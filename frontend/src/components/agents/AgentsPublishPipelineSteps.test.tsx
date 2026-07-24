@@ -56,4 +56,19 @@ describe("PublishPipelineSteps", () => {
 
     expect(screen.queryByTestId("agents-publish-step-auto_merge")).not.toBeInTheDocument();
   });
+
+  it("describes a linked PR accurately when description publishing fails", () => {
+    render(
+      <PublishPipelineSteps
+        status="description_failed"
+        isPublishing={false}
+        targetPullRequestLabel="PR #888"
+      />,
+    );
+
+    expect(screen.getByText(/metadata step for PR #888/)).toBeInTheDocument();
+    expect(screen.getByText(/unsafe replacement body/)).toBeInTheDocument();
+    expect(screen.queryByText(/no pull request was opened/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-step-describing")).toBeInTheDocument();
+  });
 });

@@ -6551,6 +6551,7 @@ async fn recover_duplicate_agent_workspace_pr_publish(
                 conversation,
                 snapshot.number,
                 snapshot.url.as_deref(),
+                snapshot.body.as_deref(),
                 &decision,
             )
             .await;
@@ -6569,6 +6570,7 @@ async fn recover_duplicate_agent_workspace_pr_publish(
             conversation,
             confirmed_snapshot.number,
             confirmed_snapshot.url.as_deref(),
+            confirmed_snapshot.body.as_deref(),
             &decision,
         )
         .await
@@ -7826,11 +7828,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     // The draft is bound to the fetched remote target. Re-read it after the
     // branch push, immediately before mutation, so a concurrent PR edit cannot
     // receive a decision drafted from stale authority.
-    if let (
-        ResolvedAgentWorkspacePrTarget::Existing(snapshot),
-        AgentWorkspacePrMetadataDecision::Patch { .. },
-    ) = (&pr_target, &pr_metadata_decision)
-    {
+    if let ResolvedAgentWorkspacePrTarget::Existing(snapshot) = &pr_target {
         let refreshed_target = match resolve_agent_workspace_pr_metadata_target(
             Some(github.as_ref()),
             &worktree_path,
@@ -7853,7 +7851,11 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         let ResolvedAgentWorkspacePrTarget::Existing(refreshed_snapshot) = &refreshed_target else {
             unreachable!("existing target branch handled above");
         };
-        if refreshed_snapshot.authority_fingerprint() != snapshot.authority_fingerprint() {
+        if matches!(
+            pr_metadata_decision,
+            AgentWorkspacePrMetadataDecision::Patch { .. }
+        ) && refreshed_snapshot.authority_fingerprint() != snapshot.authority_fingerprint()
+        {
             let cache_key = AgentWorkspacePrDescriptionCacheKey::for_target(
                 conversation_id.clone(),
                 review_base.to_string(),
@@ -7891,23 +7893,32 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     return Err(error);
                 }
             };
-            match confirm_agent_workspace_existing_pr_metadata_target(
-                github.as_ref(),
-                &worktree_path,
-                &workspace,
-                refreshed_snapshot.authority_fingerprint(),
-            )
-            .await
-            {
-                Ok(confirmed_snapshot) => {
-                    pr_target =
-                        ResolvedAgentWorkspacePrTarget::Existing(Box::new(confirmed_snapshot));
-                }
-                Err(error) => {
-                    mark_agent_workspace_publish_description_failure(state, &workspace, &error)
+            if matches!(
+                pr_metadata_decision,
+                AgentWorkspacePrMetadataDecision::Patch { .. }
+            ) {
+                match confirm_agent_workspace_existing_pr_metadata_target(
+                    github.as_ref(),
+                    &worktree_path,
+                    &workspace,
+                    refreshed_snapshot.authority_fingerprint(),
+                )
+                .await
+                {
+                    Ok(confirmed_snapshot) => {
+                        pr_target =
+                            ResolvedAgentWorkspacePrTarget::Existing(Box::new(confirmed_snapshot));
+                    }
+                    Err(error) => {
+                        mark_agent_workspace_publish_description_failure(
+                            state, &workspace, &error,
+                        )
                         .await;
-                    return Err(error);
+                        return Err(error);
+                    }
                 }
+            } else {
+                pr_target = refreshed_target;
             }
         } else {
             pr_target = refreshed_target;
@@ -7968,6 +7979,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     &conversation,
                     snapshot.number,
                     snapshot.url.as_deref(),
+                    snapshot.body.as_deref(),
                     decision,
                 )
                 .await

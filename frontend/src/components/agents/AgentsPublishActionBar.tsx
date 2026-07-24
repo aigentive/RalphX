@@ -94,6 +94,7 @@ const STATUS_ACTION_BUTTON_TONE_STYLES: Record<
 };
 
 /** Inline style for a non-actionable status button of the given tone. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared by publish-panel action slots
 export function statusActionButtonStyle(
   tone: AgentsPublishActionTone,
 ): StatusActionButtonStyle {

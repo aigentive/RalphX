@@ -3400,7 +3400,7 @@
         std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
         git(&workspace_path, &["add", "fix.txt"]);
         git(&workspace_path, &["commit", "-m", "fix CI"]);
-        github.will_return_pr_detail(PrDetail {
+        let existing_pr = PrDetail {
             number: 267,
             title: "Existing PR title".to_string(),
             body: Some("Existing PR body".to_string()),
@@ -3411,7 +3411,9 @@
             is_draft: false,
             head_ref_name: branch_name.to_string(),
             base_ref_name: "main".to_string(),
-        });
+        };
+        github.queue_pr_detail(Ok(existing_pr.clone()));
+        github.queue_pr_detail(Ok(existing_pr));
         let mut workspace = AgentConversationWorkspace::new(
             conversation_id.clone(),
             project.id.clone(),
@@ -3486,6 +3488,7 @@
                 github_state.last_push_branch_name.as_deref(),
                 Some(branch_name)
             );
+            assert_eq!(github_state.fetch_pr_detail_calls, 2);
             assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
         }
         let updated = app_state

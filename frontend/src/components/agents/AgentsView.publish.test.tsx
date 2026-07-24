@@ -540,6 +540,18 @@ describe("AgentsView publish", () => {
       detail: "could not draft a PR description",
     },
     {
+      name: "description failure on a linked pull request",
+      workspace: {
+        publicationPushStatus: "description_failed",
+        publicationPrNumber: 888,
+      },
+      freshness: { hasUncommittedChanges: true },
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Publishing failed",
+      detail: "metadata step for PR #888",
+    },
+    {
       name: "automatic publishing paused",
       workspace: {
         publicationPushStatus: "pushed",
