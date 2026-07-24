@@ -271,6 +271,88 @@ pub(super) async fn reconcile_plan_notifications(
     .await;
 }
 
+pub(super) fn next_artifact_version_sync(
+    conn: &Connection,
+    artifact_id: Option<&ArtifactId>,
+) -> Result<u32, AppError> {
+    let Some(artifact_id) = artifact_id else {
+        return Ok(1);
+    };
+    let artifact = ArtifactRepo::get_by_id_sync(conn, artifact_id.as_str())?.ok_or_else(|| {
+        AppError::NotFound(format!("Artifact {} not found", artifact_id.as_str()))
+    })?;
+    Ok(artifact.metadata.version + 1)
+}
+
+pub(super) fn delete_current_bundle_relation_sync(
+    conn: &Connection,
+    session: &IdeationSession,
+) -> Result<(), AppError> {
+    let Some(bundle) = session.plan_artifact_bundle() else {
+        return Ok(());
+    };
+    let Some(blueprint_id) = bundle.blueprint_id else {
+        return Ok(());
+    };
+    conn.execute(
+        "DELETE FROM artifact_relations
+         WHERE relation_type = 'related_to'
+           AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
+             OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
+        rusqlite::params![bundle.overview_id.as_str(), blueprint_id.as_str()],
+    )?;
+    Ok(())
+}
+
+pub(super) fn retarget_verification_authority_sync(
+    conn: &Connection,
+    authority: Option<&ArtifactMutationAuthority>,
+    session_id: &str,
+    old_target: Option<&str>,
+    updated_session: &IdeationSession,
+) -> Result<(), AppError> {
+    let (Some(authority), Some(old_target)) = (authority, old_target) else {
+        return Ok(());
+    };
+    let bundle = updated_session
+        .plan_artifact_bundle()
+        .ok_or_else(|| AppError::Validation("Plan bundle became incomplete".to_string()))?;
+    let new_target = bundle.action_target_id();
+    let retargeted = conn.execute(
+        "UPDATE agent_runs
+         SET action_target_id = ?1
+         WHERE id = ?2
+           AND conversation_id = ?3
+           AND status = 'running'
+           AND action_kind = 'verify_plan'
+           AND action_context_id = ?4
+           AND action_target_id = ?5",
+        rusqlite::params![
+            new_target,
+            authority.agent_run_id,
+            authority.conversation_id,
+            session_id,
+            old_target,
+        ],
+    )?;
+    if retargeted == 1 {
+        conn.execute(
+            "UPDATE deferred_plan_approval_notifications
+             SET artifact_id = ?1, plan_target_id = ?2,
+                 created_at = datetime('now')
+             WHERE session_id = ?3
+               AND COALESCE(plan_target_id, artifact_id) = ?4",
+            rusqlite::params![
+                bundle.overview_id.as_str(),
+                new_target,
+                session_id,
+                old_target,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 #[doc(hidden)]
 pub async fn check_verification_freeze(
     owning_sessions: &[IdeationSession],
@@ -437,26 +519,12 @@ pub(super) fn finalize_plan_update(
         for (session_id, old_target) in &old_targets {
             let updated_session = SessionRepo::get_by_id_sync(conn, session_id)?
                 .ok_or_else(|| AppError::NotFound(format!("Session {session_id} not found")))?;
-            let new_target = updated_session
-                .plan_artifact_bundle()
-                .ok_or_else(|| AppError::Validation("Plan bundle became incomplete".to_string()))?
-                .action_target_id();
-            conn.execute(
-                "UPDATE agent_runs
-                 SET action_target_id = ?1
-                 WHERE id = ?2
-                   AND conversation_id = ?3
-                   AND status = 'running'
-                   AND action_kind = 'verify_plan'
-                   AND action_context_id = ?4
-                   AND action_target_id = ?5",
-                rusqlite::params![
-                    new_target,
-                    authority.agent_run_id,
-                    authority.conversation_id,
-                    session_id,
-                    old_target,
-                ],
+            retarget_verification_authority_sync(
+                conn,
+                Some(authority),
+                session_id,
+                Some(old_target),
+                &updated_session,
             )?;
         }
     }

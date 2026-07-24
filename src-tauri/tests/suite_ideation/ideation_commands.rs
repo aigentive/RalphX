@@ -1885,6 +1885,104 @@ async fn test_apply_proposals_core_creates_tasks_with_ready_status() {
 }
 
 #[tokio::test]
+async fn test_apply_proposals_core_snapshots_blueprint_lineage_on_created_task() {
+    use ralphx_lib::domain::entities::{Artifact, ArtifactType};
+
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+    let blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Blueprint",
+            ArtifactType::Specification,
+            "Implementation details",
+            "test",
+        ))
+        .await
+        .expect("blueprint should be created");
+    let proposal_id = TaskProposalId::from_string(proposal_ids[0].clone());
+    let mut proposal = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .expect("proposal lookup should succeed")
+        .expect("proposal should exist");
+    proposal.blueprint_artifact_id = Some(blueprint.id.clone());
+    proposal.blueprint_version_at_creation = Some(1);
+    state
+        .task_proposal_repo
+        .update(&proposal)
+        .await
+        .expect("proposal blueprint lineage should persist");
+
+    let result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("proposal acceptance should succeed");
+    let task = state
+        .task_repo
+        .get_by_id(&ralphx_lib::domain::entities::TaskId::from_string(
+            result.created_task_ids[0].clone(),
+        ))
+        .await
+        .expect("task lookup should succeed")
+        .expect("task should exist");
+
+    assert_eq!(task.plan_blueprint_artifact_id, Some(blueprint.id));
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_rejects_incomplete_blueprint_lineage() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+    let proposal_id = TaskProposalId::from_string(proposal_ids[0].clone());
+    let mut proposal = state
+        .task_proposal_repo
+        .get_by_id(&proposal_id)
+        .await
+        .expect("proposal lookup should succeed")
+        .expect("proposal should exist");
+    proposal.blueprint_version_at_creation = Some(1);
+    state
+        .task_proposal_repo
+        .update(&proposal)
+        .await
+        .expect("incomplete lineage fixture should persist");
+
+    let error = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect_err("v2 lineage without a Blueprint ID must fail closed");
+
+    assert!(error
+        .to_string()
+        .contains("blueprint lineage is incomplete"));
+    assert!(
+        state
+            .task_repo
+            .get_by_ideation_session(&session.id)
+            .await
+            .expect("task lookup should succeed")
+            .is_empty(),
+        "failed acceptance must roll back task creation"
+    );
+}
+
+#[tokio::test]
 async fn test_apply_proposals_core_session_converts_to_accepted() {
     let state = setup_apply_test_state();
     let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;

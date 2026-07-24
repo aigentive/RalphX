@@ -11,6 +11,7 @@ use crate::application::{
     spawn_ready_task_scheduler_if_needed, AppState, TaskCleanupService,
 };
 use crate::commands::ExecutionState;
+use crate::domain::entities::ideation::PLAN_CONTRACT_V2;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ExecutionPlan,
     ExecutionPlanId, IdeationSessionId, IdeationSessionStatus, InternalStatus, PlanBranch,
@@ -42,22 +43,46 @@ struct TxOutput {
     any_ready_tasks: bool,
 }
 
-fn recheck_exact_plan_verification(
+pub(super) fn recheck_exact_plan_verification(
     conn: &rusqlite::Connection,
     session_id: &str,
     expected_plan_id: Option<&str>,
+    expected_blueprint_id: Option<&str>,
+    expected_contract_version: i32,
     required: bool,
 ) -> AppResult<()> {
     if !required {
         return Ok(());
     }
-    let (current_plan_id, verified_plan_id): (Option<String>, Option<String>) = conn
+    let (
+        current_plan_id,
+        current_blueprint_id,
+        verified_plan_id,
+        verified_blueprint_id,
+        contract_version,
+    ): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i32,
+    ) = conn
         .query_row(
-            "SELECT plan_artifact_id, verified_plan_artifact_id
+            "SELECT plan_artifact_id, plan_blueprint_artifact_id,
+                    verified_plan_artifact_id, verified_plan_blueprint_artifact_id,
+                    plan_contract_version
              FROM ideation_sessions
              WHERE id = ?1",
             [session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map_err(|error| {
             AppError::Database(format!(
@@ -65,9 +90,15 @@ fn recheck_exact_plan_verification(
                 error
             ))
         })?;
-    if current_plan_id.as_deref() != expected_plan_id
-        || verified_plan_id.as_deref() != current_plan_id.as_deref()
-    {
+    let exact_overview = current_plan_id.is_some()
+        && current_plan_id.as_deref() == expected_plan_id
+        && verified_plan_id.as_deref() == current_plan_id.as_deref();
+    let exact_contract = contract_version == expected_contract_version;
+    let exact_blueprint = contract_version < PLAN_CONTRACT_V2
+        || (current_blueprint_id.is_some()
+            && current_blueprint_id.as_deref() == expected_blueprint_id
+            && verified_blueprint_id.as_deref() == current_blueprint_id.as_deref());
+    if !exact_overview || !exact_contract || !exact_blueprint {
         return Err(AppError::Validation(
             "Plan changed or lost exact verification proof before acceptance; verify the current plan and accept again"
                 .to_string(),
@@ -277,6 +308,15 @@ pub(super) fn phase_insert_tasks_and_steps(
             .plan_artifact_id
             .clone()
             .or_else(|| plan_artifact_id_tx.clone());
+        if proposal.blueprint_version_at_creation.is_some()
+            && proposal.blueprint_artifact_id.is_none()
+        {
+            return Err(AppError::Validation(format!(
+                "Proposal {} blueprint lineage is incomplete; regenerate proposals from the current plan bundle",
+                proposal.id
+            )));
+        }
+        task.plan_blueprint_artifact_id = proposal.blueprint_artifact_id.clone();
 
         // Compute auto-status from pre-fetched proposal_deps (no async calls needed)
         if use_auto_status_tx {
@@ -306,8 +346,8 @@ pub(super) fn phase_insert_tasks_and_steps(
         }
 
         conn.execute(
-            "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, plan_blueprint_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             rusqlite::params![
                 task.id.as_str(),
                 task.project_id.as_str(),
@@ -319,6 +359,7 @@ pub(super) fn phase_insert_tasks_and_steps(
                 task.needs_review_point,
                 task.source_proposal_id.as_ref().map(|id| id.as_str()),
                 task.plan_artifact_id.as_ref().map(|id| id.as_str()),
+                task.plan_blueprint_artifact_id.as_ref().map(|id| id.as_str()),
                 task.ideation_session_id.as_ref().map(|id| id.as_str()),
                 task.execution_plan_id.as_ref().map(|id| id.as_str()),
                 task.created_at.to_rfc3339(),
@@ -876,6 +917,11 @@ async fn apply_proposals_core_inner(
         let foreign_skipped = total_count;
         let session_id_tx = session_id.as_str().to_string();
         let expected_plan_id_tx = plan_artifact_id.as_ref().map(ToString::to_string);
+        let expected_blueprint_id_tx = session
+            .plan_blueprint_artifact_id
+            .as_ref()
+            .map(ToString::to_string);
+        let expected_contract_version_tx = session.plan_contract_version;
         let require_verification_tx = effective_policy.require_verification_for_accept;
         app_state
             .db
@@ -884,6 +930,8 @@ async fn apply_proposals_core_inner(
                     conn,
                     &session_id_tx,
                     expected_plan_id_tx.as_deref(),
+                    expected_blueprint_id_tx.as_deref(),
+                    expected_contract_version_tx,
                     require_verification_tx,
                 )?;
                 finalize_session_acceptance(conn, &session_id_tx, require_pending_confirmation)
@@ -949,6 +997,8 @@ async fn apply_proposals_core_inner(
     let session_id_str = session_id.as_str().to_string();
     let project_id_str = session.project_id.as_str().to_string();
     let plan_artifact_id_tx = plan_artifact_id.clone();
+    let plan_blueprint_artifact_id_tx = session.plan_blueprint_artifact_id.clone();
+    let plan_contract_version_tx = session.plan_contract_version;
     let use_auto_status_tx = use_auto_status;
     let base_branch_override_tx = effective_base_branch_override.clone();
     let agent_workspace_branch_name_tx = linked_agent_workspace
@@ -993,6 +1043,10 @@ async fn apply_proposals_core_inner(
                 conn,
                 &session_id_str,
                 plan_artifact_id_tx.as_ref().map(ArtifactId::as_str),
+                plan_blueprint_artifact_id_tx
+                    .as_ref()
+                    .map(ArtifactId::as_str),
+                plan_contract_version_tx,
                 require_verification_for_accept_tx,
             )?;
 

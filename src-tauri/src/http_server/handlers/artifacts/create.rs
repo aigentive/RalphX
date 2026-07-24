@@ -13,6 +13,7 @@ pub async fn create_plan_artifact_with_headers(
     Json(req): Json<CreatePlanArtifactRequest>,
 ) -> Result<Json<ArtifactResponse>, HttpError> {
     let mutation_authority = resolve_artifact_mutation_authority(&headers);
+    let transaction_authority = mutation_authority.clone();
     let session_id_str = req.session_id.clone();
     let title = req.title.clone();
     let content = req.content.clone();
@@ -56,6 +57,13 @@ pub async fn create_plan_artifact_with_headers(
                 .plan_blueprint_artifact_id
                 .as_ref()
                 .map(|artifact_id| artifact_id.to_string());
+            let prior_target_id = session
+                .plan_artifact_bundle()
+                .map(|bundle| bundle.action_target_id());
+            let overview_version =
+                next_artifact_version_sync(conn, session.plan_artifact_id.as_ref())?;
+            let blueprint_version =
+                next_artifact_version_sync(conn, session.plan_blueprint_artifact_id.as_ref())?;
 
             let bucket_id = ArtifactBucketId::from_string("prd-library");
             let artifact = Artifact {
@@ -63,7 +71,7 @@ pub async fn create_plan_artifact_with_headers(
                 artifact_type: ArtifactType::Specification,
                 name: title,
                 content: ArtifactContent::inline(&content),
-                metadata: ArtifactMetadata::new("orchestrator").with_version(1),
+                metadata: ArtifactMetadata::new("orchestrator").with_version(overview_version),
                 derived_from: vec![],
                 bucket_id: Some(bucket_id),
                 archived_at: None,
@@ -81,19 +89,7 @@ pub async fn create_plan_artifact_with_headers(
                 artifact_type: ArtifactType::Specification,
                 name: blueprint_title,
                 content: ArtifactContent::inline(&blueprint_content),
-                metadata: ArtifactMetadata::new("orchestrator").with_version(
-                    prior_blueprint_id.as_ref().map_or(1, |_| {
-                        session
-                            .plan_blueprint_artifact_id
-                            .as_ref()
-                            .and_then(|id| {
-                                ArtifactRepo::get_by_id_sync(conn, id.as_str())
-                                    .ok()
-                                    .flatten()
-                            })
-                            .map_or(1, |artifact| artifact.metadata.version + 1)
-                    }),
-                ),
+                metadata: ArtifactMetadata::new("orchestrator").with_version(blueprint_version),
                 derived_from: vec![],
                 bucket_id: Some(ArtifactBucketId::from_string("prd-library")),
                 archived_at: None,
@@ -108,6 +104,7 @@ pub async fn create_plan_artifact_with_headers(
                 ArtifactRepo::create_sync(conn, blueprint)?
             };
 
+            delete_current_bundle_relation_sync(conn, &session)?;
             ArtifactRepo::add_relation_sync(
                 conn,
                 ArtifactRelation {
@@ -125,11 +122,19 @@ pub async fn create_plan_artifact_with_headers(
                 created.metadata.version as i32,
                 blueprint_created.metadata.version as i32,
             )?;
-            let plan_target_id = format!(
-                "plan_bundle:v2:{}:{}",
-                created.id.as_str(),
-                blueprint_created.id.as_str()
-            );
+            let updated_session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
+                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
+            retarget_verification_authority_sync(
+                conn,
+                transaction_authority.as_ref(),
+                sid.as_str(),
+                prior_target_id.as_deref(),
+                &updated_session,
+            )?;
+            let plan_target_id = updated_session
+                .plan_artifact_bundle()
+                .ok_or_else(|| AppError::Validation("Plan bundle became incomplete".to_string()))?
+                .action_target_id();
 
             let session_title = session.title.clone();
             Ok((

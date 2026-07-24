@@ -482,11 +482,21 @@ async fn verification_action_can_complete_the_plan_version_it_revises() {
         .create(conversation)
         .await
         .unwrap();
+    let original_target = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_artifact_bundle()
+        .expect("created plan should be a complete bundle")
+        .action_target_id();
 
     let mut run = AgentRun::new(conversation_id);
     run.action_kind = Some(AgentRunActionKind::VerifyPlan);
     run.action_context_id = Some(session_id.as_str().to_string());
-    run.action_target_id = Some(original_artifact_id.clone());
+    run.action_target_id = Some(original_target);
     let run = state.app_state.agent_run_repo.create(run).await.unwrap();
 
     let mut headers = axum::http::HeaderMap::new();
@@ -519,9 +529,19 @@ async fn verification_action_can_complete_the_plan_version_it_revises() {
         .await
         .unwrap()
         .unwrap();
+    let revised_target = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_artifact_bundle()
+        .expect("revised plan should remain a complete bundle")
+        .action_target_id();
     assert_eq!(
         run_after_revision.action_target_id.as_deref(),
-        Some(revised.id.as_str()),
+        Some(revised_target.as_str()),
         "the live action authority must follow the version it created"
     );
 
@@ -562,6 +582,284 @@ async fn verification_action_can_complete_the_plan_version_it_revises() {
         1,
         "authoritative completion must emit one ideation:verified event"
     );
+}
+
+#[tokio::test]
+async fn replacing_v2_bundle_advances_versions_relation_and_verifier_state_atomically() {
+    let state = setup_model_native_verification_test_state().await;
+    let session = make_active_session();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let first = create_plan_artifact_quiesced(&state, &session_id, "Plan v1", "Overview v1").await;
+    let first_blueprint_id = first
+        .blueprint_artifact
+        .as_ref()
+        .expect("v2 bundle should include Blueprint")
+        .id
+        .clone();
+    let old_target = first
+        .plan_target_id
+        .clone()
+        .expect("v2 bundle should expose target");
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(session_id.to_string());
+    run.action_target_id = Some(old_target.clone());
+    let run = state.app_state.agent_run_repo.create(run).await.unwrap();
+    let marker_session_id = session_id.to_string();
+    let marker_artifact_id = first.id.clone();
+    let marker_target = old_target.clone();
+    state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.execute_batch(
+                "CREATE TABLE deferred_retarget_audit (
+                    artifact_id TEXT NOT NULL,
+                    plan_target_id TEXT NOT NULL
+                 );
+                 CREATE TRIGGER capture_deferred_retarget
+                 AFTER UPDATE OF artifact_id, plan_target_id
+                 ON deferred_plan_approval_notifications
+                 BEGIN
+                    INSERT INTO deferred_retarget_audit (artifact_id, plan_target_id)
+                    VALUES (NEW.artifact_id, NEW.plan_target_id);
+                 END;",
+            )?;
+            conn.execute(
+                "INSERT INTO deferred_plan_approval_notifications
+                    (session_id, artifact_id, plan_target_id, created_at)
+                 VALUES (?1, ?2, ?3, datetime('now'))",
+                rusqlite::params![marker_session_id, marker_artifact_id, marker_target],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        axum::http::HeaderValue::from_str(&run.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-conversation-id",
+        axum::http::HeaderValue::from_str(&conversation_id.as_str()).unwrap(),
+    );
+    let replacement = create_plan_artifact_with_headers(
+        State(state.clone()),
+        headers,
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.to_string(),
+            title: "Plan v2".to_string(),
+            content: "Overview v2".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("Blueprint v2".to_string()),
+        }),
+    )
+    .await
+    .expect("bundle replacement should succeed")
+    .0;
+    let replacement_blueprint = replacement
+        .blueprint_artifact
+        .as_ref()
+        .expect("replacement should include Blueprint");
+    let new_target = replacement
+        .plan_target_id
+        .clone()
+        .expect("replacement should expose target");
+
+    assert_eq!(replacement.version, 2);
+    assert_eq!(replacement_blueprint.version, 2);
+    let run_after = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run_after.action_target_id.as_deref(),
+        Some(new_target.as_str())
+    );
+    let old_overview_id = first.id.clone();
+    let old_blueprint_id = first_blueprint_id;
+    let new_overview_id = replacement.id.clone();
+    let new_blueprint_id = replacement_blueprint.id.clone();
+    let (marker, old_relation_count, new_relation_count) = state
+        .app_state
+        .db
+        .run(move |conn| {
+            let marker = conn.query_row(
+                "SELECT artifact_id, plan_target_id
+                 FROM deferred_retarget_audit
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let old_relation_count = conn.query_row(
+                "SELECT COUNT(*) FROM artifact_relations
+                 WHERE relation_type = 'related_to'
+                   AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
+                     OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
+                rusqlite::params![old_overview_id, old_blueprint_id],
+                |row| row.get::<_, i64>(0),
+            )?;
+            let new_relation_count = conn.query_row(
+                "SELECT COUNT(*) FROM artifact_relations
+                 WHERE relation_type = 'related_to'
+                   AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
+                     OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
+                rusqlite::params![new_overview_id, new_blueprint_id],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok((marker, old_relation_count, new_relation_count))
+        })
+        .await
+        .unwrap();
+    assert_eq!(marker, (replacement.id, new_target));
+    assert_eq!(old_relation_count, 0);
+    assert_eq!(new_relation_count, 1);
+}
+
+#[tokio::test]
+async fn promoting_v1_bundle_retargets_active_verifier_and_deferred_marker() {
+    let state = setup_model_native_verification_test_state().await;
+    let overview = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Legacy overview",
+            ArtifactType::Specification,
+            "Legacy content",
+            "test",
+        ))
+        .await
+        .unwrap();
+    let mut session = make_active_session();
+    session.plan_artifact_id = Some(overview.id.clone());
+    session.plan_contract_version = 1;
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut run = AgentRun::new(conversation_id);
+    run.action_kind = Some(AgentRunActionKind::VerifyPlan);
+    run.action_context_id = Some(session_id.to_string());
+    run.action_target_id = Some(overview.id.to_string());
+    let run = state.app_state.agent_run_repo.create(run).await.unwrap();
+    let marker_session_id = session_id.to_string();
+    let marker_artifact_id = overview.id.to_string();
+    state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.execute_batch(
+                "CREATE TABLE deferred_retarget_audit (
+                    artifact_id TEXT NOT NULL,
+                    plan_target_id TEXT NOT NULL
+                 );
+                 CREATE TRIGGER capture_deferred_retarget
+                 AFTER UPDATE OF artifact_id, plan_target_id
+                 ON deferred_plan_approval_notifications
+                 BEGIN
+                    INSERT INTO deferred_retarget_audit (artifact_id, plan_target_id)
+                    VALUES (NEW.artifact_id, NEW.plan_target_id);
+                 END;",
+            )?;
+            conn.execute(
+                "INSERT INTO deferred_plan_approval_notifications
+                    (session_id, artifact_id, plan_target_id, created_at)
+                 VALUES (?1, ?2, ?2, datetime('now'))",
+                rusqlite::params![marker_session_id, marker_artifact_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        axum::http::HeaderValue::from_str(&run.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-conversation-id",
+        axum::http::HeaderValue::from_str(&conversation_id.as_str()).unwrap(),
+    );
+
+    let promoted = create_plan_artifact_with_headers(
+        State(state.clone()),
+        headers,
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.to_string(),
+            title: "Promoted overview".to_string(),
+            content: "Promoted content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("New Blueprint".to_string()),
+        }),
+    )
+    .await
+    .expect("v1 promotion should succeed")
+    .0;
+    let new_target = promoted
+        .plan_target_id
+        .clone()
+        .expect("promoted bundle should expose target");
+
+    assert_eq!(promoted.version, 2);
+    let run_after = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        run_after.action_target_id.as_deref(),
+        Some(new_target.as_str())
+    );
+    let marker = state
+        .app_state
+        .db
+        .run(move |conn| {
+            conn.query_row(
+                "SELECT artifact_id, plan_target_id
+                 FROM deferred_retarget_audit
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .await
+        .unwrap();
+    assert_eq!(marker, (promoted.id, new_target));
 }
 
 #[tokio::test]
