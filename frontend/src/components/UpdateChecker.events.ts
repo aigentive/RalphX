@@ -6,12 +6,18 @@ const RELEASE_NOTES_EVENT = "ralphx://show-release-notes";
 
 export function useUpdateCheckerNativeEvents({
   checkForUpdates,
+  enabled = true,
   openCurrentReleaseNotes,
 }: {
   checkForUpdates: (options?: { manual?: boolean; force?: boolean }) => void;
+  enabled?: boolean;
   openCurrentReleaseNotes: () => void;
 }) {
   useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
+
     const unlisteners: UnlistenFn[] = [];
     let isMounted = true;
 
@@ -39,5 +45,5 @@ export function useUpdateCheckerNativeEvents({
       isMounted = false;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [checkForUpdates, openCurrentReleaseNotes]);
+  }, [checkForUpdates, enabled, openCurrentReleaseNotes]);
 }

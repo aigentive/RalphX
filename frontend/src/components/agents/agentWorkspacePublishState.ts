@@ -24,6 +24,22 @@ export function hasPublishedWorkspacePr(
   return Boolean(workspace?.publicationPrNumber ?? workspace?.publicationPrUrl);
 }
 
+export function getAgentWorkspaceDescriptionFailurePresentation(
+  targetPullRequestLabel: string | null,
+): { title: string; summary: string } {
+  if (targetPullRequestLabel) {
+    return {
+      title: "Publishing failed",
+      summary: `RalphX could not finish the metadata step for ${targetPullRequestLabel} and did not apply an unsafe replacement body. Review the latest publish event before retrying Commit & Publish.`,
+    };
+  }
+  return {
+    title: "Publishing failed",
+    summary:
+      "RalphX could not draft a PR description, so no pull request was opened. Review the latest publish event before retrying Commit & Publish.",
+  };
+}
+
 function normalizePublicationStatus(status: string | null | undefined): string | null {
   const normalized = status?.trim().toLowerCase();
   return normalized || null;

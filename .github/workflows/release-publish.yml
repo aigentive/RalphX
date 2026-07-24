@@ -334,7 +334,8 @@ jobs:
 
           if gh release view "${tag}" --repo "${PUBLIC_RELEASES_REPO}" >/dev/null 2>&1; then
             release_api="$(gh api "repos/${PUBLIC_RELEASES_REPO}/releases/tags/${tag}")"
-            if [[ "$(jq -r '.immutable // "missing"' <<<"${release_api}")" != "false" ]]; then
+            if ! jq -e 'has("immutable") and (.immutable | type == "boolean") and (.immutable == false)' \
+              <<<"${release_api}" >/dev/null; then
               echo "Existing release ${tag} is immutable or missing the immutable API field." >&2
               exit 1
             fi

@@ -20,10 +20,13 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.stream.execution_attempt_start_tolerance_secs, 1);
     assert_eq!(cfg.stream.notification_retention_read_days, 30);
     assert_eq!(cfg.stream.notification_retention_max_rows, 1000);
+    assert_eq!(cfg.stream.db_lock_wait_warn_ms, 100);
+    assert_eq!(cfg.stream.db_lock_hold_warn_ms, 250);
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 1200);
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.reconciliation.branch_freshness_timeout_secs, 60);
     assert_eq!(cfg.git.cmd_timeout_secs, 60);
+    assert_eq!(cfg.git.startup_auth_preflight_timeout_secs, 10);
     assert_eq!(cfg.git.retry_backoff_secs, vec![1, 2, 4]);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 2_000);
@@ -135,8 +138,11 @@ fn test_env_overrides_apply() {
         "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS" => Some("60".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS" => Some("14".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS" => Some("250".to_string()),
+        "RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS" => Some("25".to_string()),
+        "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS" => Some("75".to_string()),
         "RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS" => Some("2400".to_string()),
         "RALPHX_GIT_CMD_TIMEOUT_SECS" => Some("120".to_string()),
+        "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS" => Some("9".to_string()),
         "RALPHX_GIT_RETRY_BACKOFF_SECS" => Some("2,4,8,16".to_string()),
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS" => Some("750".to_string()),
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS" => Some("900".to_string()),
@@ -159,10 +165,13 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.stream.launch_reservation_lease_secs, 60);
     assert_eq!(cfg.stream.notification_retention_read_days, 14);
     assert_eq!(cfg.stream.notification_retention_max_rows, 250);
+    assert_eq!(cfg.stream.db_lock_wait_warn_ms, 25);
+    assert_eq!(cfg.stream.db_lock_hold_warn_ms, 75);
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 2400);
     // validation_deadline_secs not overridden — should keep default
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.git.cmd_timeout_secs, 120);
+    assert_eq!(cfg.git.startup_auth_preflight_timeout_secs, 9);
     assert_eq!(cfg.git.retry_backoff_secs, vec![2, 4, 8, 16]);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 750);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 900);

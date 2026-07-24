@@ -84,7 +84,10 @@ fn assert_initialization_leaves_global_execution_running(
     app_state.agent_provider_settings_repo = provider_repo;
     let execution_state = Arc::new(Default::default());
 
-    initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+    tauri::async_runtime::block_on(initialize_settings_defaults(
+        &app_state,
+        Arc::clone(&execution_state),
+    ));
 
     assert!(
         !execution_state.is_paused(),
@@ -141,7 +144,10 @@ fn initialize_settings_defaults_keeps_execution_running_with_default_provider() 
     );
     let execution_state = Arc::new(Default::default());
 
-    initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+    tauri::async_runtime::block_on(initialize_settings_defaults(
+        &app_state,
+        Arc::clone(&execution_state),
+    ));
 
     assert!(!execution_state.is_paused());
 }
@@ -153,10 +159,16 @@ fn initialize_settings_defaults_does_not_resume_an_existing_global_pause() {
         MemoryAgentProviderSettingsRepository::with_all_providers_enabled(DEFAULT_AGENT_HARNESS),
     );
     let execution_state = Arc::new(Default::default());
-    initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+    tauri::async_runtime::block_on(initialize_settings_defaults(
+        &app_state,
+        Arc::clone(&execution_state),
+    ));
     execution_state.pause();
 
-    initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+    tauri::async_runtime::block_on(initialize_settings_defaults(
+        &app_state,
+        Arc::clone(&execution_state),
+    ));
 
     assert!(
         execution_state.is_paused(),
@@ -169,7 +181,10 @@ fn missing_provider_blocks_first_project_send_without_queueing_or_pausing() {
     let mut app_state = AppState::new_test();
     app_state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
     let execution_state = Arc::new(Default::default());
-    initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+    tauri::async_runtime::block_on(initialize_settings_defaults(
+        &app_state,
+        Arc::clone(&execution_state),
+    ));
 
     tauri::async_runtime::block_on(async {
         let project = app_state
@@ -239,7 +254,10 @@ fn onboarding_then_first_project_send_starts_without_manual_resume() {
     let mut app_state = AppState::new_test();
     app_state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
     let execution_state = Arc::new(Default::default());
-    initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+    tauri::async_runtime::block_on(initialize_settings_defaults(
+        &app_state,
+        Arc::clone(&execution_state),
+    ));
 
     let project_dir = tempfile::tempdir().expect("project directory");
     let cli_path = project_dir.path().join("fake-claude");

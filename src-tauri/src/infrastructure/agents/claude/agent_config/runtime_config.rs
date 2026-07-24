@@ -239,6 +239,10 @@ pub struct StreamTimeoutsConfig {
     pub notification_retention_read_days: u64,
     #[serde(default = "default_notification_retention_max_rows")]
     pub notification_retention_max_rows: u64,
+    #[serde(default = "default_db_lock_wait_warn_ms")]
+    pub db_lock_wait_warn_ms: u64,
+    #[serde(default = "default_db_lock_hold_warn_ms")]
+    pub db_lock_hold_warn_ms: u64,
 }
 
 fn default_max_wall_clock_secs() -> u64 {
@@ -269,6 +273,14 @@ fn default_notification_retention_max_rows() -> u64 {
     DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS
 }
 
+fn default_db_lock_wait_warn_ms() -> u64 {
+    100
+}
+
+fn default_db_lock_hold_warn_ms() -> u64 {
+    250
+}
+
 impl Default for StreamTimeoutsConfig {
     fn default() -> Self {
         Self {
@@ -286,6 +298,8 @@ impl Default for StreamTimeoutsConfig {
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
             notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
             notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
+            db_lock_wait_warn_ms: default_db_lock_wait_warn_ms(),
+            db_lock_hold_warn_ms: default_db_lock_hold_warn_ms(),
         }
     }
 }
@@ -475,6 +489,7 @@ impl Default for ReconciliationConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GitRuntimeConfig {
     pub cmd_timeout_secs: u64,
+    pub startup_auth_preflight_timeout_secs: u64,
     pub max_retries: u64,
     pub retry_backoff_secs: Vec<u64>,
     pub index_lock_stale_secs: u64,
@@ -523,6 +538,7 @@ impl Default for GitRuntimeConfig {
     fn default() -> Self {
         Self {
             cmd_timeout_secs: 60,
+            startup_auth_preflight_timeout_secs: 10,
             max_retries: 3,
             retry_backoff_secs: vec![1, 2, 4],
             index_lock_stale_secs: 5,
@@ -797,6 +813,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.stream.notification_retention_max_rows,
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS"
     );
+    env_u64!(
+        cfg.stream.db_lock_wait_warn_ms,
+        "RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS"
+    );
+    env_u64!(
+        cfg.stream.db_lock_hold_warn_ms,
+        "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS"
+    );
 
     // Reconciliation
     // Backward compat: old env key
@@ -968,6 +992,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
 
     // Git
     env_u64!(cfg.git.cmd_timeout_secs, "RALPHX_GIT_CMD_TIMEOUT_SECS");
+    env_u64!(
+        cfg.git.startup_auth_preflight_timeout_secs,
+        "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS"
+    );
     env_u64!(cfg.git.max_retries, "RALPHX_GIT_MAX_RETRIES");
     env_u64!(
         cfg.git.index_lock_stale_secs,
