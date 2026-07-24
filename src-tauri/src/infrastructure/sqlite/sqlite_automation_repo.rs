@@ -1201,7 +1201,10 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                 let affected = conn.execute(
                     "UPDATE automation_runs
                      SET plan_judge_state = ?1,
-                         plan_judge_verdict_json = COALESCE(?2, plan_judge_verdict_json),
+                         plan_judge_verdict_json = CASE
+                             WHEN ?1 = 'none' THEN NULL
+                             ELSE COALESCE(?2, plan_judge_verdict_json)
+                         END,
                          plan_judge_lease_expires_at = CASE
                              WHEN ?3 = 'in_progress' THEN ?4
                              ELSE NULL

@@ -1481,6 +1481,29 @@ function approvedPlanArtifact() {
   };
 }
 
+function approvedPlanBundleArtifact() {
+  return {
+    ...approvedPlanArtifact(),
+    planContractVersion: 2,
+    blueprint: {
+      id: "blueprint-1",
+      type: "specification",
+      name: "Implementation Blueprint",
+      content: {
+        type: "inline",
+        text: "# Implementation Blueprint\n\nFollow these detailed steps.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:01:00Z",
+        createdBy: "orchestrator",
+        version: 2,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    },
+  };
+}
+
 function draftPlanArtifact() {
   return {
     ...approvedPlanArtifact(),
@@ -7636,7 +7659,7 @@ describe("AgentsArtifactPane", () => {
         acceptanceStatus: null,
       }),
     );
-    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    getSessionPlanMock.mockResolvedValue(approvedPlanBundleArtifact());
 
     renderPane(
       "plan",
@@ -7654,6 +7677,15 @@ describe("AgentsArtifactPane", () => {
     );
     await user.click(await screen.findByRole("menuitem", { name: /Export/i }));
     expect(await screen.findByText("Export Plan")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download overview" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Download blueprint" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Download complete bundle" }),
+    ).toBeEnabled();
   });
 
   it("opens the Plan editor from the artifact overflow menu", async () => {

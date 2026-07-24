@@ -4019,7 +4019,8 @@ function AgentPlanPanel({
             sessionId={session.id}
             sessionTitle={sessionTitle}
             verificationStatus={session.verificationStatus ?? "unverified"}
-            planArtifact={selectedPlanArtifact}
+            overviewArtifact={planArtifact}
+            blueprintArtifact={planArtifact?.blueprint ?? null}
             projectId={session.projectId}
           />
         </Suspense>

@@ -7250,7 +7250,7 @@ async fn automation_scheduler_stale_plan_judge_failure_after_repark_reset_is_dis
 }
 
 #[tokio::test]
-async fn automation_scheduler_plan_judge_discarded_when_plan_artifact_changes_before_application() {
+async fn automation_scheduler_plan_judge_requeues_when_plan_artifact_changes_before_application() {
     let scenario =
         ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
     scenario.use_automatic_plan_approval("claude").await;
@@ -7270,19 +7270,38 @@ async fn automation_scheduler_plan_judge_discarded_when_plan_artifact_changes_be
 
     scheduler.tick_once().await.unwrap();
 
-    let latest = wait_for_latest_plan_judge_state(
+    let reset = wait_for_latest_plan_judge_state(
         &scenario.run_repo,
         &scenario.automation_id,
-        AutomationPlanJudgeState::Done,
+        AutomationPlanJudgeState::None,
     )
     .await;
-    assert!(latest.plan_judge_verdict_json.is_none());
+    assert!(reset.plan_judge_verdict_json.is_none());
+    assert!(reset.plan_judge_lease_expires_at.is_none());
     assert!(scenario
         .approval_repo
         .get_by_session(&scenario.session_id)
         .await
         .unwrap()
         .is_none());
+
+    let replacement_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-2"),
+    ]));
+    let replacement_scheduler = scenario.scheduler_with_plan_judge(replacement_judge.clone());
+
+    let replacement_tick = replacement_scheduler.tick_once().await.unwrap();
+
+    assert_eq!(replacement_tick.judges_started, 1);
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+    let calls = replacement_judge.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].overview_artifact_id, "plan-artifact-2");
 }
 
 #[tokio::test]

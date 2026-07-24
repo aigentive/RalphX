@@ -872,7 +872,9 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             return Ok(false);
         }
         run.plan_judge_state = to;
-        if let Some(verdict) = plan_judge_verdict_json {
+        if to == AutomationPlanJudgeState::None {
+            run.plan_judge_verdict_json = None;
+        } else if let Some(verdict) = plan_judge_verdict_json {
             run.plan_judge_verdict_json = Some(verdict);
         }
         if to == AutomationPlanJudgeState::InProgress {

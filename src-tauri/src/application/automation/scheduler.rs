@@ -795,7 +795,7 @@ impl AutomationPlanJudgeTask {
                 .transition_plan_judge_state(
                     &run.id,
                     AutomationPlanJudgeState::InProgress,
-                    AutomationPlanJudgeState::Done,
+                    AutomationPlanJudgeState::None,
                     None,
                     None,
                 )
