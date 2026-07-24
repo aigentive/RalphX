@@ -504,17 +504,17 @@ where
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
     let publish_target =
         resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
-    if workspace.publication_pr_number.is_none() && publish_target.plan_branch.is_none() {
-        if !project.github_pr_enabled
+    if workspace.publication_pr_number.is_none()
+        && publish_target.plan_branch.is_none()
+        && (!project.github_pr_enabled
             || !matches!(
                 inspect_repository_capability(&publish_target.worktree_path).await,
                 RepositoryCapability::Github { .. }
-            )
-        {
-            return Ok(AutoPublishDecision::Skip(
-                AutoPublishSkipReason::NewPrUnavailable,
-            ));
-        }
+            ))
+    {
+        return Ok(AutoPublishDecision::Skip(
+            AutoPublishSkipReason::NewPrUnavailable,
+        ));
     }
     if publish_target.plan_branch.as_ref().is_some()
         && publish_target
