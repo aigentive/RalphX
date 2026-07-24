@@ -35,4 +35,30 @@ test.describe("Agents terminal publish history", () => {
       maxDiffPixelRatio: 0.01,
     });
   });
+
+  test("repair-pending action strip renders a calm status chip, not the accent CTA", async ({
+    page,
+  }) => {
+    await dismissProviderCliUpdateToasts(page);
+    const publish = new AgentsPublishPage(page);
+    await publish.openRepairPendingScenario();
+
+    const actionbar = page.getByTestId("agents-publish-actionbar");
+    await expect(
+      actionbar.getByRole("heading", { name: "Repair in progress" }),
+    ).toBeVisible();
+    const repairButton = actionbar.getByTestId("agents-publish-repair-pending");
+    await expect(repairButton).toBeVisible();
+    await expect(repairButton).toBeDisabled();
+    await expect(
+      actionbar.getByTestId("agents-pr-supervision-status"),
+    ).toBeVisible();
+
+    await expect(actionbar).toHaveScreenshot(
+      "agents-publish-repair-pending-strip.png",
+      {
+        maxDiffPixelRatio: 0.01,
+      },
+    );
+  });
 });

@@ -154,6 +154,7 @@ import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { AgentWorkspaceToolbar } from "./AgentWorkspaceToolbar";
 import {
   getAgentWorkspaceReviewActionBlocker,
+  hasPublishedWorkspacePr,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
@@ -889,6 +890,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode) &&
     !isReviewPrWorkspace,
   );
+  const hasPublishedPr = hasPublishedWorkspacePr(scopedWorkspace);
   const [publishSubTabByConversation, setPublishSubTabByConversation] =
     useState<Record<string, AgentPublishSubTab>>(() =>
       conversationId
@@ -906,9 +908,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const rememberedPublishSubTab = conversationId
     ? publishSubTabByConversation[conversationId]
     : null;
-  const publishSubTab = nestsWorkspaceReview
-    ? (rememberedPublishSubTab ?? (activeTab === "review" ? "review" : "changes"))
-    : "changes";
+  const publishSubTab = rememberedPublishSubTab
+    ? (rememberedPublishSubTab === "review" && !nestsWorkspaceReview) ||
+      (rememberedPublishSubTab === "checks" && !hasPublishedPr)
+      ? "changes"
+      : rememberedPublishSubTab
+    : nestsWorkspaceReview && activeTab === "review"
+      ? "review"
+      : "changes";
   const selectPublishSubTab = useCallback(
     (tab: AgentPublishSubTab) => {
       if (!conversationId) return;
@@ -921,8 +928,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   useEffect(() => {
     if (
-      !nestsWorkspaceReview ||
+      !showPublishTab ||
       publishSubTabRequest?.conversationId !== conversationId ||
+      (publishSubTabRequest.tab === "review" && !nestsWorkspaceReview) ||
+      (publishSubTabRequest.tab === "checks" && !hasPublishedPr) ||
       publishSubTabRequest.requestId <=
         lastHandledPublishSubTabRequestIdRef.current
     ) {
@@ -938,9 +947,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     }
   }, [
     conversationId,
+    hasPublishedPr,
     nestsWorkspaceReview,
     publishSubTabRequest,
     selectPublishSubTab,
+    showPublishTab,
   ]);
   useEffect(() => {
     if (!nestsWorkspaceReview || activeTab !== "review") {
@@ -1937,9 +1948,28 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         handleOpenReview();
         return;
       }
-      handleOpenPublish();
+      if (tab === "changes") {
+        handleOpenPublish();
+        return;
+      }
+      selectPublishSubTab(tab);
+      setPendingReviewFocusConversationId(null);
+      if (activeTab !== "publish") {
+        if (onOpenPublish) {
+          onOpenPublish();
+          return;
+        }
+        onTabChange("publish");
+      }
     },
-    [handleOpenPublish, handleOpenReview],
+    [
+      activeTab,
+      handleOpenPublish,
+      handleOpenReview,
+      onOpenPublish,
+      onTabChange,
+      selectPublishSubTab,
+    ],
   );
   const handleAddArtifactExcerpt = useCallback(
     (reference: Parameters<typeof stageComposerExcerptReference>[1]) => {

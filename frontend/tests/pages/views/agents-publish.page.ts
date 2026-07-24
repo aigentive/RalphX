@@ -5,6 +5,7 @@ import {
   seedWorkspaceReviewState,
   type WorkspaceReviewVisualState,
 } from "../../fixtures/agents-workspace-review.fixtures";
+import { seedRepairPendingWorkspace } from "../../fixtures/repair-pending-publish.fixtures";
 import { setupApp } from "../../fixtures/setup.fixtures";
 import { seedMergedWorkspace } from "../../fixtures/terminal-publish.fixtures";
 import {
@@ -14,6 +15,7 @@ import {
 import { BasePage } from "../base.page";
 
 const TERMINAL_CONVERSATION_ID = "conv-agent-terminal-publish-visual";
+const REPAIR_CONVERSATION_ID = "conv-agent-repair-pending-visual";
 const PROJECT_ID = "project-mock-1";
 
 export class AgentsPublishPage extends BasePage {
@@ -26,6 +28,10 @@ export class AgentsPublishPage extends BasePage {
   readonly changesTab: Locator;
   readonly reviewTab: Locator;
   readonly reviewContent: Locator;
+  readonly historyTab: Locator;
+  readonly historyContent: Locator;
+  readonly automationTab: Locator;
+  readonly automationContent: Locator;
 
   constructor(page: Page) {
     super(page);
@@ -40,6 +46,12 @@ export class AgentsPublishPage extends BasePage {
     this.changesTab = page.getByTestId("agents-publish-tab-changes");
     this.reviewTab = page.getByTestId("agents-publish-tab-review");
     this.reviewContent = page.getByTestId("agents-publish-content-review");
+    this.historyTab = page.getByTestId("agents-publish-tab-history");
+    this.historyContent = page.getByTestId("agents-publish-content-history");
+    this.automationTab = page.getByTestId("agents-publish-tab-automation");
+    this.automationContent = page.getByTestId(
+      "agents-publish-content-automation",
+    );
   }
 
   async openFromHeader() {
@@ -58,6 +70,23 @@ export class AgentsPublishPage extends BasePage {
     await this.reviewTab.click();
     await expect(this.reviewTab).toHaveAttribute("data-state", "active");
     await expect(this.reviewContent).toBeVisible();
+  }
+
+  /**
+   * Publish sub-tabs are lazy-mounted: the panel only renders a tab's content
+   * after that tab has been activated once. Always route through these helpers
+   * before asserting on anything that lives inside a non-default tab.
+   */
+  async selectHistory() {
+    await this.historyTab.click();
+    await expect(this.historyTab).toHaveAttribute("data-state", "active");
+    await expect(this.historyContent).toBeVisible();
+  }
+
+  async selectAutomation() {
+    await this.automationTab.click();
+    await expect(this.automationTab).toHaveAttribute("data-state", "active");
+    await expect(this.automationContent).toBeVisible();
   }
 
   async seedWorkspaceReviewState(
@@ -80,6 +109,10 @@ export class AgentsPublishPage extends BasePage {
     await expectPrimaryActionContained(this.page, this.publishPane, testId);
   }
 
+  async expectCompactPrStatus(label: string) {
+    await expect(this.page.getByLabel(label, { exact: true })).toBeVisible();
+  }
+
   async expectDiffRowsLoaded() {
     await expect(this.pagedDiffContent).toBeVisible();
     await expect(
@@ -89,6 +122,48 @@ export class AgentsPublishPage extends BasePage {
 
   async installPagedDiffRoute() {
     await installPagedPublishDiffRoute(this.page);
+  }
+
+  async openRepairPendingScenario() {
+    await setupApp(this.page);
+    await seedRepairPendingWorkspace(
+      this.page,
+      REPAIR_CONVERSATION_ID,
+      PROJECT_ID,
+    );
+    await this.page.getByTestId("nav-agents").click();
+    await expect(this.page.getByTestId("agents-view")).toBeVisible();
+    await this.page.evaluate(() =>
+      window.__queryClient?.invalidateQueries({
+        queryKey: ["agents", "sidebar-conversations"],
+      }),
+    );
+    const conversation = this.page.getByTestId(
+      `agents-session-${REPAIR_CONVERSATION_ID}`,
+    );
+    // The sidebar list is repopulated by an async refetch after
+    // invalidateQueries, which can exceed the default assertion timeout when
+    // the suite runs under load.
+    await expect(conversation).toBeVisible({ timeout: 15000 });
+    await conversation.getByRole("button").first().click();
+    await this.page.evaluate(async (conversationId) => {
+      const { mockGetAgentConversationWorkspace } = await import(
+        "/src/api-mock/chat"
+      );
+      const workspace = await mockGetAgentConversationWorkspace(conversationId);
+      if (!workspace || !window.__queryClient) {
+        throw new Error("Expected repair-pending workspace query fixture");
+      }
+      window.__queryClient.setQueryData(
+        ["agents", "conversation-workspace", conversationId],
+        workspace,
+      );
+    }, REPAIR_CONVERSATION_ID);
+    await this.page.getByRole("button", { name: "Open artifacts" }).click();
+    const publishTab = this.page.getByTestId("agents-artifact-tab-publish");
+    await expect(publishTab).toBeVisible();
+    await publishTab.click();
+    await expect(this.page.getByTestId("agents-publish-pane")).toBeVisible();
   }
 
   async openMergedPublishScenario() {
@@ -105,7 +180,10 @@ export class AgentsPublishPage extends BasePage {
     const conversation = this.page.getByTestId(
       `agents-session-${TERMINAL_CONVERSATION_ID}`,
     );
-    await expect(conversation).toBeVisible();
+    // The sidebar list is repopulated by an async refetch after
+    // invalidateQueries, which can exceed the default assertion timeout when
+    // the suite runs under load.
+    await expect(conversation).toBeVisible({ timeout: 15000 });
     await conversation.getByRole("button").first().click();
     await this.page.evaluate(async (conversationId) => {
       const { mockGetAgentConversationWorkspace } = await import("/src/api-mock/chat");

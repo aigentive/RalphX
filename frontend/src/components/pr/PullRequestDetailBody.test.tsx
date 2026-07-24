@@ -8,6 +8,7 @@ import type { PullRequestDetail } from "@/api/github";
 import { diffApi } from "@/api/diff";
 import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
 
 import { PullRequestDetailBody } from "./PullRequestDetailBody";
 
@@ -19,6 +20,10 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspacePrAnnotations: vi.fn(),
   },
+}));
+
+vi.mock("@/components/ticketing/ticketing-open-external", () => ({
+  openExternalTicketUrl: vi.fn(),
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
@@ -207,6 +212,43 @@ describe("PullRequestDetailBody", () => {
     expect(screen.getByText("1 automated comment hidden.")).toBeInTheDocument();
 
     expect(await screen.findByTestId("rx-chat-panel")).toHaveTextContent("conversation-1");
+  });
+
+  it("adds an accessible check-details disclosure only when a URL exists", async () => {
+    const user = userEvent.setup();
+    renderBody(
+      loadedDetail({
+        checks: [
+          {
+            name: "lint",
+            status: "completed",
+            conclusion: "failure",
+            detailsUrl: "https://github.com/acme/app/actions/runs/1",
+          },
+          {
+            name: "types",
+            status: "completed",
+            conclusion: "failure",
+            detailsUrl: null,
+          },
+        ],
+      }),
+      {},
+      { showRxConversation: false },
+    );
+
+    const detailsButton = screen.getByRole("button", {
+      name: "Open lint check details",
+    });
+    expect(
+      screen.queryByRole("button", { name: "Open types check details" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(detailsButton);
+
+    expect(openExternalTicketUrl).toHaveBeenCalledWith(
+      "https://github.com/acme/app/actions/runs/1",
+    );
   });
 
   it("renders GitHub details blocks in the pull request description", () => {
