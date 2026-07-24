@@ -88,6 +88,19 @@ run_reconcile v0.77.0 "${FIRST_CASK}" "${TEST_TMP}/rerun"
 cmp -s "${FIRST_CASK}" <(remote_cask) || fail "idempotent rerun changed the cask"
 assert_equals 2 "$(remote_commit_count)"
 
+# The workflow passes its staged cask and work directory as paths relative to its workspace.
+WORKFLOW_DIR="${TEST_TMP}/workflow"
+mkdir -p "${WORKFLOW_DIR}/stable-control"
+cp "${FIRST_CASK}" "${WORKFLOW_DIR}/stable-control/staged-homebrew-cask.rb"
+(
+  cd "${WORKFLOW_DIR}"
+  run_reconcile \
+    v0.77.0 \
+    stable-control/staged-homebrew-cask.rb \
+    stable-homebrew
+)
+assert_equals 2 "$(remote_commit_count)"
+
 # A rejected push fails without reporting success or changing the remote authority.
 touch "${TAP_BARE}/reject-push"
 assert_fails rejects_push run_reconcile v0.78.0 "${SECOND_CASK}" "${TEST_TMP}/rejected"
