@@ -121,6 +121,28 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
         .await
         .unwrap()
         .is_none());
+    let planned = task_repo
+        .plan_assignment_run(
+            &reserved.assignment.assignment.id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(planned.assignment.state, AgentTaskAssignmentState::Reserved);
+    assert_eq!(
+        planned.assignment.delegated_agent_run_id,
+        Some(delegated_run.id)
+    );
+    assert!(task_repo
+        .bind_assignment_run(
+            &reserved.assignment.assignment.id,
+            &delegated_session.id,
+            &crate::domain::entities::AgentRunId::new(),
+        )
+        .await
+        .is_err());
     task_repo
         .bind_assignment_run(
             &reserved.assignment.assignment.id,
@@ -264,6 +286,14 @@ async fn sqlite_assignment_intent_retries_preserve_first_payload_and_event_count
         .unwrap()
         .unwrap();
     task_repo
+        .plan_assignment_run(
+            &first.assignment.assignment.id,
+            &delegated_session.id,
+            &first_run.id,
+        )
+        .await
+        .unwrap();
+    task_repo
         .bind_assignment_run(
             &first.assignment.assignment.id,
             &delegated_session.id,
@@ -324,6 +354,14 @@ async fn sqlite_assignment_intent_retries_preserve_first_payload_and_event_count
         )
         .await
         .unwrap()
+        .unwrap();
+    task_repo
+        .plan_assignment_run(
+            &second.assignment.assignment.id,
+            &delegated_session.id,
+            &second_run.id,
+        )
+        .await
         .unwrap();
     task_repo
         .bind_assignment_run(

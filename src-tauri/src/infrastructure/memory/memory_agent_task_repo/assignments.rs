@@ -146,29 +146,75 @@ pub(super) fn bind_run(
             "delegate assignment does not belong to the requested session".to_string(),
         ));
     }
-    if let Some(bound) = &assignment.delegated_agent_run_id {
-        if bound != delegated_agent_run_id {
-            return Err(AppError::Conflict(
-                "delegate assignment is already bound to a different run".to_string(),
-            ));
-        }
-    } else {
-        if assignment.state != crate::domain::entities::AgentTaskAssignmentState::Reserved {
-            return Err(AppError::Conflict(
-                "only the exact reserved delegate assignment can bind a run".to_string(),
-            ));
-        }
-        let now = Utc::now();
-        assignment.delegated_agent_run_id = Some(delegated_agent_run_id.clone());
-        assignment.state = crate::domain::entities::AgentTaskAssignmentState::Active;
-        assignment.run_bound_at = Some(now);
-        assignment.updated_at = now;
+    if assignment.delegated_agent_run_id.as_ref() != Some(delegated_agent_run_id) {
+        return Err(AppError::Conflict(
+            "delegate assignment was not planned for the requested run".to_string(),
+        ));
     }
+    if assignment.state == crate::domain::entities::AgentTaskAssignmentState::Active {
+        let assignment = assignment.clone();
+        return Ok(Some(view(&state, &assignment)?));
+    }
+    if assignment.state != crate::domain::entities::AgentTaskAssignmentState::Reserved {
+        return Err(AppError::Conflict(
+            "only the exact reserved delegate assignment can bind a run".to_string(),
+        ));
+    }
+    let now = Utc::now();
+    assignment.state = crate::domain::entities::AgentTaskAssignmentState::Active;
+    assignment.run_bound_at = Some(now);
+    assignment.updated_at = now;
     let assignment = state.assignments[index].clone();
     append_event(
         &mut state,
         &assignment.task_list_id,
         "agent_task.assignment_run_bound",
+        &assignment.task_id,
+    );
+    Ok(Some(view(&state, &assignment)?))
+}
+
+pub(super) fn plan_run(
+    repo: &MemoryAgentTaskRepository,
+    assignment_id: &AgentTaskAssignmentId,
+    delegated_session_id: &DelegatedSessionId,
+    delegated_agent_run_id: &AgentRunId,
+) -> AppResult<Option<AgentTaskAssignmentView>> {
+    let mut state = repo.state.write().unwrap();
+    let Some(index) = state
+        .assignments
+        .iter()
+        .position(|assignment| assignment.id == *assignment_id)
+    else {
+        return Ok(None);
+    };
+    let assignment = &mut state.assignments[index];
+    if assignment.delegated_session_id != *delegated_session_id {
+        return Err(AppError::Conflict(
+            "delegate assignment does not belong to the requested session".to_string(),
+        ));
+    }
+    if assignment.state != crate::domain::entities::AgentTaskAssignmentState::Reserved {
+        return Err(AppError::Conflict(
+            "only a reserved delegate assignment can plan a run".to_string(),
+        ));
+    }
+    if let Some(planned) = assignment.delegated_agent_run_id.as_ref() {
+        if planned != delegated_agent_run_id {
+            return Err(AppError::Conflict(
+                "delegate assignment is already planned for a different run".to_string(),
+            ));
+        }
+        let assignment = assignment.clone();
+        return Ok(Some(view(&state, &assignment)?));
+    }
+    assignment.delegated_agent_run_id = Some(*delegated_agent_run_id);
+    assignment.updated_at = Utc::now();
+    let assignment = state.assignments[index].clone();
+    append_event(
+        &mut state,
+        &assignment.task_list_id,
+        "agent_task.assignment_run_planned",
         &assignment.task_id,
     );
     Ok(Some(view(&state, &assignment)?))

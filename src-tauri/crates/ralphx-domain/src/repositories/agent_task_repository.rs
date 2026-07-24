@@ -59,6 +59,13 @@ pub trait AgentTaskRepository: Send + Sync {
         delegate_agent_name: &str,
     ) -> AppResult<Option<AgentTaskAssignmentReservation>>;
 
+    async fn plan_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>>;
+
     async fn bind_assignment_run(
         &self,
         assignment_id: &AgentTaskAssignmentId,

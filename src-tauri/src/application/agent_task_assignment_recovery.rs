@@ -51,10 +51,12 @@ impl AgentTaskAssignmentRecoveryService {
         };
         for assignment in assignments {
             let session_id = &assignment.assignment.delegated_session_id;
-            let run_id = match assignment.assignment.delegated_agent_run_id.clone() {
-                Some(run_id) => run_id,
-                None if assignment.assignment.state == AgentTaskAssignmentState::Reserved => {
-                    if let Some(run_id) = self.recoverable_reserved_run(session_id).await? {
+            let run_id = match (
+                assignment.assignment.delegated_agent_run_id,
+                assignment.assignment.state,
+            ) {
+                (Some(run_id), AgentTaskAssignmentState::Reserved) => {
+                    if self.recoverable_planned_run(session_id, &run_id).await? {
                         let bound = self
                             .task_service
                             .bind_assignment_run(&assignment.assignment.id, session_id, &run_id)
@@ -81,7 +83,22 @@ impl AgentTaskAssignmentRecoveryService {
                         continue;
                     }
                 }
-                None => {
+                (Some(run_id), _) => run_id,
+                (None, AgentTaskAssignmentState::Reserved) => {
+                    if self
+                        .task_service
+                        .fail_reserved_assignment(
+                            session_id,
+                            "uncorrelated_reservation_after_restart",
+                        )
+                        .await?
+                        .is_some()
+                    {
+                        report.settled += 1;
+                    }
+                    continue;
+                }
+                (None, _) => {
                     return Err(AppError::Conflict(format!(
                         "unresolved delegate assignment {} has no bound run",
                         assignment.assignment.id
@@ -159,32 +176,29 @@ impl AgentTaskAssignmentRecoveryService {
         Ok(report)
     }
 
-    async fn recoverable_reserved_run(
+    async fn recoverable_planned_run(
         &self,
         session_id: &DelegatedSessionId,
-    ) -> AppResult<Option<AgentRunId>> {
+        planned_run_id: &AgentRunId,
+    ) -> AppResult<bool> {
         let Some(session) = self.delegated_session_repo.get_by_id(session_id).await? else {
-            return Ok(None);
+            return Ok(false);
         };
         if session.status != "running" {
-            return Ok(None);
+            return Ok(false);
         }
         let Some(conversation) = self
             .conversation_repo
             .get_active_for_context(ChatContextType::Delegation, session_id.as_str())
             .await?
         else {
-            return Ok(None);
+            return Ok(false);
         };
-        let Some(run) = self
-            .agent_run_repo
-            .get_latest_for_conversation(&conversation.id)
-            .await?
-        else {
-            return Ok(None);
+        let Some(run) = self.agent_run_repo.get_by_id(planned_run_id).await? else {
+            return Ok(false);
         };
-        if run.status != AgentRunStatus::Running {
-            return Ok(None);
+        if run.status != AgentRunStatus::Running || run.conversation_id != conversation.id {
+            return Ok(false);
         }
         let key = RunningAgentKey::new("delegation", session_id.as_str());
         let exact_process = self
@@ -192,10 +206,10 @@ impl AgentTaskAssignmentRecoveryService {
             .get(&key)
             .await
             .is_some_and(|info| {
-                info.agent_run_id == run.id.as_str()
+                info.agent_run_id == planned_run_id.as_str()
                     && info.conversation_id == conversation.id.as_str()
             });
-        Ok(exact_process.then_some(run.id))
+        Ok(exact_process)
     }
 }
 

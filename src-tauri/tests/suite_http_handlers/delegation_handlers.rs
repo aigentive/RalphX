@@ -299,6 +299,17 @@ impl AgentTaskRepository for FailBindingAgentTaskRepository {
         ))
     }
 
+    async fn plan_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .plan_assignment_run(assignment_id, delegated_session_id, delegated_agent_run_id)
+            .await
+    }
+
     async fn get_unresolved_assignment(
         &self,
         delegated_session_id: &DelegatedSessionId,
@@ -1668,6 +1679,17 @@ async fn assignment_endpoints_require_exact_prebound_run_and_guard_unfinished_lo
     assert_eq!(unresolved.assignment.state.as_str(), "reserved");
     assert!(unresolved.assignment.delegated_agent_run_id.is_none());
 
+    state
+        .app_state
+        .agent_task_repo
+        .plan_assignment_run(
+            &reservation.assignment.assignment.id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
     state
         .app_state
         .agent_task_repo

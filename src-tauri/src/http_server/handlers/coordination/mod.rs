@@ -15,7 +15,7 @@ use crate::application::agent_lane_resolution::{
 };
 use crate::application::chat_service::{
     chat_service_context, events, resolve_working_directory, AgentTaskCompletedPayload,
-    AgentTaskStartedPayload, CachedStreamingTask, ChatService, SendMessageOptions,
+    AgentTaskStartedPayload, CachedStreamingTask, ChatService, SendMessageOptions, SendQueuePolicy,
     StreamingStateCache,
 };
 use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;

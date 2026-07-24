@@ -96,6 +96,24 @@ async fn assignment_reservation_locks_owned_fields_and_completion_is_two_phase()
         .await
         .unwrap()
         .is_none());
+    let planned = repo
+        .plan_assignment_run(&reserved.assignment.assignment.id, &session, &delegated_run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(planned.assignment.state, AgentTaskAssignmentState::Reserved);
+    assert_eq!(
+        planned.assignment.delegated_agent_run_id,
+        Some(delegated_run)
+    );
+    assert!(repo
+        .bind_assignment_run(
+            &reserved.assignment.assignment.id,
+            &session,
+            &AgentRunId::new(),
+        )
+        .await
+        .is_err());
     let bound = repo
         .bind_assignment_run(&reserved.assignment.assignment.id, &session, &delegated_run)
         .await
@@ -202,6 +220,13 @@ async fn terminal_without_completion_reopens_and_reused_session_gets_fresh_attem
         .await
         .unwrap()
         .unwrap();
+    repo.plan_assignment_run(
+        &first_reservation.assignment.assignment.id,
+        &session,
+        &first_run,
+    )
+    .await
+    .unwrap();
     repo.bind_assignment_run(
         &first_reservation.assignment.assignment.id,
         &session,
@@ -279,6 +304,9 @@ async fn assignment_intent_retries_preserve_first_payload_and_event_count() {
         .await
         .unwrap()
         .unwrap();
+    repo.plan_assignment_run(&first.assignment.assignment.id, &session, &first_run)
+        .await
+        .unwrap();
     repo.bind_assignment_run(&first.assignment.assignment.id, &session, &first_run)
         .await
         .unwrap();
@@ -323,6 +351,9 @@ async fn assignment_intent_retries_preserve_first_payload_and_event_count() {
         )
         .await
         .unwrap()
+        .unwrap();
+    repo.plan_assignment_run(&second.assignment.assignment.id, &session, &second_run)
+        .await
         .unwrap();
     repo.bind_assignment_run(&second.assignment.assignment.id, &session, &second_run)
         .await

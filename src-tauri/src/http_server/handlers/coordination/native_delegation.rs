@@ -912,6 +912,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             .await?;
     let delegated_session_entity = DelegatedSessionId::from_string(delegated_session_id.clone());
     let assignment_service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
+    let planned_agent_run_id = req.task_ref.as_ref().map(|_| AgentRunId::new());
     let reserved_assignment = if let Some(task_ref) = req.task_ref.as_deref() {
         let Some(caller_run_id) = parent_agent_run_id.as_deref() else {
             return Err(json_error(
@@ -946,6 +947,34 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     } else {
         None
     };
+    if let Some(reserved) = reserved_assignment.as_ref() {
+        let Some(planned_run_id) = planned_agent_run_id.as_ref() else {
+            let message = "Assigned delegated launch has no preallocated run identity".to_string();
+            mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
+            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
+        };
+        match assignment_service
+            .plan_assignment_run(
+                &reserved.assignment.id,
+                &delegated_session_entity,
+                planned_run_id,
+            )
+            .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let message =
+                    "Reserved delegate assignment disappeared before run planning".to_string();
+                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
+                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
+            }
+            Err(error) => {
+                let message = format!("Failed to plan delegated assignment run: {error}");
+                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
+                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
+            }
+        }
+    }
     let logical_effort = req.logical_effort.or(resolved_spawn.logical_effort);
     let approval_policy = req
         .approval_policy
@@ -1007,6 +1036,12 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
                 &req.prompt,
             ),
             SendMessageOptions {
+                preallocated_agent_run_id: planned_agent_run_id,
+                queue_policy: if reserved_assignment.is_some() {
+                    SendQueuePolicy::RequireImmediateStart
+                } else {
+                    SendQueuePolicy::AllowQueue
+                },
                 routing_role_override: Some(role),
                 harness_override: Some(harness),
                 agent_name_override: Some(definition.name.clone()),
@@ -1028,12 +1063,33 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
         }
     };
+    if let Some(planned_run_id) = planned_agent_run_id {
+        if send_result.agent_run_id != planned_run_id.as_str() {
+            let error_message =
+                "Delegated run did not use its preallocated assignment identity".to_string();
+            fail_started_delegated_launch(
+                state,
+                &chat_service,
+                &delegated_session_id,
+                &send_result.agent_run_id,
+                &error_message,
+            )
+            .await?;
+            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
+        }
+    }
     let bound_assignment = if let Some(reserved) = reserved_assignment.as_ref() {
+        let planned_run_id = planned_agent_run_id.ok_or_else(|| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Assigned delegated launch lost its preallocated run identity",
+            )
+        })?;
         match assignment_service
             .bind_assignment_run(
                 &reserved.assignment.id,
                 &delegated_session_entity,
-                &AgentRunId::from_string(send_result.agent_run_id.clone()),
+                &planned_run_id,
             )
             .await
         {

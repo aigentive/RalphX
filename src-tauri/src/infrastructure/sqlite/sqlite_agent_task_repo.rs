@@ -392,6 +392,21 @@ impl AgentTaskRepository for SqliteAgentTaskRepository {
         .await
     }
 
+    async fn plan_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::plan_run(
+            &self.db,
+            assignment_id,
+            delegated_session_id,
+            delegated_agent_run_id,
+        )
+        .await
+    }
+
     async fn get_unresolved_assignment(
         &self,
         delegated_session_id: &DelegatedSessionId,
