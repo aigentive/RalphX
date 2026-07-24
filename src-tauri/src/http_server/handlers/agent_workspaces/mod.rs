@@ -28,6 +28,9 @@ use axum::{
 
 use super::*;
 use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
+use crate::application::agent_workspace_local_commit::{
+    commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };

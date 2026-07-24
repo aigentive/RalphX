@@ -65,6 +65,9 @@ use crate::application::agent_workspace_external_pr_reconciliation::{
     external_pr_reconciliation_skip_reason, schedule_agent_workspace_external_pr_reconciliation,
     AgentWorkspaceExternalPrReconciliationDeps, AgentWorkspaceExternalPrReconciliationTrigger,
 };
+use crate::application::agent_workspace_local_commit::{
+    commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };
