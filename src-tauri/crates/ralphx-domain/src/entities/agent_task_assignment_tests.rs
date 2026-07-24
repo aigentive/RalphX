@@ -37,6 +37,8 @@ fn assignment_ids_and_terminal_status_are_typed() {
     assert_eq!(id.as_str(), "assignment-1");
     assert_eq!(id.to_string(), "assignment-1");
     assert!(!AgentTaskAssignmentId::new().as_str().is_empty());
+    assert!(!AgentTaskAssignmentId::default().as_str().is_empty());
+    assert_eq!(AgentTaskAssignmentState::Reserved.to_string(), "reserved");
     assert_eq!(
         AgentTaskAssignmentTerminalStatus::Completed,
         AgentTaskAssignmentTerminalStatus::Completed

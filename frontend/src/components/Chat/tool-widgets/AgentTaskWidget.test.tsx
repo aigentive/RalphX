@@ -238,6 +238,24 @@ describe("AgentTaskWidget", () => {
       expectedTitle: "Release requested #4 Inspect recovery",
       expectedState: "release requested",
     },
+    {
+      toolName: "mcp__ralphx_internal__get_delegate_assignment",
+      assignmentState: "released",
+      expectedTitle: "Assigned work #4 Inspect recovery",
+      expectedState: "released",
+    },
+    {
+      toolName: "mcp__ralphx_internal__get_delegate_assignment",
+      assignmentState: "failed",
+      expectedTitle: "Assigned work #4 Inspect recovery",
+      expectedState: "failed",
+    },
+    {
+      toolName: "mcp__ralphx_internal__get_delegate_assignment",
+      assignmentState: "cancelled",
+      expectedTitle: "Assigned work #4 Inspect recovery",
+      expectedState: "cancelled",
+    },
   ])(
     "renders assignment lifecycle result for $toolName",
     ({ toolName, assignmentState, expectedTitle, expectedState }) => {

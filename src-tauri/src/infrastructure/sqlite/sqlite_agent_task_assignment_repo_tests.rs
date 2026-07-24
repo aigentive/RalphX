@@ -7,7 +7,7 @@ use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentRun, AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentState,
     AgentTaskAssignmentTerminalStatus, AgentTaskCreate, AgentTaskPatch, AgentTaskScope,
-    AgentTaskState, ChatConversation, DelegatedSession,
+    AgentTaskState, ChatConversation, DelegatedSession, DelegatedSessionId,
 };
 use crate::domain::repositories::{
     AgentRunRepository, AgentTaskRepository, DelegatedSessionRepository,
@@ -172,6 +172,20 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
         AgentTaskAssignmentState::Reserved
     );
     assert_eq!(reserved.assignment.task.state, AgentTaskState::Active);
+    assert_eq!(
+        task_repo
+            .get_unresolved_assignment(&delegated_session.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .assignment
+            .id,
+        reserved.assignment.assignment.id
+    );
+    assert_eq!(
+        task_repo.list_unresolved_assignments().await.unwrap().len(),
+        1
+    );
 
     let locked = task_repo
         .update_task(
@@ -200,6 +214,15 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
 
     let wrong_assignment_id = AgentTaskAssignmentId::new();
     assert!(task_repo
+        .plan_assignment_run(
+            &wrong_assignment_id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(task_repo
         .bind_assignment_run(
             &wrong_assignment_id,
             &delegated_session.id,
@@ -208,6 +231,15 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
         .await
         .unwrap()
         .is_none());
+    let wrong_session = DelegatedSessionId::from_string("wrong-session");
+    assert!(task_repo
+        .plan_assignment_run(
+            &reserved.assignment.assignment.id,
+            &wrong_session,
+            &delegated_run.id,
+        )
+        .await
+        .is_err());
     let planned = task_repo
         .plan_assignment_run(
             &reserved.assignment.assignment.id,
@@ -223,6 +255,36 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
         Some(delegated_run.id)
     );
     assert_eq!(planned.assignment.delegated_agent_run_id, None);
+    assert_eq!(
+        task_repo
+            .plan_assignment_run(
+                &reserved.assignment.assignment.id,
+                &delegated_session.id,
+                &delegated_run.id,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .assignment
+            .planned_delegated_agent_run_id,
+        Some(delegated_run.id)
+    );
+    assert!(task_repo
+        .plan_assignment_run(
+            &reserved.assignment.assignment.id,
+            &delegated_session.id,
+            &AgentRunId::new(),
+        )
+        .await
+        .is_err());
+    assert!(task_repo
+        .bind_assignment_run(
+            &reserved.assignment.assignment.id,
+            &wrong_session,
+            &delegated_run.id,
+        )
+        .await
+        .is_err());
     assert!(task_repo
         .bind_assignment_run(
             &reserved.assignment.assignment.id,
@@ -239,11 +301,65 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
         )
         .await
         .unwrap();
+    assert_eq!(
+        task_repo
+            .bind_assignment_run(
+                &reserved.assignment.assignment.id,
+                &delegated_session.id,
+                &delegated_run.id,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .assignment
+            .delegated_agent_run_id,
+        Some(delegated_run.id)
+    );
+    assert!(task_repo
+        .bind_assignment_run(
+            &reserved.assignment.assignment.id,
+            &delegated_session.id,
+            &AgentRunId::new(),
+        )
+        .await
+        .is_err());
+    let local_scope = AgentTaskScope::new("delegation", delegated_session.id.as_str());
+    for title in ["Implement locally", "Validate locally"] {
+        task_repo
+            .create_task(&local_scope, task(title, None))
+            .await
+            .unwrap();
+    }
+    let unfinished_local = task_repo
+        .request_assignment_completion(
+            &delegated_session.id,
+            &delegated_run.id,
+            &local_scope,
+            Some(json!({"verified": true})),
+        )
+        .await
+        .unwrap_err();
+    assert!(unfinished_local
+        .to_string()
+        .contains("delegate-local tasks must be resolved"));
+    for task_ref in ["1", "2"] {
+        task_repo
+            .update_task(
+                &local_scope,
+                task_ref,
+                AgentTaskPatch {
+                    state: Some(AgentTaskState::Done),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
     let requested = task_repo
         .request_assignment_completion(
             &delegated_session.id,
             &delegated_run.id,
-            &AgentTaskScope::new("delegation", delegated_session.id.as_str()),
+            &local_scope,
             Some(json!({"verified": true})),
         )
         .await
