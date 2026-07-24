@@ -479,6 +479,8 @@ mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
 #[cfg(test)]
+mod startup_status_guard_tests;
+#[cfg(test)]
 mod startup_status_tests;
 #[cfg(test)]
 mod task_cleanup_service_tests;
