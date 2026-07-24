@@ -150,6 +150,7 @@ const {
   closeWorkspacePrMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  activateAgentPlanDirectImplementationMock,
   activateAgentTaskPipelineMock,
   startAgentTaskPipelineMock,
   listAgentConversationIssuesMock,
@@ -221,6 +222,7 @@ const {
   closeWorkspacePrMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  activateAgentPlanDirectImplementationMock: vi.fn(),
   activateAgentTaskPipelineMock: vi.fn(),
   startAgentTaskPipelineMock: vi.fn(),
   listAgentConversationIssuesMock: vi.fn(),
@@ -318,6 +320,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
       sendAgentMessage: (...args: unknown[]) => sendAgentMessageMock(...args),
       switchAgentConversationMode: (...args: unknown[]) =>
         switchAgentConversationModeMock(...args),
+      activateAgentPlanDirectImplementation: (...args: unknown[]) =>
+        activateAgentPlanDirectImplementationMock(...args),
       activateAgentTaskPipeline: (...args: unknown[]) =>
         activateAgentTaskPipelineMock(...args),
       startAgentTaskPipeline: (...args: unknown[]) =>
@@ -2036,6 +2040,30 @@ describe("AgentsArtifactPane", () => {
         mode: "ideation",
         linkedIdeationSessionId: "session-1",
       }),
+    });
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: workspace({
+        mode: "edit",
+        linkedIdeationSessionId: "session-1",
+      }),
+      artifactReferences: [
+        {
+          artifactId: "artifact-1",
+          kind: "plan",
+          title: "Implementation Plan",
+          sessionId: "session-1",
+          version: 1,
+          status: "approved",
+        },
+        {
+          artifactId: "blueprint-1",
+          kind: "plan",
+          title: "Implementation Blueprint",
+          sessionId: "session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
     });
     activateAgentTaskPipelineMock.mockResolvedValue(
       workspace({
@@ -7518,6 +7546,35 @@ describe("AgentsArtifactPane", () => {
     ).toBeVisible();
   });
 
+  it("loads the complete bundle for an attached ordinary ideation session", async () => {
+    const user = userEvent.setup();
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({ sessionFlow: "ideation" }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanBundleArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await waitFor(() =>
+      expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"),
+    );
+    expect(getArtifactMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("tab", { name: "Blueprint" }));
+    expect(
+      await screen.findByText("Follow these detailed steps."),
+    ).toBeVisible();
+  });
+
   it("keeps proposal content inside Plan when a stale Proposals tab is active", async () => {
     const user = userEvent.setup();
     getIdeationSessionMock.mockResolvedValue({
@@ -8931,14 +8988,6 @@ describe("AgentsArtifactPane", () => {
       createdAt: "2026-04-23T09:31:00Z",
       updatedAt: "2026-04-23T09:31:00Z",
     });
-    switchAgentConversationModeMock.mockResolvedValue({
-      conversation: conversation({ agentMode: "edit" }),
-      workspace: workspace({
-        mode: "edit",
-        linkedIdeationSessionId: "session-1",
-      }),
-    });
-
     const onConversationModeSwitched = vi.fn();
 
     renderPane(
@@ -8962,10 +9011,10 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() =>
-      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+      expect(activateAgentPlanDirectImplementationMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
-        mode: "edit",
-        runtimeOverride: approvedPlanRuntime,
+        sessionId: "session-1",
+        retry: false,
       }),
     );
     await waitFor(() =>
@@ -8977,10 +9026,15 @@ describe("AgentsArtifactPane", () => {
         {
           conversationId: "conversation-1",
           runtimeOverride: approvedPlanRuntime,
+          composerArtifactReferences: [
+            expect.objectContaining({ artifactId: "artifact-1" }),
+            expect.objectContaining({ artifactId: "blueprint-1" }),
+          ],
           suppressUserMessage: true,
         },
       ),
     );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
       "do not create task proposals",
     );
