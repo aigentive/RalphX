@@ -243,6 +243,58 @@ async fn create_project_persists_worktree_parent_and_resolved_local_only_contrac
     );
 }
 
+#[tokio::test]
+async fn create_project_enables_pr_mode_for_a_github_capable_repository() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    let project_path = temporary.path();
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(project_path)
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    assert!(Command::new(resolve_git_cli_path())
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:owner/repository.git",
+        ])
+        .current_dir(project_path)
+        .output()
+        .expect("git remote add should run")
+        .status
+        .success());
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = create_project(
+        CreateProjectInput {
+            name: "GitHub project".to_string(),
+            working_directory: project_path.to_string_lossy().to_string(),
+            git_mode: None,
+            base_branch: None,
+            worktree_parent_directory: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("GUI project creation should retain GitHub PR capability");
+
+    assert!(response.github_pr_enabled);
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string(response.id))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist");
+    assert!(persisted.github_pr_enabled);
+}
+
 #[test]
 fn gh_web_login_args_use_browser_flow_and_ssh_protocol() {
     assert_eq!(

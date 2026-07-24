@@ -148,19 +148,33 @@ async fn commit_agent_workspace_locally_unlocked(
         .await
         .map_err(|error| error.to_string())?;
     let message = build_commit_message(conversation.title.as_deref());
-    #[cfg(test)]
-    if let Some(before_staging) = request.before_staging {
-        before_staging(&worktree_path);
-    }
     let index_snapshot =
         GitService::stage_all_including_deletions_with_index_snapshot(&worktree_path)
             .await
             .map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    if let Some(before_staging) = request.before_staging {
+        before_staging(&worktree_path);
+    }
     if let Err(error) = validate_review_gate_and_receipt(state, &workspace, &request).await {
         return match GitService::restore_index_snapshot(&worktree_path, &index_snapshot).await {
             Ok(()) => Err(error),
             Err(restore_error) => Err(format!(
                 "{error} Additionally, RalphX could not restore the pre-commit Git index: {restore_error}"
+            )),
+        };
+    }
+    let commit_head_sha = GitService::get_head_sha(&worktree_path)
+        .await
+        .map_err(|error| error.to_string())?;
+    if commit_head_sha != previous_head_sha {
+        return match GitService::restore_index_snapshot(&worktree_path, &index_snapshot).await {
+            Ok(()) => Err(
+                "Workspace branch changed since this commit attempt started; refresh before committing."
+                    .to_string(),
+            ),
+            Err(restore_error) => Err(format!(
+                "Workspace branch changed since this commit attempt started; refresh before committing. Additionally, RalphX could not restore the pre-commit Git index: {restore_error}"
             )),
         };
     }
@@ -190,15 +204,10 @@ async fn validate_review_gate_and_receipt(
         .await
         .map_err(|error| error.to_string())?;
     if !review_settings.require_workspace_review {
-        let has_receipt = request.review_artifact_id.is_some()
-            || request.review_artifact_version.is_some()
-            || request.reviewed_head_sha.is_some()
-            || request.reviewed_diff_fingerprint.is_some();
-        return if has_receipt {
-            Err("Workspace Review is not required, so this commit request must not carry a review receipt.".to_string())
-        } else {
-            Ok(())
-        };
+        // Optional reviews are informative only. The monitor may still carry a
+        // current receipt, so clients can safely send it without turning an
+        // optional review into a commit-time gate.
+        return Ok(());
     }
     let context = load_agent_workspace_review_context(state, workspace)
         .await

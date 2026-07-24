@@ -258,12 +258,15 @@ pub async fn create_project(
     )
     .await
     .map_err(|error| error.to_string())?;
+    let repository_capability = inspect_repository_capability(Path::new(&working_directory)).await;
     let mut project = Project::new(name, working_directory);
     if let Some(git_mode_str) = git_mode {
         project.git_mode = git_mode_str.parse().unwrap_or(GitMode::Worktree);
     }
     project.base_branch = Some(bootstrap.base_branch);
     project.worktree_parent_directory = worktree_parent_directory;
+    project.github_pr_enabled =
+        matches!(repository_capability, RepositoryCapability::Github { .. });
 
     let created = state
         .project_repo

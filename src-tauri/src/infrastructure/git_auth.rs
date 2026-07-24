@@ -127,12 +127,42 @@ pub(crate) fn repository_capability_from_origin_config(
 /// network or credential checks. Inspection failures remain distinct from a
 /// normal no-origin repository so callers can fail closed before mutations.
 pub(crate) async fn inspect_repository_capability(working_dir: &Path) -> RepositoryCapability {
-    match inspect_origin_topology_config(working_dir).await {
+    match inspect_effective_origin_topology_config(working_dir).await {
         Ok(config) => repository_capability_from_origin_config(&config),
         Err(error) => RepositoryCapability::InspectionFailed {
             message: error.to_string(),
         },
     }
+}
+
+/// Read the URLs Git will actually use for transport. Capability authorizes a
+/// mutation, so it must honor includes and `url.*.insteadOf`/`pushInsteadOf`
+/// rewrites rather than relying on literal `.git/config` values.
+async fn inspect_effective_origin_topology_config(
+    working_dir: &Path,
+) -> AppResult<GitRemoteAuthConfig> {
+    let deadline = Duration::from_secs(5);
+    ensure_git_worktree(working_dir).await?;
+    let fetch_url =
+        read_origin_url_with_timeout(working_dir, &["remote", "get-url", "origin"], deadline)
+            .await?;
+    let push_url = if fetch_url.is_some() {
+        read_origin_url_with_timeout(
+            working_dir,
+            &["remote", "get-url", "--push", "origin"],
+            deadline,
+        )
+        .await?
+        .or_else(|| fetch_url.clone())
+    } else {
+        None
+    };
+
+    Ok(GitRemoteAuthConfig {
+        fetch_url,
+        push_url,
+        github_https_credential_helper_configured: false,
+    })
 }
 
 impl GitRemoteAuthConfig {
@@ -495,10 +525,6 @@ pub(crate) async fn inspect_origin_auth_config_with_timeout(
 /// Read origin URLs through local Git metadata or Git's local configuration
 /// commands. This bounded topology-only path deliberately skips credential
 /// helper inspection, so project list loading never performs auth work.
-async fn inspect_origin_topology_config(working_dir: &Path) -> AppResult<GitRemoteAuthConfig> {
-    inspect_origin_topology_config_with_timeout(working_dir, Duration::from_secs(5)).await
-}
-
 async fn inspect_origin_topology_config_with_timeout(
     working_dir: &Path,
     deadline: Duration,

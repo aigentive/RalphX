@@ -390,7 +390,7 @@ async fn test_register_project_bootstraps_unborn_repo_before_persisting_resolved
 }
 
 #[tokio::test]
-async fn test_register_project_detects_github_capability_without_enabling_pr_mode() {
+async fn test_register_project_enables_pr_mode_for_a_github_capable_repository() {
     let (_db, state) = setup_sqlite_register_state();
     let key_id = insert_key(&state, PERMISSION_CREATE_PROJECT).await;
     let temporary = temp_dir_under_home();
@@ -428,10 +428,7 @@ async fn test_register_project_detects_github_capability_without_enabling_pr_mod
     .await
     .expect("registration should detect the configured GitHub origin");
 
-    assert!(
-        !response.0.github_pr_enabled,
-        "GitHub capability must not implicitly enable the user preference"
-    );
+    assert!(response.0.github_pr_enabled);
     let response_json = serde_json::to_value(&response.0).expect("response serializes");
     assert_eq!(response_json["repository_capability"]["kind"], "github");
     let persisted = state
@@ -443,10 +440,7 @@ async fn test_register_project_detects_github_capability_without_enabling_pr_mod
         .await
         .expect("project lookup should succeed")
         .expect("project should persist after registration");
-    assert!(
-        !persisted.github_pr_enabled,
-        "fresh GitHub projects must persist an explicit PR-mode opt-out"
-    );
+    assert!(persisted.github_pr_enabled);
 }
 
 #[tokio::test]

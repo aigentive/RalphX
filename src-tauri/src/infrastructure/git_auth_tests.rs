@@ -311,19 +311,47 @@ async fn repository_capability_returns_typed_inspection_failure_for_invalid_conf
 }
 
 #[tokio::test]
-async fn repository_capability_reads_normal_git_config_directly() {
+async fn repository_capability_uses_git_effective_urls_for_included_push_rewrites() {
     let repo = tempfile::tempdir().expect("temporary repository path");
-    let git_directory = repo.path().join(".git");
-    std::fs::create_dir(&git_directory).expect("git metadata directory");
+    let included = tempfile::tempdir().expect("included git config");
+    let include_path = included.path().join("capability.gitconfig");
+    std::process::Command::new("git")
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git init should run");
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .expect("git remote add should run");
     std::fs::write(
-        git_directory.join("config"),
-        "[remote \"origin\"]\n\turl = https://github.com/owner/repo.git\n",
+        &include_path,
+        "[url \"https://gitlab.com/rewritten/\"]\n\tpushInsteadOf = https://github.com/\n",
     )
-    .expect("git config");
+    .expect("included config should write");
+    std::process::Command::new("git")
+        .args([
+            "config",
+            "include.path",
+            include_path.to_str().expect("utf-8 path"),
+        ])
+        .current_dir(repo.path())
+        .output()
+        .expect("git config should run");
 
     let capability = inspect_repository_capability(repo.path()).await;
 
-    assert!(matches!(capability, RepositoryCapability::Github { .. }));
+    assert!(matches!(
+        capability,
+        RepositoryCapability::OtherRemote { push_url, .. }
+            if push_url == "https://gitlab.com/rewritten/owner/repo.git"
+    ));
 }
 
 #[cfg(unix)]

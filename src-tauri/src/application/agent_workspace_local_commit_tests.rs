@@ -453,6 +453,31 @@ async fn local_commit_required_review_accepts_exact_receipt_and_preserves_equiva
 }
 
 #[tokio::test]
+async fn local_commit_allows_an_optional_review_receipt() {
+    let (_temp, state, conversation_id, head) = setup_workspace().await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace");
+    let worktree = std::path::Path::new(&workspace.worktree_path);
+    fs::write(worktree.join("optional-reviewed.txt"), "optional review\n")
+        .expect("optional reviewed change");
+    let request =
+        current_passing_review_request(&state, &conversation_id, head, "optional-1").await;
+
+    let result = commit_agent_workspace_locally(&state, conversation_id, request)
+        .await
+        .expect("optional review receipt must not block a local commit");
+
+    assert_eq!(
+        result.outcome,
+        AgentWorkspaceLocalCommitOutcome::CommittedLocal
+    );
+}
+
+#[tokio::test]
 async fn local_commit_required_review_rejects_mismatched_receipt_before_staging() {
     let (_temp, state, conversation_id, head) = setup_workspace().await;
     let review_settings = ReviewSettings {
@@ -488,6 +513,51 @@ async fn local_commit_required_review_rejects_mismatched_receipt_before_staging(
 fn add_unreviewed_change_after_receipt_validation(worktree: &std::path::Path) {
     fs::write(worktree.join("unreviewed.txt"), "unreviewed content\n")
         .expect("inject unreviewed change");
+}
+
+fn advance_head_after_staging(worktree: &std::path::Path) {
+    git(
+        worktree,
+        &[
+            "commit",
+            "--allow-empty",
+            "--only",
+            "--no-verify",
+            "-m",
+            "concurrent commit",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn local_commit_rejects_a_head_advance_after_staging_and_restores_the_index() {
+    let (_temp, state, conversation_id, head) = setup_workspace().await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace");
+    let worktree = std::path::Path::new(&workspace.worktree_path);
+    fs::write(worktree.join("stale-after-stage.txt"), "pending\n").expect("add file");
+    let mut request = request(head.clone(), "cas-1");
+    request.before_staging = Some(advance_head_after_staging);
+
+    let error = commit_agent_workspace_locally(&state, conversation_id, request)
+        .await
+        .expect_err("a changed HEAD immediately before commit must reject the stale request");
+
+    assert!(error.contains("Workspace branch changed since this commit attempt started"));
+    assert_ne!(git(worktree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(worktree, &["diff", "--cached", "--name-only"]), "");
+    assert_eq!(
+        git(worktree, &["status", "--short"]),
+        "?? stale-after-stage.txt"
+    );
+    assert_eq!(
+        git(worktree, &["show", "--format=", "--name-only", "HEAD"]),
+        ""
+    );
 }
 
 #[tokio::test]

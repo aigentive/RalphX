@@ -344,6 +344,8 @@ pub async fn register_project_external(
     let mut project = Project::new(name, canonical_str.clone());
     project.base_branch = Some(bootstrap.base_branch.clone());
     project.worktree_parent_directory = worktree_parent_directory;
+    project.github_pr_enabled =
+        matches!(repository_capability, RepositoryCapability::Github { .. });
 
     // Extract response data before moving project into transaction closure
     let response_id = project.id.as_str().to_string();
