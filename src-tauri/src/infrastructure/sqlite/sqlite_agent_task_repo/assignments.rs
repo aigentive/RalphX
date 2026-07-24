@@ -284,12 +284,12 @@ pub(super) async fn request_completion(
     let delegated_agent_run_id = delegated_agent_run_id.clone();
     let local_scope = local_scope.clone();
     db.run_transaction(move |conn| {
-        ensure_local_ledger_resolved(conn, &local_scope)?;
         request_intent_in_transaction(
             conn,
             &delegated_session_id,
             &delegated_agent_run_id,
             AgentTaskAssignmentState::CompletionRequested,
+            Some(&local_scope),
             completion_metadata,
             None,
         )
@@ -330,6 +330,7 @@ async fn request_intent(
             &delegated_session_id,
             &delegated_agent_run_id,
             requested_state,
+            None,
             completion_metadata,
             reason,
         )
@@ -342,6 +343,7 @@ fn request_intent_in_transaction(
     delegated_session_id: &DelegatedSessionId,
     delegated_agent_run_id: &AgentRunId,
     requested_state: AgentTaskAssignmentState,
+    local_scope: Option<&AgentTaskScope>,
     completion_metadata: Option<Value>,
     reason: Option<String>,
 ) -> AppResult<Option<AgentTaskAssignmentView>> {
@@ -353,19 +355,25 @@ fn request_intent_in_transaction(
             "delegate assignment does not belong to the current run".to_string(),
         ));
     }
-    if assignment.state != AgentTaskAssignmentState::Active && assignment.state != requested_state {
+    if assignment.state == requested_state {
+        return Ok(Some(view(conn, assignment)?));
+    }
+    if assignment.state != AgentTaskAssignmentState::Active {
         return Err(AppError::Conflict(
             "delegate assignment cannot accept that request in its current state".to_string(),
         ));
     }
+    if let Some(local_scope) = local_scope {
+        ensure_local_ledger_resolved(conn, local_scope)?;
+    }
     let now = Utc::now();
-    conn.execute(
+    let updated = conn.execute(
         "UPDATE agent_task_delegate_assignments
          SET state = ?1,
              completion_metadata_json = ?2,
              settlement_reason = ?3,
              updated_at = ?4
-         WHERE id = ?5 AND state IN ('active', ?1)",
+         WHERE id = ?5 AND state = 'active'",
         params![
             requested_state.as_str(),
             value_to_json_text(&completion_metadata)?,
@@ -374,6 +382,11 @@ fn request_intent_in_transaction(
             assignment.id.as_str()
         ],
     )?;
+    if updated != 1 {
+        return Err(AppError::Conflict(
+            "delegate assignment changed before intent request".to_string(),
+        ));
+    }
     append_event(
         conn,
         &assignment.task_list_id,

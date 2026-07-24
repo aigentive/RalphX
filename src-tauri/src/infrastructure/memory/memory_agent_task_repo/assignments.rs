@@ -253,25 +253,27 @@ fn request_intent(
     reason: Option<&str>,
 ) -> AppResult<Option<AgentTaskAssignmentView>> {
     let mut state = repo.state.write().unwrap();
-    if let Some(local_scope) = local_scope {
-        ensure_local_ledger_resolved(&state, local_scope)?;
-    }
     let Some(index) = unresolved_index_for_session(&state, delegated_session_id) else {
         return Ok(None);
     };
-    let assignment = &mut state.assignments[index];
+    let assignment = &state.assignments[index];
     if assignment.delegated_agent_run_id.as_ref() != Some(delegated_agent_run_id) {
         return Err(AppError::Conflict(
             "delegate assignment does not belong to the current run".to_string(),
         ));
     }
-    if assignment.state != crate::domain::entities::AgentTaskAssignmentState::Active
-        && assignment.state != requested_state
-    {
+    if assignment.state == requested_state {
+        return Ok(Some(view(&state, assignment)?));
+    }
+    if assignment.state != crate::domain::entities::AgentTaskAssignmentState::Active {
         return Err(AppError::Conflict(
             "delegate assignment cannot accept that request in its current state".to_string(),
         ));
     }
+    if let Some(local_scope) = local_scope {
+        ensure_local_ledger_resolved(&state, local_scope)?;
+    }
+    let assignment = &mut state.assignments[index];
     assignment.state = requested_state;
     assignment.completion_metadata = completion_metadata;
     assignment.settlement_reason = reason.map(str::to_string);

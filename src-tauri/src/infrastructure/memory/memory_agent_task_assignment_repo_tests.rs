@@ -262,3 +262,89 @@ async fn terminal_without_completion_reopens_and_reused_session_gets_fresh_attem
         Some("orchestrator")
     );
 }
+
+#[tokio::test]
+async fn assignment_intent_retries_preserve_first_payload_and_event_count() {
+    let repo = seeded_repo().await;
+    let session = DelegatedSessionId::from_string("session-1");
+    let first_run = AgentRunId::from_string("delegated-run-1");
+    let first = repo
+        .reserve_assignment(
+            &scope(),
+            "1",
+            &session,
+            &AgentRunId::from_string("caller-run-1"),
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    repo.bind_assignment_run(&first.assignment.assignment.id, &session, &first_run)
+        .await
+        .unwrap();
+    let local_scope = AgentTaskScope::new("delegation", session.as_str());
+    let requested = repo
+        .request_assignment_completion(
+            &session,
+            &first_run,
+            &local_scope,
+            Some(json!({"verified": true})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let event_count = repo.state.read().unwrap().events.len();
+    let retried = repo
+        .request_assignment_completion(&session, &first_run, &local_scope, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retried.assignment.completion_metadata,
+        requested.assignment.completion_metadata
+    );
+    assert_eq!(repo.state.read().unwrap().events.len(), event_count);
+    assert!(repo
+        .request_assignment_release(&session, &first_run, "opposite intent")
+        .await
+        .is_err());
+
+    repo.settle_assignment_for_run(&first_run, AgentTaskAssignmentTerminalStatus::Failed, None)
+        .await
+        .unwrap();
+    let second_run = AgentRunId::from_string("delegated-run-2");
+    let second = repo
+        .reserve_assignment(
+            &scope(),
+            "2",
+            &session,
+            &AgentRunId::from_string("caller-run-2"),
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    repo.bind_assignment_run(&second.assignment.assignment.id, &session, &second_run)
+        .await
+        .unwrap();
+    let requested = repo
+        .request_assignment_release(&session, &second_run, "first reason")
+        .await
+        .unwrap()
+        .unwrap();
+    let event_count = repo.state.read().unwrap().events.len();
+    let retried = repo
+        .request_assignment_release(&session, &second_run, "replacement reason")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retried.assignment.settlement_reason,
+        requested.assignment.settlement_reason
+    );
+    assert_eq!(repo.state.read().unwrap().events.len(), event_count);
+    assert!(repo
+        .request_assignment_completion(&session, &second_run, &local_scope, None)
+        .await
+        .is_err());
+}

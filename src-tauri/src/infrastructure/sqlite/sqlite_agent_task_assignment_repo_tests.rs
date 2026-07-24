@@ -214,3 +214,158 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
     assert!(event_types.contains(&"agent_task.assignment_completed".to_string()));
     assert!(event_types.contains(&"agent_task.assignment_reopened".to_string()));
 }
+
+#[tokio::test]
+async fn sqlite_assignment_intent_retries_preserve_first_payload_and_event_count() {
+    let db = SqliteTestDb::new("sqlite_assignment_intent_retries");
+    let project = db.seed_project("Assignment retry project");
+    let caller_conversation =
+        db.insert_conversation(ChatConversation::new_project(project.id.clone()));
+    let run_repo = SqliteAgentRunRepository::from_shared(db.shared_conn());
+    let delegated_repo = SqliteDelegatedSessionRepository::from_shared(db.shared_conn());
+    let task_repo = SqliteAgentTaskRepository::from_shared(db.shared_conn());
+    let caller_run = run_repo
+        .create(AgentRun::new(caller_conversation.id))
+        .await
+        .unwrap();
+    let delegated_session = delegated_repo
+        .create(DelegatedSession::new(
+            project.id,
+            "project".to_string(),
+            "project-context".to_string(),
+            "ralphx-general-worker".to_string(),
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .unwrap();
+    let delegated_conversation = db.insert_conversation(ChatConversation::new_delegation(
+        delegated_session.id.clone(),
+    ));
+    let first_run = run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .unwrap();
+    for title in ["Implement", "Validate"] {
+        task_repo
+            .create_task(&scope(), task(title, Some("orchestrator")))
+            .await
+            .unwrap();
+    }
+
+    let first = task_repo
+        .reserve_assignment(
+            &scope(),
+            "1",
+            &delegated_session.id,
+            &caller_run.id,
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    task_repo
+        .bind_assignment_run(
+            &first.assignment.assignment.id,
+            &delegated_session.id,
+            &first_run.id,
+        )
+        .await
+        .unwrap();
+    let local_scope = AgentTaskScope::new("delegation", delegated_session.id.as_str());
+    let requested = task_repo
+        .request_assignment_completion(
+            &delegated_session.id,
+            &first_run.id,
+            &local_scope,
+            Some(json!({"verified": true})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let completion_event_count =
+        assignment_event_count(&db, "agent_task.assignment_completion_requested");
+    let retried = task_repo
+        .request_assignment_completion(&delegated_session.id, &first_run.id, &local_scope, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retried.assignment.completion_metadata,
+        requested.assignment.completion_metadata
+    );
+    assert_eq!(
+        assignment_event_count(&db, "agent_task.assignment_completion_requested"),
+        completion_event_count
+    );
+    assert!(task_repo
+        .request_assignment_release(&delegated_session.id, &first_run.id, "opposite intent")
+        .await
+        .is_err());
+
+    task_repo
+        .settle_assignment_for_run(
+            &first_run.id,
+            AgentTaskAssignmentTerminalStatus::Failed,
+            None,
+        )
+        .await
+        .unwrap();
+    let second_run = run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .unwrap();
+    let second = task_repo
+        .reserve_assignment(
+            &scope(),
+            "2",
+            &delegated_session.id,
+            &caller_run.id,
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    task_repo
+        .bind_assignment_run(
+            &second.assignment.assignment.id,
+            &delegated_session.id,
+            &second_run.id,
+        )
+        .await
+        .unwrap();
+    let requested = task_repo
+        .request_assignment_release(&delegated_session.id, &second_run.id, "first reason")
+        .await
+        .unwrap()
+        .unwrap();
+    let release_event_count =
+        assignment_event_count(&db, "agent_task.assignment_release_requested");
+    let retried = task_repo
+        .request_assignment_release(&delegated_session.id, &second_run.id, "replacement reason")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retried.assignment.settlement_reason,
+        requested.assignment.settlement_reason
+    );
+    assert_eq!(
+        assignment_event_count(&db, "agent_task.assignment_release_requested"),
+        release_event_count
+    );
+    assert!(task_repo
+        .request_assignment_completion(&delegated_session.id, &second_run.id, &local_scope, None,)
+        .await
+        .is_err());
+}
+
+fn assignment_event_count(db: &SqliteTestDb, event_type: &str) -> i64 {
+    db.with_connection(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM agent_task_events WHERE event_type = ?1",
+            [event_type],
+            |row| row.get(0),
+        )
+        .unwrap()
+    })
+}
