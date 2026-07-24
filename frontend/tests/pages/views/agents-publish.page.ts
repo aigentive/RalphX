@@ -102,11 +102,11 @@ export class AgentsPublishPage extends BasePage {
         queryKey: ["agents", "sidebar-conversations"],
       }),
     );
-    const conversation = this.page.getByTestId(
-      `agents-session-${TERMINAL_CONVERSATION_ID}`,
-    );
-    await expect(conversation).toBeVisible();
-    await conversation.getByRole("button").first().click();
+    const conversation = this.page.getByRole("button", {
+      name: /Merged publish history PR #451 merged/,
+    });
+    await expect(conversation).toBeVisible({ timeout: 15_000 });
+    await conversation.click();
     await this.page.evaluate(async (conversationId) => {
       const { mockGetAgentConversationWorkspace } = await import("/src/api-mock/chat");
       const workspace = await mockGetAgentConversationWorkspace(conversationId);
