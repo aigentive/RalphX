@@ -9,7 +9,9 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace,
     recover_stale_publish_repair_for_workspace_and_reload,
     recover_stale_publish_repair_for_workspace_and_reload_with_review_target,
-    recover_stale_publish_repair_for_workspace_in_state, recover_stale_transient_publish_statuses,
+    recover_stale_publish_repair_for_workspace_in_state,
+    recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
+    recover_stale_transient_publish_statuses, StalePublishRepairRecoveryOutcome,
     STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
 };
@@ -148,6 +150,32 @@ async fn startup_recovery_wrappers_finish_on_empty_repositories() {
 }
 
 #[tokio::test]
+async fn failed_exact_pr_autofix_is_classified_as_retry_eligible() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(31);
+    let workspace = needs_agent_workspace(conversation_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let fingerprint = "github_pr_autofix:684:head:checks";
+    seed_failed_pr_autofix_run(state.agent_run_repo.as_ref(), conversation_id, fingerprint).await;
+
+    let (_workspace, outcome) =
+        recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.project_repo),
+            workspace,
+        )
+        .await
+        .expect("recover retry-eligible repair");
+
+    assert_eq!(outcome, StalePublishRepairRecoveryOutcome::RetryEligible);
+}
+
+#[tokio::test]
 async fn state_recovery_recovers_terminal_needs_agent_workspace_and_reloads_it() {
     let state = AppState::new_test();
     let conversation_id = conversation_id(1);
@@ -214,7 +242,7 @@ async fn recovery_correlates_the_exact_pr_autofix_attempt_not_a_newer_unrelated_
         .await
         .expect("complete unrelated run");
 
-    let (updated, recovered) =
+    let (updated, outcome) =
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
@@ -224,7 +252,7 @@ async fn recovery_correlates_the_exact_pr_autofix_attempt_not_a_newer_unrelated_
         .await
         .expect("recover exact autofix attempt");
 
-    assert!(recovered);
+    assert_eq!(outcome, StalePublishRepairRecoveryOutcome::RetryEligible);
     assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
     assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
     assert!(updated
@@ -261,7 +289,7 @@ async fn recovery_with_review_target_preserves_current_reviewing_handoff() {
         .expect("seed review monitor");
     seed_terminal_run(agent_run_repo.as_ref(), conversation_id).await;
 
-    let (refreshed, recovered) =
+    let (refreshed, outcome) =
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
@@ -271,7 +299,7 @@ async fn recovery_with_review_target_preserves_current_reviewing_handoff() {
         .await
         .expect("check stale publish repair");
 
-    assert!(!recovered);
+    assert_eq!(outcome, StalePublishRepairRecoveryOutcome::HandoffPreserved);
     assert_eq!(
         refreshed.publication_push_status.as_deref(),
         Some("needs_agent")
@@ -415,6 +443,105 @@ async fn recovery_heals_only_an_active_current_repair_to_fixing() {
         Some("needs_agent")
     );
     assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
+}
+
+#[tokio::test]
+async fn recovery_restores_blocked_state_only_for_the_current_pr_autofix_replacement() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let conversation_id = conversation_id(7);
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    let fingerprint = "github_pr_autofix:684:head:replacement";
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed blocked workspace");
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix",
+            "started",
+            "PR autofix replacement started.",
+            Some(fingerprint.to_string()),
+        ))
+        .await
+        .expect("seed autofix evidence");
+    let mut replacement = AgentRun::new(conversation_id.clone());
+    replacement.action_kind = Some(AgentRunActionKind::PrAutofix);
+    replacement.action_context_id = Some("684".to_string());
+    replacement.action_target_id = Some(fingerprint.to_string());
+    agent_run_repo
+        .create(replacement)
+        .await
+        .expect("seed exact active replacement");
+
+    let (refreshed, outcome) =
+        recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            workspace,
+            None,
+        )
+        .await
+        .expect("recover exact active replacement");
+
+    assert_eq!(
+        outcome,
+        StalePublishRepairRecoveryOutcome::ActiveReplacement
+    );
+    assert_eq!(
+        refreshed.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
+}
+
+#[tokio::test]
+async fn recovery_does_not_treat_an_unrelated_active_run_as_a_pr_autofix_replacement() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let conversation_id = conversation_id(8);
+    let workspace = needs_agent_workspace(conversation_id.clone());
+    let fingerprint = "github_pr_autofix:684:head:retry";
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix",
+            "failed",
+            "PR autofix failed.",
+            Some(fingerprint.to_string()),
+        ))
+        .await
+        .expect("seed exact autofix event");
+    seed_failed_pr_autofix_run(
+        agent_run_repo.as_ref(),
+        conversation_id.clone(),
+        fingerprint,
+    )
+    .await;
+    agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed unrelated active run");
+
+    let (refreshed, outcome) =
+        recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            workspace,
+            None,
+        )
+        .await
+        .expect("recover retry-eligible autofix");
+
+    assert_eq!(outcome, StalePublishRepairRecoveryOutcome::RetryEligible);
+    assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("blocked"));
 }
 
 mod extracted_inline_tests {

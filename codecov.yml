@@ -22,9 +22,14 @@ coverage:
           - "!src-tauri/src/application/app_setup.rs"
           - "!src-tauri/src/application/runtime_wiring.rs"
           - "!src-tauri/src/application/startup_background.rs"
+          - "!src-tauri/src/application/startup_bootstrap.rs"
+          - "!src-tauri/src/application/startup_cleanup.rs"
           - "!src-tauri/src/application/startup_pipeline.rs"
           - "!src-tauri/src/application/startup_pipeline_launch.rs"
           - "!src-tauri/src/application/startup_transition_factory.rs"
+          # Startup commands wrap Tauri State/AppHandle and the opener plugin.
+          # Their deterministic diagnostics/retry/path helpers are sidecar-tested.
+          - "!src-tauri/src/commands/startup_commands.rs"
           # Tauri RunEvent / HTTP-server boot glue — same composition-root pattern.
           # The Exit-arm body needs the full production AppState AND a non-async
           # caller context (tauri::async_runtime::block_on panics inside
@@ -165,6 +170,10 @@ coverage:
           - "!src-tauri/src/commands/automation_commands.rs"
           - "!src-tauri/src/commands/manual_role_default_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
+          # Agent-workspace PR auto-publish listener wiring depends on Tauri's
+          # managed runtime state and background scheduling. Its deterministic
+          # authorization and publication decisions are covered in sidecar tests.
+          - "!src-tauri/src/commands/agent_workspace_auto_publish.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
 parsers:
