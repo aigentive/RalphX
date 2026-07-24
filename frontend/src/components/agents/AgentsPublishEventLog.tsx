@@ -126,15 +126,8 @@ export function PublishEventLog({
                   {event.summary}
                 </div>
                 {meta.length > 0 ? (
-                  <div className="flex flex-wrap items-center gap-x-1.5 text-[0.6875rem] capitalize text-[var(--text-muted)]">
-                    {meta.map((part, index) => (
-                      <span key={index} className="flex items-center gap-1.5">
-                        {index > 0 ? (
-                          <span aria-hidden="true">·</span>
-                        ) : null}
-                        <span>{part}</span>
-                      </span>
-                    ))}
+                  <div className="text-[0.6875rem] capitalize text-[var(--text-muted)]">
+                    {meta.join(" · ")}
                   </div>
                 ) : null}
               </div>

@@ -1475,15 +1475,13 @@ test.describe("Agents View", () => {
     await expect(
       publishPage.historyContent.getByTestId("agents-publish-events"),
     ).toBeVisible();
-    await publishPage.historyContent
-      .getByTestId("agents-publish-history-toggle")
-      .click();
+    // The timeline renders directly inside the History tab (no expand toggle).
     await expect(
       publishPage.historyContent.getByTestId("agents-publish-event-published"),
     ).toBeVisible();
     await stabilizePublishHistoryTimestamps(page, editConversationId);
     await expect(
-      publishPage.historyContent.getByText("Published / May 13, 5:20 AM"),
+      publishPage.historyContent.getByText("Published · May 13, 5:20 AM"),
     ).toBeVisible();
     await expect(page.getByTestId("agents-workspace-toolbar")).toBeVisible();
     await expect(page.getByTestId("pr-status-strip")).toBeVisible();

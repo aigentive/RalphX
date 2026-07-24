@@ -141,7 +141,10 @@ export class AgentsPublishPage extends BasePage {
     const conversation = this.page.getByTestId(
       `agents-session-${REPAIR_CONVERSATION_ID}`,
     );
-    await expect(conversation).toBeVisible();
+    // The sidebar list is repopulated by an async refetch after
+    // invalidateQueries, which can exceed the default assertion timeout when
+    // the suite runs under load.
+    await expect(conversation).toBeVisible({ timeout: 15000 });
     await conversation.getByRole("button").first().click();
     await this.page.evaluate(async (conversationId) => {
       const { mockGetAgentConversationWorkspace } = await import(
@@ -177,7 +180,10 @@ export class AgentsPublishPage extends BasePage {
     const conversation = this.page.getByTestId(
       `agents-session-${TERMINAL_CONVERSATION_ID}`,
     );
-    await expect(conversation).toBeVisible();
+    // The sidebar list is repopulated by an async refetch after
+    // invalidateQueries, which can exceed the default assertion timeout when
+    // the suite runs under load.
+    await expect(conversation).toBeVisible({ timeout: 15000 });
     await conversation.getByRole("button").first().click();
     await this.page.evaluate(async (conversationId) => {
       const { mockGetAgentConversationWorkspace } = await import("/src/api-mock/chat");

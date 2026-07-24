@@ -11861,10 +11861,6 @@ describe("AgentsArtifactPane", () => {
         deferredHydrationTimeout,
       ),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Pre-commit hook failed"),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("agents-publish-history-toggle"));
     expect(screen.getByText("Pre-commit hook failed")).toBeInTheDocument();
     expect(screen.getByText(/agent fixable/i)).toBeInTheDocument();
   });
@@ -11917,11 +11913,6 @@ describe("AgentsArtifactPane", () => {
         deferredHydrationTimeout,
       ),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Checking workspace changes"),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("Pushing agent branch")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("agents-publish-history-toggle"));
     expect(
       screen.queryByText("Checking workspace changes"),
     ).not.toBeInTheDocument();
