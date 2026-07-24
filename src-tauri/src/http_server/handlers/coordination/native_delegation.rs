@@ -745,18 +745,40 @@ async fn resolve_trusted_caller_agent_run_id(
     trusted_caller_conversation_id: Option<&str>,
     trusted_parent_run_id: Option<&str>,
 ) -> Result<Option<String>, JsonError> {
-    let caller_conversation_id = match (
-        trusted_caller_conversation_id,
-        parent.caller_conversation_id.as_deref(),
-    ) {
-        (Some(trusted), Some(resolved)) if trusted != resolved => {
+    let caller_conversation_id = if parent.context_type == ChatContextType::Delegation {
+        let resolved = parent.caller_conversation_id.as_deref().ok_or_else(|| {
+            json_error(
+                StatusCode::NOT_FOUND,
+                "Active caller delegated conversation not found",
+            )
+        })?;
+        let trusted = trusted_caller_conversation_id.ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "Nested delegate_start requires trusted caller conversation context",
+            )
+        })?;
+        if trusted != resolved {
             return Err(json_error(
                 StatusCode::BAD_REQUEST,
                 "Trusted caller conversation does not match the resolved caller conversation",
             ));
         }
-        (Some(trusted), _) => Some(trusted),
-        (None, resolved) => resolved,
+        Some(resolved)
+    } else {
+        match (
+            trusted_caller_conversation_id,
+            parent.caller_conversation_id.as_deref(),
+        ) {
+            (Some(trusted), Some(resolved)) if trusted != resolved => {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    "Trusted caller conversation does not match the resolved caller conversation",
+                ));
+            }
+            (Some(trusted), _) => Some(trusted),
+            (None, resolved) => resolved,
+        }
     };
     let Some(caller_conversation_id) = caller_conversation_id else {
         if trusted_parent_run_id.is_some() {

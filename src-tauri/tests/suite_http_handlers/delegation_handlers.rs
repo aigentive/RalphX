@@ -592,6 +592,115 @@ fn build_state(app_state: Arc<AppState>) -> HttpServerState {
     }
 }
 
+struct NestedAssignmentCaller {
+    project: Project,
+    parent_conversation: ChatConversation,
+    delegated_session: DelegatedSession,
+    delegated_conversation: Option<ChatConversation>,
+    local_scope: AgentTaskScope,
+}
+
+async fn seed_nested_assignment_caller(
+    state: &HttpServerState,
+    with_active_conversation: bool,
+) -> NestedAssignmentCaller {
+    let project = state
+        .app_state
+        .project_repo
+        .create(Project::new(
+            "Nested assignment project".to_string(),
+            repo_root().display().to_string(),
+        ))
+        .await
+        .expect("create nested assignment project");
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create nested assignment parent conversation");
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id.clone(),
+            "project",
+            project.id.as_str(),
+            "ralphx-general-worker",
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .expect("create caller delegated session");
+    let delegated_conversation = if with_active_conversation {
+        let mut conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+        conversation.parent_conversation_id = Some(parent_conversation.id.as_str());
+        Some(
+            state
+                .app_state
+                .chat_conversation_repo
+                .create(conversation)
+                .await
+                .expect("create active caller delegated conversation"),
+        )
+    } else {
+        None
+    };
+    let local_scope = AgentTaskScope::new("delegation", delegated_session.id.as_str());
+    for title in ["Nested assigned task", "Meaningful local sibling"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &local_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create caller-local task");
+    }
+
+    NestedAssignmentCaller {
+        project,
+        parent_conversation,
+        delegated_session,
+        delegated_conversation,
+        local_scope,
+    }
+}
+
+fn nested_assignment_start_request(caller: &NestedAssignmentCaller) -> DelegateStartRequest {
+    DelegateStartRequest {
+        caller_agent_name: Some("ralphx-general-worker".to_string()),
+        caller_agent_profile: None,
+        caller_context_type: Some("delegation".to_string()),
+        caller_context_id: Some(caller.delegated_session.id.as_str().to_string()),
+        parent_session_id: None,
+        parent_turn_id: None,
+        parent_message_id: None,
+        parent_conversation_id: Some(caller.parent_conversation.id.as_str()),
+        parent_tool_use_id: None,
+        delegated_session_id: None,
+        child_session_id: None,
+        task_ref: Some("1".to_string()),
+        agent_name: "ralphx-general-explorer".to_string(),
+        prompt: "Inspect the exact nested assignment.".to_string(),
+        title: None,
+        inherit_context: true,
+        harness: Some(AgentHarnessKind::Codex),
+        model: None,
+        logical_effort: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    }
+}
+
 async fn seed_codex_provider_default(app_state: &AppState, model: &str, effort: LogicalEffort) {
     let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
     codex.enabled = true;
@@ -1979,6 +2088,155 @@ async fn test_delegate_start_from_project_without_workspace_uses_project_checkou
     assert_eq!(
         captured_cwds,
         vec![PathBuf::from(project.working_directory)]
+    );
+}
+
+#[tokio::test]
+async fn nested_assignment_rejects_missing_active_caller_conversation_before_reservation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir
+        .path()
+        .join("missing-nested-caller-conversation-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let caller = seed_nested_assignment_caller(&state, false).await;
+    let trusted_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(caller.parent_conversation.id))
+        .await
+        .expect("create unrelated trusted caller run");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        caller.parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        trusted_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(nested_assignment_start_request(&caller)),
+    )
+    .await
+    .expect_err("nested assignment must require an active caller conversation");
+
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("delegated conversation")));
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&caller.local_scope, "1")
+        .await
+        .expect("load caller-local task")
+        .expect("caller-local task");
+    assert_eq!(task.state, AgentTaskState::Open);
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .list_unresolved_assignments()
+        .await
+        .expect("list unresolved assignments")
+        .is_empty());
+    assert!(state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("delegation", caller.delegated_session.id.as_str())
+        .await
+        .expect("list nested delegated sessions")
+        .is_empty());
+    assert!(
+        !captured_args_path.exists(),
+        "missing caller conversation must fail before process spawn"
+    );
+}
+
+#[tokio::test]
+async fn nested_assignment_rejects_mismatched_trusted_caller_conversation_before_reservation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir
+        .path()
+        .join("mismatched-nested-caller-conversation-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let caller = seed_nested_assignment_caller(&state, true).await;
+    let other_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(caller.project.id.clone()))
+        .await
+        .expect("create mismatched trusted conversation");
+    let trusted_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(other_conversation.id))
+        .await
+        .expect("create mismatched trusted caller run");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        other_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        trusted_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(nested_assignment_start_request(&caller)),
+    )
+    .await
+    .expect_err("nested assignment must reject a mismatched trusted caller conversation");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("does not match")));
+    assert!(caller.delegated_conversation.is_some());
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&caller.local_scope, "1")
+        .await
+        .expect("load caller-local task")
+        .expect("caller-local task");
+    assert_eq!(task.state, AgentTaskState::Open);
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .list_unresolved_assignments()
+        .await
+        .expect("list unresolved assignments")
+        .is_empty());
+    assert!(state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("delegation", caller.delegated_session.id.as_str())
+        .await
+        .expect("list nested delegated sessions")
+        .is_empty());
+    assert!(
+        !captured_args_path.exists(),
+        "mismatched caller conversation must fail before process spawn"
     );
 }
 

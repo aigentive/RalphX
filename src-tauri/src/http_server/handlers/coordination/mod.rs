@@ -631,10 +631,14 @@ async fn resolve_nested_delegation_parent(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to load caller delegated conversation: {error}"),
             )
+        })?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::NOT_FOUND,
+                "Active caller delegated conversation not found",
+            )
         })?;
-    let stored_parent_conversation_id = delegated_conversation
-        .as_ref()
-        .and_then(|conversation| conversation.parent_conversation_id.clone());
+    let stored_parent_conversation_id = delegated_conversation.parent_conversation_id.clone();
     if let (Some(supplied), Some(stored)) = (
         parent_conversation_id.as_deref(),
         stored_parent_conversation_id.as_deref(),
@@ -705,9 +709,7 @@ async fn resolve_nested_delegation_parent(
         context_id: session.id.as_str().to_string(),
         project_id: project.id.as_str().to_string(),
         working_directory,
-        caller_conversation_id: delegated_conversation
-            .as_ref()
-            .map(|conversation| conversation.id.as_str()),
+        caller_conversation_id: Some(delegated_conversation.id.as_str()),
         parent_conversation_id: Some(parent_conversation_id),
         ideation_verification: false,
     })
