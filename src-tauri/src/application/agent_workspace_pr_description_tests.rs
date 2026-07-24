@@ -944,6 +944,56 @@ async fn draft_pr_description_recovers_literal_tool_call_output() {
 }
 
 #[tokio::test]
+async fn invalid_recovered_new_pr_decision_is_not_persisted() {
+    let (_temp_dir, repo, base) = create_reviewable_repo();
+    let project = project_for(&repo);
+    let conversation = conversation_for(&project);
+    let workspace = workspace_for(&conversation, &project, &repo, &base);
+    let state = AppState::new_test();
+    let raw_output = format!(
+        "<call_tool>\n\
+         <tool_name>{PR_DESCRIBER_SUBMIT_TOOL}</tool_name>\n\
+         <tool_parameters>\n\
+         <parameter name=\"conversation_id\">{}</parameter>\n\
+         <parameter name=\"decision\">patch</parameter>\n\
+         <parameter name=\"title\">Title without a body</parameter>\n\
+         </tool_parameters>\n\
+         </call_tool>",
+        conversation.id
+    );
+    let client = Arc::new(SubmittingPrDescriptionClient::success_without_submission(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation.id.clone(),
+        raw_output,
+    ));
+    let state = state.with_agent_client(client);
+
+    let error = draft_agent_workspace_pr_description(
+        &state,
+        &conversation,
+        &project,
+        &workspace,
+        &repo,
+        &base,
+    )
+    .await
+    .expect_err("a new PR decision without a body should fail validation");
+
+    assert!(error
+        .to_string()
+        .contains("new pull requests require a complete metadata body patch"));
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .get_pr_metadata_decision(&conversation.id)
+            .await
+            .expect("stored decision lookup should succeed")
+            .is_none(),
+        "a target-invalid recovered decision must not remain persisted"
+    );
+}
+
+#[tokio::test]
 async fn draft_pr_description_uses_conversation_harness_client_when_available() {
     let (_temp_dir, repo, base) = create_reviewable_repo();
     let project = project_for(&repo);
@@ -1238,10 +1288,59 @@ fn existing_target_prompt_escapes_untrusted_metadata_and_marks_truncated_body() 
     assert!(prompt.contains("<publication_target kind=\"existing_pr\" evidence=\"untrusted\">"));
     assert!(prompt.contains("<author>Author &lt;unsafe&gt; &amp; value</author>"));
     assert!(prompt.contains("<title>Title &lt;unsafe&gt; &amp; value</title>"));
-    assert!(prompt.contains("<body complete=\"false\">Body &lt;unsafe&gt; &amp;"));
+    assert!(prompt.contains(
+        "<body complete=\"false\" patch_allowed=\"false\" managed_suffix_preserved=\"false\" \
+         max_output_chars=\"60000\">Body &lt;unsafe&gt; &amp;"
+    ));
     assert!(prompt.contains("<state>Closed</state>"));
     assert!(prompt.contains("<head_ref>head&lt;unsafe&gt;&amp;value</head_ref>"));
     assert!(prompt.contains("<base_ref>base&lt;unsafe&gt;&amp;value</base_ref>"));
+}
+
+#[test]
+fn recognized_existing_target_prompt_exposes_only_the_editable_prefix_and_budget() {
+    let (_temp_dir, repo, base) = create_reviewable_repo();
+    let project = project_for(&repo);
+    let conversation = conversation_for(&project);
+    let workspace = workspace_for(&conversation, &project, &repo, &base);
+    let preserved_suffix = format!(
+        "\n\n{RALPHX_MANAGED_PR_BODY_START}\n{}\n{RALPHX_GENERATED_FOOTER}\n\
+         {RALPHX_MANAGED_PR_BODY_END}\n\nOpaque tail",
+        "plan".repeat(MAX_EXISTING_PR_BODY_CONTEXT_CHARS)
+    );
+    let target = existing_target(Some(&format!("Editable prefix{preserved_suffix}")));
+    let diff_stats = crate::application::git_service::DiffStats {
+        files_changed: 0,
+        insertions: 0,
+        deletions: 0,
+        changed_files: Vec::new(),
+    };
+
+    let prompt = build_pr_describer_prompt(PrDescriberPromptContext {
+        conversation: &conversation,
+        project: &project,
+        workspace: &workspace,
+        effective_cwd: &repo,
+        review_base: &base,
+        template: &PullRequestTemplateContext {
+            source: "workspace",
+            content: "## Summary".to_string(),
+        },
+        commits: &[],
+        diff_stats: &diff_stats,
+        name_status: "",
+        diff_stat: "",
+        patch_excerpt: "",
+        conversation_context: "",
+        target: &target,
+    });
+
+    assert!(prompt.contains(
+        "<body complete=\"true\" patch_allowed=\"true\" managed_suffix_preserved=\"true\""
+    ));
+    assert!(prompt.contains(">Editable prefix</body>"));
+    assert!(!prompt.contains("Opaque tail"));
+    assert!(!prompt.contains("planplanplan"));
 }
 
 #[test]
@@ -1323,6 +1422,101 @@ fn existing_target_rejects_body_patch_when_prompt_body_is_truncated() {
         &target,
     )
     .is_ok());
+}
+
+#[test]
+fn recognized_managed_suffix_keeps_a_small_editable_prefix_patchable() {
+    let managed_suffix = format!(
+        "\n\n{RALPHX_MANAGED_PR_BODY_START}\n{}\n{RALPHX_GENERATED_FOOTER}\n\
+         {RALPHX_MANAGED_PR_BODY_END}\n\nOpaque tail",
+        "plan".repeat(MAX_EXISTING_PR_BODY_CONTEXT_CHARS)
+    );
+    let target = existing_target(Some(&format!("Small editable prefix{managed_suffix}")));
+    let decision =
+        AgentWorkspacePrMetadataDecision::patch(None, Some("Replacement".to_string())).unwrap();
+
+    assert!(validate_agent_workspace_pr_metadata_decision(&decision, &target).is_ok());
+}
+
+#[test]
+fn incomplete_existing_body_decisions_are_constrained_without_losing_a_safe_title() {
+    let target = existing_target(Some(&"x".repeat(MAX_EXISTING_PR_BODY_CONTEXT_CHARS + 1)));
+
+    assert_eq!(
+        constrain_agent_workspace_pr_metadata_decision(
+            AgentWorkspacePrMetadataDecision::patch(
+                Some("Improved title".to_string()),
+                Some("Unsafe replacement".to_string()),
+            )
+            .unwrap(),
+            &target,
+        ),
+        AgentWorkspacePrMetadataDecision::patch(Some("Improved title".to_string()), None).unwrap()
+    );
+    assert_eq!(
+        constrain_agent_workspace_pr_metadata_decision(
+            AgentWorkspacePrMetadataDecision::patch(None, Some("Unsafe replacement".to_string()))
+                .unwrap(),
+            &target,
+        ),
+        AgentWorkspacePrMetadataDecision::Preserve
+    );
+}
+
+#[test]
+fn preserved_suffix_without_editable_budget_downgrades_the_body_field() {
+    let remote = format!(
+        "Editable\n\n{RALPHX_MANAGED_PR_BODY_START}\n{}\n{RALPHX_GENERATED_FOOTER}\n\
+         {RALPHX_MANAGED_PR_BODY_END}",
+        "s".repeat(GITHUB_PR_BODY_SOFT_LIMIT_CHARS)
+    );
+    let target = existing_target(Some(&remote));
+
+    assert_eq!(
+        constrain_agent_workspace_pr_metadata_decision(
+            AgentWorkspacePrMetadataDecision::patch(
+                Some("Improved title".to_string()),
+                Some("Improved body".to_string()),
+            )
+            .unwrap(),
+            &target,
+        ),
+        AgentWorkspacePrMetadataDecision::patch(Some("Improved title".to_string()), None).unwrap()
+    );
+}
+
+#[test]
+fn model_managed_tokens_are_removed_or_downgraded_before_publication() {
+    let remote = format!(
+        "Editable\n\n{RALPHX_MANAGED_PR_BODY_START}\n{RALPHX_GENERATED_FOOTER}\n\
+         {RALPHX_MANAGED_PR_BODY_END}"
+    );
+    let target = existing_target(Some(&remote));
+    let complete_model_copy = format!(
+        "Improved editable\n\n{RALPHX_MANAGED_PR_BODY_START}\n{RALPHX_GENERATED_FOOTER}\n\
+         {RALPHX_MANAGED_PR_BODY_END}"
+    );
+    assert_eq!(
+        constrain_agent_workspace_pr_metadata_decision(
+            AgentWorkspacePrMetadataDecision::patch(None, Some(complete_model_copy)).unwrap(),
+            &target,
+        ),
+        AgentWorkspacePrMetadataDecision::patch(None, Some("Improved editable".to_string()))
+            .unwrap()
+    );
+
+    let ambiguous = format!("Improved editable\n{RALPHX_MANAGED_PR_BODY_START}");
+    assert_eq!(
+        constrain_agent_workspace_pr_metadata_decision(
+            AgentWorkspacePrMetadataDecision::patch(
+                Some("Improved title".to_string()),
+                Some(ambiguous),
+            )
+            .unwrap(),
+            &target,
+        ),
+        AgentWorkspacePrMetadataDecision::patch(Some("Improved title".to_string()), None).unwrap()
+    );
 }
 
 #[tokio::test]

@@ -7,7 +7,7 @@ import type { AgentConversationWorkspacePublicationEvent } from "@/api/chat";
  * renders. Used by both the timeline and the History tab badge so the count
  * never disagrees with the rendered rows.
  */
-// eslint-disable-next-line react-refresh/only-export-components -- consumed by AgentsPublishPanel.
+// eslint-disable-next-line react-refresh/only-export-components -- shared with the History tab badge
 export function selectPublishHistory(
   events: AgentConversationWorkspacePublicationEvent[],
   isPublishing: boolean,
