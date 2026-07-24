@@ -48,8 +48,10 @@ async fn setup_workspace() -> (tempfile::TempDir, AppState, ChatConversationId, 
     git(&repo, &["commit", "-m", "base"]);
 
     let state = AppState::new_test();
-    let mut review_settings = ReviewSettings::default();
-    review_settings.require_workspace_review = false;
+    let review_settings = ReviewSettings {
+        require_workspace_review: false,
+        ..Default::default()
+    };
     state
         .review_settings_repo
         .update_settings(&review_settings)
@@ -412,8 +414,10 @@ async fn local_commit_allows_a_non_active_needs_agent_publication_status() {
 #[tokio::test]
 async fn local_commit_required_review_accepts_exact_receipt_and_preserves_equivalent_authority() {
     let (_temp, state, conversation_id, head) = setup_workspace().await;
-    let mut review_settings = ReviewSettings::default();
-    review_settings.require_workspace_review = true;
+    let review_settings = ReviewSettings {
+        require_workspace_review: true,
+        ..Default::default()
+    };
     state
         .review_settings_repo
         .update_settings(&review_settings)
@@ -451,8 +455,10 @@ async fn local_commit_required_review_accepts_exact_receipt_and_preserves_equiva
 #[tokio::test]
 async fn local_commit_required_review_rejects_mismatched_receipt_before_staging() {
     let (_temp, state, conversation_id, head) = setup_workspace().await;
-    let mut review_settings = ReviewSettings::default();
-    review_settings.require_workspace_review = true;
+    let review_settings = ReviewSettings {
+        require_workspace_review: true,
+        ..Default::default()
+    };
     state
         .review_settings_repo
         .update_settings(&review_settings)
@@ -487,8 +493,10 @@ fn add_unreviewed_change_after_receipt_validation(worktree: &std::path::Path) {
 #[tokio::test]
 async fn local_commit_required_review_rejects_snapshot_drift_and_restores_the_index() {
     let (_temp, state, conversation_id, head) = setup_workspace().await;
-    let mut review_settings = ReviewSettings::default();
-    review_settings.require_workspace_review = true;
+    let review_settings = ReviewSettings {
+        require_workspace_review: true,
+        ..Default::default()
+    };
     state
         .review_settings_repo
         .update_settings(&review_settings)
@@ -534,8 +542,10 @@ async fn local_commit_required_review_rejects_running_and_blocking_states_before
         ),
     ] {
         let (_temp, state, conversation_id, head) = setup_workspace().await;
-        let mut review_settings = ReviewSettings::default();
-        review_settings.require_workspace_review = true;
+        let review_settings = ReviewSettings {
+            require_workspace_review: true,
+            ..Default::default()
+        };
         state
             .review_settings_repo
             .update_settings(&review_settings)

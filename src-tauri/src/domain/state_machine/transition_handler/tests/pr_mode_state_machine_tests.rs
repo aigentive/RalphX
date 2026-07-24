@@ -928,11 +928,12 @@ async fn reviewable_diff_read_failure_stays_merge_incomplete_without_github_or_l
         "reviewable-diff read failures should use the canonical merge-incomplete transition",
     );
 
-    let github_state = mock_github.state();
-    assert_eq!(github_state.push_branch_calls, 0);
-    assert_eq!(github_state.create_draft_pr_calls, 0);
-    assert_eq!(github_state.mark_pr_ready_calls, 0);
-    drop(github_state);
+    {
+        let github_state = mock_github.state();
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(github_state.create_draft_pr_calls, 0);
+        assert_eq!(github_state.mark_pr_ready_calls, 0);
+    }
 
     let updated_task = task_repo
         .get_by_id(&task_id)
@@ -1013,11 +1014,12 @@ async fn stale_pre_pr_eligibility_without_origin_uses_local_merge_without_github
         .await
         .expect("local-only PendingMerge entry should complete the canonical local merge");
 
-    let github_state = mock_github.state();
-    assert_eq!(github_state.push_branch_calls, 0);
-    assert_eq!(github_state.create_draft_pr_calls, 0);
-    assert_eq!(github_state.mark_pr_ready_calls, 0);
-    drop(github_state);
+    {
+        let github_state = mock_github.state();
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(github_state.create_draft_pr_calls, 0);
+        assert_eq!(github_state.mark_pr_ready_calls, 0);
+    }
 
     let updated_task = task_repo
         .get_by_id(&task_id)
@@ -1079,11 +1081,12 @@ async fn pre_pr_origin_inspection_failure_blocks_without_local_merge_or_github_c
         .await
         .expect("origin inspection failure should use the canonical merge-incomplete transition");
 
-    let github_state = mock_github.state();
-    assert_eq!(github_state.push_branch_calls, 0);
-    assert_eq!(github_state.create_draft_pr_calls, 0);
-    assert_eq!(github_state.mark_pr_ready_calls, 0);
-    drop(github_state);
+    {
+        let github_state = mock_github.state();
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(github_state.create_draft_pr_calls, 0);
+        assert_eq!(github_state.mark_pr_ready_calls, 0);
+    }
 
     let updated_task = task_repo
         .get_by_id(&task_id)
