@@ -944,6 +944,56 @@ async fn draft_pr_description_recovers_literal_tool_call_output() {
 }
 
 #[tokio::test]
+async fn invalid_recovered_new_pr_decision_is_not_persisted() {
+    let (_temp_dir, repo, base) = create_reviewable_repo();
+    let project = project_for(&repo);
+    let conversation = conversation_for(&project);
+    let workspace = workspace_for(&conversation, &project, &repo, &base);
+    let state = AppState::new_test();
+    let raw_output = format!(
+        "<call_tool>\n\
+         <tool_name>{PR_DESCRIBER_SUBMIT_TOOL}</tool_name>\n\
+         <tool_parameters>\n\
+         <parameter name=\"conversation_id\">{}</parameter>\n\
+         <parameter name=\"decision\">patch</parameter>\n\
+         <parameter name=\"title\">Title without a body</parameter>\n\
+         </tool_parameters>\n\
+         </call_tool>",
+        conversation.id
+    );
+    let client = Arc::new(SubmittingPrDescriptionClient::success_without_submission(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation.id.clone(),
+        raw_output,
+    ));
+    let state = state.with_agent_client(client);
+
+    let error = draft_agent_workspace_pr_description(
+        &state,
+        &conversation,
+        &project,
+        &workspace,
+        &repo,
+        &base,
+    )
+    .await
+    .expect_err("a new PR decision without a body should fail validation");
+
+    assert!(error
+        .to_string()
+        .contains("new pull requests require a complete metadata body patch"));
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .get_pr_metadata_decision(&conversation.id)
+            .await
+            .expect("stored decision lookup should succeed")
+            .is_none(),
+        "a target-invalid recovered decision must not remain persisted"
+    );
+}
+
+#[tokio::test]
 async fn draft_pr_description_uses_conversation_harness_client_when_available() {
     let (_temp_dir, repo, base) = create_reviewable_repo();
     let project = project_for(&repo);

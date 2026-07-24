@@ -484,8 +484,16 @@ fn finalize_agent_workspace_pr_body(body: &str, plan_markdown: &Option<String>) 
                 "\n\n{RALPHX_MANAGED_PR_BODY_START}\n{RALPHX_GENERATED_FOOTER}\n\
                  {RALPHX_MANAGED_PR_BODY_END}"
             );
-            recompose_agent_workspace_pr_body_with_preserved_suffix(body, &preserved_suffix)
-                .unwrap_or(preserved_suffix)
+            let editable_prefix = body
+                .trim_end()
+                .strip_suffix(RALPHX_GENERATED_FOOTER)
+                .map(str::trim_end)
+                .unwrap_or(body);
+            recompose_agent_workspace_pr_body_with_preserved_suffix(
+                editable_prefix,
+                &preserved_suffix,
+            )
+            .unwrap_or(preserved_suffix)
         }
     }
 }

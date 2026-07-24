@@ -590,10 +590,6 @@ async fn draft_agent_workspace_pr_metadata_decision_unlocked(
                 branch = %workspace.branch_name,
                 "Recovered PR metadata decision from literal tool-call text emitted by describer helper"
             );
-            state
-                .agent_conversation_workspace_repo
-                .save_pr_metadata_decision(&workspace.conversation_id, decision.clone())
-                .await?;
             decision
         }
     };
@@ -609,11 +605,24 @@ async fn draft_agent_workspace_pr_metadata_decision_unlocked(
             "Constrained PR describer metadata decision before validation and persistence"
         );
     }
+    if let Err(error) = validate_agent_workspace_pr_metadata_decision(&decision, target) {
+        state
+            .agent_conversation_workspace_repo
+            .clear_pr_metadata_decision(&workspace.conversation_id)
+            .await?;
+        return Err(error);
+    }
     state
         .agent_conversation_workspace_repo
         .save_pr_metadata_decision(&workspace.conversation_id, decision.clone())
         .await?;
-    validate_agent_workspace_pr_metadata_decision(&decision, target)?;
+    let (decision_kind, title_patch_present, body_patch_present) = match &decision {
+        AgentWorkspacePrMetadataDecision::Preserve => ("preserve", false, false),
+        AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown,
+        } => ("patch", title.is_some(), body_markdown.is_some()),
+    };
     info!(
         target: "ralphx_lib::application::agent_workspace_pr_description",
         conversation_id = %workspace.conversation_id,
@@ -621,7 +630,9 @@ async fn draft_agent_workspace_pr_metadata_decision_unlocked(
         branch = %workspace.branch_name,
         review_base,
         elapsed_ms = total_started.elapsed().as_millis(),
-        decision = ?decision,
+        decision_kind,
+        title_patch_present,
+        body_patch_present,
         "Drafted agent workspace PR metadata decision"
     );
     Ok(decision)

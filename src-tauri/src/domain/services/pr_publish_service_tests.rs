@@ -447,6 +447,22 @@ fn finalize_body_without_plan_appends_only_footer() {
 }
 
 #[test]
+fn finalize_body_without_plan_wraps_an_existing_canonical_footer_once() {
+    let input = format!("## Summary\n\nBody\n\n{RALPHX_GENERATED_FOOTER}\n");
+
+    let body = finalize_agent_workspace_pr_body(&input, &None);
+
+    assert_eq!(
+        body,
+        format!(
+            "## Summary\n\nBody\n\n{RALPHX_MANAGED_PR_BODY_START}\n\
+             {RALPHX_GENERATED_FOOTER}\n{RALPHX_MANAGED_PR_BODY_END}"
+        )
+    );
+    assert_eq!(body.matches(RALPHX_GENERATED_FOOTER).count(), 1);
+}
+
+#[test]
 fn finalize_body_with_empty_plan_appends_only_footer() {
     let body = finalize_agent_workspace_pr_body("## Summary\n\nBody", &Some("  ".to_string()));
     assert_eq!(
