@@ -31,6 +31,20 @@ use crate::application::agent_conversation_workspace::AgentConversationWorkspace
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
 };
+use crate::application::agent_workspace_pr_autofix_attempt::{
+    load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
+};
+use crate::application::agent_workspace_pr_supervision_recovery::{
+    build_agent_workspace_pr_supervision_recovery_deps,
+    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrSupervisionRecoveryTrigger,
+};
+use crate::application::agent_workspace_publish_repair_state::{
+    abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
+    complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
+    continue_agent_workspace_pr_fix_after_review_handoff,
+    current_agent_workspace_repair_claim_for_completion,
+    settle_agent_workspace_failure_without_repair, AgentWorkspaceRepairClaim,
+};
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
@@ -51,13 +65,6 @@ use crate::application::agent_workspace_review_diff::{
 use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
 };
-use crate::application::agent_workspace_publish_repair_state::{
-    abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
-    complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
-    continue_agent_workspace_pr_fix_after_review_handoff,
-    current_agent_workspace_repair_claim_for_completion,
-    settle_agent_workspace_failure_without_repair, AgentWorkspaceRepairClaim,
-};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -70,10 +77,11 @@ use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
-    update_agent_conversation_workspace_from_base_for_app_state,
+    update_agent_conversation_workspace_from_base_for_app_state_with_caller,
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
-    AgentWorkspacePostRepairAction, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+    AgentWorkspacePostRepairAction, AgentWorkspacePrFixReviewPublishCommandResumer,
+    AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
@@ -91,7 +99,9 @@ use crate::domain::entities::{
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
     NotificationTarget, NotificationTargetKind, PlanBranch, ProjectId,
 };
-use crate::domain::repositories::AgentWorkspacePrReviewActionMutation;
+use crate::domain::repositories::{
+    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairStateGuard,
+};
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
 };
@@ -135,6 +145,8 @@ pub struct UpdateAgentWorkspaceFromBaseRequest {
     pub base_ref_kind: Option<String>,
     pub base_ref: Option<String>,
     pub base_display_name: Option<String>,
+    /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
+    pub created_by_run_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -290,6 +302,8 @@ pub struct CompleteAgentWorkspacePrFixRequest {
     pub summary: String,
     pub blocker: Option<String>,
     pub fix_commit_sha: Option<String>,
+    /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
+    pub created_by_run_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1246,11 +1260,12 @@ pub async fn update_agent_workspace_from_base(
         display_name: req.base_display_name,
         source_pull_request: None,
     };
-    match update_agent_conversation_workspace_from_base_for_app_state(
+    match update_agent_conversation_workspace_from_base_for_app_state_with_caller(
         state.app_state.as_ref(),
         &state.execution_state,
         conversation_id,
         selection,
+        req.created_by_run_id.as_deref(),
     )
     .await
     {
@@ -2262,26 +2277,88 @@ pub async fn complete_agent_workspace_pr_fix(
             )
         })?;
 
+    let authority = match load_pr_autofix_completion_authority(
+        state.app_state.agent_run_repo.as_ref(),
+        &conversation_id,
+        target.pr_number,
+        req.created_by_run_id.as_deref(),
+    )
+    .await
+    {
+        Ok(authority) => authority,
+        Err(error) => {
+            schedule_pr_autofix_completion_recovery(&state, &conversation_id);
+            return Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+                None,
+            ));
+        }
+    };
+    let claim = match authority {
+        PrAutofixCompletionAuthority::Superseded => {
+            return Ok(Json(CompleteAgentWorkspacePrFixResponse {
+                success: true,
+                status: "superseded".to_string(),
+                message: "This PR fixer attempt was superseded; RalphX supervision continues automatically."
+                    .to_string(),
+                workspace: None,
+                publish_status: Some("skipped".to_string()),
+                publish_error: None,
+                commit_sha: None,
+                pushed: None,
+                created_pr: None,
+                pr_number: Some(target.pr_number),
+                pr_url: target.pr_url.clone(),
+            }));
+        }
+        PrAutofixCompletionAuthority::AlreadyCompleted => {
+            return Ok(Json(CompleteAgentWorkspacePrFixResponse {
+                success: true,
+                status: "already_completed".to_string(),
+                message: "This PR fixer attempt was already settled.".to_string(),
+                workspace: None,
+                publish_status: Some("skipped".to_string()),
+                publish_error: None,
+                commit_sha: None,
+                pushed: None,
+                created_pr: None,
+                pr_number: Some(target.pr_number),
+                pr_url: target.pr_url.clone(),
+            }));
+        }
+        PrAutofixCompletionAuthority::Invalid => {
+            schedule_pr_autofix_completion_recovery(&state, &conversation_id);
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                "Agent workspace PR fix attempt is no longer current",
+                None,
+            ));
+        }
+        PrAutofixCompletionAuthority::Current => {
+            if workspace.publication_push_status.as_deref() != Some("needs_agent")
+                || workspace.pr_supervision_status.as_deref() != Some("fixing")
+            {
+                schedule_pr_autofix_completion_recovery(&state, &conversation_id);
+                return Err(json_error(
+                    StatusCode::CONFLICT,
+                    "Agent workspace PR fix claim is no longer current",
+                    None,
+                ));
+            }
+            AgentWorkspaceRepairClaim {
+                conversation_id: conversation_id.clone(),
+                guard: AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
+            }
+        }
+    };
+
     if let Some(blocker) = req
         .blocker
         .as_deref()
         .map(str::trim)
         .filter(|blocker| !blocker.is_empty())
     {
-        let claim = current_agent_workspace_repair_claim_for_completion(
-            Arc::clone(&state.app_state.agent_conversation_workspace_repo),
-            Arc::clone(&state.app_state.agent_run_repo),
-            &workspace,
-        )
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::CONFLICT,
-                "Agent workspace PR fix attempt is no longer current",
-                None,
-            )
-        })?;
         block_agent_workspace_pr_fix_claim(
             Arc::clone(&state.app_state.agent_conversation_workspace_repo),
             &claim,
@@ -2290,6 +2367,7 @@ pub async fn complete_agent_workspace_pr_fix(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| {
+            schedule_pr_autofix_completion_recovery(&state, &conversation_id);
             json_error(
                 StatusCode::CONFLICT,
                 "Agent workspace PR fix attempt was replaced before blocker settlement",
@@ -2377,21 +2455,6 @@ pub async fn complete_agent_workspace_pr_fix(
         }
     }
 
-    let claim = current_agent_workspace_repair_claim_for_completion(
-        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
-        Arc::clone(&state.app_state.agent_run_repo),
-        &workspace,
-    )
-    .await
-    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
-    .ok_or_else(|| {
-        json_error(
-            StatusCode::CONFLICT,
-            "Agent workspace PR fix attempt is no longer current",
-            None,
-        )
-    })?;
-
     let fix_commit_sha = req
         .fix_commit_sha
         .as_deref()
@@ -2454,6 +2517,7 @@ pub async fn complete_agent_workspace_pr_fix(
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
     .ok_or_else(|| {
+        schedule_pr_autofix_completion_recovery(&state, &conversation_id);
         json_error(
             StatusCode::CONFLICT,
             "Agent workspace PR fix attempt was replaced before completion",
@@ -2477,11 +2541,7 @@ pub async fn complete_agent_workspace_pr_fix(
     }
 
     if !workspace.auto_publish_enabled {
-        return completed_pr_fix_paused_response(
-            state.app_state.as_ref(),
-            &conversation_id,
-        )
-        .await;
+        return completed_pr_fix_paused_response(state.app_state.as_ref(), &conversation_id).await;
     }
 
     if target.is_ideation_plan() {
@@ -2586,6 +2646,42 @@ pub async fn complete_agent_workspace_pr_fix(
             }))
         }
     }
+}
+
+fn schedule_pr_autofix_completion_recovery(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+) {
+    let resumer = Arc::new(AgentWorkspacePrFixReviewPublishCommandResumer {
+        app_state: state.app_state.as_ref().clone(),
+        execution_state: Arc::clone(&state.execution_state),
+    });
+    let runtime_app_handle = state.app_state.app_handle.clone();
+    let transition_service = Arc::new(
+        state.app_state.build_transition_service_for_runtime(
+            Arc::clone(&state.execution_state),
+            runtime_app_handle.clone(),
+        ),
+    );
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.app_state.build_chat_service_for_runtime(
+        Some(Arc::clone(&state.execution_state)),
+        runtime_app_handle.clone(),
+    ));
+    let Some(deps) = build_agent_workspace_pr_supervision_recovery_deps(
+        state.app_state.as_ref(),
+        runtime_app_handle,
+        Some(transition_service),
+        Some(chat_service),
+        Some(resumer),
+    ) else {
+        return;
+    };
+    schedule_agent_workspace_pr_supervision_recovery(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+        false,
+    );
 }
 
 async fn complete_ideation_plan_pr_fix_for_terminal_pr(
@@ -3013,6 +3109,7 @@ async fn settle_pr_fix_workspace_review_handoff(
                 )
             })?
             .ok_or_else(|| {
+                schedule_pr_autofix_completion_recovery(state, conversation_id);
                 json_error(
                     StatusCode::CONFLICT,
                     "Workspace Review handoff was replaced while start failure was settling",
@@ -3047,6 +3144,7 @@ async fn settle_pr_fix_workspace_review_handoff(
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
             })?
             .ok_or_else(|| {
+                schedule_pr_autofix_completion_recovery(state, conversation_id);
                 json_error(
                     StatusCode::CONFLICT,
                     "Workspace Review handoff was replaced before publish continuation",
@@ -3089,6 +3187,7 @@ async fn settle_pr_fix_workspace_review_handoff(
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
             })?
             .ok_or_else(|| {
+                schedule_pr_autofix_completion_recovery(state, conversation_id);
                 json_error(
                     StatusCode::CONFLICT,
                     "Workspace Review handoff was replaced before blocker settlement",

@@ -2233,7 +2233,7 @@ fn is_active_direct_pr_supervision_recovery_candidate(
                 workspace.publication_push_status.as_deref(),
                 workspace.pr_supervision_status.as_deref(),
             ),
-            (Some("failed"), Some("blocked")) | (Some("refreshed"), Some("reviewing"))
+            (Some("failed"), Some("blocked")) | (Some("refreshed"), Some("fixing" | "reviewing"))
         )
         && workspace.auto_publish_enabled
         && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)
