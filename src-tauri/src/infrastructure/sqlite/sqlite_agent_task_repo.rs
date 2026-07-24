@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::DbConnection;
 use crate::domain::entities::{
-    merge_agent_task_metadata, AgentRunId, AgentTaskAssignmentReservation,
+    merge_agent_task_metadata, AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
     AgentTaskAssignmentSettlement, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
     AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList, AgentTaskListId,
     AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState,
@@ -379,10 +379,17 @@ impl AgentTaskRepository for SqliteAgentTaskRepository {
 
     async fn bind_assignment_run(
         &self,
+        assignment_id: &AgentTaskAssignmentId,
         delegated_session_id: &DelegatedSessionId,
         delegated_agent_run_id: &AgentRunId,
     ) -> AppResult<Option<AgentTaskAssignmentView>> {
-        assignments::bind_run(&self.db, delegated_session_id, delegated_agent_run_id).await
+        assignments::bind_run(
+            &self.db,
+            assignment_id,
+            delegated_session_id,
+            delegated_agent_run_id,
+        )
+        .await
     }
 
     async fn get_unresolved_assignment(

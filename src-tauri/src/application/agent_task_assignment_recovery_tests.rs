@@ -64,9 +64,10 @@ async fn recovery_releases_orphaned_reservations_and_bound_running_attempts() {
         .reserve_assignment(&scope, "1", &session_one.id, &AgentRunId::new(), "worker")
         .await
         .unwrap();
-    task_repo
+    let session_two_reservation = task_repo
         .reserve_assignment(&scope, "2", &session_two.id, &AgentRunId::new(), "worker")
         .await
+        .unwrap()
         .unwrap();
     let conversation = conversation_repo
         .create(ChatConversation::new_delegation(session_two.id.clone()))
@@ -77,7 +78,11 @@ async fn recovery_releases_orphaned_reservations_and_bound_running_attempts() {
         .await
         .unwrap();
     task_repo
-        .bind_assignment_run(&session_two.id, &run.id)
+        .bind_assignment_run(
+            &session_two_reservation.assignment.assignment.id,
+            &session_two.id,
+            &run.id,
+        )
         .await
         .unwrap();
 

@@ -16,13 +16,14 @@ use ralphx_lib::domain::agents::{
 use ralphx_lib::domain::entities::agent_run::PersonaRunAttribution;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
-    AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AgentTaskAssignmentReservation,
-    AgentTaskAssignmentSettlement, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
-    AgentTaskCreate, AgentTaskDetail, AgentTaskListId, AgentTaskListSummary,
-    AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState, AgentTaskSummary,
-    ChatContextType, ChatConversation, ChatConversationId, DelegatedSession, DelegatedSessionId,
-    IdeationAnalysisBaseRefKind, IdeationSession, InterruptedConversation, Persona, PersonaId,
-    PersonaStatus, Project, ProjectId, SessionPurpose, UsageCapture,
+    AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AgentTaskAssignmentId,
+    AgentTaskAssignmentReservation, AgentTaskAssignmentSettlement,
+    AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail,
+    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
+    AgentTaskState, AgentTaskSummary, ChatContextType, ChatConversation, ChatConversationId,
+    DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession,
+    InterruptedConversation, Persona, PersonaId, PersonaStatus, Project, ProjectId, SessionPurpose,
+    UsageCapture,
 };
 use ralphx_lib::domain::repositories::{
     AgentRunRepository, AgentTaskListOptions, AgentTaskRepository, DelegatedSessionRepository,
@@ -289,6 +290,7 @@ impl AgentTaskRepository for FailBindingAgentTaskRepository {
 
     async fn bind_assignment_run(
         &self,
+        _assignment_id: &AgentTaskAssignmentId,
         _delegated_session_id: &DelegatedSessionId,
         _delegated_agent_run_id: &AgentRunId,
     ) -> AppResult<Option<AgentTaskAssignmentView>> {
@@ -1413,7 +1415,140 @@ async fn binding_failure_keeps_parent_task_reserved_when_run_cancellation_fails(
 }
 
 #[tokio::test]
-async fn assignment_endpoints_bind_trusted_run_and_guard_unfinished_local_tasks() {
+async fn reused_unassigned_launch_does_not_bind_stale_reserved_attempt() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create active parent run");
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    for title in ["Stale reserved work", "Keep meaningful ledger"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create parent agent task");
+    }
+
+    let mut delegated_session = DelegatedSession::new(
+        project.id.clone(),
+        "project",
+        project.id.as_str(),
+        "ralphx-general-explorer",
+        AgentHarnessKind::Codex,
+    );
+    delegated_session.status = "failed".to_string();
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(delegated_session)
+        .await
+        .expect("create reusable delegated session");
+    let mut delegated_conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+    delegated_conversation.parent_conversation_id = Some(parent_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .expect("create delegated conversation");
+    let reserved = state
+        .app_state
+        .agent_task_repo
+        .reserve_assignment(
+            &parent_scope,
+            "1",
+            &delegated_session.id,
+            &parent_run.id,
+            "ralphx-general-explorer",
+        )
+        .await
+        .expect("reserve stale assignment")
+        .expect("reserved assignment");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        parent_run.id.as_str().parse().unwrap(),
+    );
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: Some("tool-unassigned-retry".to_string()),
+            delegated_session_id: Some(delegated_session.id.as_str().to_string()),
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Perform unrelated unassigned exploration.".to_string(),
+            title: Some("Unassigned retry".to_string()),
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("unassigned reused launch should start")
+    .0;
+
+    assert!(
+        started.assignment.is_none(),
+        "an unassigned launch must not inherit an older reservation"
+    );
+    let unresolved = state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&delegated_session.id)
+        .await
+        .expect("load unresolved assignment")
+        .expect("stale reservation remains fenced for recovery");
+    assert_eq!(unresolved.assignment.id, reserved.assignment.assignment.id);
+    assert_eq!(
+        unresolved.assignment.state.as_str(),
+        "reserved",
+        "the stale attempt must remain unbound"
+    );
+    assert!(unresolved.assignment.delegated_agent_run_id.is_none());
+}
+
+#[tokio::test]
+async fn assignment_endpoints_require_exact_prebound_run_and_guard_unfinished_local_tasks() {
     let app_state = Arc::new(AppState::new_sqlite_test());
     let state = build_state(app_state);
     let project = state
@@ -1495,7 +1630,7 @@ async fn assignment_endpoints_bind_trusted_run_and_guard_unfinished_local_tasks(
                 .unwrap();
         }
     }
-    state
+    let reservation = state
         .app_state
         .agent_task_repo
         .reserve_assignment(
@@ -1518,6 +1653,32 @@ async fn assignment_endpoints_bind_trusted_run_and_guard_unfinished_local_tasks(
         delegated_run.id.as_str().parse().unwrap(),
     );
 
+    let unbound = get_delegate_assignment(State(state.clone()), headers.clone())
+        .await
+        .0;
+    assert!(unbound.success);
+    assert!(unbound.assignment.is_none());
+    let unresolved = state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&delegated_session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unresolved.assignment.state.as_str(), "reserved");
+    assert!(unresolved.assignment.delegated_agent_run_id.is_none());
+
+    state
+        .app_state
+        .agent_task_repo
+        .bind_assignment_run(
+            &reservation.assignment.assignment.id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
     let inspected = get_delegate_assignment(State(state.clone()), headers.clone())
         .await
         .0;

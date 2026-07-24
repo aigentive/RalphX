@@ -222,10 +222,19 @@ pub async fn get_delegate_assignment(
         };
     let service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
     Json(
-        match bind_current_assignment(&service, &delegated_session_id, &delegated_agent_run_id)
+        match service
+            .get_assignment_for_run(&delegated_agent_run_id)
             .await
         {
-            Ok(assignment) => assignment_success(assignment),
+            Ok(Some(assignment))
+                if assignment.assignment.delegated_session_id == delegated_session_id =>
+            {
+                assignment_success(Some(assignment))
+            }
+            Ok(Some(_)) => assignment_error(
+                "Bound delegate assignment does not belong to the current session".to_string(),
+            ),
+            Ok(None) => assignment_success(None),
             Err(error) => assignment_error(error.to_string()),
         },
     )
@@ -242,11 +251,6 @@ pub async fn complete_delegate_assignment(
             Err(error) => return Json(assignment_error(error)),
         };
     let service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
-    if let Err(error) =
-        bind_current_assignment(&service, &delegated_session_id, &delegated_agent_run_id).await
-    {
-        return Json(assignment_error(error.to_string()));
-    }
     Json(
         match service
             .request_assignment_completion(
@@ -279,11 +283,6 @@ pub async fn release_delegate_assignment(
             Err(error) => return Json(assignment_error(error)),
         };
     let service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
-    if let Err(error) =
-        bind_current_assignment(&service, &delegated_session_id, &delegated_agent_run_id).await
-    {
-        return Json(assignment_error(error.to_string()));
-    }
     Json(
         match service
             .request_assignment_release(
@@ -298,22 +297,6 @@ pub async fn release_delegate_assignment(
             Err(error) => assignment_error(error.to_string()),
         },
     )
-}
-
-async fn bind_current_assignment(
-    service: &AgentTaskService,
-    delegated_session_id: &DelegatedSessionId,
-    delegated_agent_run_id: &AgentRunId,
-) -> crate::error::AppResult<Option<AgentTaskAssignmentView>> {
-    let unresolved = service
-        .get_unresolved_assignment(delegated_session_id)
-        .await?;
-    if unresolved.is_none() {
-        return Ok(None);
-    }
-    service
-        .bind_assignment_run(delegated_session_id, delegated_agent_run_id)
-        .await
 }
 
 async fn trusted_delegate_identity(

@@ -3,10 +3,11 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::domain::entities::{
-    AgentRunId, AgentTaskAssignmentReservation, AgentTaskAssignmentSettlement,
-    AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail,
-    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
-    AgentTaskState, AgentTaskSummary, DelegatedSessionId,
+    AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
+    AgentTaskAssignmentSettlement, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
+    AgentTaskCreate, AgentTaskDetail, AgentTaskListId, AgentTaskListSummary,
+    AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState, AgentTaskSummary,
+    DelegatedSessionId,
 };
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::error::{AppError, AppResult};
@@ -155,11 +156,12 @@ impl AgentTaskService {
 
     pub async fn bind_assignment_run(
         &self,
+        assignment_id: &AgentTaskAssignmentId,
         delegated_session_id: &DelegatedSessionId,
         delegated_agent_run_id: &AgentRunId,
     ) -> AppResult<Option<AgentTaskAssignmentView>> {
         self.repo
-            .bind_assignment_run(delegated_session_id, delegated_agent_run_id)
+            .bind_assignment_run(assignment_id, delegated_session_id, delegated_agent_run_id)
             .await
     }
 

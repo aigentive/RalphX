@@ -128,14 +128,24 @@ pub(super) fn reserve(
 
 pub(super) fn bind_run(
     repo: &MemoryAgentTaskRepository,
+    assignment_id: &AgentTaskAssignmentId,
     delegated_session_id: &DelegatedSessionId,
     delegated_agent_run_id: &AgentRunId,
 ) -> AppResult<Option<AgentTaskAssignmentView>> {
     let mut state = repo.state.write().unwrap();
-    let Some(index) = unresolved_index_for_session(&state, delegated_session_id) else {
+    let Some(index) = state
+        .assignments
+        .iter()
+        .position(|assignment| assignment.id == *assignment_id)
+    else {
         return Ok(None);
     };
     let assignment = &mut state.assignments[index];
+    if assignment.delegated_session_id != *delegated_session_id {
+        return Err(AppError::Conflict(
+            "delegate assignment does not belong to the requested session".to_string(),
+        ));
+    }
     if let Some(bound) = &assignment.delegated_agent_run_id {
         if bound != delegated_agent_run_id {
             return Err(AppError::Conflict(
@@ -145,7 +155,7 @@ pub(super) fn bind_run(
     } else {
         if assignment.state != crate::domain::entities::AgentTaskAssignmentState::Reserved {
             return Err(AppError::Conflict(
-                "only a reserved delegate assignment can bind a run".to_string(),
+                "only the exact reserved delegate assignment can bind a run".to_string(),
             ));
         }
         let now = Utc::now();

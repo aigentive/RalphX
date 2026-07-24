@@ -706,14 +706,6 @@ export const IDEATION_TOOLS = [
                     type: "string",
                     description: "Optional parent tool_use id for future collapsed subagent/task widget parity in the invoker chat.",
                 },
-                delegated_session_id: {
-                    type: "string",
-                    description: "Optional existing delegated session to reuse for RalphX-side continuity.",
-                },
-                child_session_id: {
-                    type: "string",
-                    description: "Deprecated alias for delegated_session_id.",
-                },
                 task_ref: {
                     type: "string",
                     description: "Optional task number or task_id from the caller's current ledger to assign atomically to this delegate.",
@@ -758,6 +750,7 @@ export const IDEATION_TOOLS = [
                 },
             },
             required: ["agent_name", "prompt"],
+            additionalProperties: false,
         },
     },
     {

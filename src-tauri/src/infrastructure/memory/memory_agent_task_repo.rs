@@ -7,11 +7,12 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    merge_agent_task_metadata, AgentRunId, AgentTaskAssignment, AgentTaskAssignmentReservation,
-    AgentTaskAssignmentSettlement, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
-    AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList, AgentTaskListId,
-    AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState,
-    AgentTaskStateChange, AgentTaskSummary, DelegatedSessionId,
+    merge_agent_task_metadata, AgentRunId, AgentTaskAssignment, AgentTaskAssignmentId,
+    AgentTaskAssignmentReservation, AgentTaskAssignmentSettlement,
+    AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail,
+    AgentTaskId, AgentTaskList, AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult,
+    AgentTaskPatch, AgentTaskScope, AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
+    DelegatedSessionId,
 };
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::error::{AppError, AppResult};
@@ -304,10 +305,16 @@ impl AgentTaskRepository for MemoryAgentTaskRepository {
 
     async fn bind_assignment_run(
         &self,
+        assignment_id: &AgentTaskAssignmentId,
         delegated_session_id: &DelegatedSessionId,
         delegated_agent_run_id: &AgentRunId,
     ) -> AppResult<Option<AgentTaskAssignmentView>> {
-        assignments::bind_run(self, delegated_session_id, delegated_agent_run_id)
+        assignments::bind_run(
+            self,
+            assignment_id,
+            delegated_session_id,
+            delegated_agent_run_id,
+        )
     }
 
     async fn get_unresolved_assignment(

@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 
 use crate::domain::entities::{
-    AgentRunId, AgentTaskAssignmentReservation, AgentTaskAssignmentSettlement,
-    AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail,
-    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
-    AgentTaskSummary, DelegatedSessionId,
+    AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
+    AgentTaskAssignmentSettlement, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
+    AgentTaskCreate, AgentTaskDetail, AgentTaskListId, AgentTaskListSummary,
+    AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskSummary, DelegatedSessionId,
 };
 use crate::error::AppResult;
 
@@ -61,6 +61,7 @@ pub trait AgentTaskRepository: Send + Sync {
 
     async fn bind_assignment_run(
         &self,
+        assignment_id: &AgentTaskAssignmentId,
         delegated_session_id: &DelegatedSessionId,
         delegated_agent_run_id: &AgentRunId,
     ) -> AppResult<Option<AgentTaskAssignmentView>>;

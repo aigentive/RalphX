@@ -2,8 +2,8 @@ use serde_json::json;
 
 use super::MemoryAgentTaskRepository;
 use crate::domain::entities::{
-    AgentRunId, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus, AgentTaskCreate,
-    AgentTaskPatch, AgentTaskScope, AgentTaskState, DelegatedSessionId,
+    AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
+    AgentTaskCreate, AgentTaskPatch, AgentTaskScope, AgentTaskState, DelegatedSessionId,
 };
 use crate::domain::repositories::AgentTaskRepository;
 
@@ -90,8 +90,14 @@ async fn assignment_reservation_locks_owned_fields_and_completion_is_two_phase()
         .unwrap();
     assert_eq!(descriptive.task.state, AgentTaskState::Active);
 
+    let wrong_assignment_id = AgentTaskAssignmentId::new();
+    assert!(repo
+        .bind_assignment_run(&wrong_assignment_id, &session, &delegated_run)
+        .await
+        .unwrap()
+        .is_none());
     let bound = repo
-        .bind_assignment_run(&session, &delegated_run)
+        .bind_assignment_run(&reserved.assignment.assignment.id, &session, &delegated_run)
         .await
         .unwrap()
         .unwrap();
@@ -185,18 +191,24 @@ async fn terminal_without_completion_reopens_and_reused_session_gets_fresh_attem
     let session = DelegatedSessionId::from_string("session-1");
     let first_run = AgentRunId::from_string("delegated-run-1");
 
-    repo.reserve_assignment(
-        &scope(),
-        "1",
+    let first_reservation = repo
+        .reserve_assignment(
+            &scope(),
+            "1",
+            &session,
+            &AgentRunId::from_string("caller-run-1"),
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    repo.bind_assignment_run(
+        &first_reservation.assignment.assignment.id,
         &session,
-        &AgentRunId::from_string("caller-run-1"),
-        "ralphx-general-worker",
+        &first_run,
     )
     .await
     .unwrap();
-    repo.bind_assignment_run(&session, &first_run)
-        .await
-        .unwrap();
     let released = repo
         .settle_assignment_for_run(
             &first_run,

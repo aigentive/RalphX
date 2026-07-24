@@ -5,8 +5,9 @@ use super::{
 };
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus, AgentTaskCreate,
-    AgentTaskPatch, AgentTaskScope, AgentTaskState, ChatConversation, DelegatedSession,
+    AgentRun, AgentTaskAssignmentId, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
+    AgentTaskCreate, AgentTaskPatch, AgentTaskScope, AgentTaskState, ChatConversation,
+    DelegatedSession,
 };
 use crate::domain::repositories::{
     AgentRunRepository, AgentTaskRepository, DelegatedSessionRepository,
@@ -110,8 +111,22 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
         .await
         .unwrap();
 
+    let wrong_assignment_id = AgentTaskAssignmentId::new();
+    assert!(task_repo
+        .bind_assignment_run(
+            &wrong_assignment_id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .is_none());
     task_repo
-        .bind_assignment_run(&delegated_session.id, &delegated_run.id)
+        .bind_assignment_run(
+            &reserved.assignment.assignment.id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
         .await
         .unwrap();
     let requested = task_repo

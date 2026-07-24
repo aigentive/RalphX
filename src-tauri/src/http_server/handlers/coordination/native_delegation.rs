@@ -1028,27 +1028,32 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
         }
     };
-    let bound_assignment = match assignment_service
-        .bind_assignment_run(
-            &delegated_session_entity,
-            &AgentRunId::from_string(send_result.agent_run_id.clone()),
-        )
-        .await
-    {
-        Ok(assignment) => assignment,
-        Err(error) => {
-            let error_message =
-                format!("Delegated run started but task assignment binding failed: {error}");
-            fail_started_delegated_launch(
-                state,
-                &chat_service,
-                &delegated_session_id,
-                &send_result.agent_run_id,
-                &error_message,
+    let bound_assignment = if let Some(reserved) = reserved_assignment.as_ref() {
+        match assignment_service
+            .bind_assignment_run(
+                &reserved.assignment.id,
+                &delegated_session_entity,
+                &AgentRunId::from_string(send_result.agent_run_id.clone()),
             )
-            .await?;
-            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
+            .await
+        {
+            Ok(assignment) => assignment,
+            Err(error) => {
+                let error_message =
+                    format!("Delegated run started but task assignment binding failed: {error}");
+                fail_started_delegated_launch(
+                    state,
+                    &chat_service,
+                    &delegated_session_id,
+                    &send_result.agent_run_id,
+                    &error_message,
+                )
+                .await?;
+                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
+            }
         }
+    } else {
+        None
     };
     if reserved_assignment.is_some() && bound_assignment.is_none() {
         let error_message =

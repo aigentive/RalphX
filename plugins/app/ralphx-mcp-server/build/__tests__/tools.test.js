@@ -1678,7 +1678,7 @@ describe('delegation bridge tools', () => {
     it.each(['delegate_start', 'delegate_wait', 'delegate_cancel'])('%s should exist in ALL_TOOLS', (toolName) => {
         expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
     });
-    it('delegate_start should expose optional parent_session_id plus required agent_name and prompt', () => {
+    it('delegate_start should hide session selection and require only agent_name and prompt', () => {
         const tool = allTools.find((entry) => entry.name === 'delegate_start');
         expect(tool?.inputSchema.type).toBe('object');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_session_id');
@@ -1688,8 +1688,10 @@ describe('delegation bridge tools', () => {
         expect(tool?.inputSchema.properties).not.toHaveProperty('parent_agent_run_id');
         expect(tool?.inputSchema.properties).not.toHaveProperty('caller_agent_run_id');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_tool_use_id');
-        expect(tool?.inputSchema.properties).toHaveProperty('delegated_session_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('delegated_session_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('child_session_id');
         expect(tool?.inputSchema.properties).toHaveProperty('task_ref');
+        expect(tool?.inputSchema.additionalProperties).toBe(false);
         expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['agent_name', 'prompt']));
         expect(tool?.inputSchema.required).not.toContain('parent_session_id');
     });

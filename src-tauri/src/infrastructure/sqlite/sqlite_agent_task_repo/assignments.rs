@@ -192,15 +192,22 @@ pub(super) async fn reserve(
 
 pub(super) async fn bind_run(
     db: &DbConnection,
+    assignment_id: &AgentTaskAssignmentId,
     delegated_session_id: &DelegatedSessionId,
     delegated_agent_run_id: &AgentRunId,
 ) -> AppResult<Option<AgentTaskAssignmentView>> {
+    let assignment_id = assignment_id.clone();
     let delegated_session_id = delegated_session_id.clone();
     let delegated_agent_run_id = delegated_agent_run_id.clone();
     db.run_transaction(move |conn| {
-        let Some(assignment) = load_unresolved_for_session(conn, &delegated_session_id)? else {
+        let Some(assignment) = load_by_id(conn, &assignment_id)? else {
             return Ok(None);
         };
+        if assignment.delegated_session_id != delegated_session_id {
+            return Err(AppError::Conflict(
+                "delegate assignment does not belong to the requested session".to_string(),
+            ));
+        }
         if let Some(bound) = &assignment.delegated_agent_run_id {
             if bound != &delegated_agent_run_id {
                 return Err(AppError::Conflict(
@@ -211,7 +218,7 @@ pub(super) async fn bind_run(
         }
         if assignment.state != AgentTaskAssignmentState::Reserved {
             return Err(AppError::Conflict(
-                "only a reserved delegate assignment can bind a run".to_string(),
+                "only the exact reserved delegate assignment can bind a run".to_string(),
             ));
         }
         let now = Utc::now();
@@ -222,13 +229,15 @@ pub(super) async fn bind_run(
                  run_bound_at = ?2,
                  updated_at = ?3
              WHERE id = ?4
+               AND delegated_session_id = ?5
                AND state = 'reserved'
                AND delegated_agent_run_id IS NULL",
             params![
                 delegated_agent_run_id.as_str(),
                 now.to_rfc3339(),
                 now.to_rfc3339(),
-                assignment.id.as_str()
+                assignment.id.as_str(),
+                delegated_session_id.as_str()
             ],
         )?;
         if updated != 1 {
