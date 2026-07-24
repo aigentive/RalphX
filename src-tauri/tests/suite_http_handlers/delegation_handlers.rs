@@ -13,13 +13,20 @@ use ralphx_lib::domain::agents::{
     AgentHarnessKind, AgentProviderSettings, LogicalEffort, ManualRoleDefault, ManualServiceTier,
     RoutingRole,
 };
+use ralphx_lib::domain::entities::agent_run::PersonaRunAttribution;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
-    AgentTaskCreate, AgentTaskScope, AgentTaskState, ChatContextType, ChatConversation,
-    ChatConversationId, DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind,
-    IdeationSession, Persona, PersonaId, PersonaStatus, Project, ProjectId, SessionPurpose,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
+    AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AgentTaskAssignmentReservation,
+    AgentTaskAssignmentSettlement, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
+    AgentTaskCreate, AgentTaskDetail, AgentTaskListId, AgentTaskListSummary,
+    AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState, AgentTaskSummary,
+    ChatContextType, ChatConversation, ChatConversationId, DelegatedSession, DelegatedSessionId,
+    IdeationAnalysisBaseRefKind, IdeationSession, InterruptedConversation, Persona, PersonaId,
+    PersonaStatus, Project, ProjectId, SessionPurpose, UsageCapture,
 };
-use ralphx_lib::domain::repositories::DelegatedSessionRepository;
+use ralphx_lib::domain::repositories::{
+    AgentRunRepository, AgentTaskListOptions, AgentTaskRepository, DelegatedSessionRepository,
+};
 use ralphx_lib::error::{AppError, AppResult};
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
@@ -201,6 +208,335 @@ impl DelegatedSessionRepository for RemoveWorkspaceOnRunningDelegatedSessionRepo
             })?;
         }
         Ok(())
+    }
+}
+
+struct FailBindingAgentTaskRepository {
+    inner: Arc<dyn AgentTaskRepository>,
+}
+
+#[async_trait]
+impl AgentTaskRepository for FailBindingAgentTaskRepository {
+    async fn create_task(
+        &self,
+        scope: &AgentTaskScope,
+        input: AgentTaskCreate,
+    ) -> AppResult<AgentTaskMutationResult> {
+        self.inner.create_task(scope, input).await
+    }
+
+    async fn get_task(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+    ) -> AppResult<Option<AgentTaskDetail>> {
+        self.inner.get_task(scope, task_ref).await
+    }
+
+    async fn list_tasks(
+        &self,
+        scope: &AgentTaskScope,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>> {
+        self.inner.list_tasks(scope, options).await
+    }
+
+    async fn list_task_lists(
+        &self,
+        scope: &AgentTaskScope,
+    ) -> AppResult<Vec<AgentTaskListSummary>> {
+        self.inner.list_task_lists(scope).await
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        scope: &AgentTaskScope,
+        list_id: &AgentTaskListId,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>> {
+        self.inner
+            .list_tasks_for_list(scope, list_id, options)
+            .await
+    }
+
+    async fn update_task(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+        patch: AgentTaskPatch,
+    ) -> AppResult<Option<AgentTaskMutationResult>> {
+        self.inner.update_task(scope, task_ref, patch).await
+    }
+
+    async fn reserve_assignment(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+        delegated_session_id: &DelegatedSessionId,
+        caller_agent_run_id: &AgentRunId,
+        delegate_agent_name: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentReservation>> {
+        self.inner
+            .reserve_assignment(
+                scope,
+                task_ref,
+                delegated_session_id,
+                caller_agent_run_id,
+                delegate_agent_name,
+            )
+            .await
+    }
+
+    async fn bind_assignment_run(
+        &self,
+        _delegated_session_id: &DelegatedSessionId,
+        _delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        Err(AppError::Infrastructure(
+            "injected assignment binding failure".to_string(),
+        ))
+    }
+
+    async fn get_unresolved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .get_unresolved_assignment(delegated_session_id)
+            .await
+    }
+
+    async fn request_assignment_completion(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        local_scope: &AgentTaskScope,
+        completion_metadata: Option<serde_json::Value>,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .request_assignment_completion(
+                delegated_session_id,
+                delegated_agent_run_id,
+                local_scope,
+                completion_metadata,
+            )
+            .await
+    }
+
+    async fn request_assignment_release(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .request_assignment_release(delegated_session_id, delegated_agent_run_id, reason)
+            .await
+    }
+
+    async fn settle_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+        terminal_status: AgentTaskAssignmentTerminalStatus,
+        reason: Option<&str>,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        self.inner
+            .settle_assignment_for_run(delegated_agent_run_id, terminal_status, reason)
+            .await
+    }
+
+    async fn get_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .get_assignment_for_run(delegated_agent_run_id)
+            .await
+    }
+
+    async fn fail_reserved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        self.inner
+            .fail_reserved_assignment(delegated_session_id, reason)
+            .await
+    }
+
+    async fn list_unresolved_assignments(&self) -> AppResult<Vec<AgentTaskAssignmentView>> {
+        self.inner.list_unresolved_assignments().await
+    }
+}
+
+struct FailCancelAgentRunRepository {
+    inner: Arc<dyn AgentRunRepository>,
+}
+
+#[async_trait]
+impl AgentRunRepository for FailCancelAgentRunRepository {
+    async fn create(&self, run: AgentRun) -> AppResult<AgentRun> {
+        self.inner.create(run).await
+    }
+
+    async fn get_by_id(&self, id: &AgentRunId) -> AppResult<Option<AgentRun>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_by_ids(&self, ids: &[AgentRunId]) -> AppResult<Vec<AgentRun>> {
+        self.inner.get_by_ids(ids).await
+    }
+
+    async fn get_latest_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_latest_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_latest_completed_for_provider_session(
+                conversation_id,
+                harness,
+                provider_session_id,
+            )
+            .await
+    }
+
+    async fn get_active_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_active_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_latest_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_latest_action(
+                conversation_id,
+                action_kind,
+                action_context_id,
+                action_target_id,
+            )
+            .await
+    }
+
+    async fn get_active_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_active_action(
+                conversation_id,
+                action_kind,
+                action_context_id,
+                action_target_id,
+            )
+            .await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentRun>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn update_status(&self, id: &AgentRunId, status: AgentRunStatus) -> AppResult<()> {
+        self.inner.update_status(id, status).await
+    }
+
+    async fn update_usage(&self, id: &AgentRunId, usage: &AgentRunUsage) -> AppResult<()> {
+        self.inner.update_usage(id, usage).await
+    }
+
+    async fn replace_usage_capture(
+        &self,
+        id: &AgentRunId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        self.inner.replace_usage_capture(id, capture).await
+    }
+
+    async fn update_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: &AgentRunAttribution,
+    ) -> AppResult<()> {
+        self.inner.update_attribution(id, attribution).await
+    }
+
+    async fn set_persona_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: PersonaRunAttribution,
+    ) -> AppResult<()> {
+        self.inner.set_persona_attribution(id, attribution).await
+    }
+
+    async fn complete(&self, id: &AgentRunId) -> AppResult<()> {
+        self.inner.complete(id).await
+    }
+
+    async fn complete_if_running(&self, id: &AgentRunId) -> AppResult<bool> {
+        self.inner.complete_if_running(id).await
+    }
+
+    async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
+        self.inner.fail(id, error_message).await
+    }
+
+    async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "injected agent-run cancellation failure".to_string(),
+        ))
+    }
+
+    async fn delete(&self, id: &AgentRunId) -> AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn delete_by_conversation(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.inner.delete_by_conversation(conversation_id).await
+    }
+
+    async fn count_by_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: AgentRunStatus,
+    ) -> AppResult<u32> {
+        self.inner.count_by_status(conversation_id, status).await
+    }
+
+    async fn cancel_all_running(&self) -> AppResult<u32> {
+        self.inner.cancel_all_running().await
+    }
+
+    async fn cancel_running_started_before(&self, cutoff: DateTime<Utc>) -> AppResult<u32> {
+        self.inner.cancel_running_started_before(cutoff).await
+    }
+
+    async fn get_interrupted_conversations(&self) -> AppResult<Vec<InterruptedConversation>> {
+        self.inner.get_interrupted_conversations().await
     }
 }
 
@@ -853,6 +1189,118 @@ async fn bound_delegate_false_success_reopens_exact_parent_task() {
         .await
         .expect("load assignment")
         .is_none());
+}
+
+#[tokio::test]
+async fn binding_failure_keeps_parent_task_reserved_when_run_cancellation_fails() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let mut app_state = AppState::new_sqlite_test();
+    app_state.agent_task_repo = Arc::new(FailBindingAgentTaskRepository {
+        inner: Arc::clone(&app_state.agent_task_repo),
+    });
+    app_state.agent_run_repo = Arc::new(FailCancelAgentRunRepository {
+        inner: Arc::clone(&app_state.agent_run_repo),
+    });
+    let state = build_state(Arc::new(app_state));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create active parent run");
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    for title in ["Inspect binding failure", "Keep meaningful ledger"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create parent agent task");
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        parent_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: Some("tool-binding-failure".to_string()),
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: Some("1".to_string()),
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the assigned work.".to_string(),
+            title: Some("Binding failure".to_string()),
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect_err("injected binding failure should reject delegate_start");
+    assert_eq!(error.0, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&parent_scope, "1")
+        .await
+        .expect("load parent task")
+        .expect("parent task");
+    assert_eq!(task.state, AgentTaskState::Active);
+    assert_eq!(task.owner_agent.as_deref(), Some("ralphx-general-explorer"));
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("project", project.id.as_str())
+        .await
+        .expect("load delegated sessions")
+        .into_iter()
+        .next()
+        .expect("delegated session");
+    let assignment = state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&delegated_session.id)
+        .await
+        .expect("load unresolved assignment")
+        .expect("reservation must remain unavailable");
+    assert_eq!(assignment.assignment.state.as_str(), "reserved");
 }
 
 #[tokio::test]

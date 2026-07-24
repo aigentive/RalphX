@@ -125,6 +125,53 @@ fn cached_streaming_task_from_completed_payload(
     }
 }
 
+async fn fail_started_delegated_launch(
+    state: &HttpServerState,
+    chat_service: &dyn ChatService,
+    delegated_session_id: &str,
+    delegated_agent_run_id: &str,
+    error_message: &str,
+) -> Result<(), JsonError> {
+    let stop_result = chat_service
+        .stop_agent(ChatContextType::Delegation, delegated_session_id)
+        .await;
+    let cancel_result = state
+        .app_state
+        .agent_run_repo
+        .cancel(&AgentRunId::from_string(delegated_agent_run_id.to_string()))
+        .await;
+
+    match (stop_result, cancel_result) {
+        (Ok(true), Ok(())) => {
+            mark_delegated_launch_failed(state, delegated_session_id, error_message).await
+        }
+        (stop_result, cancel_result) => {
+            let stop_detail = match stop_result {
+                Ok(false) => "no running delegated process was found".to_string(),
+                Ok(true) => "delegated process stop succeeded".to_string(),
+                Err(error) => format!("delegated process stop failed: {error}"),
+            };
+            let cancel_detail = match cancel_result {
+                Ok(()) => "durable run cancellation succeeded".to_string(),
+                Err(error) => format!("durable run cancellation failed: {error}"),
+            };
+            warn!(
+                delegated_session_id,
+                delegated_agent_run_id,
+                stop_detail,
+                cancel_detail,
+                "Delegated launch cleanup could not prove both process termination and durable cancellation; keeping task assignment reserved"
+            );
+            Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "{error_message}; delegated launch cleanup was incomplete ({stop_detail}; {cancel_detail}); the task assignment remains reserved for recovery"
+                ),
+            ))
+        }
+    }
+}
+
 async fn cache_delegated_parent_task(
     cache: &StreamingStateCache,
     conversation_id: &str,
@@ -970,30 +1017,28 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
         Err(error) => {
             let error_message =
                 format!("Delegated run started but task assignment binding failed: {error}");
-            let _ = chat_service
-                .stop_agent(ChatContextType::Delegation, &delegated_session_id)
-                .await;
-            let _ = state
-                .app_state
-                .agent_run_repo
-                .cancel(&AgentRunId::from_string(send_result.agent_run_id.clone()))
-                .await;
-            mark_delegated_launch_failed(state, &delegated_session_id, &error_message).await?;
+            fail_started_delegated_launch(
+                state,
+                &chat_service,
+                &delegated_session_id,
+                &send_result.agent_run_id,
+                &error_message,
+            )
+            .await?;
             return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
         }
     };
     if reserved_assignment.is_some() && bound_assignment.is_none() {
         let error_message =
             "Delegated run started but its reserved task assignment disappeared".to_string();
-        let _ = chat_service
-            .stop_agent(ChatContextType::Delegation, &delegated_session_id)
-            .await;
-        let _ = state
-            .app_state
-            .agent_run_repo
-            .cancel(&AgentRunId::from_string(send_result.agent_run_id.clone()))
-            .await;
-        mark_delegated_launch_failed(state, &delegated_session_id, &error_message).await?;
+        fail_started_delegated_launch(
+            state,
+            &chat_service,
+            &delegated_session_id,
+            &send_result.agent_run_id,
+            &error_message,
+        )
+        .await?;
         return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
     }
 
