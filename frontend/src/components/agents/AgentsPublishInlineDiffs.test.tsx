@@ -541,6 +541,35 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-count", "2");
     });
 
+    it("keeps workspace count, adjacent count, and rendered rows aligned with review changes when live status is clean", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            liveSummary={{
+              supportsWorktreeModes: true,
+              staged: { fileCount: 0, additions: 0, deletions: 0 },
+              unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+              conflicted: { fileCount: 0, files: [] },
+            }}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-count", "2");
+      expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("2");
+      expect(screen.getByTestId("inline-diffs-virtual-list")).toHaveAttribute(
+        "data-count",
+        "2",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toBeInTheDocument();
+    });
+
     it("renders a file card for each change in review.changes (workspace changes mode)", () => {
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(

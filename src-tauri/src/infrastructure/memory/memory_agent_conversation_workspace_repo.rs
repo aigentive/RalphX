@@ -11,12 +11,12 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -35,6 +35,7 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     workspaces: RwLock<HashMap<ChatConversationId, AgentConversationWorkspace>>,
     followup_provenance: RwLock<HashMap<ChatConversationId, AgentWorkspaceFollowupProvenance>>,
     pr_descriptions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrDescription>>,
+    pr_metadata_decisions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrMetadataDecision>>,
     publication_events:
         RwLock<HashMap<ChatConversationId, Vec<AgentConversationWorkspacePublicationEvent>>>,
     pr_comment_evidence: RwLock<HashMap<(String, i64, String), AgentWorkspacePrCommentEvidence>>,
@@ -64,6 +65,7 @@ impl MemoryAgentConversationWorkspaceRepository {
             workspaces: RwLock::new(HashMap::new()),
             followup_provenance: RwLock::new(HashMap::new()),
             pr_descriptions: RwLock::new(HashMap::new()),
+            pr_metadata_decisions: RwLock::new(HashMap::new()),
             publication_events: RwLock::new(HashMap::new()),
             pr_comment_evidence: RwLock::new(HashMap::new()),
             pr_review_monitors: RwLock::new(HashMap::new()),
@@ -819,6 +821,58 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
     }
 
     async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.pr_descriptions.write().await.remove(conversation_id);
+        Ok(())
+    }
+
+    async fn save_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+        decision: AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<()> {
+        self.pr_metadata_decisions
+            .write()
+            .await
+            .insert(conversation_id.clone(), decision);
+        Ok(())
+    }
+
+    async fn get_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrMetadataDecision>> {
+        if let Some(decision) = self
+            .pr_metadata_decisions
+            .read()
+            .await
+            .get(conversation_id)
+            .cloned()
+        {
+            return Ok(Some(decision));
+        }
+
+        // Legacy rows were stored separately from the explicit decision map. Await
+        // this read so a contended lock cannot be mistaken for no submission.
+        Ok(self
+            .pr_descriptions
+            .read()
+            .await
+            .get(conversation_id)
+            .cloned()
+            .map(|description| AgentWorkspacePrMetadataDecision::Patch {
+                title: description.title,
+                body_markdown: Some(description.body_markdown),
+            }))
+    }
+
+    async fn clear_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        self.pr_metadata_decisions
+            .write()
+            .await
+            .remove(conversation_id);
         self.pr_descriptions.write().await.remove(conversation_id);
         Ok(())
     }
@@ -2179,7 +2233,7 @@ fn is_active_direct_pr_supervision_recovery_candidate(
                 workspace.publication_push_status.as_deref(),
                 workspace.pr_supervision_status.as_deref(),
             ),
-            (Some("failed"), Some("blocked")) | (Some("refreshed"), Some("reviewing"))
+            (Some("failed"), Some("blocked")) | (Some("refreshed"), Some("fixing" | "reviewing"))
         )
         && workspace.auto_publish_enabled
         && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)

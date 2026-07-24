@@ -2,14 +2,15 @@ use super::MemoryAgentConversationWorkspaceRepository;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
+    ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -32,6 +33,71 @@ fn pr_review_action(
         None,
         Some(format!("run-{head_sha}")),
     )
+}
+
+#[tokio::test]
+async fn pr_metadata_decisions_round_trip_legacy_and_clear() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-pr-metadata");
+    let cases = [
+        AgentWorkspacePrMetadataDecision::Preserve,
+        AgentWorkspacePrMetadataDecision::patch(Some("title".to_string()), None).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(None, Some("body".to_string())).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(
+            Some("title".to_string()),
+            Some("body".to_string()),
+        )
+        .unwrap(),
+    ];
+    for decision in cases {
+        repo.save_pr_metadata_decision(&conversation_id, decision.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_pr_metadata_decision(&conversation_id)
+                .await
+                .unwrap(),
+            Some(decision)
+        );
+    }
+
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    repo.save_pr_description(
+        &conversation_id,
+        AgentWorkspacePrDescription::new(
+            Some("legacy title".to_string()),
+            "legacy body".to_string(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        Some(AgentWorkspacePrMetadataDecision::Patch {
+            title: Some("legacy title".to_string()),
+            body_markdown: Some("legacy body".to_string()),
+        })
+    );
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -2268,6 +2334,12 @@ mod tests {
         review_handoff.publication_push_status = Some("refreshed".to_string());
         review_handoff.pr_supervision_status = Some("reviewing".to_string());
         review_handoff.pr_autofix_enabled = true;
+        let mut stranded_fix = candidate_workspace("stranded-fix");
+        stranded_fix.publication_pr_number = Some(47);
+        stranded_fix.publication_pr_status = Some("open".to_string());
+        stranded_fix.publication_push_status = Some("refreshed".to_string());
+        stranded_fix.pr_supervision_status = Some("fixing".to_string());
+        stranded_fix.pr_autofix_enabled = true;
 
         for workspace in [
             first.clone(),
@@ -2276,6 +2348,7 @@ mod tests {
             needs_agent,
             terminal,
             review_handoff.clone(),
+            stranded_fix.clone(),
         ] {
             repo.create_or_update(workspace).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -2286,7 +2359,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].conversation_id, review_handoff.conversation_id);
+        assert_eq!(limited[0].conversation_id, stranded_fix.conversation_id);
 
         let all = repo
             .list_active_direct_pr_supervision_recovery_candidates(10)
@@ -2297,6 +2370,7 @@ mod tests {
                 .map(|workspace| workspace.conversation_id)
                 .collect::<Vec<_>>(),
             vec![
+                stranded_fix.conversation_id,
                 review_handoff.conversation_id,
                 second.conversation_id,
                 first.conversation_id

@@ -1370,34 +1370,41 @@ fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
 }
 
 #[test]
-fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
+fn pr_describer_surfaces_share_preserve_or_patch_submit_contract() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-utility-pr-describer")
         .expect("expected canonical PR describer definition");
-    let prompt = load_harness_agent_prompt(
-        &root,
-        "ralphx-utility-pr-describer",
-        AgentPromptHarness::Codex,
-    )
-    .expect("expected PR describer Codex prompt");
-    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
 
     assert_eq!(
         definition.capabilities.mcp_tools,
         vec!["submit_agent_workspace_pr_description".to_string()]
     );
-    assert!(
-        prompt.contains("submit_agent_workspace_pr_description"),
-        "Codex PR describer prompt should expose the submit contract"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__"),
-        "Codex PR describer prompt should not use Claude-style MCP names"
-    );
-    assert!(
-        !prompt.contains("truncated"),
-        "Codex PR describer prompt should not tell helpers to expose bounded-context truncation"
-    );
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-utility-pr-describer", harness)
+            .expect("expected PR describer prompt");
+        assert!(
+            prompt.contains("submit_agent_workspace_pr_description"),
+            "PR describer {harness:?} prompt should expose the submit contract"
+        );
+        assert!(
+            prompt.contains("`decision: preserve`") && prompt.contains("`decision: patch`"),
+            "PR describer {harness:?} prompt should expose preserve and patch decisions"
+        );
+        assert!(
+            prompt.contains("untrusted evidence"),
+            "PR describer {harness:?} prompt should identify remote metadata as untrusted"
+        );
+        assert!(
+            !prompt.contains("mcp__ralphx__"),
+            "PR describer {harness:?} prompt should use surface-local tool names"
+        );
+        assert!(
+            !prompt.contains("truncated"),
+            "PR describer {harness:?} prompt should not tell helpers to expose bounded-context truncation"
+        );
+    }
+
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
     assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
 }
 

@@ -11,13 +11,13 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -1322,7 +1322,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND publication_pr_number IS NOT NULL
                        AND (
                            (publication_push_status = 'failed' AND pr_supervision_status = 'blocked')
-                           OR (publication_push_status = 'refreshed' AND pr_supervision_status = 'reviewing')
+                           OR (
+                               publication_push_status = 'refreshed'
+                               AND pr_supervision_status IN ('fixing', 'reviewing')
+                           )
                        )
                        AND auto_publish_enabled = 1
                        AND (pr_autofix_enabled = 1 OR pr_auto_merge_desired = 1)
@@ -1875,6 +1878,106 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 conn.execute(
                     "UPDATE agent_conversation_workspaces
                      SET publication_pr_title = NULL,
+                         publication_pr_body = NULL,
+                         updated_at = ?2
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, updated_at],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn save_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+        decision: AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let (kind, title, body) = match decision {
+            AgentWorkspacePrMetadataDecision::Preserve => ("preserve", None, None),
+            AgentWorkspacePrMetadataDecision::Patch {
+                title,
+                body_markdown,
+            } => ("patch", title, body_markdown),
+        };
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_pr_metadata_decision = ?2,
+                         publication_pr_title = ?3,
+                         publication_pr_body = ?4,
+                         updated_at = ?5
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, kind, title, body, updated_at],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn get_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrMetadataDecision>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let row = conn
+                    .query_row(
+                        "SELECT publication_pr_metadata_decision, publication_pr_title, publication_pr_body
+                         FROM agent_conversation_workspaces WHERE conversation_id = ?1",
+                        rusqlite::params![conversation_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let Some((kind, title, body_markdown)) = row else {
+                    return Ok(None);
+                };
+                match kind.as_deref() {
+                    Some("preserve") if title.is_none() && body_markdown.is_none() => {
+                        Ok(Some(AgentWorkspacePrMetadataDecision::Preserve))
+                    }
+                    Some("patch") => AgentWorkspacePrMetadataDecision::patch(title, body_markdown)
+                        .ok_or_else(|| {
+                            AppError::Validation("stored PR metadata patch is empty".to_string())
+                        })
+                        .map(Some),
+                    None if body_markdown.is_some() => {
+                        Ok(Some(AgentWorkspacePrMetadataDecision::Patch {
+                            title,
+                            body_markdown,
+                        }))
+                    }
+                    None => Ok(None),
+                    Some(_) => Err(AppError::Validation(
+                        "stored PR metadata decision is invalid".to_string(),
+                    )),
+                }
+            })
+            .await
+    }
+
+    async fn clear_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_pr_metadata_decision = NULL,
+                         publication_pr_title = NULL,
                          publication_pr_body = NULL,
                          updated_at = ?2
                      WHERE conversation_id = ?1",

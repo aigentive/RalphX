@@ -63,6 +63,7 @@ done
 [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || die "--tag must be an exact vX.Y.Z release tag."
 [[ -f "${expected_cask}" ]] || die "Staged expected cask is missing: ${expected_cask}"
+expected_cask="$(cd "$(dirname "${expected_cask}")" && pwd -P)/$(basename "${expected_cask}")"
 
 mkdir -p "${work_dir}"
 tap_dir="$(mktemp -d "${work_dir}/tap.XXXXXX")"

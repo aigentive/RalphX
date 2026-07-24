@@ -7,7 +7,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::AppResult;
+use crate::{AppError, AppResult};
+
+pub const EMPTY_PR_METADATA_PATCH_VALIDATION_ERROR: &str =
+    "pull request metadata patch requires a title or body";
+
+/// Reject a metadata patch that omits both mutable fields.
+pub fn validate_pr_metadata_patch(title: Option<&str>, body_file: Option<&Path>) -> AppResult<()> {
+    if title.is_none() && body_file.is_none() {
+        return Err(AppError::Validation(
+            EMPTY_PR_METADATA_PATCH_VALIDATION_ERROR.to_string(),
+        ));
+    }
+
+    Ok(())
+}
 
 /// Status of a GitHub pull request
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,6 +474,22 @@ pub trait GithubServiceTrait: Send + Sync {
         body_file: &Path,
     ) -> AppResult<()>;
 
+    /// Patch one or both existing pull-request metadata fields without
+    /// synthesizing or resending the omitted field.
+    async fn patch_pr_metadata(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        title: Option<&str>,
+        body_file: Option<&Path>,
+    ) -> AppResult<()> {
+        validate_pr_metadata_patch(title, body_file)?;
+        let _ = (working_dir, pr_number, title, body_file);
+        Err(AppError::Validation(
+            "GitHub metadata patching is not supported by this service".to_string(),
+        ))
+    }
+
     /// Update an existing pull request's base branch.
     async fn update_pr_base(&self, working_dir: &Path, pr_number: i64, base: &str)
         -> AppResult<()>;
@@ -619,116 +649,5 @@ pub trait GithubServiceTrait: Send + Sync {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct DefaultOnlyGithubService;
-
-    #[async_trait]
-    impl GithubServiceTrait for DefaultOnlyGithubService {
-        async fn create_issue(
-            &self,
-            _working_dir: &Path,
-            _repository: &str,
-            _title: &str,
-            _body_file: &Path,
-        ) -> AppResult<String> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn create_draft_pr(
-            &self,
-            _working_dir: &Path,
-            _base: &str,
-            _head: &str,
-            _title: &str,
-            _body_file: &Path,
-        ) -> AppResult<(i64, String)> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn mark_pr_ready(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn update_pr_details(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-            _title: &str,
-            _body_file: &Path,
-        ) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn update_pr_base(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-            _base: &str,
-        ) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn check_pr_status(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-        ) -> AppResult<PrStatus> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn check_pr_sync_state(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-        ) -> AppResult<PrSyncState> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn push_branch(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn close_pr(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn delete_remote_branch(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn fetch_remote(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn find_pr_by_head_branch(
-            &self,
-            _working_dir: &Path,
-            _head: &str,
-        ) -> AppResult<Option<(i64, String)>> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-
-        async fn get_pr_diff_patch(
-            &self,
-            _working_dir: &Path,
-            _pr_number: i64,
-            _pr_url: Option<&str>,
-        ) -> AppResult<String> {
-            unimplemented!("not needed for default annotation coverage")
-        }
-    }
-
-    #[tokio::test]
-    async fn default_pr_diff_annotations_are_empty_for_pr_number() {
-        let service = DefaultOnlyGithubService;
-
-        let annotations = service
-            .fetch_pr_diff_annotations(Path::new("/tmp"), 123)
-            .await
-            .expect("default annotations should be empty");
-
-        assert_eq!(annotations, PrDiffAnnotations::empty(123));
-    }
-}
+#[path = "github_service_tests.rs"]
+mod tests;

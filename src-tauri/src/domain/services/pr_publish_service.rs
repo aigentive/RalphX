@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use tempfile::NamedTempFile;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentWorkspacePrDescription, ArtifactContent, ChatConversation,
-    PlanBranch, Project, Task,
+    AgentConversationWorkspace, AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision,
+    ArtifactContent, ChatConversation, PlanBranch, Project, Task,
 };
 use crate::domain::repositories::{ArtifactRepository, IdeationSessionRepository};
 use crate::domain::services::github_generated_markdown::RALPHX_GENERATED_FOOTER;
@@ -87,6 +87,30 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         workspace: &AgentConversationWorkspace,
         description: &AgentWorkspacePrDescription,
     ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+        self.publish_draft_pr_inner(working_dir, conversation, workspace, description, true)
+            .await
+    }
+
+    /// Creates a draft PR while preserving duplicate recovery for the caller.
+    pub async fn publish_draft_pr_without_duplicate_recovery(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
+    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+        self.publish_draft_pr_inner(working_dir, conversation, workspace, description, false)
+            .await
+    }
+
+    async fn publish_draft_pr_inner(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
+        recover_duplicate: bool,
+    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
         let mut title = description
             .title
             .as_deref()
@@ -136,7 +160,7 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 created_pr: true,
                 pr_status: "draft",
             }),
-            Err(AppError::DuplicatePr) => {
+            Err(AppError::DuplicatePr) if recover_duplicate => {
                 let Some((pr_number, pr_url)) = self
                     .github
                     .find_pr_by_head_branch(working_dir, &workspace.branch_name)
@@ -154,8 +178,61 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                     pr_status: "open",
                 })
             }
+            Err(AppError::DuplicatePr) => Err(AppError::DuplicatePr),
             Err(error) => Err(error),
         }
+    }
+
+    /// Applies a deliberately partial metadata decision to a linked existing PR.
+    pub async fn publish_existing_pr_metadata_decision(
+        &self,
+        working_dir: &Path,
+        conversation: &ChatConversation,
+        pr_number: i64,
+        pr_url: Option<&str>,
+        metadata_decision: &AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+        match metadata_decision {
+            AgentWorkspacePrMetadataDecision::Preserve => {}
+            AgentWorkspacePrMetadataDecision::Patch {
+                title,
+                body_markdown,
+            } => {
+                let title = title.as_deref().map(|title| {
+                    let mut title = title.trim().to_string();
+                    if let Some(jira_key) = primary_jira_key_from_title(
+                        build_agent_workspace_pr_title(conversation).as_str(),
+                    ) {
+                        title = normalize_title_with_jira_key(&title, &jira_key);
+                    }
+                    title
+                });
+                let body_file = body_markdown
+                    .as_deref()
+                    .map(|body| {
+                        let body = finalize_agent_workspace_pr_body(body, &self.plan_markdown);
+                        write_agent_workspace_pr_body(&body)
+                    })
+                    .transpose()?;
+                self.github
+                    .patch_pr_metadata(
+                        working_dir,
+                        pr_number,
+                        title.as_deref(),
+                        body_file.as_ref().map(NamedTempFile::path),
+                    )
+                    .await?;
+            }
+        }
+
+        Ok(AgentWorkspacePrPublishOutcome {
+            pr_number,
+            pr_url: pr_url
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("#{pr_number}")),
+            created_pr: false,
+            pr_status: "open",
+        })
     }
 }
 

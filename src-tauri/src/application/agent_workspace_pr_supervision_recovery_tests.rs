@@ -25,10 +25,10 @@ use crate::domain::entities::plan_branch::{
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunStatus, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
-    Project, ProjectId, TaskId,
+    AgentRunActionKind, AgentRunStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch,
+    PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
@@ -920,6 +920,285 @@ async fn recovers_stale_needs_agent_repair_without_rearming_pr_supervision() {
             "pr_autofix_completed" | "pr_autofix_published"
         )
     }));
+}
+
+#[tokio::test]
+async fn retry_eligible_stale_pr_autofix_settlement_restarts_pr_polling() {
+    let (_temp_dir, project, mut workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-retry-eligible").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha.clone());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    let fingerprint = "github_pr_autofix:257:head:retry-eligible";
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut failed_autofix = AgentRun::new(conversation_id.clone());
+    failed_autofix.action_kind = Some(AgentRunActionKind::PrAutofix);
+    failed_autofix.action_context_id = Some("257".to_string());
+    failed_autofix.action_target_id = Some(fingerprint.to_string());
+    let failed_autofix = agent_run_repo
+        .create(failed_autofix)
+        .await
+        .expect("seed failed autofix");
+    agent_run_repo
+        .fail(&failed_autofix.id, "autofix failed")
+        .await
+        .expect("fail autofix");
+
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&workspace_repo)
+                as Arc<dyn AgentConversationWorkspaceRepository>,
+            project_repo: Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new())
+                as Arc<dyn PlanBranchRepository>,
+            github,
+            pr_poller_registry: Some(Arc::clone(&registry)),
+            transition_service: None,
+            chat_service: Some(Arc::new(MockChatService::new())),
+            agent_run_repo,
+            app_handle: None,
+            pr_fix_review_publish_resumer: None,
+        },
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("retry-eligible recovery should rearm supervision");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
+            pr_number: 257,
+            head_sha,
+        }
+    );
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn refreshed_fixing_workspace_restores_current_exact_pr_autofix_claim() {
+    let (_temp_dir, project, mut workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-refreshed-fixing").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_summary = Some("PR fixer refreshed from base.".to_string());
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed stranded workspace");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut active_autofix = AgentRun::new(conversation_id.clone());
+    active_autofix.action_kind = Some(AgentRunActionKind::PrAutofix);
+    active_autofix.action_context_id = Some("257".to_string());
+    active_autofix.action_target_id =
+        Some("github_pr_autofix:257:head:refreshed-fixing".to_string());
+    agent_run_repo
+        .create(active_autofix)
+        .await
+        .expect("seed active exact autofix");
+    let github = Arc::new(MockGithubService::new());
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            Arc::clone(&github),
+            agent_run_repo,
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("stranded exact PR autofix should recover");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("active_pr_autofix_replacement")
+    );
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    let recovered = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    assert_eq!(
+        recovered.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(recovered.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(
+        recovered.pr_supervision_summary.as_deref(),
+        Some("PR fixer refreshed from base.")
+    );
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should load")
+            .is_empty(),
+        "claim restoration must not fabricate completion or publish events"
+    );
+}
+
+#[tokio::test]
+async fn refreshed_fixing_workspace_without_exact_pr_autofix_run_stays_unclaimed() {
+    let (_temp_dir, project, mut workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-refreshed-fixing-unbound").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed unbound stranded workspace");
+    let github = Arc::new(MockGithubService::new());
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("unbound stranded workspace should fail closed");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("workspace_push_not_failed")
+    );
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    let unchanged = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    assert_eq!(
+        unchanged.publication_push_status,
+        workspace.publication_push_status
+    );
+    assert_eq!(
+        unchanged.pr_supervision_status,
+        workspace.pr_supervision_status
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should load")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn exhausted_stale_pr_autofix_stays_blocked_without_pr_polling() {
+    let (_temp_dir, project, mut workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-retry-exhausted").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha);
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    let fingerprint = "github_pr_autofix:257:head:retry-exhausted";
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    for _ in 0..2 {
+        let mut failed_autofix = AgentRun::new(conversation_id.clone());
+        failed_autofix.action_kind = Some(AgentRunActionKind::PrAutofix);
+        failed_autofix.action_context_id = Some("257".to_string());
+        failed_autofix.action_target_id = Some(fingerprint.to_string());
+        let failed_autofix = agent_run_repo
+            .create(failed_autofix)
+            .await
+            .expect("seed failed autofix");
+        agent_run_repo
+            .fail(&failed_autofix.id, "autofix failed")
+            .await
+            .expect("fail autofix");
+    }
+
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    let outcome = recover_agent_workspace_pr_supervision(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&workspace_repo)
+                as Arc<dyn AgentConversationWorkspaceRepository>,
+            project_repo: Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new())
+                as Arc<dyn PlanBranchRepository>,
+            github: Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            pr_poller_registry: Some(Arc::clone(&registry)),
+            transition_service: None,
+            chat_service: Some(Arc::new(MockChatService::new())),
+            agent_run_repo,
+            app_handle: None,
+            pr_fix_review_publish_resumer: None,
+        },
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("exhausted recovery should settle blocked");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_manual")
+    );
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    assert!(!registry.is_agent_workspace_polling(&conversation_id));
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup")
+        .expect("workspace exists");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("retry budget is exhausted"));
 }
 
 #[tokio::test]
@@ -1843,7 +2122,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_manual")
     );
     assert_eq!(
         publish_resumer.calls(),
@@ -1990,7 +2269,7 @@ async fn pending_review_handoff_without_monitor_aborts_fail_closed_without_publi
 
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_recovered")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("stale_repair_manual")
     );
     assert_eq!(resumer.calls(), 0);
     let updated = workspace_repo
