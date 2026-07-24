@@ -5,7 +5,13 @@
  * warm orange accent for actions, and smooth animations.
  */
 
-import { useState, useCallback, useEffect, type ReactNode } from "react";
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useId,
+  type ReactNode,
+} from "react";
 import { toast } from "sonner";
 import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -32,6 +38,10 @@ import {
   PlanBundleTabs,
   type PlanBundleBodyMode,
 } from "./PlanBundleTabs";
+import {
+  planBundlePanelId,
+  planBundleTabId,
+} from "./planBundleTabIds";
 
 // ============================================================================
 // Types
@@ -52,6 +62,7 @@ export interface PlanDisplayProps {
   linkedProposalsCount?: number;
   bodyMode?: PlanDisplayBodyMode;
   onBodyModeChange?: (mode: PlanDisplayBodyMode) => void;
+  bodyTabsIdPrefix?: string;
   hideBody?: boolean;
   onEdit?: () => void;
   onExport?: () => void;
@@ -385,6 +396,7 @@ export function PlanDisplay({
   linkedProposalsCount = 0,
   bodyMode = "overview",
   onBodyModeChange,
+  bodyTabsIdPrefix,
   hideBody = false,
   onEdit,
   onExport,
@@ -422,6 +434,9 @@ export function PlanDisplay({
     onCreateProposals &&
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
   const showPlanBodyTabs = onBodyModeChange !== undefined;
+  const generatedBodyTabsId = useId();
+  const resolvedBodyTabsIdPrefix =
+    bodyTabsIdPrefix ?? `plan-bundle-${generatedBodyTabsId.replace(/:/g, "")}`;
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
     !isPlanActionRecommendationPending &&
@@ -600,6 +615,35 @@ export function PlanDisplay({
         showCreateProposals ||
         showImplementDirectly ||
         Boolean(artifactActions));
+    const body = isLoadingVersion ? (
+      <div className="flex items-center justify-center py-12">
+        <Loader2
+          className="w-6 h-6 animate-spin"
+          style={{ color: "var(--accent-primary)" }}
+        />
+      </div>
+    ) : renderedContent ? (
+      <ArtifactMarkdownBody
+        content={bodyAfterHeading ?? ""}
+        source={{
+          sourceKind: artifactLabel === "Review" ? "review" : "plan",
+          sourceId: plan.id,
+          sourceLabel: artifactLabel,
+          title: plan.name,
+          artifactId: plan.id,
+          version: selectedVersion,
+        }}
+        excerptSelectionEnabled={excerptSelectionEnabled}
+        className="text-[0.8125rem] leading-relaxed"
+      />
+    ) : (
+      <p
+        className="text-[0.8125rem] italic py-8 text-center"
+        style={{ color: "var(--text-muted)" }}
+      >
+        No content available
+      </p>
+    );
 
     return (
       <div data-testid="plan-display-chromeless" className="group">
@@ -793,6 +837,7 @@ export function PlanDisplay({
 
               {showPlanBodyTabs && (
                 <PlanBundleTabs
+                  idPrefix={resolvedBodyTabsIdPrefix}
                   value={currentBodyMode}
                   onValueChange={(mode) => onBodyModeChange?.(mode)}
                   linkedProposalsCount={linkedProposalsCount}
@@ -964,34 +1009,23 @@ export function PlanDisplay({
 
         {!isLoadingVersion && artifactPreamble}
 
-        {hideBody ? null : isLoadingVersion ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2
-              className="w-6 h-6 animate-spin"
-              style={{ color: "var(--accent-primary)" }}
-            />
-          </div>
-        ) : renderedContent ? (
-          <ArtifactMarkdownBody
-            content={bodyAfterHeading ?? ""}
-            source={{
-              sourceKind: artifactLabel === "Review" ? "review" : "plan",
-              sourceId: plan.id,
-              sourceLabel: artifactLabel,
-              title: plan.name,
-              artifactId: plan.id,
-              version: selectedVersion,
-            }}
-            excerptSelectionEnabled={excerptSelectionEnabled}
-            className="text-[0.8125rem] leading-relaxed"
-          />
-        ) : (
-          <p
-            className="text-[0.8125rem] italic py-8 text-center"
-            style={{ color: "var(--text-muted)" }}
+        {hideBody ? null : showPlanBodyTabs ? (
+          <div
+            id={planBundlePanelId(
+              resolvedBodyTabsIdPrefix,
+              currentBodyMode,
+            )}
+            role="tabpanel"
+            aria-labelledby={planBundleTabId(
+              resolvedBodyTabsIdPrefix,
+              currentBodyMode,
+            )}
+            tabIndex={0}
           >
-            No content available
-          </p>
+            {body}
+          </div>
+        ) : (
+          body
         )}
       </div>
     );

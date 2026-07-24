@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PlanDisplay, VersionedArtifactDisplay } from "./PlanDisplay";
 import type { Artifact } from "@/types/artifact";
@@ -732,6 +739,16 @@ describe("PlanDisplay", () => {
       expect(overviewButton).toHaveAttribute("aria-selected", "true");
       expect(blueprintButton).toHaveAttribute("aria-selected", "false");
       expect(proposalsButton).toHaveAttribute("aria-selected", "false");
+      const overviewPanel = document.getElementById(
+        overviewButton.getAttribute("aria-controls")!,
+      );
+      expect(overviewPanel).toHaveAttribute("role", "tabpanel");
+      expect(overviewPanel).toBeVisible();
+      expect(
+        within(overviewPanel!).getByText(
+          "Implement JWT-based authentication system.",
+        ),
+      ).toBeVisible();
 
       fireEvent.mouseDown(proposalsButton);
       fireEvent.click(proposalsButton);

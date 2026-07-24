@@ -255,7 +255,6 @@ pub(super) fn resolve_artifact_mutation_authority(
 
 pub(super) async fn reconcile_plan_notifications(
     state: &HttpServerState,
-    prior_artifact_id: Option<&str>,
     current_artifact: &Artifact,
     sessions: &[IdeationSession],
     mutation_authority: Option<&ArtifactMutationAuthority>,
@@ -263,7 +262,7 @@ pub(super) async fn reconcile_plan_notifications(
     let publish_authority = mutation_authority.and_then(|value| value.plan_approval_authority());
     crate::application::plan_approval_notification_service::reconcile_plan_approval_on_publish(
         &state.app_state,
-        prior_artifact_id,
+        None,
         current_artifact.id.as_str(),
         sessions,
         publish_authority.as_ref(),

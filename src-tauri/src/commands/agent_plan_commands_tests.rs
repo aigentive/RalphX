@@ -1454,6 +1454,44 @@ async fn copy_agent_conversation_plan_uses_selected_source_version() {
 }
 
 #[tokio::test]
+async fn copy_agent_conversation_plan_rejects_historical_v2_overview_without_exact_pair() {
+    let (state, project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let (source_session, _source_v1, source_v2) = seed_source_plan(&state, &project).await;
+    seed_blueprint_for_session(
+        &state,
+        source_session.id.as_str(),
+        "# Current source blueprint",
+    )
+    .await;
+
+    let error = copy_agent_conversation_plan_for_state(
+        CopyAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_v2.id.as_str().to_string(),
+            source_version: 1,
+        },
+        &state,
+    )
+    .await
+    .expect_err("historical v2 Overview cannot prove its exact Blueprint pair");
+
+    assert_eq!(
+        error,
+        "Historical v2 plan copies require selecting the current Overview and Blueprint pair"
+    );
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Edit);
+    assert!(workspace.linked_ideation_session_id.is_none());
+}
+
+#[tokio::test]
 async fn copy_agent_conversation_plan_rejects_file_backed_source_plan() {
     let (state, project, conversation, _test_root) =
         setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;

@@ -32,6 +32,19 @@ pub async fn approve_plan_artifact(
         .blueprint_artifact
         .as_ref()
         .map(|artifact| artifact.metadata.version);
+    let plan_bundle = PlanArtifactBundle {
+        overview_id: approved.artifact.id.clone(),
+        blueprint_id: approved
+            .blueprint_artifact
+            .as_ref()
+            .map(|artifact| artifact.id.clone()),
+        contract_version: if approved.blueprint_artifact.is_some() {
+            2
+        } else {
+            1
+        },
+        is_inherited: false,
+    };
     let mut response = ArtifactResponse::from(approved.artifact);
     if let Some(blueprint) = approved.blueprint_artifact {
         let mut blueprint_response = ArtifactResponse::from(blueprint);
@@ -65,16 +78,12 @@ pub async fn approve_plan_artifact(
             "approvedAt": approved.approved_at,
         }),
     );
-    state
-        .app_state
-        .notification_service()
-        .resolve_workflow_notification(
-            &crate::application::interactive_notification_producer::plan_notification_key(
-                approved.session_id.as_str(),
-                &response_id,
-            ),
-        )
-        .await;
+    crate::application::plan_approval_notification_service::resolve_plan_approval_notifications(
+        &state.app_state,
+        &approved.session_id,
+        &plan_bundle,
+    )
+    .await;
 
     let tasks_enabled = state
         .app_state

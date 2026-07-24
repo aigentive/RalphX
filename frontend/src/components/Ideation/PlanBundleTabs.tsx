@@ -1,21 +1,19 @@
 import { FileText, GitPullRequestArrow, ListTree } from "lucide-react";
 
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { planBundlePanelId, planBundleTabId } from "./planBundleTabIds";
 
 export type PlanBundleBodyMode = "overview" | "blueprint" | "proposals";
 
 interface PlanBundleTabsProps {
+  idPrefix: string;
   value: PlanBundleBodyMode;
   onValueChange: (value: PlanBundleBodyMode) => void;
   linkedProposalsCount: number;
 }
 
 export function PlanBundleTabs({
+  idPrefix,
   value,
   onValueChange,
   linkedProposalsCount,
@@ -31,6 +29,8 @@ export function PlanBundleTabs({
       >
         <TabsTrigger
           value="overview"
+          id={planBundleTabId(idPrefix, "overview")}
+          aria-controls={planBundlePanelId(idPrefix, "overview")}
           data-testid="plan-overview-tab"
           className="h-7 gap-1.5 px-2.5 text-[0.6875rem]"
         >
@@ -39,6 +39,8 @@ export function PlanBundleTabs({
         </TabsTrigger>
         <TabsTrigger
           value="blueprint"
+          id={planBundleTabId(idPrefix, "blueprint")}
+          aria-controls={planBundlePanelId(idPrefix, "blueprint")}
           data-testid="plan-blueprint-tab"
           className="h-7 gap-1.5 px-2.5 text-[0.6875rem]"
         >
@@ -48,6 +50,8 @@ export function PlanBundleTabs({
         {linkedProposalsCount > 0 ? (
           <TabsTrigger
             value="proposals"
+            id={planBundleTabId(idPrefix, "proposals")}
+            aria-controls={planBundlePanelId(idPrefix, "proposals")}
             data-testid="plan-proposals-tab"
             className="h-7 gap-1.5 px-2.5 text-[0.6875rem]"
           >
@@ -56,11 +60,6 @@ export function PlanBundleTabs({
           </TabsTrigger>
         ) : null}
       </TabsList>
-      <TabsContent value="overview" className="hidden" />
-      <TabsContent value="blueprint" className="hidden" />
-      {linkedProposalsCount > 0 ? (
-        <TabsContent value="proposals" className="hidden" />
-      ) : null}
     </Tabs>
   );
 }

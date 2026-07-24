@@ -523,6 +523,12 @@ async fn resolve_source_plan_artifacts(
         let bundle = source_session
             .plan_artifact_bundle()
             .ok_or_else(|| "Source session has an incomplete v2 plan bundle".to_string())?;
+        if source_artifact.id != bundle.overview_id {
+            return Err(
+                "Historical v2 plan copies require selecting the current Overview and Blueprint pair"
+                    .to_string(),
+            );
+        }
         let blueprint_id = bundle
             .blueprint_id
             .ok_or_else(|| "Source session has an incomplete v2 plan bundle".to_string())?;

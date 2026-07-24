@@ -36,7 +36,6 @@ pub async fn create_plan_artifact_with_headers(
         blueprint_created,
         project_id,
         session_title,
-        prior_artifact_id,
         notification_session,
         plan_target_id,
     ) = state
@@ -49,10 +48,6 @@ pub async fn create_plan_artifact_with_headers(
                 .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
 
             crate::http_server::helpers::assert_session_mutable(&session)?;
-            let prior_artifact_id = session
-                .plan_artifact_id
-                .as_ref()
-                .map(|artifact_id| artifact_id.to_string());
             let prior_blueprint_id = session
                 .plan_blueprint_artifact_id
                 .as_ref()
@@ -143,7 +138,6 @@ pub async fn create_plan_artifact_with_headers(
                 blueprint_created,
                 session.project_id.clone(),
                 session_title,
-                prior_artifact_id,
                 session,
                 plan_target_id,
             ))
@@ -157,7 +151,6 @@ pub async fn create_plan_artifact_with_headers(
 
     reconcile_plan_notifications(
         &state,
-        prior_artifact_id.as_deref(),
         &created,
         std::slice::from_ref(&notification_session),
         mutation_authority.as_ref(),

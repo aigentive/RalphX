@@ -58,7 +58,7 @@ export const PLAN_TOOLS = [
     },
     {
         name: "link_proposals_to_plan",
-        description: "Link multiple task proposals to an implementation plan. Use after creating proposals to establish the connection between the plan and its derived tasks. Stale artifact IDs are auto-resolved: you can pass any previous version's ID and it will resolve to the latest before linking. This enables traceability and allows the system to suggest updates when the plan changes.",
+        description: "Link multiple task proposals to the current implementation plan bundle. The backend derives and records the exact Overview and Blueprint pair atomically. Use after creating proposals to establish the connection between the plan and its derived tasks. Stale Overview artifact IDs are auto-resolved to the latest current Overview before linking.",
         inputSchema: {
             type: "object",
             properties: {
@@ -69,7 +69,7 @@ export const PLAN_TOOLS = [
                 },
                 artifact_id: {
                     type: "string",
-                    description: "The plan artifact ID to link proposals to. Can be any version ID — stale IDs are auto-resolved to the latest version.",
+                    description: "The Overview artifact ID to link proposals from. Can be any version ID — stale IDs are auto-resolved to the latest current Overview and its exact Blueprint.",
                 },
             },
             required: ["proposal_ids", "artifact_id"],

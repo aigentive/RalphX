@@ -7482,6 +7482,42 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("connects Overview and Blueprint tabs to their visible document panels", async () => {
+    const user = userEvent.setup();
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanBundleArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const overviewTab = await screen.findByRole("tab", { name: "Overview" });
+    const overviewPanel = document.getElementById(
+      overviewTab.getAttribute("aria-controls")!,
+    );
+    expect(overviewPanel).toHaveAttribute("role", "tabpanel");
+    expect(overviewPanel).toBeVisible();
+    expect(within(overviewPanel!).getByText("Do the work.")).toBeVisible();
+
+    const blueprintTab = screen.getByRole("tab", { name: "Blueprint" });
+    await user.click(blueprintTab);
+    const blueprintPanel = document.getElementById(
+      blueprintTab.getAttribute("aria-controls")!,
+    );
+    expect(blueprintPanel).toHaveAttribute("role", "tabpanel");
+    expect(blueprintPanel).toBeVisible();
+    expect(
+      within(blueprintPanel!).getByText("Follow these detailed steps."),
+    ).toBeVisible();
+  });
+
   it("keeps proposal content inside Plan when a stale Proposals tab is active", async () => {
     const user = userEvent.setup();
     getIdeationSessionMock.mockResolvedValue({
@@ -7645,8 +7681,13 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByTestId("agents-artifact-tab-proposal"),
     ).not.toBeInTheDocument();
+    const proposalsPanel = document.getElementById(
+      proposalsToggle.getAttribute("aria-controls")!,
+    );
+    expect(proposalsPanel).toHaveAttribute("role", "tabpanel");
+    expect(proposalsPanel).toBeVisible();
     expect(
-      await screen.findByText("Gate embedded proposal access"),
+      await within(proposalsPanel!).findByText("Gate embedded proposal access"),
     ).toBeInTheDocument();
     expect(useDependencyGraphMock).toHaveBeenLastCalledWith("session-1");
   });

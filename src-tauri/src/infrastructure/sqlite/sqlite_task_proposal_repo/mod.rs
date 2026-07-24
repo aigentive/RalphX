@@ -122,30 +122,35 @@ impl SqliteTaskProposalRepository {
         Ok(())
     }
 
-    /// Update a proposal's plan_artifact_id and plan_version_at_creation for a batch of proposal IDs.
-    /// Uses a single UPDATE with WHERE id IN (...) instead of per-row statements.
+    /// Update a batch of proposals to the same exact plan Overview and Blueprint pair.
+    /// Legacy v1 plans clear any stale Blueprint lineage.
     pub(crate) fn batch_link_proposals_sync(
         conn: &Connection,
         proposal_ids: &[String],
         artifact_id: &str,
         version: u32,
+        blueprint_artifact_id: Option<&str>,
+        blueprint_version: Option<u32>,
     ) -> AppResult<()> {
         if proposal_ids.is_empty() {
             return Ok(());
         }
         let now = Utc::now().to_rfc3339();
         let placeholders: Vec<String> = (0..proposal_ids.len())
-            .map(|i| format!("?{}", i + 4))
+            .map(|i| format!("?{}", i + 6))
             .collect();
         let sql = format!(
             "UPDATE task_proposals SET plan_artifact_id = ?1, plan_version_at_creation = ?2, \
-             updated_at = ?3 WHERE id IN ({})",
+             blueprint_artifact_id = ?3, blueprint_version_at_creation = ?4, updated_at = ?5 \
+             WHERE id IN ({})",
             placeholders.join(", ")
         );
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(3 + proposal_ids.len());
+            Vec::with_capacity(5 + proposal_ids.len());
         params.push(Box::new(artifact_id.to_string()));
         params.push(Box::new(version));
+        params.push(Box::new(blueprint_artifact_id.map(str::to_string)));
+        params.push(Box::new(blueprint_version));
         params.push(Box::new(now));
         for id in proposal_ids {
             params.push(Box::new(id.clone()));

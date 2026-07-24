@@ -25,6 +25,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -77,6 +78,10 @@ import type {
   PlanDisplayConversationReference,
   PlanDisplayBodyMode,
 } from "@/components/Ideation/PlanDisplay";
+import {
+  planBundlePanelId,
+  planBundleTabId,
+} from "@/components/Ideation/planBundleTabIds";
 import { useChatStore } from "@/stores/chatStore";
 import {
   selectActivePlanId,
@@ -2898,6 +2903,11 @@ function AgentPlanPanel({
     ((conversationId: string, sessionId: string) => void) | undefined;
   onOpenTasks: () => void;
 }) {
+  const generatedPlanBundleTabsId = useId();
+  const planBundleTabsId = `agents-plan-bundle-${generatedPlanBundleTabsId.replace(
+    /:/g,
+    "",
+  )}`;
   const [isEditing, setIsEditing] = useState(false);
   const [isPlanExpanded, setIsPlanExpanded] = useState(true);
   const [planBodyMode, setPlanBodyMode] =
@@ -3928,6 +3938,7 @@ function AgentPlanPanel({
                 plan={selectedPlanArtifact ?? planArtifact}
                 linkedProposalsCount={linkedProposalsCount}
                 bodyMode={planBodyMode}
+                bodyTabsIdPrefix={planBundleTabsId}
                 hideBody={
                   planBodyMode === "proposals" ||
                   (planBodyMode === "blueprint" && !planArtifact.blueprint)
@@ -3947,60 +3958,88 @@ function AgentPlanPanel({
               />
             </Suspense>
             {planBodyMode === "blueprint" && !planArtifact.blueprint ? (
-              <EmptyArtifactState
-                title={
-                  planArtifact.planContractVersion === 1
-                    ? "Blueprint not created for this legacy plan"
-                    : "Implementation blueprint is not available yet"
-                }
-              />
+              <div
+                id={planBundlePanelId(
+                  planBundleTabsId,
+                  "blueprint",
+                )}
+                role="tabpanel"
+                aria-labelledby={planBundleTabId(
+                  planBundleTabsId,
+                  "blueprint",
+                )}
+                tabIndex={0}
+              >
+                <EmptyArtifactState
+                  title={
+                    planArtifact.planContractVersion === 1
+                      ? "Blueprint not created for this legacy plan"
+                      : "Implementation blueprint is not available yet"
+                  }
+                />
+              </div>
             ) : null}
-            {planBodyMode === "proposals" &&
-              session &&
-              proposals.length > 0 && (
-                <>
-                  <Suspense
-                    fallback={
-                      <EmptyArtifactState title="Loading proposals..." />
-                    }
-                  >
-                    <LazyProposalsTabContent
-                      session={session}
-                      proposals={proposals}
-                      dependencyGraph={dependencyGraph}
-                      criticalPathSet={criticalPathSet}
-                      highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
-                      isReadOnly
-                      onEditProposal={noop}
-                      onNavigateToTask={noop}
-                      onViewProposal={handleViewProposal}
-                      {...(viewingProposalId != null && {
-                        selectedProposalId: viewingProposalId,
-                      })}
-                      onViewHistoricalPlan={noop}
-                      onImportPlan={noop}
-                      onClearAll={noop}
-                      onAcceptPlan={noop}
-                      onReviewSync={noop}
-                      onUndoSync={noop}
-                      onDismissSync={noop}
-                      hideToolbar
-                    />
-                  </Suspense>
-                  {viewingProposal && (
-                    <Suspense fallback={null}>
-                      <LazyProposalDetailSheet
-                        proposal={viewingProposal}
-                        {...(viewingEnrichment !== undefined && {
-                          enrichment: viewingEnrichment,
-                        })}
+            {planBodyMode === "proposals" ? (
+              <>
+                <div
+                  id={planBundlePanelId(
+                    planBundleTabsId,
+                    "proposals",
+                  )}
+                  role="tabpanel"
+                  aria-labelledby={planBundleTabId(
+                    planBundleTabsId,
+                    "proposals",
+                  )}
+                  tabIndex={0}
+                >
+                  {session && proposals.length > 0 ? (
+                    <Suspense
+                      fallback={
+                        <EmptyArtifactState title="Loading proposals..." />
+                      }
+                    >
+                      <LazyProposalsTabContent
+                        session={session}
+                        proposals={proposals}
+                        dependencyGraph={dependencyGraph}
+                        criticalPathSet={criticalPathSet}
+                        highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
                         isReadOnly
-                        onClose={handleCloseProposalDetail}
+                        onEditProposal={noop}
+                        onNavigateToTask={noop}
+                        onViewProposal={handleViewProposal}
+                        {...(viewingProposalId != null && {
+                          selectedProposalId: viewingProposalId,
+                        })}
+                        onViewHistoricalPlan={noop}
+                        onImportPlan={noop}
+                        onClearAll={noop}
+                        onAcceptPlan={noop}
+                        onReviewSync={noop}
+                        onUndoSync={noop}
+                        onDismissSync={noop}
+                        hideToolbar
                       />
                     </Suspense>
+                  ) : (
+                    <EmptyArtifactState title="No linked proposals" />
                   )}
-                </>
-              )}
+                </div>
+                {viewingProposal && (
+                  <Suspense fallback={null}>
+                    <LazyProposalDetailSheet
+                      proposal={viewingProposal}
+                      {...(viewingEnrichment !== undefined && {
+                        enrichment: viewingEnrichment,
+                      })}
+                      isReadOnly
+                      onClose={handleCloseProposalDetail}
+                    />
+                  </Suspense>
+                )}
+              </>
+            ) : null}
             <ConfirmationDialog {...confirmationDialogProps} />
             <PlanContinuationDialog {...planContinuationDialogProps} />
           </>

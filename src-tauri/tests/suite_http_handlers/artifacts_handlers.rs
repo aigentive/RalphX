@@ -1587,7 +1587,20 @@ async fn test_link_proposals_to_plan_batch_25() {
     };
 
     let state = setup_test_state().await;
-    let (_, artifact_id) = create_parent_with_plan(&state).await;
+    let (parent_id, artifact_id) = create_parent_with_plan(&state).await;
+    let parent = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&parent_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let blueprint_artifact_id = parent
+        .plan_blueprint_artifact_id
+        .as_ref()
+        .expect("v2 plan should include a Blueprint")
+        .as_str()
+        .to_string();
 
     // Create 25 proposals via the repo (SQLite-backed in new_sqlite_test state)
     let mut proposal_ids = Vec::new();
@@ -1669,6 +1682,17 @@ async fn test_link_proposals_to_plan_batch_25() {
             p.plan_version_at_creation,
             Some(1),
             "plan_version_at_creation should be set to artifact version 1"
+        );
+        assert_eq!(
+            p.blueprint_artifact_id.as_ref().map(|id| id.as_str()),
+            Some(blueprint_artifact_id.as_str()),
+            "Proposal {} should point to the plan's exact Blueprint",
+            p.id
+        );
+        assert_eq!(
+            p.blueprint_version_at_creation,
+            Some(1),
+            "blueprint_version_at_creation should be set to Blueprint version 1"
         );
     }
 }

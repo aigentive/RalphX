@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::application::attention_service::AttentionService;
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::plan_approval_notification_service::{
     has_deferred_plan_approval, has_deferred_plan_approval_in_db,
     reconcile_deferred_plan_approvals_on_startup, reconcile_plan_approval_on_publish,
@@ -12,7 +13,7 @@ use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
     AgentRunId, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession,
-    IdeationSessionFlow, Project,
+    IdeationSessionFlow, NotificationTarget, Project,
 };
 use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
 use crate::domain::repositories::{IdeationSettingsRepository, PlanApprovalActor};
@@ -325,6 +326,108 @@ async fn plan_revision_replaces_deferred_identity_and_settles_prior_notification
         has_deferred_plan_approval(&state, &session.id, "plan-revised")
             .await
             .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn blueprint_only_revision_records_a_new_exact_bundle_notification() {
+    let state = AppState::new_test();
+    let (mut session, _) = planning_session_with_workspace(&state).await;
+    session.plan_contract_version = 2;
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "blueprint-1",
+    ));
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "plan-current",
+        std::slice::from_ref(&session),
+        None,
+    )
+    .await;
+    state
+        .notification_service()
+        .record_result(InteractiveNotificationProducer::plan_approval(
+            session.project_id.to_string(),
+            session.id.as_str(),
+            "plan-current",
+            session.title.as_deref(),
+            NotificationTarget::none(),
+        ))
+        .await
+        .unwrap();
+
+    let prior_session = session.clone();
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "blueprint-2",
+    ));
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "blueprint-2",
+        std::slice::from_ref(&prior_session),
+        None,
+    )
+    .await;
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(
+        notifications.len(),
+        3,
+        "a Blueprint-only revision must not dedupe against the prior pair or legacy key"
+    );
+    let current_target = session
+        .plan_artifact_bundle()
+        .expect("v2 session should have a complete bundle")
+        .action_target_id();
+    let expected_current_key = format!("plan:{}:{current_target}", session.id);
+    let current = notifications
+        .iter()
+        .find(|notification| notification.dedupe_key.as_deref() == Some(&expected_current_key))
+        .expect("the revised exact bundle should create its own notification");
+    assert!(
+        current.read_at.is_none(),
+        "the revised exact bundle notification must remain actionable"
+    );
+
+    let prior_target = prior_session
+        .plan_artifact_bundle()
+        .expect("prior v2 session should have a complete bundle")
+        .action_target_id();
+    let expected_prior_key = format!("plan:{}:{prior_target}", session.id);
+    let prior = notifications
+        .iter()
+        .find(|notification| notification.dedupe_key.as_deref() == Some(&expected_prior_key))
+        .expect("the prior exact bundle notification should be retained");
+    assert!(
+        prior.read_at.is_some(),
+        "the prior exact bundle notification should be settled"
+    );
+    let expected_legacy_key = format!("plan:{}:plan-current", session.id);
+    let legacy = notifications
+        .iter()
+        .find(|notification| notification.dedupe_key.as_deref() == Some(&expected_legacy_key))
+        .expect("the legacy Overview-keyed notification should be retained");
+    assert!(
+        legacy.read_at.is_some(),
+        "the legacy Overview-keyed notification should be settled"
     );
 }
 

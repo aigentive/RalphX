@@ -7,6 +7,7 @@ describe("PlanBundleTabs", () => {
   it("always renders overview and blueprint and hides empty proposals", () => {
     render(
       <PlanBundleTabs
+        idPrefix="test-plan"
         value="overview"
         onValueChange={() => undefined}
         linkedProposalsCount={0}
@@ -22,6 +23,7 @@ describe("PlanBundleTabs", () => {
     const onValueChange = vi.fn();
     render(
       <PlanBundleTabs
+        idPrefix="test-plan"
         value="overview"
         onValueChange={onValueChange}
         linkedProposalsCount={2}

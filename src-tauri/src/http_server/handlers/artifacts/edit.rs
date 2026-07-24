@@ -141,14 +141,7 @@ pub async fn edit_plan_artifact(
         linked_proposal_ids,
         verification_reset,
     );
-    reconcile_plan_notifications(
-        &state,
-        Some(&old_artifact_id_str),
-        &created,
-        &sessions,
-        mutation_authority.as_ref(),
-    )
-    .await;
+    reconcile_plan_notifications(&state, &created, &sessions, mutation_authority.as_ref()).await;
     let mut response = ArtifactResponse::from(created);
     response.artifact_role = sessions.first().map(|session| {
         if session
