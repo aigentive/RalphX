@@ -394,6 +394,7 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
     let input = || ActivateAgentPlanDirectImplementationInput {
         conversation_id: conversation.id.as_str().to_string(),
         session_id: seeded.session_id.clone(),
+        retry: false,
     };
     let error = activate_agent_plan_direct_implementation_for_state(input(), &state)
         .await
@@ -425,7 +426,29 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
     let activated = activate_agent_plan_direct_implementation_for_state(input(), &state)
         .await
         .unwrap();
-    assert_eq!(activated.mode, "edit");
+    assert_eq!(activated.workspace.mode, "edit");
+    assert_eq!(activated.artifact_references.len(), 2);
+    assert_eq!(
+        activated.artifact_references[0].artifact_id,
+        seeded.artifact.id
+    );
+    assert_eq!(
+        activated.artifact_references[1].title.as_deref(),
+        Some("Implementation Blueprint")
+    );
+
+    let retry = activate_agent_plan_direct_implementation_for_state(
+        ActivateAgentPlanDirectImplementationInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+            retry: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry.workspace.mode, "edit");
+    assert_eq!(retry.artifact_references, activated.artifact_references);
 }
 
 #[tokio::test]

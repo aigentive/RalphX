@@ -19,7 +19,7 @@ use super::decomposition_verifier::{
     parse_authoring_state, AutomationAuthoringState, AutomationDecompositionVerificationStatus,
 };
 use super::plan_gate::{
-    current_plan_artifact_id_for_workspace, matching_plan_approval_for_workspace,
+    current_plan_artifact_ids_for_workspace, matching_plan_approval_for_workspace,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +73,9 @@ pub struct AutomationRunResponse {
     pub plan_revision_pending: bool,
     pub plan_phase: bool,
     pub plan_artifact_id: Option<String>,
+    pub plan_blueprint_artifact_id: Option<String>,
+    pub parked_plan_artifact_id: Option<String>,
+    pub parked_plan_blueprint_artifact_id: Option<String>,
     pub plan_approved_by: Option<String>,
     pub plan_approved_artifact_version: Option<u32>,
     pub plan_approved_at: Option<String>,
@@ -334,6 +337,7 @@ async fn automation_usage_for_runs(
 struct AutomationRunPlanReadModel {
     plan_phase: bool,
     plan_artifact_id: Option<String>,
+    plan_blueprint_artifact_id: Option<String>,
     plan_approved_by: Option<String>,
     plan_approved_artifact_version: Option<u32>,
     plan_approved_at: Option<String>,
@@ -365,9 +369,11 @@ async fn automation_run_plan_read_model_for_state(
     state: &AppState,
 ) -> crate::error::AppResult<AutomationRunPlanReadModel> {
     let parked_plan_artifact_id = run.plan_last_parked_artifact_id.clone();
+    let parked_plan_blueprint_artifact_id = run.plan_last_parked_blueprint_artifact_id.clone();
     let Some(conversation_id) = run.conversation_id.as_ref() else {
         return Ok(AutomationRunPlanReadModel {
             plan_artifact_id: parked_plan_artifact_id,
+            plan_blueprint_artifact_id: parked_plan_blueprint_artifact_id,
             ..AutomationRunPlanReadModel::default()
         });
     };
@@ -378,15 +384,21 @@ async fn automation_run_plan_read_model_for_state(
     else {
         return Ok(AutomationRunPlanReadModel {
             plan_artifact_id: parked_plan_artifact_id,
+            plan_blueprint_artifact_id: parked_plan_blueprint_artifact_id,
             ..AutomationRunPlanReadModel::default()
         });
     };
 
     let open = is_open_automation_run(run.status, run.judge_state);
-    let plan_artifact_id =
-        current_plan_artifact_id_for_workspace(&state.ideation_session_repo, &workspace)
-            .await?
-            .or(parked_plan_artifact_id);
+    let current_plan_artifacts =
+        current_plan_artifact_ids_for_workspace(&state.ideation_session_repo, &workspace).await?;
+    let plan_artifact_id = current_plan_artifacts
+        .as_ref()
+        .map(|artifacts| artifacts.overview_id.clone())
+        .or(parked_plan_artifact_id);
+    let plan_blueprint_artifact_id = current_plan_artifacts
+        .and_then(|artifacts| artifacts.blueprint_id)
+        .or(parked_plan_blueprint_artifact_id);
     let approval = if open {
         matching_plan_approval_for_workspace(
             &state.ideation_session_repo,
@@ -401,6 +413,7 @@ async fn automation_run_plan_read_model_for_state(
     Ok(AutomationRunPlanReadModel {
         plan_phase: open && workspace.mode == AgentConversationWorkspaceMode::Plan,
         plan_artifact_id,
+        plan_blueprint_artifact_id,
         plan_approved_by: approval
             .as_ref()
             .map(|approval| approval.approved_by.clone()),
@@ -472,6 +485,9 @@ impl From<AutomationRun> for AutomationRunResponse {
             plan_revision_pending: run.plan_pending_instructions.is_some(),
             plan_phase: false,
             plan_artifact_id: None,
+            plan_blueprint_artifact_id: None,
+            parked_plan_artifact_id: run.plan_last_parked_artifact_id.clone(),
+            parked_plan_blueprint_artifact_id: run.plan_last_parked_blueprint_artifact_id.clone(),
             plan_approved_by: None,
             plan_approved_artifact_version: None,
             plan_approved_at: None,
@@ -510,6 +526,7 @@ impl AutomationRunResponse {
         let mut response = Self::from(run);
         response.plan_phase = plan.plan_phase;
         response.plan_artifact_id = plan.plan_artifact_id;
+        response.plan_blueprint_artifact_id = plan.plan_blueprint_artifact_id;
         response.plan_approved_by = plan.plan_approved_by;
         response.plan_approved_artifact_version = plan.plan_approved_artifact_version;
         response.plan_approved_at = plan.plan_approved_at;

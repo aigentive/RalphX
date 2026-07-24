@@ -26,6 +26,25 @@ const activateAgentPlanDirectImplementationMock = vi.mocked(
 );
 const sendAgentMessageMock = vi.mocked(chatApi.sendAgentMessage);
 
+const approvedArtifactReferences = [
+  {
+    artifactId: "overview-1",
+    kind: "plan",
+    title: "Plan Overview",
+    sessionId: "session-1",
+    version: 3,
+    status: "approved",
+  },
+  {
+    artifactId: "blueprint-1",
+    kind: "plan",
+    title: "Implementation Blueprint",
+    sessionId: "session-1",
+    version: 2,
+    status: "approved",
+  },
+];
+
 function workspace(
   overrides: Partial<AgentConversationWorkspace> = {},
 ): AgentConversationWorkspace {
@@ -69,7 +88,10 @@ describe("implementAgentPlanDirectly", () => {
     const queryClient = new QueryClient();
     const editWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
-    activateAgentPlanDirectImplementationMock.mockResolvedValue(editWorkspace);
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: editWorkspace,
+      artifactReferences: approvedArtifactReferences,
+    });
 
     await implementAgentPlanDirectly({
       projectId: "project-1",
@@ -102,6 +124,7 @@ describe("implementAgentPlanDirectly", () => {
         modelId: "gpt-5.5",
         logicalEffort: "high",
         codexFastMode: true,
+        composerArtifactReferences: approvedArtifactReferences,
         suppressUserMessage: true,
       },
     );
@@ -110,9 +133,13 @@ describe("implementAgentPlanDirectly", () => {
     );
   });
 
-  it("synchronizes an already-edit workspace without another switch", async () => {
+  it("revalidates an already-edit retry and sends the backend-pinned pair", async () => {
     const currentWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: currentWorkspace,
+      artifactReferences: approvedArtifactReferences,
+    });
 
     await implementAgentPlanDirectly({
       projectId: "project-1",
@@ -121,13 +148,27 @@ describe("implementAgentPlanDirectly", () => {
       onConversationModeSwitched,
     });
 
-    expect(activateAgentPlanDirectImplementationMock).not.toHaveBeenCalled();
+    expect(activateAgentPlanDirectImplementationMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      sessionId: "session-1",
+      retry: true,
+    });
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
       "edit",
       currentWorkspace,
     );
-    expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentMessageMock).toHaveBeenCalledWith(
+      "project",
+      "project-1",
+      expect.stringContaining("Implement the approved plan directly"),
+      undefined,
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        composerArtifactReferences: approvedArtifactReferences,
+        suppressUserMessage: true,
+      }),
+    );
   });
 
   it("does not project or send when activation fails", async () => {
@@ -153,7 +194,10 @@ describe("implementAgentPlanDirectly", () => {
     const editWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
     const error = new Error("send failed");
-    activateAgentPlanDirectImplementationMock.mockResolvedValue(editWorkspace);
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: editWorkspace,
+      artifactReferences: approvedArtifactReferences,
+    });
     sendAgentMessageMock.mockRejectedValue(error);
 
     await expect(

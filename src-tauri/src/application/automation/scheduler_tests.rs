@@ -20,10 +20,10 @@ use super::integration_pr::{
 use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::merged_run_finalizer::{AutomationMergedRunFinalizer, NoopAutomationMergedRunFinalizer};
 use super::plan_gate::{
-    clear_plan_phase_publication_metadata, AutomationPlanVerificationStartOutcome,
-    AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
-    AutomationRunResumer, NoopAutomationPlanVerificationStarter, ResumeDelivery,
-    AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
+    clear_plan_phase_publication_metadata, refresh_plan_park_baseline,
+    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
+    AutomationPlanVerificationStarter, AutomationRunResumer, NoopAutomationPlanVerificationStarter,
+    ResumeDelivery, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
     PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use super::provisioning::{
@@ -754,7 +754,7 @@ impl AutomationPlanJudgeInvoker for MutatingPlanJudgeInvoker {
         Ok(AutomationPlanJudgeInvocationOutput {
             raw_output: self
                 .output
-                .replace("plan-artifact-1", &input.plan_artifact_id),
+                .replace("plan-artifact-1", &input.overview_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -830,7 +830,7 @@ impl AutomationPlanJudgeInvoker for ApprovingPlanJudgeInvoker {
         Ok(AutomationPlanJudgeInvocationOutput {
             raw_output: self
                 .output
-                .replace("plan-artifact-1", &input.plan_artifact_id),
+                .replace("plan-artifact-1", &input.overview_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -860,7 +860,7 @@ impl AutomationPlanJudgeInvoker for SupersedingPlanJudgeInvoker {
         Ok(AutomationPlanJudgeInvocationOutput {
             raw_output: self
                 .output
-                .replace("plan-artifact-1", &input.plan_artifact_id),
+                .replace("plan-artifact-1", &input.overview_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -1028,6 +1028,7 @@ fn automation_run(
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id,
         run_prompt: "Run prompt".to_string(),
@@ -1112,7 +1113,8 @@ fn plan_workspace_with_session(
     let session = {
         let builder = IdeationSession::builder()
             .project_id(ProjectId::from_string("project-1".to_string()))
-            .session_flow(IdeationSessionFlow::Planning);
+            .session_flow(IdeationSessionFlow::Planning)
+            .plan_contract_version(1);
         match plan_artifact_id {
             Some(artifact_id) => {
                 builder.plan_artifact_id(ArtifactId::from_string(artifact_id.to_string()))
@@ -1125,6 +1127,52 @@ fn plan_workspace_with_session(
     workspace.mode = AgentConversationWorkspaceMode::Plan;
     workspace.linked_ideation_session_id = Some(session.id.clone());
     (workspace, session)
+}
+
+#[tokio::test]
+async fn refresh_plan_park_baseline_persists_overview_and_blueprint_separately() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let automation_id = AutomationId::from_string("automation-paired-baseline");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let run = automation_run(
+        "run-paired-baseline",
+        &automation_id,
+        AutomationRunStatus::AwaitingPlanApproval,
+        None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let transition_service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        Arc::new(NoopAutomationEventEmitter),
+        notification_service(),
+    );
+
+    assert!(refresh_plan_park_baseline(
+        &transition_service,
+        &(run_repo.clone() as Arc<dyn AutomationRunRepository>),
+        &run,
+        Some("overview-1".to_string()),
+        Some("blueprint-1".to_string()),
+    )
+    .await
+    .unwrap());
+
+    let parked = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(
+        parked.plan_last_parked_artifact_id.as_deref(),
+        Some("overview-1")
+    );
+    assert_eq!(
+        parked.plan_last_parked_blueprint_artifact_id.as_deref(),
+        Some("blueprint-1")
+    );
 }
 
 struct ParkedPlanGateScenario {
@@ -1865,7 +1913,8 @@ fn valid_plan_approve_verdict(artifact_id: &str) -> String {
         "decision": "approve",
         "reason": "The plan is aligned with the automation goal and current phase.",
         "confidence": "high",
-        "evaluatedArtifactId": artifact_id
+        "evaluatedOverviewArtifactId": artifact_id,
+        "evaluatedBlueprintArtifactId": null
     })
     .to_string()
 }
@@ -1876,7 +1925,8 @@ fn valid_plan_revise_verdict(artifact_id: &str, instructions: &str) -> String {
         "reason": "The plan needs a narrower recovery and validation section.",
         "confidence": "medium",
         "revisionInstructions": instructions,
-        "evaluatedArtifactId": artifact_id
+        "evaluatedOverviewArtifactId": artifact_id,
+        "evaluatedBlueprintArtifactId": null
     })
     .to_string()
 }
@@ -4714,7 +4764,10 @@ async fn automation_scheduler_automatic_plan_judge_holds_until_first_verificatio
     wait_for_plan_judge_call_count(&plan_judge, 1).await;
 
     assert_eq!(terminal_summary.judges_started, 1);
-    assert_eq!(plan_judge.calls()[0].plan_artifact_id, "plan-artifact-1");
+    assert_eq!(
+        plan_judge.calls()[0].overview_artifact_id,
+        "plan-artifact-1"
+    );
 }
 
 #[tokio::test]
@@ -4738,7 +4791,10 @@ async fn automation_scheduler_plan_deep_verification_off_makes_zero_verification
 
     assert_eq!(summary.judges_started, 1);
     assert_eq!(starter.call_count(), 0);
-    assert_eq!(plan_judge.calls()[0].plan_artifact_id, "plan-artifact-2");
+    assert_eq!(
+        plan_judge.calls()[0].overview_artifact_id,
+        "plan-artifact-2"
+    );
 }
 
 #[tokio::test]
@@ -6544,10 +6600,10 @@ async fn automation_scheduler_automatic_plan_gate_dispatches_single_flight_with_
         .plan_judge_verdict_json
         .as_deref()
         .unwrap()
-        .contains("evaluatedArtifactId"));
+        .contains("evaluatedOverviewArtifactId"));
     let calls = plan_judge.calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].plan_artifact_id, "plan-artifact-1");
+    assert_eq!(calls[0].overview_artifact_id, "plan-artifact-1");
     assert_eq!(calls[0].plan_judge_model.as_deref(), Some("gpt-5.4"));
     assert!(!calls[0]
         .plan_judge_model
@@ -6784,7 +6840,7 @@ async fn automation_scheduler_plan_judge_revise_sets_pending_instructions_and_ba
         .plan_judge_verdict_json
         .as_deref()
         .unwrap()
-        .contains("evaluatedArtifactId"));
+        .contains("evaluatedOverviewArtifactId"));
     assert!(scenario
         .approval_repo
         .get_by_session(&scenario.session_id)
@@ -7182,7 +7238,7 @@ async fn automation_scheduler_stale_plan_judge_failure_after_repark_reset_is_dis
 
     let calls = replacement_judge.calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].plan_artifact_id, "plan-artifact-2");
+    assert_eq!(calls[0].overview_artifact_id, "plan-artifact-2");
     let automation = scenario
         .automation_repo
         .get_by_id(&scenario.automation_id)
@@ -10106,8 +10162,10 @@ async fn harness_plan_judge_invoker_passes_override_model_to_utility_runtime() {
         .invoke(AutomationPlanJudgeInvocation {
             automation,
             run,
-            plan_artifact_id: "plan-1".to_string(),
-            plan_content: "# Plan\n\nShip one scoped slice.".to_string(),
+            overview_artifact_id: "plan-1".to_string(),
+            overview_content: "# Plan\n\nShip one scoped slice.".to_string(),
+            blueprint_artifact_id: Some("blueprint-1".to_string()),
+            blueprint_content: Some("# Blueprint\n\nEdit the scheduler seam.".to_string()),
             verification_context: None,
             previous_verdict_json: None,
             retry_reminder: true,

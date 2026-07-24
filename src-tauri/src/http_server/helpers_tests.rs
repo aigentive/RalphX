@@ -3,11 +3,12 @@ use super::{
 };
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, Automation,
-    AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
-    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
-    AutomationRunStatus, AutomationStatus, ChatConversation, IdeationAnalysisBaseRefKind,
-    IdeationSession, InternalStatus, Project, ProjectId, Task, VerificationStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversation,
+    IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Project, ProjectId, Task,
+    VerificationStatus,
 };
 use chrono::Utc;
 
@@ -107,6 +108,84 @@ async fn get_task_context_impl_filters_resolved_blockers_and_keeps_active_ones()
             .any(|hint| hint.contains("Merged Blocker")),
         "resolved blockers must not be emitted as active HTTP context blockers"
     );
+}
+
+#[tokio::test]
+async fn get_task_context_impl_exposes_the_tasks_immutable_blueprint() {
+    let state = AppState::new_test();
+    let mut task = Task::new(ProjectId::new(), "Blueprint task".to_string());
+    let blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Implementation Blueprint",
+            ArtifactType::Specification,
+            "# Ordered step\n\nUse the immutable task snapshot.",
+            "planner",
+        ))
+        .await
+        .unwrap();
+    task.plan_blueprint_artifact_id = Some(blueprint.id.clone());
+    let task = state.task_repo.create(task).await.unwrap();
+
+    let context = get_task_context_impl(&state, &task.id).await.unwrap();
+
+    let summary = context
+        .blueprint_artifact
+        .expect("worker/reviewer context must expose the task Blueprint");
+    assert_eq!(summary.id, blueprint.id);
+    assert!(summary.content_preview.contains("immutable task snapshot"));
+}
+
+#[tokio::test]
+async fn get_task_context_impl_rejects_v2_task_without_blueprint_lineage() {
+    let state = AppState::new_test();
+    let session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(ProjectId::new())
+                .plan_contract_version(2)
+                .build(),
+        )
+        .await
+        .unwrap();
+    let mut task = Task::new(session.project_id.clone(), "Missing Blueprint".to_string());
+    task.ideation_session_id = Some(session.id);
+    let task = state.task_repo.create(task).await.unwrap();
+
+    let error = get_task_context_impl(&state, &task.id).await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("v2 task is missing immutable Blueprint lineage"));
+}
+
+#[tokio::test]
+async fn get_task_context_impl_rejects_unreadable_v2_blueprint_lineage() {
+    let state = AppState::new_test();
+    let session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(ProjectId::new())
+                .plan_contract_version(2)
+                .build(),
+        )
+        .await
+        .unwrap();
+    let mut task = Task::new(
+        session.project_id.clone(),
+        "Missing Blueprint artifact".to_string(),
+    );
+    task.ideation_session_id = Some(session.id);
+    task.plan_blueprint_artifact_id = Some(ArtifactId::new());
+    let task = state.task_repo.create(task).await.unwrap();
+
+    let error = get_task_context_impl(&state, &task.id).await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("immutable Blueprint artifact was not found"));
 }
 
 #[tokio::test]
@@ -228,6 +307,7 @@ async fn automation_bridge_finalize_authority_requires_current_verified_run_and_
             plan_reminder_count: 0,
             plan_pending_instructions: None,
             plan_last_parked_artifact_id: Some(artifact_id.to_string()),
+            plan_last_parked_blueprint_artifact_id: None,
             agent_phase_started_at: Some(now),
             conversation_id: Some(conversation.id),
             run_prompt: "Author and finalize the plan".to_string(),

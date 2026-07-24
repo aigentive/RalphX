@@ -72,6 +72,7 @@ fn automation_run(
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: Some(ChatConversationId::from_string("conversation-1")),
         run_prompt: "Run prompt".to_string(),

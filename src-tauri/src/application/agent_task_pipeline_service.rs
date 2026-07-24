@@ -282,7 +282,7 @@ fn validate_activation_authority_sync(
             "Task pipeline activation authority changed before it was consumed".to_string(),
         ));
     }
-    validate_current_user_approved_plan_sync(conn, &session)
+    validate_current_user_approved_plan_sync(conn, &session).map(|_| ())
 }
 
 pub(crate) fn validate_start_authority_sync(
@@ -347,10 +347,15 @@ pub(crate) fn validate_start_authority_sync(
     Ok(())
 }
 
+pub(crate) struct ApprovedPlanBundleSnapshot {
+    pub overview: crate::domain::entities::Artifact,
+    pub blueprint: Option<crate::domain::entities::Artifact>,
+}
+
 fn validate_current_user_approved_plan_sync(
     conn: &rusqlite::Connection,
     session: &IdeationSession,
-) -> AppResult<()> {
+) -> AppResult<ApprovedPlanBundleSnapshot> {
     let plan_id = session
         .plan_artifact_id
         .as_ref()
@@ -388,7 +393,7 @@ fn validate_current_user_approved_plan_sync(
             "Current plan version requires explicit user approval".to_string(),
         ));
     }
-    match session.plan_blueprint_artifact_id.as_ref() {
+    let blueprint = match session.plan_blueprint_artifact_id.as_ref() {
         Some(blueprint_id) => {
             let latest_blueprint_id =
                 ArtifactRepo::resolve_latest_sync(conn, blueprint_id.as_str())?;
@@ -403,38 +408,52 @@ fn validate_current_user_approved_plan_sync(
                     "Current plan blueprint version requires explicit user approval".to_string(),
                 ));
             }
+            Some(latest_blueprint)
         }
         None if session.plan_contract_version >= 2 => {
             return Err(AppError::Validation(
                 "Task pipeline has no implementation blueprint".to_string(),
             ));
         }
-        None => {}
-    }
-    Ok(())
+        None => None,
+    };
+    Ok(ApprovedPlanBundleSnapshot {
+        overview: latest,
+        blueprint,
+    })
 }
 
 pub(crate) fn validate_direct_implementation_authority_sync(
     conn: &rusqlite::Connection,
     conversation_id: &str,
     session_id: &str,
-) -> AppResult<()> {
+    retry: bool,
+) -> AppResult<ApprovedPlanBundleSnapshot> {
     let session = SessionRepo::get_by_id_sync(conn, session_id)?
         .ok_or_else(|| AppError::NotFound("Planning session not found".to_string()))?;
     let owns_plan = conn
         .query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM agent_conversation_workspaces
-                WHERE conversation_id = ?1 AND mode = 'plan'
+                WHERE conversation_id = ?1 AND mode = ?3
                   AND linked_ideation_session_id = ?2
              )",
-            rusqlite::params![conversation_id, session_id],
+            rusqlite::params![
+                conversation_id,
+                session_id,
+                if retry { "edit" } else { "plan" }
+            ],
             |row| row.get::<_, bool>(0),
         )
         .map_err(|error| AppError::Database(error.to_string()))?;
     if !owns_plan {
         return Err(AppError::Conflict(
-            "Plan conversation no longer owns this planning session".to_string(),
+            if retry {
+                "Direct implementation retry is not in the authorized Edit workspace"
+            } else {
+                "Plan conversation no longer owns this planning session"
+            }
+            .to_string(),
         ));
     }
     validate_current_user_approved_plan_sync(conn, &session)

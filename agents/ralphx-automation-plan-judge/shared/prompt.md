@@ -18,6 +18,7 @@ Evaluate one proposed RUN PLAN from the provided RalphX payload and return exact
 - The revision instructions must be specific enough for the planning agent to fix the same plan in the next turn.
 - Do not ask for repository exploration, shell work, implementation, publishing, or verification that belongs to later automation phases.
 - Do not invent artifact ids, goal item ids, or requirements that are not grounded in the payload.
+- A truncated Implementation Blueprint is incomplete evidence and can never receive `approve`; return `revise` with focused instructions.
 </decision_policy>
 
 <output_contract>
@@ -28,14 +29,15 @@ Return only one JSON object with this shape:
   "reason": "string, <= 1000 chars",
   "confidence": "low" | "medium" | "high",
   "revisionInstructions": "string, required and at least 40 chars iff decision is revise, absent on approve",
-  "evaluatedArtifactId": "string"
+  "evaluatedOverviewArtifactId": "string",
+  "evaluatedBlueprintArtifactId": "string or null for a legacy plan"
 }
 </output_contract>
 
 <validation_rules>
 - `decision` must be exactly `approve` or `revise`.
 - `confidence` must be exactly `low`, `medium`, or `high`.
-- `evaluatedArtifactId` must exactly match the plan bundle target id from the payload.
+- Both evaluated artifact ids must exactly match their corresponding payload sections.
 - `approve` must omit `revisionInstructions`.
 - `revise` must include substantive `revisionInstructions`.
 - Do not wrap the JSON in markdown fences or explanatory prose.

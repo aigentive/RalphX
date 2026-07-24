@@ -156,19 +156,31 @@ pub(crate) async fn current_plan_artifact_id_for_workspace(
         .map(|artifact_id| artifact_id.as_str().to_string()))
 }
 
-pub(crate) async fn current_plan_target_id_for_workspace(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AutomationPlanArtifactIds {
+    pub overview_id: String,
+    pub blueprint_id: Option<String>,
+    pub target_id: String,
+}
+
+pub(crate) async fn current_plan_artifact_ids_for_workspace(
     session_repo: &Arc<dyn IdeationSessionRepository>,
     workspace: &AgentConversationWorkspace,
-) -> AppResult<Option<String>> {
+) -> AppResult<Option<AutomationPlanArtifactIds>> {
     let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
         return Ok(None);
     };
     let Some(session) = session_repo.get_by_id(session_id).await? else {
         return Ok(None);
     };
-    Ok(session
-        .plan_artifact_bundle()
-        .map(|bundle| bundle.action_target_id()))
+    Ok(session.plan_artifact_bundle().map(|bundle| {
+        let target_id = bundle.action_target_id();
+        AutomationPlanArtifactIds {
+            overview_id: bundle.overview_id.as_str().to_string(),
+            blueprint_id: bundle.blueprint_id.map(|id| id.as_str().to_string()),
+            target_id,
+        }
+    }))
 }
 
 pub(crate) async fn matching_plan_approval_for_workspace(
@@ -225,14 +237,17 @@ pub(crate) async fn refresh_plan_park_baseline(
     run_repo: &Arc<dyn AutomationRunRepository>,
     run: &AutomationRun,
     plan_artifact_id: Option<String>,
+    plan_blueprint_artifact_id: Option<String>,
 ) -> AppResult<bool> {
-    if run.plan_last_parked_artifact_id == plan_artifact_id {
+    if run.plan_last_parked_artifact_id == plan_artifact_id
+        && run.plan_last_parked_blueprint_artifact_id == plan_blueprint_artifact_id
+    {
         return Ok(false);
     }
 
     let next_round = run.plan_revision_round.saturating_add(1);
     run_repo
-        .set_plan_last_parked_artifact_id(&run.id, plan_artifact_id)
+        .set_plan_last_parked_artifact_ids(&run.id, plan_artifact_id, plan_blueprint_artifact_id)
         .await?;
     run_repo
         .set_plan_revision_round(&run.id, next_round)

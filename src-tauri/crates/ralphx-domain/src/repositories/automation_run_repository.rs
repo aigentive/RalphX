@@ -197,6 +197,13 @@ pub trait AutomationRunRepository: Send + Sync {
         plan_last_parked_artifact_id: Option<String>,
     ) -> AppResult<Option<AutomationRun>>;
 
+    async fn set_plan_last_parked_artifact_ids(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+        plan_last_parked_blueprint_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
     async fn set_plan_reminder_count(
         &self,
         id: &AutomationRunId,

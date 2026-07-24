@@ -22,7 +22,7 @@ use crate::application::automation::judge::{
 use crate::application::automation::merged_run_finalizer::AutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
     approval_delivery_prompt, clear_plan_phase_publication_metadata,
-    current_plan_target_id_for_workspace, ideation_bridge_delivery_prompt,
+    current_plan_artifact_ids_for_workspace, ideation_bridge_delivery_prompt,
     is_plan_gate_pause_reason, matching_plan_approval_for_workspace, refresh_plan_park_baseline,
     revision_delivery_prompt, AutomationPlanVerificationStartOutcome,
     AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
@@ -35,7 +35,7 @@ use crate::application::automation::plan_judge::{
     parse_automation_plan_judge_verdict, AutomationPlanJudgeDecision,
     AutomationPlanJudgeValidationContext, AutomationPlanJudgeVerdict,
     AutomationPlanVerificationGapSummary, AutomationPlanVerificationJudgeContext,
-    BuildAutomationPlanJudgePromptInput,
+    BuildAutomationPlanJudgePromptInput, PLAN_BLUEPRINT_MAX_BYTES,
 };
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
@@ -405,8 +405,10 @@ impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
 pub struct AutomationPlanJudgeInvocation {
     pub automation: Automation,
     pub run: AutomationRun,
-    pub plan_artifact_id: String,
-    pub plan_content: String,
+    pub overview_artifact_id: String,
+    pub overview_content: String,
+    pub blueprint_artifact_id: Option<String>,
+    pub blueprint_content: Option<String>,
     pub verification_context: Option<AutomationPlanVerificationJudgeContext>,
     pub previous_verdict_json: Option<String>,
     pub retry_reminder: bool,
@@ -449,8 +451,10 @@ impl AutomationPlanJudgeInvoker for HarnessAutomationPlanJudgeInvoker {
         let mut prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
             automation: &input.automation,
             run: &input.run,
-            evaluated_artifact_id: &input.plan_artifact_id,
-            plan_content: &input.plan_content,
+            evaluated_overview_artifact_id: &input.overview_artifact_id,
+            overview_content: &input.overview_content,
+            evaluated_blueprint_artifact_id: input.blueprint_artifact_id.as_deref(),
+            blueprint_content: input.blueprint_content.as_deref(),
             verification_context: input.verification_context.as_ref(),
             spec_attachments: &attachments,
             previous_verdict_json: input.previous_verdict_json.as_deref(),
@@ -646,41 +650,45 @@ impl AutomationPlanJudgeTask {
                 plan_artifact_id.as_str()
             ));
         };
-        let plan_content = if let Some(blueprint_id) = bundle.blueprint_id.as_ref() {
-            let blueprint = self
-                .artifact_repo
-                .get_by_id(blueprint_id)
-                .await
-                .map_err(|error| {
-                    format!(
-                        "failed to read plan blueprint {}: {error}",
+        let (blueprint_artifact_id, blueprint_content) =
+            if let Some(blueprint_id) = bundle.blueprint_id.as_ref() {
+                let blueprint = self
+                    .artifact_repo
+                    .get_by_id(blueprint_id)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "failed to read plan blueprint {}: {error}",
+                            blueprint_id.as_str()
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        format!(
+                            "automation plan judge blueprint {} not found",
+                            blueprint_id.as_str()
+                        )
+                    })?;
+                let ArtifactContent::Inline {
+                    text: blueprint_content,
+                } = blueprint.content
+                else {
+                    return Err(format!(
+                        "automation plan judge blueprint {} is not inline-readable",
                         blueprint_id.as_str()
-                    )
-                })?
-                .ok_or_else(|| {
-                    format!(
-                        "automation plan judge blueprint {} not found",
-                        blueprint_id.as_str()
-                    )
-                })?;
-            let ArtifactContent::Inline {
-                text: blueprint_content,
-            } = blueprint.content
-            else {
-                return Err(format!(
-                    "automation plan judge blueprint {} is not inline-readable",
-                    blueprint_id.as_str()
-                ));
+                    ));
+                };
+                (
+                    Some(blueprint_id.as_str().to_string()),
+                    Some(blueprint_content),
+                )
+            } else {
+                (None, None)
             };
-            format!(
-                "# Plan Overview\n\n{overview_content}\n\n# Implementation Blueprint\n\n{blueprint_content}"
-            )
-        } else {
-            overview_content
-        };
         Ok(AutomationPlanJudgePayload {
-            plan_artifact_id: bundle.action_target_id(),
-            plan_content,
+            overview_artifact_id: plan_artifact_id.as_str().to_string(),
+            overview_content,
+            blueprint_artifact_id,
+            blueprint_content,
             verification_context: self.verification_context.clone(),
         })
     }
@@ -703,8 +711,10 @@ impl AutomationPlanJudgeTask {
             .invoke(AutomationPlanJudgeInvocation {
                 automation: automation.clone(),
                 run: run.clone(),
-                plan_artifact_id: payload.plan_artifact_id.clone(),
-                plan_content: payload.plan_content.clone(),
+                overview_artifact_id: payload.overview_artifact_id.clone(),
+                overview_content: payload.overview_content.clone(),
+                blueprint_artifact_id: payload.blueprint_artifact_id.clone(),
+                blueprint_content: payload.blueprint_content.clone(),
                 verification_context: payload.verification_context.clone(),
                 previous_verdict_json: run.plan_judge_verdict_json.clone(),
                 retry_reminder,
@@ -718,7 +728,12 @@ impl AutomationPlanJudgeTask {
         let verdict = parse_automation_plan_judge_verdict(
             &output.raw_output,
             AutomationPlanJudgeValidationContext {
-                expected_artifact_id: Some(&payload.plan_artifact_id),
+                expected_overview_artifact_id: Some(&payload.overview_artifact_id),
+                expected_blueprint_artifact_id: payload.blueprint_artifact_id.as_deref(),
+                blueprint_truncated: payload
+                    .blueprint_content
+                    .as_ref()
+                    .is_some_and(|content| content.len() > PLAN_BLUEPRINT_MAX_BYTES),
             },
         )
         .map_err(|error| JudgeInvocationFailure::InvalidOutput {
@@ -764,13 +779,17 @@ impl AutomationPlanJudgeTask {
                 ..AutomationPlanJudgeTaskOutcome::default()
             });
         };
-        if current.plan_artifact_id != parsed.verdict.evaluated_artifact_id {
+        if current.overview_artifact_id != parsed.verdict.evaluated_overview_artifact_id
+            || current.blueprint_artifact_id != parsed.verdict.evaluated_blueprint_artifact_id
+        {
             tracing::warn!(
                 automation_id = %automation.id,
                 run_id = %run.id,
-                evaluated_artifact_id = parsed.verdict.evaluated_artifact_id,
-                current_artifact_id = current.plan_artifact_id,
-                "Discarding automation plan judge verdict because the plan artifact changed"
+                evaluated_overview_artifact_id = parsed.verdict.evaluated_overview_artifact_id,
+                evaluated_blueprint_artifact_id = ?parsed.verdict.evaluated_blueprint_artifact_id,
+                current_overview_artifact_id = current.overview_artifact_id,
+                current_blueprint_artifact_id = ?current.blueprint_artifact_id,
+                "Discarding automation plan judge verdict because the plan bundle changed"
             );
             self.transition_service
                 .transition_plan_judge_state(
@@ -894,7 +913,8 @@ impl AutomationPlanJudgeTask {
                     .unwrap_or("");
                 if prior_revision_instruction_repeats(
                     run.plan_judge_verdict_json.as_deref(),
-                    &current.plan_artifact_id,
+                    &current.overview_artifact_id,
+                    current.blueprint_artifact_id.as_deref(),
                     instructions,
                 ) {
                     if !self
@@ -995,7 +1015,6 @@ impl AutomationPlanJudgeTask {
         };
         Ok(Some(PlanApplicationContext {
             session_id: session_id.clone(),
-            plan_artifact_id: bundle.action_target_id(),
             overview_artifact_id: bundle.overview_id.as_str().to_string(),
             blueprint_artifact_id: bundle.blueprint_id.map(|id| id.as_str().to_string()),
         }))
@@ -1042,15 +1061,16 @@ impl AutomationPlanJudgeTask {
 
 #[derive(Debug, Clone)]
 struct AutomationPlanJudgePayload {
-    plan_artifact_id: String,
-    plan_content: String,
+    overview_artifact_id: String,
+    overview_content: String,
+    blueprint_artifact_id: Option<String>,
+    blueprint_content: Option<String>,
     verification_context: Option<AutomationPlanVerificationJudgeContext>,
 }
 
 #[derive(Debug, Clone)]
 struct PlanApplicationContext {
     session_id: crate::domain::entities::IdeationSessionId,
-    plan_artifact_id: String,
     overview_artifact_id: String,
     blueprint_artifact_id: Option<String>,
 }
@@ -2294,11 +2314,12 @@ impl AutomationScheduler {
         from_status: AutomationRunStatus,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<bool> {
-        let plan_artifact_id =
-            current_plan_target_id_for_workspace(&self.ideation_session_repo, workspace).await?;
-        if plan_artifact_id.is_none() {
+        let Some(plan_artifacts) =
+            current_plan_artifact_ids_for_workspace(&self.ideation_session_repo, workspace).await?
+        else {
             return Ok(false);
-        }
+        };
+        let plan_artifact_id = Some(plan_artifacts.target_id.clone());
 
         if self
             .transition_service
@@ -2315,7 +2336,8 @@ impl AutomationScheduler {
                 &self.transition_service,
                 &self.run_repo,
                 run,
-                plan_artifact_id.clone(),
+                Some(plan_artifacts.overview_id),
+                plan_artifacts.blueprint_id,
             )
             .await?;
             let parked_run = self
@@ -2934,13 +2956,20 @@ impl AutomationScheduler {
             return Ok(());
         }
 
-        let plan_artifact_id =
-            current_plan_target_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
+        let plan_artifacts =
+            current_plan_artifact_ids_for_workspace(&self.ideation_session_repo, &workspace)
+                .await?;
+        let plan_artifact_id = plan_artifacts
+            .as_ref()
+            .map(|artifacts| artifacts.target_id.clone());
         let baseline_changed = refresh_plan_park_baseline(
             &self.transition_service,
             &self.run_repo,
             run,
-            plan_artifact_id.clone(),
+            plan_artifacts
+                .as_ref()
+                .map(|artifacts| artifacts.overview_id.clone()),
+            plan_artifacts.and_then(|artifacts| artifacts.blueprint_id),
         )
         .await?;
         let run = self
@@ -3682,7 +3711,9 @@ impl AutomationScheduler {
         let verdict = match parse_automation_plan_judge_verdict(
             verdict_json,
             AutomationPlanJudgeValidationContext {
-                expected_artifact_id: None,
+                expected_overview_artifact_id: None,
+                expected_blueprint_artifact_id: None,
+                blueprint_truncated: false,
             },
         ) {
             Ok(verdict) => verdict,
@@ -3700,13 +3731,17 @@ impl AutomationScheduler {
         let Some(current) = self.current_plan_application_context(run).await? else {
             return Ok(());
         };
-        if current.plan_artifact_id != verdict.evaluated_artifact_id {
+        if current.overview_artifact_id != verdict.evaluated_overview_artifact_id
+            || current.blueprint_artifact_id != verdict.evaluated_blueprint_artifact_id
+        {
             tracing::warn!(
                 automation_id = %automation.id,
                 run_id = %run.id,
-                evaluated_artifact_id = verdict.evaluated_artifact_id,
-                current_artifact_id = current.plan_artifact_id,
-                "Ignoring stored automation plan judge verdict because the plan artifact changed"
+                evaluated_overview_artifact_id = verdict.evaluated_overview_artifact_id,
+                evaluated_blueprint_artifact_id = ?verdict.evaluated_blueprint_artifact_id,
+                current_overview_artifact_id = current.overview_artifact_id,
+                current_blueprint_artifact_id = ?current.blueprint_artifact_id,
+                "Ignoring stored automation plan judge verdict because the plan bundle changed"
             );
             self.transition_service
                 .transition_plan_judge_state(
@@ -3786,7 +3821,6 @@ impl AutomationScheduler {
         };
         Ok(Some(PlanApplicationContext {
             session_id: session_id.clone(),
-            plan_artifact_id: bundle.action_target_id(),
             overview_artifact_id: bundle.overview_id.as_str().to_string(),
             blueprint_artifact_id: bundle.blueprint_id.map(|id| id.as_str().to_string()),
         }))
@@ -4318,7 +4352,8 @@ fn plan_judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
 
 fn prior_revision_instruction_repeats(
     prior_verdict_json: Option<&str>,
-    current_artifact_id: &str,
+    current_overview_artifact_id: &str,
+    current_blueprint_artifact_id: Option<&str>,
     next_instructions: &str,
 ) -> bool {
     let Some(prior_verdict_json) = prior_verdict_json else {
@@ -4327,7 +4362,9 @@ fn prior_revision_instruction_repeats(
     let Ok(prior) = parse_automation_plan_judge_verdict(
         prior_verdict_json,
         AutomationPlanJudgeValidationContext {
-            expected_artifact_id: None,
+            expected_overview_artifact_id: None,
+            expected_blueprint_artifact_id: None,
+            blueprint_truncated: false,
         },
     ) else {
         return false;
@@ -4335,7 +4372,9 @@ fn prior_revision_instruction_repeats(
     let Some(prior_instructions) = prior.revision_instructions.as_deref() else {
         return false;
     };
-    if prior.evaluated_artifact_id != current_artifact_id {
+    if prior.evaluated_overview_artifact_id != current_overview_artifact_id
+        || prior.evaluated_blueprint_artifact_id.as_deref() != current_blueprint_artifact_id
+    {
         return false;
     }
     crate::application::automation::judge::normalized_prompt_fingerprint(prior_instructions)

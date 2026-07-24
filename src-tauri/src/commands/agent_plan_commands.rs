@@ -24,6 +24,7 @@ use crate::domain::entities::{
     ArtifactMetadata, ArtifactRelation, ArtifactType, ChatContextType, ChatConversationId,
     IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus,
 };
+use crate::domain::services::ComposerArtifactReference;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::{
     SqliteArtifactRepository as ArtifactRepo, SqliteIdeationSessionRepository as SessionRepo,
@@ -61,6 +62,14 @@ pub struct ActivateAgentTaskPipelineInput {
 pub struct ActivateAgentPlanDirectImplementationInput {
     pub conversation_id: String,
     pub session_id: String,
+    #[serde(default)]
+    pub retry: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivateAgentPlanDirectImplementationResponse {
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub artifact_references: Vec<ComposerArtifactReference>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,7 +177,7 @@ pub async fn activate_agent_task_pipeline(
 pub async fn activate_agent_plan_direct_implementation(
     input: ActivateAgentPlanDirectImplementationInput,
     state: State<'_, AppState>,
-) -> Result<AgentConversationWorkspaceResponse, String> {
+) -> Result<ActivateAgentPlanDirectImplementationResponse, String> {
     activate_agent_plan_direct_implementation_for_state(input, state.inner()).await
 }
 
@@ -253,18 +262,37 @@ pub(crate) async fn activate_agent_task_pipeline_for_state(
 pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
     input: ActivateAgentPlanDirectImplementationInput,
     state: &AppState,
-) -> Result<AgentConversationWorkspaceResponse, String> {
+) -> Result<ActivateAgentPlanDirectImplementationResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let tx_conversation_id = input.conversation_id;
     let tx_session_id = input.session_id;
-    state
+    let response_session_id = tx_session_id.clone();
+    let retry = input.retry;
+    let approved_bundle = state
         .db
         .run_transaction(move |conn| {
-            validate_direct_implementation_authority_sync(
+            let approved_bundle = validate_direct_implementation_authority_sync(
                 conn,
                 &tx_conversation_id,
                 &tx_session_id,
+                retry,
             )?;
+            if retry {
+                let conversation_is_edit = conn.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM chat_conversations
+                        WHERE id = ?1 AND agent_mode = 'edit'
+                     )",
+                    [&tx_conversation_id],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !conversation_is_edit {
+                    return Err(AppError::Conflict(
+                        "Direct implementation retry is not in Edit mode".to_string(),
+                    ));
+                }
+                return Ok(approved_bundle);
+            }
             let now = chrono::Utc::now().to_rfc3339();
             let workspace_updated = conn.execute(
                 "UPDATE agent_conversation_workspaces
@@ -284,7 +312,7 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
                     "Plan changed before direct implementation activation".to_string(),
                 ));
             }
-            Ok(())
+            Ok(approved_bundle)
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -295,7 +323,42 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Activated Edit workspace was not found".to_string())?;
-    agent_workspace_response_for_state(state, workspace).await
+    let workspace = agent_workspace_response_for_state(state, workspace).await?;
+    let mut artifact_references = vec![approved_plan_composer_reference(
+        approved_bundle.overview,
+        &response_session_id,
+        "Plan Overview",
+    )];
+    if let Some(blueprint) = approved_bundle.blueprint {
+        artifact_references.push(approved_plan_composer_reference(
+            blueprint,
+            &response_session_id,
+            "Implementation Blueprint",
+        ));
+    }
+    Ok(ActivateAgentPlanDirectImplementationResponse {
+        workspace,
+        artifact_references,
+    })
+}
+
+fn approved_plan_composer_reference(
+    artifact: Artifact,
+    session_id: &str,
+    fallback_title: &str,
+) -> ComposerArtifactReference {
+    ComposerArtifactReference {
+        artifact_id: artifact.id.as_str().to_string(),
+        kind: "plan".to_string(),
+        title: Some(if artifact.name.trim().is_empty() {
+            fallback_title.to_string()
+        } else {
+            artifact.name
+        }),
+        session_id: Some(session_id.to_string()),
+        version: Some(artifact.metadata.version),
+        status: Some("approved".to_string()),
+    }
 }
 
 #[doc(hidden)]

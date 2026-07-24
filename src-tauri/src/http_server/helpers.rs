@@ -1233,6 +1233,63 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         None
     };
 
+    let blueprint_id = match task.plan_blueprint_artifact_id.clone() {
+        Some(blueprint_id) => Some(blueprint_id),
+        None => {
+            let is_v2_task = if let Some(session_id) = task.ideation_session_id.as_ref() {
+                state
+                    .ideation_session_repo
+                    .get_by_id(session_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "Task planning session was not found: {}",
+                            session_id.as_str()
+                        ))
+                    })?
+                    .plan_contract_version
+                    >= 2
+            } else {
+                false
+            };
+            if is_v2_task {
+                return Err(AppError::Validation(
+                    "v2 task is missing immutable Blueprint lineage".to_string(),
+                ));
+            }
+            if let Some(proposal_id) = task.source_proposal_id.as_ref() {
+                state
+                    .task_proposal_repo
+                    .get_by_id(proposal_id)
+                    .await?
+                    .and_then(|proposal| proposal.blueprint_artifact_id)
+            } else {
+                None
+            }
+        }
+    };
+    let blueprint_artifact = if let Some(blueprint_id) = blueprint_id {
+        let blueprint = state
+            .artifact_repo
+            .get_by_id(&blueprint_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Task immutable Blueprint artifact was not found: {}",
+                    blueprint_id.as_str()
+                ))
+            })?;
+        Some(ArtifactSummary {
+            content_preview: create_artifact_preview(&blueprint),
+            id: blueprint.id,
+            title: blueprint.name,
+            artifact_type: blueprint.artifact_type,
+            current_version: blueprint.metadata.version,
+        })
+    } else {
+        None
+    };
+
     // 4. Fetch related artifacts
     let related_artifacts = if let Some(artifact_id) = &task.plan_artifact_id {
         let related = state.artifact_repo.get_related(artifact_id).await?;
@@ -1362,6 +1419,12 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
             task.title
         ));
     }
+    if blueprint_artifact.is_some() {
+        context_hints.push(
+            "Implementation Blueprint available - use get_artifact to read the immutable task-specific execution authority"
+                .to_string(),
+        );
+    }
     if !related_artifacts.is_empty() {
         context_hints.push(format!(
             "{} related artifact{} found - may contain useful context",
@@ -1420,7 +1483,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         task,
         source_proposal,
         plan_artifact,
-        blueprint_artifact: None,
+        blueprint_artifact,
         related_artifacts,
         steps,
         step_progress,

@@ -4469,18 +4469,46 @@ export async function activateAgentTaskPipeline(input: {
 export async function activateAgentPlanDirectImplementation(input: {
   conversationId: string;
   sessionId: string;
-}): Promise<AgentConversationWorkspace> {
+  retry: boolean;
+}): Promise<{
+  workspace: AgentConversationWorkspace;
+  artifactReferences: ComposerArtifactReference[];
+}> {
+  const responseSchema = z.object({
+    workspace: AgentConversationWorkspaceResponseSchema,
+    artifact_references: z.array(
+      z.object({
+        artifactId: z.string(),
+        kind: z.string(),
+        title: z.string().optional(),
+        sessionId: z.string().optional(),
+        version: z.number().int().positive().optional(),
+        status: z.string().optional(),
+      }),
+    ),
+  });
   const raw = await typedInvoke(
     "activate_agent_plan_direct_implementation",
     {
       input: {
         conversationId: input.conversationId,
         sessionId: input.sessionId,
+        retry: input.retry,
       },
     },
-    AgentConversationWorkspaceResponseSchema,
+    responseSchema,
   );
-  return transformAgentConversationWorkspace(raw);
+  return {
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    artifactReferences: raw.artifact_references.map((reference) => ({
+      artifactId: reference.artifactId,
+      kind: reference.kind,
+      ...(reference.title ? { title: reference.title } : {}),
+      ...(reference.sessionId ? { sessionId: reference.sessionId } : {}),
+      ...(reference.version ? { version: reference.version } : {}),
+      ...(reference.status ? { status: reference.status } : {}),
+    })),
+  };
 }
 
 export async function startAgentTaskPipeline(input: {

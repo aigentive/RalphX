@@ -40,28 +40,24 @@ export async function implementAgentPlanDirectly({
 }: ImplementAgentPlanDirectlyParams): Promise<SendAgentMessageResult> {
   const conversationId = workspace.conversationId;
 
-  if (workspace.mode !== "edit") {
-    if (!workspace.linkedIdeationSessionId) {
-      throw new Error("Plan workspace is missing its linked planning session");
-    }
-    const activatedWorkspace =
-      await chatApi.activateAgentPlanDirectImplementation({
-      conversationId,
-      sessionId: workspace.linkedIdeationSessionId,
-    });
-    queryClient.setQueryData(
-      agentWorkspaceKeys.workspace(conversationId),
-      activatedWorkspace,
-    );
-    onConversationModeSwitched?.(
-      conversationId,
-      "edit",
-      activatedWorkspace,
-    );
-    void invalidateWorkspaceQueries(queryClient, conversationId);
-  } else {
-    onConversationModeSwitched?.(conversationId, "edit", workspace);
+  if (!workspace.linkedIdeationSessionId) {
+    throw new Error("Plan workspace is missing its linked planning session");
   }
+  const activation = await chatApi.activateAgentPlanDirectImplementation({
+    conversationId,
+    sessionId: workspace.linkedIdeationSessionId,
+    retry: workspace.mode === "edit",
+  });
+  queryClient.setQueryData(
+    agentWorkspaceKeys.workspace(conversationId),
+    activation.workspace,
+  );
+  onConversationModeSwitched?.(
+    conversationId,
+    "edit",
+    activation.workspace,
+  );
+  void invalidateWorkspaceQueries(queryClient, conversationId);
 
   return chatApi.sendAgentMessage(
     "project",
@@ -71,6 +67,7 @@ export async function implementAgentPlanDirectly({
     {
       conversationId,
       ...sendOptions,
+      composerArtifactReferences: activation.artifactReferences,
       suppressUserMessage: true,
     },
   );
