@@ -1395,6 +1395,16 @@ fn pr_describer_surfaces_share_preserve_or_patch_submit_contract() {
             "PR describer {harness:?} prompt should identify remote metadata as untrusted"
         );
         assert!(
+            prompt.contains("patch_allowed=\"true\"")
+                && prompt.contains("managed_suffix_preserved=\"true\"")
+                && prompt.contains("max_output_chars"),
+            "PR describer {harness:?} prompt should expose the editable-body capability contract"
+        );
+        assert!(
+            prompt.contains("never include or reconstruct"),
+            "PR describer {harness:?} prompt should exclude preserved managed content"
+        );
+        assert!(
             !prompt.contains("mcp__ralphx__"),
             "PR describer {harness:?} prompt should use surface-local tool names"
         );

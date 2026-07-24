@@ -2,6 +2,7 @@ import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
+  getAgentWorkspaceDescriptionFailurePresentation,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
 } from "./agentWorkspacePublishState";
@@ -22,6 +23,7 @@ export function PublishPipelineSteps({
   autoMergeDesired = false,
   className,
   prSupervisionStatus = null,
+  targetPullRequestLabel = null,
   status,
   isPublishing,
   testIdPrefix = "agents-publish",
@@ -30,6 +32,7 @@ export function PublishPipelineSteps({
   autoMergeDesired?: boolean;
   className?: string;
   prSupervisionStatus?: string | null;
+  targetPullRequestLabel?: string | null;
   status: string | null;
   isPublishing: boolean;
   testIdPrefix?: string;
@@ -80,6 +83,9 @@ export function PublishPipelineSteps({
   const isDescriptionFailure = normalizedStatus === "description_failed";
   const isTerminalFailure = normalizedStatus === "failed" || isRepairStatus || isDescriptionFailure;
   const failureIndex = isDescriptionFailure ? 3 : 0;
+  const descriptionFailure = getAgentWorkspaceDescriptionFailurePresentation(
+    targetPullRequestLabel,
+  );
 
   return (
     <div
@@ -166,8 +172,8 @@ export function PublishPipelineSteps({
           {isRepairStatus
             ? "The latest publish attempt found a fixable issue and sent it back to the workspace agent."
             : isDescriptionFailure
-              ? "RalphX could not draft a PR description, so no pull request was opened."
-            : "The latest publish attempt failed. Fixable errors are sent back to the workspace agent."}
+              ? descriptionFailure.summary
+              : "The latest publish attempt failed. Fixable errors are sent back to the workspace agent."}
         </div>
       )}
     </div>

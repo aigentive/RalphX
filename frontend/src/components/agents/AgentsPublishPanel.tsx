@@ -98,6 +98,7 @@ import {
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
   getAgentWorkspacePrConflictSummary,
+  getAgentWorkspaceDescriptionFailurePresentation,
   getAgentWorkspaceTerminalPublicationLabel,
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
@@ -894,10 +895,11 @@ export function AgentPublishPanel({
       };
     }
     if (isDescriptionFailed) {
+      const descriptionFailure = getAgentWorkspaceDescriptionFailurePresentation(
+        publishTargetPullRequestLabel,
+      );
       return {
-        title: "Publishing failed",
-        summary:
-          "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event.",
+        ...descriptionFailure,
         tone: "error" as const,
       };
     }
@@ -1550,6 +1552,7 @@ export function AgentPublishPanel({
             autoMergeDesired={prAutoMergeDesired}
             className="mt-0"
             prSupervisionStatus={prSupervisionStatus}
+            targetPullRequestLabel={publishTargetPullRequestLabel}
             status={pipelineStatus}
             isPublishing={effectivePublishing}
           />

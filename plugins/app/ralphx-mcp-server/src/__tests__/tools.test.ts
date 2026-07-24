@@ -1269,6 +1269,16 @@ describe('agent workspace PR description tool', () => {
     );
   });
 
+  it('limits existing PR body patches to the supplied editable region', () => {
+    const bodyDescription = inputSchemaProperties(
+      'submit_agent_workspace_pr_description'
+    ).body_markdown?.description;
+
+    expect(bodyDescription).toContain('patch_allowed=true');
+    expect(bodyDescription).toContain('RalphX-managed Plan/signature');
+    expect(bodyDescription).toContain('trailing integration block');
+  });
+
   it('routes PR description submissions to the agent workspace endpoint', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
 

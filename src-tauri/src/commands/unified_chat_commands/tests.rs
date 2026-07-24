@@ -96,6 +96,10 @@ use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::repositories::AgentWorkspaceRepairStateGuard;
 use crate::domain::review::ReviewSettings;
+use crate::domain::services::github_generated_markdown::{
+    decompose_ralphx_managed_pr_body, RALPHX_GENERATED_FOOTER, RALPHX_MANAGED_PR_BODY_END,
+    RALPHX_MANAGED_PR_BODY_START,
+};
 use crate::domain::services::github_service::PrDetail;
 use crate::domain::services::github_service::{PrAutoMergeRequest, PrHealth};
 use crate::domain::services::{
@@ -5999,6 +6003,7 @@ async fn publish_workspace_updates_authoritative_existing_pr_metadata_after_push
     {
         let github_state = github.state();
         assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(github_state.fetch_pr_detail_calls, 2);
         assert_eq!(github_state.create_draft_pr_calls, 0);
         assert_eq!(github_state.patch_pr_metadata_calls, 1);
         assert_eq!(
@@ -6038,6 +6043,153 @@ async fn publish_workspace_updates_authoritative_existing_pr_metadata_after_push
             && event.status == "succeeded"
             && event.summary == "Draft pull request is ready"
     }));
+}
+
+#[tokio::test]
+async fn publish_workspace_patches_only_editable_prefix_and_preserves_exact_managed_suffix() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("linked-managed-body", true, Some(888), github).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let remote_body = format!(
+        "Existing editable description\n\n{RALPHX_MANAGED_PR_BODY_START}\n\
+         <details>\n<summary>View full plan</summary>\n\n{}\n</details>\n\n\
+         {RALPHX_GENERATED_FOOTER}\n{RALPHX_MANAGED_PR_BODY_END}\n\nCodeSmith tail  \n",
+        "large plan\n".repeat(2_000)
+    );
+    let expected_suffix = decompose_ralphx_managed_pr_body(&remote_body)
+        .preserved_suffix
+        .expect("managed body should split")
+        .to_string();
+    for _ in 0..2 {
+        github.queue_pr_detail(Ok(authoritative_pr_detail(
+            888,
+            workspace.branch_name.clone(),
+            "Existing title",
+            &remote_body,
+        )));
+    }
+    write_publishable_workspace_change(&state, &conversation_id).await;
+    let client = Arc::new(SubmittingPrDescriptionClient::new(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+    ));
+    client
+        .queue_decision(
+            AgentWorkspacePrMetadataDecision::patch(
+                None,
+                Some("Improved editable description".to_string()),
+            )
+            .unwrap(),
+        )
+        .await;
+    let state = state.with_agent_client(client.clone());
+
+    publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    .expect("managed existing body should patch safely");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
+
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.fetch_pr_detail_calls, 2);
+        assert_eq!(github_state.patch_pr_metadata_calls, 1);
+        let expected_body = format!("Improved editable description{expected_suffix}");
+        assert_eq!(
+            github_state.last_patch_pr_metadata_body.as_deref(),
+            Some(expected_body.as_str())
+        );
+    }
+    let prompt = &client.spawned_configs().await[0].prompt;
+    assert!(prompt.contains("managed_suffix_preserved=\"true\""));
+    assert!(prompt.contains(">Existing editable description</body>"));
+    assert!(!prompt.contains("large plan"));
+    assert!(!prompt.contains("CodeSmith tail"));
+    assert!(!publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "description_failed"));
+}
+
+#[tokio::test]
+async fn publish_workspace_preserve_fails_closed_when_linked_target_closes_after_push() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("linked-preserve-closes", true, Some(889), github).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    github.queue_pr_detail(Ok(authoritative_pr_detail(
+        889,
+        workspace.branch_name.clone(),
+        "Existing title",
+        "Existing body",
+    )));
+    github.queue_pr_detail(Ok(PrDetail {
+        state: GithubPrStatus::Closed,
+        ..authoritative_pr_detail(
+            889,
+            workspace.branch_name.clone(),
+            "Existing title",
+            "Existing body",
+        )
+    }));
+    write_publishable_workspace_change(&state, &conversation_id).await;
+    let client = Arc::new(SubmittingPrDescriptionClient::new(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+    ));
+    client
+        .queue_decision(AgentWorkspacePrMetadataDecision::Preserve)
+        .await;
+    let state = state.with_agent_client(client);
+
+    let error = publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    .expect_err("closed post-push target must block success");
+
+    assert!(error.contains("is not open"));
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(github_state.fetch_pr_detail_calls, 2);
+        assert_eq!(github_state.patch_pr_metadata_calls, 0);
+    }
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.publication_pr_number, Some(889));
+    assert_eq!(
+        stored.publication_push_status.as_deref(),
+        Some("description_failed")
+    );
+    assert!(!publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "published" && event.status == "succeeded"));
 }
 
 fn authoritative_pr_detail(
@@ -6133,6 +6285,7 @@ async fn publish_workspace_preserves_linked_existing_pr_metadata_without_edit() 
     {
         let github_state = github.state();
         assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(github_state.fetch_pr_detail_calls, 2);
         assert_eq!(github_state.create_draft_pr_calls, 0);
         assert_eq!(github_state.patch_pr_metadata_calls, 0);
         assert_eq!(github_state.update_pr_details_calls, 0);
@@ -6163,6 +6316,16 @@ async fn publish_workspace_discovers_unlinked_same_head_pr_before_create() {
         453,
         "https://github.com/owner/repo/pull/453".to_string(),
     ))));
+    github.queue_find_pr_by_head_branch(Ok(Some((
+        453,
+        "https://github.com/owner/repo/pull/453".to_string(),
+    ))));
+    github.queue_pr_detail(Ok(authoritative_pr_detail(
+        453,
+        workspace.branch_name.clone(),
+        "Discovered title",
+        "Discovered body",
+    )));
     github.queue_pr_detail(Ok(authoritative_pr_detail(
         453,
         workspace.branch_name.clone(),
@@ -6192,8 +6355,8 @@ async fn publish_workspace_discovers_unlinked_same_head_pr_before_create() {
         .stop_agent_workspace_polling(&conversation_id);
 
     let github_state = github.state();
-    assert_eq!(github_state.find_pr_by_head_branch_calls, 1);
-    assert_eq!(github_state.fetch_pr_detail_calls, 1);
+    assert_eq!(github_state.find_pr_by_head_branch_calls, 2);
+    assert_eq!(github_state.fetch_pr_detail_calls, 2);
     assert_eq!(github_state.create_draft_pr_calls, 0);
     assert_eq!(github_state.patch_pr_metadata_calls, 0);
     assert_eq!(github_state.push_branch_calls, 1);
