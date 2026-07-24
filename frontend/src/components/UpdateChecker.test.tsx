@@ -720,15 +720,23 @@ describe("UpdateChecker", () => {
     expect(toastCallsById("whats-new-0.9.0")).toHaveLength(2);
   });
 
-  it("native menu release notes opens the dialog", async () => {
-    render(<UpdateChecker />);
+  it("keeps native menu release notes available while automatic maintenance is disabled", async () => {
+    render(
+      <UpdateChecker
+        automaticMaintenanceEnabled={false}
+        listenForNativeActions={false}
+        openReleaseNotesRequest={1}
+      />,
+    );
 
     await act(async () => {
-      eventListeners.get("ralphx://show-release-notes")?.({ payload: undefined });
       await flushAsyncWork();
+      await vi.advanceTimersByTimeAsync(4_000);
     });
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+    expect(mocks.check).not.toHaveBeenCalled();
+    expect(mocks.getCurrentReleaseNotes).not.toHaveBeenCalled();
   });
 
   it("waits for the persisted channel before choosing native-menu history", async () => {

@@ -41,7 +41,19 @@ interface CheckForUpdatesOptions {
 
 type CheckForUpdates = (options?: CheckForUpdatesOptions) => Promise<void>;
 
-export function UpdateChecker() {
+interface UpdateCheckerProps {
+  automaticMaintenanceEnabled?: boolean;
+  checkForUpdatesRequest?: number;
+  listenForNativeActions?: boolean;
+  openReleaseNotesRequest?: number;
+}
+
+export function UpdateChecker({
+  automaticMaintenanceEnabled = true,
+  checkForUpdatesRequest = 0,
+  listenForNativeActions = true,
+  openReleaseNotesRequest = 0,
+}: UpdateCheckerProps = {}) {
   const activeModal = useUiStore((s) => s.activeModal);
   const {
     updateChannel,
@@ -62,6 +74,8 @@ export function UpdateChecker() {
   const visibleWhatsNew = useRef<ReleaseNotesView | null>(null);
   const visibleWhatsNewToastId = useRef<string | null>(null);
   const isGlobalModalOpen = useRef(activeModal !== null);
+  const handledCheckForUpdatesRequest = useRef(0);
+  const handledOpenReleaseNotesRequest = useRef(0);
   const [dialogState, setDialogState] = useState<ReleaseDialogState>({ open: false });
 
   const clearVisibleWhatsNew = useCallback((version?: string) => {
@@ -289,12 +303,21 @@ export function UpdateChecker() {
     toast.dismiss("update-available");
     toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
 
+    if (!automaticMaintenanceEnabled) {
+      return;
+    }
+
     if (checkInFlight.current) {
       queuedForcedCheck.current = { force: true, target: updateChannel };
       return;
     }
     void checkForUpdates({ force: true, target: updateChannel });
-  }, [checkForUpdates, isUpdateChannelSettled, updateChannel]);
+  }, [
+    automaticMaintenanceEnabled,
+    checkForUpdates,
+    isUpdateChannelSettled,
+    updateChannel,
+  ]);
 
   useEffect(() => {
     if (!isUpdateChannelSettled || queuedUnsettledCheck.current === null) {
@@ -306,7 +329,7 @@ export function UpdateChecker() {
   }, [checkForUpdates, isUpdateChannelSettled, updateChannel]);
 
   useEffect(() => {
-    if (!isUpdateChannelSettled) {
+    if (!automaticMaintenanceEnabled || !isUpdateChannelSettled) {
       return undefined;
     }
     const timeoutId = window.setTimeout(
@@ -321,17 +344,25 @@ export function UpdateChecker() {
       window.clearTimeout(timeoutId);
       window.clearInterval(intervalId);
     };
-  }, [isUpdateChannelSettled]);
+  }, [automaticMaintenanceEnabled, isUpdateChannelSettled]);
 
   useEffect(() => {
+    if (!automaticMaintenanceEnabled) {
+      return undefined;
+    }
+
     const timeoutId = window.setTimeout(
       () => void showStartupReleaseNotes(),
       STARTUP_RELEASE_NOTES_DELAY_MS,
     );
     return () => window.clearTimeout(timeoutId);
-  }, [showStartupReleaseNotes]);
+  }, [automaticMaintenanceEnabled, showStartupReleaseNotes]);
 
   useEffect(() => {
+    if (!automaticMaintenanceEnabled) {
+      return undefined;
+    }
+
     const checkIfActive = () => {
       if (document.visibilityState === "hidden") return;
       void checkForUpdates();
@@ -346,10 +377,27 @@ export function UpdateChecker() {
       window.removeEventListener("online", checkIfActive);
       document.removeEventListener("visibilitychange", checkIfActive);
     };
-  }, [checkForUpdates]);
+  }, [automaticMaintenanceEnabled, checkForUpdates]);
+
+  useEffect(() => {
+    if (checkForUpdatesRequest <= handledCheckForUpdatesRequest.current) {
+      return;
+    }
+    handledCheckForUpdatesRequest.current = checkForUpdatesRequest;
+    void checkForUpdates({ manual: true, force: true });
+  }, [checkForUpdates, checkForUpdatesRequest]);
+
+  useEffect(() => {
+    if (openReleaseNotesRequest <= handledOpenReleaseNotesRequest.current) {
+      return;
+    }
+    handledOpenReleaseNotesRequest.current = openReleaseNotesRequest;
+    openCurrentReleaseNotes();
+  }, [openCurrentReleaseNotes, openReleaseNotesRequest]);
 
   useUpdateCheckerNativeEvents({
     checkForUpdates,
+    enabled: listenForNativeActions,
     openCurrentReleaseNotes,
   });
 
