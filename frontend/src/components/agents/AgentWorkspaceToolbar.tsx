@@ -1,4 +1,4 @@
-import { ExternalLink, GitBranch, GitPullRequestArrow } from "lucide-react";
+import { ExternalLink, GitPullRequestArrow } from "lucide-react";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
 import { PrStatusBadge } from "@/components/tasks/detail-views/shared/PrStatusBadge";
@@ -20,8 +20,13 @@ import {
   getAgentWorkspaceTerminalPublicationStatus,
   isPipelineOwnedAgentWorkspace,
 } from "./agentWorkspacePublishState";
-import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
+import {
+  AgentWorkspaceBranchIdentity,
+  AgentWorkspaceModeStatus,
+  AgentWorkspaceSyncStatus,
+} from "./AgentWorkspaceToolbarPresentation";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
+import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 
 export type AgentWorkspaceToolbarResolutionState =
   "resolved" | "loading" | "unavailable";
@@ -87,24 +92,6 @@ interface WorkspaceSyncState {
   terminalPrStatus: "merged" | "closed" | null;
 }
 
-function WorkspaceSyncChip({ label }: { label: string | null }) {
-  if (!label) return null;
-  return (
-    <span
-      className="shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-medium"
-      data-testid="agents-workspace-sync-status"
-      style={{
-        borderColor: "var(--border-subtle)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-        color: "var(--text-muted)",
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
 function AgentWorkspacePrHealth({
   selector,
   shellStatus,
@@ -137,7 +124,7 @@ function AgentWorkspacePrHealth({
   if (detailQuery.isError) {
     return (
       <>
-        <WorkspaceSyncChip label={syncLabel} />
+        <AgentWorkspaceSyncStatus label={syncLabel} />
         <span
           className="shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-medium"
           style={{
@@ -158,8 +145,13 @@ function AgentWorkspacePrHealth({
   if (!detail) {
     return (
       <>
-        <WorkspaceSyncChip label={syncLabel} />
-        <PullRequestStatusStrip reviewSummary={null} checks={[]} loading />
+        <AgentWorkspaceSyncStatus label={syncLabel} />
+        <PullRequestStatusStrip
+          reviewSummary={null}
+          checks={[]}
+          loading
+          variant="compact"
+        />
       </>
     );
   }
@@ -169,11 +161,12 @@ function AgentWorkspacePrHealth({
       {detailStatus && detailStatus !== shellStatus ? (
         <PrStatusBadge status={detailStatus} />
       ) : null}
-      <WorkspaceSyncChip label={syncLabel} />
+      <AgentWorkspaceSyncStatus label={syncLabel} />
       <PullRequestStatusStrip
         reviewSummary={detail.reviewSummary}
         checks={detail.checks}
         checksUnavailable={detail.sourcesUnavailable.includes("checks")}
+        variant="compact"
       />
     </>
   );
@@ -289,24 +282,10 @@ export function AgentWorkspaceToolbar({
       }}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
-        <span className="flex min-w-0 flex-[1_1_16rem] items-center gap-1.5 text-[var(--text-secondary)]">
-          <GitBranch
-            className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]"
-            aria-hidden="true"
-          />
-          <span className="min-w-0 truncate font-medium text-[var(--text-primary)]">
-            {workspace.branchName}
-          </span>
-          <span
-            className="shrink-0 text-[var(--text-muted)]"
-            aria-hidden="true"
-          >
-            &rarr;
-          </span>
-          <span className="min-w-0 truncate text-[var(--text-muted)]">
-            {baseLabel}
-          </span>
-        </span>
+        <AgentWorkspaceBranchIdentity
+          branchName={workspace.branchName}
+          baseLabel={baseLabel}
+        />
 
         <span className="flex min-w-0 shrink-0 items-center gap-1.5 text-[var(--text-secondary)]">
           <GitPullRequestArrow
@@ -319,7 +298,11 @@ export function AgentWorkspaceToolbar({
                 type="button"
                 className="inline-flex min-w-0 items-center gap-1 rounded bg-transparent p-0 text-left font-medium text-[var(--text-primary)] transition-colors hover:text-[var(--accent-primary)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
                 onClick={() => void openExternalTicketUrl(shell.url!)}
-                aria-label={`Open PR #${shell.prNumber ?? ""} in GitHub`}
+                aria-label={
+                  shell.prNumber
+                    ? `Open PR #${shell.prNumber} in GitHub`
+                    : "Open pull request in GitHub"
+                }
               >
                 <span className="truncate">
                   {shell.prNumber ? `PR #${shell.prNumber}` : "Pull request"}
@@ -343,20 +326,7 @@ export function AgentWorkspaceToolbar({
 
         {shellStatus ? <PrStatusBadge status={shellStatus} /> : null}
 
-        <span
-          className="shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-medium"
-          data-testid="agents-workspace-mode-status"
-          style={{
-            borderColor: "var(--border-subtle)",
-            borderStyle: "solid",
-            borderWidth: "1px",
-            color: "var(--text-secondary)",
-          }}
-        >
-          {workspaceModeLabel(workspace)}
-        </span>
-
-        {!selector ? <WorkspaceSyncChip label={syncLabel} /> : null}
+        {!selector ? <AgentWorkspaceSyncStatus label={syncLabel} /> : null}
 
         {selector && prHealthKey ? (
           <div
@@ -372,6 +342,8 @@ export function AgentWorkspaceToolbar({
             />
           </div>
         ) : null}
+
+        <AgentWorkspaceModeStatus label={workspaceModeLabel(workspace)} />
       </div>
     </section>
   );

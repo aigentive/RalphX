@@ -1,5 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import { vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -47,6 +47,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   finalizeAutomationMock: vi.fn(),
   triggerAutomationRunNowMock: vi.fn(),
   updateAutomationSetupMock: vi.fn(),
+  getPullRequestDetailMock: vi.fn(),
   getAgentConversationWorkspaceMock: vi.fn(),
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
@@ -193,6 +194,7 @@ const {
   finalizeAutomationMock,
   triggerAutomationRunNowMock,
   updateAutomationSetupMock,
+  getPullRequestDetailMock,
   getAgentConversationWorkspaceMock,
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
@@ -409,6 +411,17 @@ vi.mock("@tauri-apps/api/webview", () => ({
 vi.mock("@/hooks/useProjects", () => ({
   useProjects: () => useProjectsMock(),
 }));
+
+vi.mock("@/api/github", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/github")>();
+  return {
+    ...actual,
+    githubApi: {
+      ...actual.githubApi,
+      getPullRequestDetail: getPullRequestDetailMock,
+    },
+  };
+});
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
   useHarnessProviders: (options?: unknown) => useHarnessProvidersMock(options),
@@ -1076,6 +1089,21 @@ vi.mock("./AgentsArtifactPane", async () => {
   const { AgentPublishPanel } = await vi.importActual<
     typeof import("./AgentsPublishPanel")
   >("./AgentsPublishPanel");
+  function ControlledPublishPanel(
+    props: ComponentProps<typeof AgentPublishPanel>,
+  ) {
+    const [activeSubTab, setActiveSubTab] = useState(props.activeSubTab);
+    useEffect(() => {
+      setActiveSubTab(props.activeSubTab);
+    }, [props.activeSubTab]);
+    return (
+      <AgentPublishPanel
+        {...props}
+        activeSubTab={activeSubTab}
+        onSubTabChange={setActiveSubTab}
+      />
+    );
+  }
   artifactPaneModuleLoadedMock();
   return {
     AgentsArtifactPane: ({
@@ -1145,7 +1173,7 @@ vi.mock("./AgentsArtifactPane", async () => {
             Close
           </button>
         ) : null}
-        <AgentPublishPanel
+        <ControlledPublishPanel
           workspace={workspace ?? null}
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch ?? null}
@@ -1638,6 +1666,7 @@ export function setupAgentsViewTest() {
   finalizeAutomationMock.mockReset();
   triggerAutomationRunNowMock.mockReset();
   updateAutomationSetupMock.mockReset();
+  getPullRequestDetailMock.mockReset();
   getAgentConversationWorkspaceMock.mockReset();
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
@@ -1719,6 +1748,29 @@ export function setupAgentsViewTest() {
     wasQueued: false,
     queuedAsPending: false,
     queuedMessageId: null,
+  });
+  getPullRequestDetailMock.mockResolvedValue({
+    state: "loaded",
+    origin: "ownedOutbound",
+    description: {
+      number: 42,
+      title: "Published pull request",
+      body: null,
+      author: "octocat",
+      createdAt: "2026-07-23T15:00:00Z",
+      url: "https://github.com/mock/project/pull/42",
+      state: "open",
+      isDraft: false,
+      headRefName: "ralphx/ralphx/agent-abcdef12",
+      baseRefName: "main",
+    },
+    checks: [],
+    reviewSummary: null,
+    issueComments: [],
+    reviewThread: [],
+    rxConversations: [],
+    linkedTickets: [],
+    sourcesUnavailable: [],
   });
   listAgentConversationIssuesMock.mockResolvedValue([]);
   getAgentConversationWorkspaceMock.mockResolvedValue(null);
