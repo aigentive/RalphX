@@ -3438,6 +3438,7 @@ async fn test_routed_delegate_start_requires_trusted_parent_run_context() {
 async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_runs() {
     let state = build_state(Arc::new(AppState::new_sqlite_test()));
     let parent = create_parent_session(&state).await;
+    let other_parent = create_parent_session(&state).await;
     let parent_conversation = state
         .app_state
         .chat_conversation_repo
@@ -3447,7 +3448,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     let other_conversation = state
         .app_state
         .chat_conversation_repo
-        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .create(ChatConversation::new_ideation(other_parent.id))
         .await
         .expect("create other conversation");
 
