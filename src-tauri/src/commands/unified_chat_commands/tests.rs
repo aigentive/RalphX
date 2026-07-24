@@ -6102,15 +6102,16 @@ async fn publish_workspace_patches_only_editable_prefix_and_preserves_exact_mana
         .pr_poller_registry
         .stop_agent_workspace_polling(&conversation_id);
 
-    let github_state = github.state();
-    assert_eq!(github_state.fetch_pr_detail_calls, 2);
-    assert_eq!(github_state.patch_pr_metadata_calls, 1);
-    let expected_body = format!("Improved editable description{expected_suffix}");
-    assert_eq!(
-        github_state.last_patch_pr_metadata_body.as_deref(),
-        Some(expected_body.as_str())
-    );
-    drop(github_state);
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.fetch_pr_detail_calls, 2);
+        assert_eq!(github_state.patch_pr_metadata_calls, 1);
+        let expected_body = format!("Improved editable description{expected_suffix}");
+        assert_eq!(
+            github_state.last_patch_pr_metadata_body.as_deref(),
+            Some(expected_body.as_str())
+        );
+    }
     let prompt = &client.spawned_configs().await[0].prompt;
     assert!(prompt.contains("managed_suffix_preserved=\"true\""));
     assert!(prompt.contains(">Existing editable description</body>"));
@@ -6168,11 +6169,12 @@ async fn publish_workspace_preserve_fails_closed_when_linked_target_closes_after
     .expect_err("closed post-push target must block success");
 
     assert!(error.contains("is not open"));
-    let github_state = github.state();
-    assert_eq!(github_state.push_branch_calls, 1);
-    assert_eq!(github_state.fetch_pr_detail_calls, 2);
-    assert_eq!(github_state.patch_pr_metadata_calls, 0);
-    drop(github_state);
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(github_state.fetch_pr_detail_calls, 2);
+        assert_eq!(github_state.patch_pr_metadata_calls, 0);
+    }
     let stored = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
