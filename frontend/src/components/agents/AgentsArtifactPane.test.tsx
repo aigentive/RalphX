@@ -620,6 +620,10 @@ vi.mock("./AgentPlanStartPanel", () => ({
         id: string;
         name: string;
       };
+      blueprintArtifact: {
+        id: string;
+        name: string;
+      } | null;
     }) => void;
   }) => (
     <div
@@ -645,6 +649,10 @@ vi.mock("./AgentPlanStartPanel", () => ({
             artifact: {
               id: "seeded-plan-1",
               name: "Seeded plan",
+            },
+            blueprintArtifact: {
+              id: "seeded-blueprint-1",
+              name: "Seeded Blueprint",
             },
           })
         }
@@ -3364,6 +3372,24 @@ describe("AgentsArtifactPane", () => {
       ["agents", "session-plan", "seeded-session-1", "seeded-plan-1"],
       expect.objectContaining({
         id: "seeded-plan-1",
+      }),
+    );
+    expect(setQueryDataSpy).toHaveBeenCalledWith(
+      ["agents", "artifact", "seeded-blueprint-1"],
+      expect.objectContaining({
+        id: "seeded-blueprint-1",
+        name: "Seeded Blueprint",
+      }),
+    );
+    expect(setQueryDataSpy).toHaveBeenCalledWith(
+      [
+        "agents",
+        "session-plan",
+        "seeded-session-1",
+        "seeded-blueprint-1",
+      ],
+      expect.objectContaining({
+        id: "seeded-blueprint-1",
       }),
     );
     expect(setQueryDataSpy).toHaveBeenCalledWith(

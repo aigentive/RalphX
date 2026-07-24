@@ -139,7 +139,49 @@ async fn get_task_context_impl_exposes_the_tasks_immutable_blueprint() {
 #[tokio::test]
 async fn get_task_context_impl_rejects_v2_task_without_blueprint_lineage() {
     let state = AppState::new_test();
-    let session = state
+    let mut proposal = crate::domain::entities::TaskProposal::new(
+        crate::domain::entities::IdeationSessionId::new(),
+        "V2 proposal",
+        crate::domain::entities::ProposalCategory::Feature,
+        crate::domain::entities::Priority::Medium,
+    );
+    proposal.blueprint_artifact_id = Some(ArtifactId::new());
+    proposal.blueprint_version_at_creation = Some(1);
+    let proposal = state.task_proposal_repo.create(proposal).await.unwrap();
+    let mut task = Task::new(ProjectId::new(), "Missing Blueprint".to_string());
+    task.source_proposal_id = Some(proposal.id);
+    let task = state.task_repo.create(task).await.unwrap();
+
+    let error = get_task_context_impl(&state, &task.id).await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("v2 task is missing immutable Blueprint lineage"));
+}
+
+#[tokio::test]
+async fn get_task_context_impl_keeps_legacy_task_readable_after_session_promotion() {
+    let state = AppState::new_test();
+    let blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Promoted Blueprint",
+            ArtifactType::Specification,
+            "# Blueprint added after the legacy task",
+            "planner",
+        ))
+        .await
+        .unwrap();
+    let mut proposal = crate::domain::entities::TaskProposal::new(
+        crate::domain::entities::IdeationSessionId::new(),
+        "Legacy proposal",
+        crate::domain::entities::ProposalCategory::Feature,
+        crate::domain::entities::Priority::Medium,
+    );
+    proposal.blueprint_artifact_id = Some(blueprint.id.clone());
+    proposal.blueprint_version_at_creation = None;
+    let proposal = state.task_proposal_repo.create(proposal).await.unwrap();
+    let promoted_session = state
         .ideation_session_repo
         .create(
             IdeationSession::builder()
@@ -149,15 +191,21 @@ async fn get_task_context_impl_rejects_v2_task_without_blueprint_lineage() {
         )
         .await
         .unwrap();
-    let mut task = Task::new(session.project_id.clone(), "Missing Blueprint".to_string());
-    task.ideation_session_id = Some(session.id);
+    let mut task = Task::new(
+        promoted_session.project_id.clone(),
+        "Grandfathered task".to_string(),
+    );
+    task.ideation_session_id = Some(promoted_session.id);
+    task.source_proposal_id = Some(proposal.id);
     let task = state.task_repo.create(task).await.unwrap();
 
-    let error = get_task_context_impl(&state, &task.id).await.unwrap_err();
+    let context = get_task_context_impl(&state, &task.id).await.unwrap();
 
-    assert!(error
-        .to_string()
-        .contains("v2 task is missing immutable Blueprint lineage"));
+    assert_eq!(
+        context.blueprint_artifact.map(|artifact| artifact.id),
+        Some(blueprint.id),
+        "the session's current contract must not reclassify a legacy task"
+    );
 }
 
 #[tokio::test]
@@ -242,6 +290,8 @@ async fn automation_bridge_finalize_authority_requires_current_verified_run_and_
     let automation_id = AutomationId::new();
     let run_id = AutomationRunId::new();
     let artifact_id = ArtifactId::new();
+    let blueprint_id = ArtifactId::new();
+    let stale_blueprint_id = ArtifactId::new();
     let now = Utc::now();
 
     state
@@ -307,7 +357,7 @@ async fn automation_bridge_finalize_authority_requires_current_verified_run_and_
             plan_reminder_count: 0,
             plan_pending_instructions: None,
             plan_last_parked_artifact_id: Some(artifact_id.to_string()),
-            plan_last_parked_blueprint_artifact_id: None,
+            plan_last_parked_blueprint_artifact_id: Some(blueprint_id.to_string()),
             agent_phase_started_at: Some(now),
             conversation_id: Some(conversation.id),
             run_prompt: "Author and finalize the plan".to_string(),
@@ -342,7 +392,11 @@ async fn automation_bridge_finalize_authority_requires_current_verified_run_and_
     let session = IdeationSession::builder()
         .project_id(project_id.clone())
         .plan_artifact_id(artifact_id.clone())
+        .plan_blueprint_artifact_id(blueprint_id.clone())
+        .plan_contract_version(2)
         .verification_status(VerificationStatus::Verified)
+        .verified_plan_artifact_id(artifact_id.clone())
+        .verified_plan_blueprint_artifact_id(blueprint_id.clone())
         .build();
     state
         .ideation_session_repo
@@ -370,19 +424,50 @@ async fn automation_bridge_finalize_authority_requires_current_verified_run_and_
 
     let session_id = session.id.to_string();
     let approved_artifact_id = artifact_id.to_string();
+    let approved_stale_blueprint_id = stale_blueprint_id.to_string();
     state
         .db
         .run(move |conn| {
             conn.execute(
                 "INSERT INTO plan_artifact_approvals (
-                    session_id, artifact_id, artifact_version, status, approved_at, approved_by
-                 ) VALUES (?1, ?2, 1, 'approved', ?3, 'judge')",
-                rusqlite::params![session_id, approved_artifact_id, Utc::now().to_rfc3339()],
+                    session_id, artifact_id, artifact_version,
+                    blueprint_artifact_id, blueprint_artifact_version,
+                    status, approved_at, approved_by
+                 ) VALUES (?1, ?2, 1, ?3, 1, 'approved', ?4, 'judge')",
+                rusqlite::params![
+                    session_id,
+                    approved_artifact_id,
+                    approved_stale_blueprint_id,
+                    Utc::now().to_rfc3339()
+                ],
             )?;
             Ok(())
         })
         .await
-        .expect("approve current plan");
+        .expect("approve stale plan pair");
+
+    assert!(
+        !automation_bridge_finalize_authorized(&state, &session)
+            .await
+            .expect("reject stale blueprint approval"),
+        "an unchanged overview must not authorize a revised Blueprint"
+    );
+
+    let session_id = session.id.to_string();
+    let approved_blueprint_id = blueprint_id.to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE plan_artifact_approvals
+                 SET blueprint_artifact_id = ?2, blueprint_artifact_version = 1
+                 WHERE session_id = ?1",
+                rusqlite::params![session_id, approved_blueprint_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("approve current plan pair");
 
     assert!(automation_bridge_finalize_authorized(&state, &session)
         .await
@@ -390,6 +475,7 @@ async fn automation_bridge_finalize_authority_requires_current_verified_run_and_
 
     let mut unverified = session;
     unverified.verification_status = VerificationStatus::NeedsRevision;
+    unverified.verified_plan_blueprint_artifact_id = None;
     assert!(!automation_bridge_finalize_authorized(&state, &unverified)
         .await
         .expect("reject unverified bridge"));

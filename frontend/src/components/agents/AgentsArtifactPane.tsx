@@ -1747,6 +1747,21 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ["agents", "session-plan", result.sessionId, result.artifact.id],
         result.artifact,
       );
+      if (result.blueprintArtifact) {
+        queryClient.setQueryData(
+          ["agents", "artifact", result.blueprintArtifact.id],
+          result.blueprintArtifact,
+        );
+        queryClient.setQueryData(
+          [
+            "agents",
+            "session-plan",
+            result.sessionId,
+            result.blueprintArtifact.id,
+          ],
+          result.blueprintArtifact,
+        );
+      }
       queryClient.setQueryData(
         ["agents", "plan-approval", result.sessionId],
         result.artifact,

@@ -236,11 +236,74 @@ async fn seed_source_plan(
                 .project_id(project.id.clone())
                 .session_flow(IdeationSessionFlow::Planning)
                 .plan_artifact_id(source_v2.id.clone())
+                .plan_contract_version(1)
                 .build(),
         )
         .await
         .unwrap();
     (source_session, source_v1, source_v2)
+}
+
+#[tokio::test]
+async fn copy_agent_conversation_plan_clones_complete_v2_bundle_and_provenance() {
+    let (state, project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let (mut source_session, _source_v1, source_overview) =
+        seed_source_plan(&state, &project).await;
+    let source_blueprint =
+        seed_blueprint_for_session(&state, source_session.id.as_str(), "# Source blueprint").await;
+    source_session = state
+        .ideation_session_repo
+        .get_by_id(&source_session.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let response = copy_agent_conversation_plan_for_state(
+        CopyAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_overview.id.as_str().to_string(),
+            source_version: source_overview.metadata.version,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let copied_blueprint = response
+        .blueprint_artifact
+        .expect("complete v2 copy must return its Blueprint");
+    assert_eq!(copied_blueprint.content, "# Source blueprint");
+    assert_eq!(
+        copied_blueprint.derived_from,
+        vec![source_blueprint.id.as_str().to_string()]
+    );
+
+    let target_session = state
+        .ideation_session_repo
+        .get_by_id(&IdeationSessionId::from_string(response.session_id.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    let target_bundle = target_session
+        .plan_artifact_bundle()
+        .expect("copied target must contain a complete bundle");
+    assert_eq!(target_bundle.overview_id.as_str(), response.artifact.id);
+    assert_eq!(
+        target_bundle.blueprint_id.as_ref().map(ArtifactId::as_str),
+        Some(copied_blueprint.id.as_str())
+    );
+
+    let relations = state
+        .artifact_repo
+        .get_relations(&ArtifactId::from_string(response.artifact.id))
+        .await
+        .unwrap();
+    assert!(relations.iter().any(|relation| {
+        relation.relation_type == ArtifactRelationType::RelatedTo
+            && relation.to_artifact_id.as_str() == copied_blueprint.id
+    }));
 }
 
 #[tokio::test]
@@ -1406,6 +1469,7 @@ async fn copy_agent_conversation_plan_rejects_file_backed_source_plan() {
                 .project_id(project.id.clone())
                 .session_flow(IdeationSessionFlow::Planning)
                 .plan_artifact_id(source_plan.id.clone())
+                .plan_contract_version(1)
                 .build(),
         )
         .await

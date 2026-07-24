@@ -201,9 +201,7 @@ pub(crate) async fn matching_plan_approval_for_workspace(
         return Ok(None);
     };
 
-    if approval.artifact_id == bundle.overview_id
-        && approval.blueprint_artifact_id == bundle.blueprint_id
-    {
+    if approval.matches_bundle(&bundle) {
         Ok(Some(approval))
     } else {
         Ok(None)

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::application::git_service::GitService;
+use crate::application::task_context_service::resolve_task_blueprint_artifact_id;
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::commands::ideation_commands::{
     apply_pending_proposals_core, apply_proposals_core, is_local_proposal, ApplyProposalsInput,
@@ -17,7 +18,7 @@ use crate::domain::entities::{
     AutomationRunStatus, AutomationStatus, Complexity, IdeationSession, IdeationSessionId,
     IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
     TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
-    ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus, VerificationStatus,
+    ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
 use crate::domain::services::resolve_effective_gate_policy;
@@ -1060,10 +1061,10 @@ pub(crate) async fn automation_bridge_finalize_authorized(
     state: &AppState,
     session: &IdeationSession,
 ) -> AppResult<bool> {
-    if session.verification_status != VerificationStatus::Verified {
+    if !session.has_exact_plan_verification() {
         return Ok(false);
     }
-    let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+    let Some(bundle) = session.plan_artifact_bundle() else {
         return Ok(false);
     };
     let Some(workspace) = state
@@ -1114,7 +1115,7 @@ pub(crate) async fn automation_bridge_finalize_authorized(
     let Some(approval) = state.plan_approval_repo.get_by_session(&session.id).await? else {
         return Ok(false);
     };
-    Ok(approval.artifact_id == *plan_artifact_id)
+    Ok(approval.matches_bundle(&bundle))
 }
 
 /// Apply proposals core for an already-validated session.
@@ -1183,35 +1184,36 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         .ok_or_else(|| AppError::NotFound(format!("Task not found: {}", task_id)))?;
 
     // 2. If source_proposal_id present, fetch proposal and create TaskProposalSummary
-    let source_proposal = if let Some(proposal_id) = &task.source_proposal_id {
-        match state.task_proposal_repo.get_by_id(proposal_id).await? {
-            Some(proposal) => {
-                // Parse acceptance_criteria from JSON string to Vec<String>
-                let acceptance_criteria: Vec<String> = proposal
-                    .acceptance_criteria
-                    .as_ref()
-                    .and_then(|json_str| serde_json::from_str(json_str).ok())
-                    .unwrap_or_default();
-
-                Some(crate::domain::entities::TaskProposalSummary {
-                    id: proposal.id.clone(),
-                    title: proposal.title.clone(),
-                    description: proposal.description.clone().unwrap_or_default(),
-                    acceptance_criteria,
-                    implementation_notes: None,
-                    plan_version_at_creation: proposal.plan_version_at_creation,
-                    priority_score: proposal.priority_score,
-                    affected_paths: proposal
-                        .affected_paths
-                        .as_ref()
-                        .and_then(|json_str| serde_json::from_str(json_str).ok())
-                        .unwrap_or_default(),
-                })
-            }
-            None => None,
-        }
+    let source_proposal_entity = if let Some(proposal_id) = &task.source_proposal_id {
+        state.task_proposal_repo.get_by_id(proposal_id).await?
     } else {
         None
+    };
+    let source_proposal = match source_proposal_entity.as_ref() {
+        Some(proposal) => {
+            // Parse acceptance_criteria from JSON string to Vec<String>
+            let acceptance_criteria: Vec<String> = proposal
+                .acceptance_criteria
+                .as_ref()
+                .and_then(|json_str| serde_json::from_str(json_str).ok())
+                .unwrap_or_default();
+
+            Some(crate::domain::entities::TaskProposalSummary {
+                id: proposal.id.clone(),
+                title: proposal.title.clone(),
+                description: proposal.description.clone().unwrap_or_default(),
+                acceptance_criteria,
+                implementation_notes: None,
+                plan_version_at_creation: proposal.plan_version_at_creation,
+                priority_score: proposal.priority_score,
+                affected_paths: proposal
+                    .affected_paths
+                    .as_ref()
+                    .and_then(|json_str| serde_json::from_str(json_str).ok())
+                    .unwrap_or_default(),
+            })
+        }
+        None => None,
     };
 
     // 3. If plan_artifact_id present, fetch artifact and create ArtifactSummary
@@ -1233,41 +1235,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         None
     };
 
-    let blueprint_id = match task.plan_blueprint_artifact_id.clone() {
-        Some(blueprint_id) => Some(blueprint_id),
-        None => {
-            let is_v2_task = if let Some(session_id) = task.ideation_session_id.as_ref() {
-                state
-                    .ideation_session_repo
-                    .get_by_id(session_id)
-                    .await?
-                    .ok_or_else(|| {
-                        AppError::NotFound(format!(
-                            "Task planning session was not found: {}",
-                            session_id.as_str()
-                        ))
-                    })?
-                    .plan_contract_version
-                    >= 2
-            } else {
-                false
-            };
-            if is_v2_task {
-                return Err(AppError::Validation(
-                    "v2 task is missing immutable Blueprint lineage".to_string(),
-                ));
-            }
-            if let Some(proposal_id) = task.source_proposal_id.as_ref() {
-                state
-                    .task_proposal_repo
-                    .get_by_id(proposal_id)
-                    .await?
-                    .and_then(|proposal| proposal.blueprint_artifact_id)
-            } else {
-                None
-            }
-        }
-    };
+    let blueprint_id = resolve_task_blueprint_artifact_id(&task, source_proposal_entity.as_ref())?;
     let blueprint_artifact = if let Some(blueprint_id) = blueprint_id {
         let blueprint = state
             .artifact_repo

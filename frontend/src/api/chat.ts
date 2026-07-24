@@ -2153,6 +2153,7 @@ export interface AgentConversationPlanSeedResult {
   workspace: AgentConversationWorkspace;
   sessionId: string;
   artifact: Artifact;
+  blueprintArtifact: Artifact | null;
 }
 
 export interface PublishAgentConversationWorkspaceResult {
@@ -2982,6 +2983,7 @@ const AgentConversationPlanSeedResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   session_id: z.string(),
   artifact: ArtifactResponseSchema,
+  blueprint_artifact: ArtifactResponseSchema.nullable().optional().default(null),
 });
 
 const PublishAgentConversationWorkspaceResponseSchema = z.object({
@@ -3283,6 +3285,9 @@ function transformAgentConversationPlanSeedResponse(
     workspace: transformAgentConversationWorkspace(raw.workspace),
     sessionId: raw.session_id,
     artifact: transformArtifactResponse(raw.artifact),
+    blueprintArtifact: raw.blueprint_artifact
+      ? transformArtifactResponse(raw.blueprint_artifact)
+      : null,
   };
 }
 

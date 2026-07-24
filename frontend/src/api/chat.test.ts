@@ -2571,6 +2571,13 @@ describe("chat api", () => {
       workspace: planSeedWorkspaceResponse(),
       session_id: "session-plan",
       artifact: planSeedArtifactResponse(),
+      blueprint_artifact: {
+        ...planSeedArtifactResponse(),
+        id: "artifact-blueprint",
+        name: "Implementation Blueprint",
+        content: "# Blueprint",
+        derived_from: ["source-blueprint"],
+      },
     });
 
     const result = await copyAgentConversationPlan({
@@ -2596,6 +2603,12 @@ describe("chat api", () => {
       name: "Imported plan",
       content: { type: "inline", text: "# Imported plan" },
       planApproval: { status: "draft" },
+    });
+    expect(result.blueprintArtifact).toMatchObject({
+      id: "artifact-blueprint",
+      name: "Implementation Blueprint",
+      content: { type: "inline", text: "# Blueprint" },
+      derivedFrom: ["source-blueprint"],
     });
   });
 
@@ -2632,6 +2645,7 @@ describe("chat api", () => {
       content: { type: "inline", text: "# Dropped plan" },
       derivedFrom: [],
     });
+    expect(result.blueprintArtifact).toBeNull();
   });
 
   it("forks an agent conversation and transforms child workspace metadata", async () => {
