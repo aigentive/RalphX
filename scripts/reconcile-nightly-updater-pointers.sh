@@ -184,7 +184,7 @@ snapshot_pointer_state() {
   pointer_arm_tag=""
   pointer_x86_tag=""
   pointer_json="$(pointer_release_json)"
-  [[ -n "${pointer_json}" ]] || return
+  [[ -n "${pointer_json}" ]] || return 0
 
   jq -e '
     (.tagName == "updater-nightly")
