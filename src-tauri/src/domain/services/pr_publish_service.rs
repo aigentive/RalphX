@@ -9,10 +9,13 @@ use crate::domain::entities::{
     ArtifactContent, ChatConversation, PlanBranch, Project, Task,
 };
 use crate::domain::repositories::{ArtifactRepository, IdeationSessionRepository};
-use crate::domain::services::github_generated_markdown::RALPHX_GENERATED_FOOTER;
+use crate::domain::services::github_generated_markdown::{
+    decompose_ralphx_managed_pr_body, fit_editable_prefix_for_preserved_suffix,
+    GITHUB_PR_BODY_SOFT_LIMIT_CHARS, PR_BODY_TRUNCATION_NOTICE, RALPHX_GENERATED_FOOTER,
+    RALPHX_MANAGED_PR_BODY_END, RALPHX_MANAGED_PR_BODY_START,
+};
 use crate::domain::services::{
-    append_ralphx_generated_footer, normalize_title_with_jira_key, primary_jira_key_from_title,
-    GithubServiceTrait,
+    normalize_title_with_jira_key, primary_jira_key_from_title, GithubServiceTrait,
 };
 use crate::error::{AppError, AppResult};
 
@@ -26,10 +29,6 @@ pub trait PlanPrDescriptionDrafter: Send + Sync {
         review_state: PrReviewState,
     ) -> AppResult<AgentWorkspacePrDescription>;
 }
-
-const GITHUB_PR_BODY_SOFT_LIMIT_CHARS: usize = 60_000;
-const PR_BODY_TRUNCATION_NOTICE: &str =
-    "\n\n_Excerpt truncated by RalphX because GitHub PR descriptions have a body size limit._";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrReviewState {
@@ -190,6 +189,7 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         conversation: &ChatConversation,
         pr_number: i64,
         pr_url: Option<&str>,
+        existing_body: Option<&str>,
         metadata_decision: &AgentWorkspacePrMetadataDecision,
     ) -> AppResult<AgentWorkspacePrPublishOutcome> {
         match metadata_decision {
@@ -210,7 +210,18 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 let body_file = body_markdown
                     .as_deref()
                     .map(|body| {
-                        let body = finalize_agent_workspace_pr_body(body, &self.plan_markdown);
+                        let body = existing_body
+                            .map(decompose_ralphx_managed_pr_body)
+                            .and_then(|decomposition| decomposition.preserved_suffix)
+                            .map(|preserved_suffix| {
+                                recompose_agent_workspace_pr_body_with_preserved_suffix(
+                                    body,
+                                    preserved_suffix,
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                Ok(finalize_agent_workspace_pr_body(body, &self.plan_markdown))
+                            })?;
                         write_agent_workspace_pr_body(&body)
                     })
                     .transpose()?;
@@ -439,14 +450,60 @@ fn write_agent_workspace_pr_body(body: &str) -> AppResult<NamedTempFile> {
 fn finalize_agent_workspace_pr_body(body: &str, plan_markdown: &Option<String>) -> String {
     match plan_markdown {
         Some(plan) if !plan.trim().is_empty() => {
-            let prefix = format!("{}\n\n", body.trim_end());
-            let suffix = format!("\n\n</details>\n\n{RALPHX_GENERATED_FOOTER}");
+            let editable_prefix = body.trim_end();
+            let managed_prefix = format!("\n\n{RALPHX_MANAGED_PR_BODY_START}\n");
+            let suffix = format!(
+                "\n\n</details>\n\n{RALPHX_GENERATED_FOOTER}\n{RALPHX_MANAGED_PR_BODY_END}"
+            );
             let plan_header = "<details>\n<summary>View full plan</summary>\n\n";
-            let full_prefix = format!("{prefix}{plan_header}");
-            fit_plan_markdown_to_pr_body(&full_prefix, plan.trim(), &suffix)
+            let full_body = format!(
+                "{editable_prefix}{managed_prefix}{plan_header}{}{suffix}",
+                plan.trim()
+            );
+            if char_count(&full_body) <= GITHUB_PR_BODY_SOFT_LIMIT_CHARS {
+                return full_body;
+            }
+            let fixed_chars = char_count(&managed_prefix)
+                + char_count(plan_header)
+                + char_count(&suffix)
+                + char_count(PR_BODY_TRUNCATION_NOTICE);
+            let available_content_chars =
+                GITHUB_PR_BODY_SOFT_LIMIT_CHARS.saturating_sub(fixed_chars);
+            let editable = truncate_chars(editable_prefix, available_content_chars);
+            let remaining_plan_chars =
+                available_content_chars.saturating_sub(char_count(editable.trim_end()));
+            let truncated_plan = truncate_chars(plan.trim(), remaining_plan_chars);
+            format!(
+                "{}{managed_prefix}{plan_header}{}{PR_BODY_TRUNCATION_NOTICE}{suffix}",
+                editable.trim_end(),
+                truncated_plan.trim_end()
+            )
         }
-        _ => append_ralphx_generated_footer(body),
+        _ => {
+            let preserved_suffix = format!(
+                "\n\n{RALPHX_MANAGED_PR_BODY_START}\n{RALPHX_GENERATED_FOOTER}\n\
+                 {RALPHX_MANAGED_PR_BODY_END}"
+            );
+            recompose_agent_workspace_pr_body_with_preserved_suffix(body, &preserved_suffix)
+                .unwrap_or(preserved_suffix)
+        }
     }
+}
+
+fn recompose_agent_workspace_pr_body_with_preserved_suffix(
+    editable_prefix: &str,
+    preserved_suffix: &str,
+) -> AppResult<String> {
+    let editable_prefix = fit_editable_prefix_for_preserved_suffix(
+        editable_prefix,
+        preserved_suffix,
+    )
+    .ok_or_else(|| {
+        AppError::Validation(
+            "the preserved PR body suffix leaves no room for an editable description".to_string(),
+        )
+    })?;
+    Ok(format!("{editable_prefix}{preserved_suffix}"))
 }
 
 fn char_count(text: &str) -> usize {

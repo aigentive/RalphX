@@ -579,7 +579,8 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         },
         body_markdown: {
           type: "string",
-          description: "Optional improved Markdown pull request body; only valid for a patch decision.",
+          description:
+            "Optional reviewer-focused editable Markdown body; valid only for a new PR or when the existing PR prompt marks the editable body patch_allowed=true. Exclude RalphX-managed Plan/signature content and every preserved trailing integration block.",
         },
         decision: {
           type: "string",
