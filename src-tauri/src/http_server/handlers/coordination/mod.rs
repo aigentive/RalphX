@@ -182,6 +182,30 @@ async fn preflight_requested_delegated_session(
             ));
         }
     }
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_active_for_context(ChatContextType::Delegation, delegated.id.as_str())
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load delegated session conversation: {error}"),
+            )
+        })?;
+    let stored_parent_conversation_id = delegated_conversation
+        .as_ref()
+        .and_then(|conversation| conversation.parent_conversation_id.as_deref());
+    let lineage_matches = match parent.parent_conversation_id.as_deref() {
+        Some(expected) => stored_parent_conversation_id == Some(expected),
+        None => stored_parent_conversation_id.is_none(),
+    };
+    if !lineage_matches {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "Delegated session conversation lineage does not match the trusted caller lineage",
+        ));
+    }
     Ok(Some(delegated))
 }
 

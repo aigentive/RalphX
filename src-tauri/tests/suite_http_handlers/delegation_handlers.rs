@@ -1297,6 +1297,183 @@ async fn test_delegate_start_rejects_reused_session_identity_conflicts() {
         1,
         "conflicts must not create another session"
     );
+
+    let mut delegated_conversation = ChatConversation::new_delegation(existing.id.clone());
+    delegated_conversation.parent_conversation_id = Some(parent_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .expect("create matching delegated conversation lineage");
+    let resumed = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: Some(existing.id.as_str().to_string()),
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Resume the matching delegated session.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("matching caller lineage should permit session reuse")
+    .0;
+    assert_eq!(resumed.delegated_session_id, existing.id.as_str());
+}
+
+#[tokio::test]
+async fn test_delegate_start_rejects_reused_session_from_another_project_conversation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir
+        .path()
+        .join("cross-conversation-reuse-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, first_parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let second_parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create second same-project parent conversation");
+    let second_parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(second_parent_conversation.id))
+        .await
+        .expect("create active second parent run");
+
+    let mut existing = DelegatedSession::new(
+        project.id.clone(),
+        "project",
+        project.id.as_str(),
+        "ralphx-general-explorer",
+        AgentHarnessKind::Codex,
+    );
+    existing.status = "pending".to_string();
+    let existing = state
+        .app_state
+        .delegated_session_repo
+        .create(existing)
+        .await
+        .expect("existing delegated session should persist");
+    let mut delegated_conversation = ChatConversation::new_delegation(existing.id.clone());
+    delegated_conversation.parent_conversation_id = Some(first_parent_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .expect("create delegated conversation under first parent");
+
+    let second_parent_scope =
+        AgentTaskScope::new("conversation", second_parent_conversation.id.as_str());
+    for title in ["Assigned from second conversation", "Meaningful sibling"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &second_parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create second parent task");
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        second_parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        second_parent_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(second_parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: Some(existing.id.as_str().to_string()),
+            child_session_id: None,
+            task_ref: Some("1".to_string()),
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "This cross-conversation reuse must not launch.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect_err("same-project cross-conversation session reuse should fail");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("lineage")));
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&second_parent_scope, "1")
+        .await
+        .expect("load second parent task")
+        .expect("second parent task");
+    assert_eq!(task.state, AgentTaskState::Open);
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&existing.id)
+        .await
+        .expect("load unresolved assignment")
+        .is_none());
+    assert!(
+        !captured_args_path.exists(),
+        "cross-conversation reuse must fail before process spawn"
+    );
 }
 
 #[tokio::test]
