@@ -810,6 +810,11 @@ fi
 # Nightly can advance only from an older complete pointer, repair a candidate/prior split, and rerun exactly.
 if [[ "${pointer_test_scope}" == "all" || "${pointer_test_scope}" == "nightly" ]]; then
 setup_nightly_pair
+run_nightly_control v1.1.0
+assert_release_state updater-nightly $'false\ttrue\tfalse'
+assert_nightly_pointer_versions v1.1.0
+
+setup_nightly_pair
 make_release updater-nightly true false
 make_nightly_pointers v1.0.0
 run_nightly_control v1.1.0

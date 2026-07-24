@@ -70,7 +70,7 @@ export const startupApi = {
   ): Promise<void> => {
     await typedInvoke(
       "report_startup_frontend_milestone",
-      { ...input },
+      { input },
       TauriVoidSchema,
     );
   },

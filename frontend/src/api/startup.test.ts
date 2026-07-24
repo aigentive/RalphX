@@ -59,9 +59,11 @@ describe("startupApi", () => {
     ).resolves.toBeUndefined();
 
     expect(invoke).toHaveBeenCalledWith("report_startup_frontend_milestone", {
-      bootId: "boot-1",
-      attemptId: 2,
-      milestone: "shell_painted",
+      input: {
+        bootId: "boot-1",
+        attemptId: 2,
+        milestone: "shell_painted",
+      },
     });
   });
 
