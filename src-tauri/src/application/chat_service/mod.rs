@@ -2042,9 +2042,11 @@ impl<R: Runtime> AppChatService<R> {
             .map(|timestamp| timestamp.with_timezone(&chrono::Utc));
         let queued_message_id = queued_msg.id.clone();
         let send_options = SendMessageOptions {
-            queue_policy: (policy == QueuedMessageSendPolicy::RuntimeHandoff)
-                .then_some(SendQueuePolicy::RequireImmediateStart)
-                .unwrap_or_default(),
+            queue_policy: if policy == QueuedMessageSendPolicy::RuntimeHandoff {
+                SendQueuePolicy::RequireImmediateStart
+            } else {
+                SendQueuePolicy::default()
+            },
             runtime_handoff_recovery: policy == QueuedMessageSendPolicy::RuntimeHandoff,
             metadata: queued_msg.metadata_override.clone(),
             created_at,
