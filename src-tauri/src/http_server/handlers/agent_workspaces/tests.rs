@@ -1293,6 +1293,20 @@
             Some("needs_agent")
         );
         assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
+        let existing_pr = PrDetail {
+            number: 267,
+            title: "Existing PR title".to_string(),
+            body: Some("Existing PR body".to_string()),
+            author: Some("maintainer".to_string()),
+            created_at: None,
+            url: Some("https://github.com/owner/repo/pull/267".to_string()),
+            state: PrStatus::Open,
+            is_draft: false,
+            head_ref_name: refreshed.branch_name.clone(),
+            base_ref_name: "main".to_string(),
+        };
+        fixture.github.queue_pr_detail(Ok(existing_pr.clone()));
+        fixture.github.queue_pr_detail(Ok(existing_pr));
         let Json(completion) = complete_agent_workspace_pr_fix(
             State(test_http_state(Arc::clone(&fixture.app_state))),
             Path(fixture.conversation_id.to_string()),
@@ -1313,6 +1327,8 @@
         );
         assert_eq!(completion.pushed, Some(true));
         assert_eq!(fixture.github.state().push_branch_calls, 1);
+        assert_eq!(fixture.github.state().fetch_pr_detail_calls, 2);
+        assert_eq!(fixture.github.state().last_fetch_pr_detail_number, Some(267));
         let completed = fixture
             .app_state
             .agent_conversation_workspace_repo
