@@ -161,19 +161,33 @@ describe("StartupRoot", () => {
     const user = userEvent.setup();
     currentStatus = startupStatus({
       appStateReady: true,
+    });
+    mockStartupStatus();
+    const { rerender } = render(<StartupRoot />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    currentStatus = startupStatus({
+      appStateReady: true,
       runtimeReady: true,
       stage: "runtime_ready",
     });
     mockStartupStatus();
-    render(<StartupRoot />);
+    rerender(<StartupRoot />);
 
-    await waitFor(() => expect(screen.queryByTestId("startup-screen")).not.toBeInTheDocument());
-    expect(toastLoadingMock).toHaveBeenCalledWith(
-      "Restoring background work…",
-      expect.objectContaining({ id: "startup-background-operation" }),
-    );
+    const openWorkspaceButton = await screen.findByRole("button", {
+      name: "Open workspace",
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("startup-screen")).not.toBeInTheDocument();
+      expect(toastLoadingMock).toHaveBeenCalledWith(
+        "Restoring background work…",
+        expect.objectContaining({ id: "startup-background-operation" }),
+      );
+    });
 
-    await user.click(screen.getByRole("button", { name: "Open workspace" }));
+    await user.click(openWorkspaceButton);
 
     expect(screen.getByRole("button", { name: "Workspace opened" })).toBeInTheDocument();
   });
