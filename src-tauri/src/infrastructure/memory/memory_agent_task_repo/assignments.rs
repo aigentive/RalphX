@@ -94,6 +94,7 @@ pub(super) fn reserve(
         delegated_session_id: delegated_session_id.clone(),
         attempt_number,
         caller_agent_run_id: caller_agent_run_id.clone(),
+        planned_delegated_agent_run_id: None,
         delegated_agent_run_id: None,
         task_list_id: list.id.clone(),
         task_id: task.task_id.clone(),
@@ -146,12 +147,17 @@ pub(super) fn bind_run(
             "delegate assignment does not belong to the requested session".to_string(),
         ));
     }
-    if assignment.delegated_agent_run_id.as_ref() != Some(delegated_agent_run_id) {
+    if assignment.planned_delegated_agent_run_id.as_ref() != Some(delegated_agent_run_id) {
         return Err(AppError::Conflict(
             "delegate assignment was not planned for the requested run".to_string(),
         ));
     }
     if assignment.state == crate::domain::entities::AgentTaskAssignmentState::Active {
+        if assignment.delegated_agent_run_id.as_ref() != Some(delegated_agent_run_id) {
+            return Err(AppError::Conflict(
+                "active delegate assignment is bound to a different run".to_string(),
+            ));
+        }
         let assignment = assignment.clone();
         return Ok(Some(view(&state, &assignment)?));
     }
@@ -161,6 +167,7 @@ pub(super) fn bind_run(
         ));
     }
     let now = Utc::now();
+    assignment.delegated_agent_run_id = Some(*delegated_agent_run_id);
     assignment.state = crate::domain::entities::AgentTaskAssignmentState::Active;
     assignment.run_bound_at = Some(now);
     assignment.updated_at = now;
@@ -199,7 +206,7 @@ pub(super) fn plan_run(
             "only a reserved delegate assignment can plan a run".to_string(),
         ));
     }
-    if let Some(planned) = assignment.delegated_agent_run_id.as_ref() {
+    if let Some(planned) = assignment.planned_delegated_agent_run_id.as_ref() {
         if planned != delegated_agent_run_id {
             return Err(AppError::Conflict(
                 "delegate assignment is already planned for a different run".to_string(),
@@ -208,7 +215,7 @@ pub(super) fn plan_run(
         let assignment = assignment.clone();
         return Ok(Some(view(&state, &assignment)?));
     }
-    assignment.delegated_agent_run_id = Some(*delegated_agent_run_id);
+    assignment.planned_delegated_agent_run_id = Some(*delegated_agent_run_id);
     assignment.updated_at = Utc::now();
     let assignment = state.assignments[index].clone();
     append_event(

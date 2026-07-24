@@ -5,9 +5,9 @@ use super::{
 };
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, AgentTaskAssignmentId, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
-    AgentTaskCreate, AgentTaskPatch, AgentTaskScope, AgentTaskState, ChatConversation,
-    DelegatedSession,
+    AgentRun, AgentRunId, AgentTaskAssignmentId, AgentTaskAssignmentState,
+    AgentTaskAssignmentTerminalStatus, AgentTaskCreate, AgentTaskPatch, AgentTaskScope,
+    AgentTaskState, ChatConversation, DelegatedSession,
 };
 use crate::domain::repositories::{
     AgentRunRepository, AgentTaskRepository, DelegatedSessionRepository,
@@ -28,6 +28,93 @@ fn task(title: &str, owner_agent: Option<&str>) -> AgentTaskCreate {
         blocked_by: Vec::new(),
         blocks: Vec::new(),
     }
+}
+
+#[tokio::test]
+async fn sqlite_assignment_plans_before_agent_run_fk_row_exists() {
+    let db = SqliteTestDb::new("sqlite_assignment_plans_before_agent_run_fk_row_exists");
+    assert_eq!(
+        db.with_connection(|conn| {
+            conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        }),
+        Ok(1)
+    );
+    let project = db.seed_project("Assignment project");
+    let conversation = db.insert_conversation(ChatConversation::new_project(project.id.clone()));
+    let run_repo = SqliteAgentRunRepository::from_shared(db.shared_conn());
+    let delegated_repo = SqliteDelegatedSessionRepository::from_shared(db.shared_conn());
+    let task_repo = SqliteAgentTaskRepository::from_shared(db.shared_conn());
+    let caller_run = run_repo
+        .create(AgentRun::new(conversation.id))
+        .await
+        .unwrap();
+    let delegated_session = delegated_repo
+        .create(DelegatedSession::new(
+            project.id,
+            "project".to_string(),
+            "project-context".to_string(),
+            "ralphx-general-worker".to_string(),
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .unwrap();
+    let delegated_conversation = db.insert_conversation(ChatConversation::new_delegation(
+        delegated_session.id.clone(),
+    ));
+    task_repo
+        .create_task(&scope(), task("Implement", Some("orchestrator")))
+        .await
+        .unwrap();
+    task_repo
+        .create_task(&scope(), task("Validate", None))
+        .await
+        .unwrap();
+    let reserved = task_repo
+        .reserve_assignment(
+            &scope(),
+            "1",
+            &delegated_session.id,
+            &caller_run.id,
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let planned_run_id = AgentRunId::new();
+
+    let planned = task_repo
+        .plan_assignment_run(
+            &reserved.assignment.assignment.id,
+            &delegated_session.id,
+            &planned_run_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(planned.assignment.state, AgentTaskAssignmentState::Reserved);
+    assert_eq!(
+        planned.assignment.planned_delegated_agent_run_id,
+        Some(planned_run_id)
+    );
+    assert_eq!(planned.assignment.delegated_agent_run_id, None);
+
+    let mut delegated_run = AgentRun::new(delegated_conversation.id);
+    delegated_run.id = planned_run_id;
+    let delegated_run = run_repo.create(delegated_run).await.unwrap();
+    let bound = task_repo
+        .bind_assignment_run(
+            &reserved.assignment.assignment.id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bound.assignment.state, AgentTaskAssignmentState::Active);
+    assert_eq!(
+        bound.assignment.delegated_agent_run_id,
+        Some(delegated_run.id)
+    );
 }
 
 #[tokio::test]
@@ -132,9 +219,10 @@ async fn sqlite_assignment_lifecycle_is_atomic_locked_and_attempt_scoped() {
         .unwrap();
     assert_eq!(planned.assignment.state, AgentTaskAssignmentState::Reserved);
     assert_eq!(
-        planned.assignment.delegated_agent_run_id,
+        planned.assignment.planned_delegated_agent_run_id,
         Some(delegated_run.id)
     );
+    assert_eq!(planned.assignment.delegated_agent_run_id, None);
     assert!(task_repo
         .bind_assignment_run(
             &reserved.assignment.assignment.id,

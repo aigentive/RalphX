@@ -51,56 +51,81 @@ impl AgentTaskAssignmentRecoveryService {
         };
         for assignment in assignments {
             let session_id = &assignment.assignment.delegated_session_id;
-            let run_id = match (
-                assignment.assignment.delegated_agent_run_id,
-                assignment.assignment.state,
-            ) {
-                (Some(run_id), AgentTaskAssignmentState::Reserved) => {
-                    if self.recoverable_planned_run(session_id, &run_id).await? {
-                        let bound = self
-                            .task_service
-                            .bind_assignment_run(&assignment.assignment.id, session_id, &run_id)
-                            .await?;
-                        if bound.is_none() {
-                            return Err(AppError::Conflict(format!(
-                                "reserved delegate assignment {} disappeared before recovery binding",
-                                assignment.assignment.id
-                            )));
-                        }
-                        run_id
-                    } else {
+            let run_id = match assignment.assignment.state {
+                AgentTaskAssignmentState::Reserved => {
+                    if assignment.assignment.delegated_agent_run_id.is_some() {
+                        return Err(AppError::Conflict(format!(
+                            "reserved delegate assignment {} already has a bound run",
+                            assignment.assignment.id
+                        )));
+                    }
+                    if let Some(planned_run_id) =
+                        assignment.assignment.planned_delegated_agent_run_id
+                    {
                         if self
+                            .recoverable_planned_run(session_id, &planned_run_id)
+                            .await?
+                        {
+                            let bound = self
+                                .task_service
+                                .bind_assignment_run(
+                                    &assignment.assignment.id,
+                                    session_id,
+                                    &planned_run_id,
+                                )
+                                .await?;
+                            if bound.is_none() {
+                                return Err(AppError::Conflict(format!(
+                                    "reserved delegate assignment {} disappeared before recovery binding",
+                                    assignment.assignment.id
+                                )));
+                            }
+                            planned_run_id
+                        } else {
+                            if self
+                                .task_service
+                                .fail_reserved_assignment(
+                                    session_id,
+                                    "orphaned_reservation_after_restart",
+                                )
+                                .await?
+                                .is_some()
+                            {
+                                report.settled += 1;
+                            }
+                            continue;
+                        }
+                    } else {
+                        let settled = self
                             .task_service
                             .fail_reserved_assignment(
                                 session_id,
-                                "orphaned_reservation_after_restart",
+                                "uncorrelated_reservation_after_restart",
                             )
-                            .await?
-                            .is_some()
-                        {
+                            .await?;
+                        if settled.is_some() {
                             report.settled += 1;
                         }
                         continue;
                     }
                 }
-                (Some(run_id), _) => run_id,
-                (None, AgentTaskAssignmentState::Reserved) => {
-                    if self
-                        .task_service
-                        .fail_reserved_assignment(
-                            session_id,
-                            "uncorrelated_reservation_after_restart",
-                        )
-                        .await?
-                        .is_some()
-                    {
-                        report.settled += 1;
-                    }
-                    continue;
+                AgentTaskAssignmentState::Active
+                | AgentTaskAssignmentState::CompletionRequested
+                | AgentTaskAssignmentState::ReleaseRequested => {
+                    let Some(run_id) = assignment.assignment.delegated_agent_run_id else {
+                        return Err(AppError::Conflict(format!(
+                            "unresolved delegate assignment {} has no bound run",
+                            assignment.assignment.id
+                        )));
+                    };
+                    run_id
                 }
-                (None, _) => {
+                AgentTaskAssignmentState::Completed
+                | AgentTaskAssignmentState::Released
+                | AgentTaskAssignmentState::Failed
+                | AgentTaskAssignmentState::Cancelled => {
                     return Err(AppError::Conflict(format!(
-                        "unresolved delegate assignment {} has no bound run",
+                        "settled delegate assignment {} was returned as unresolved",
                         assignment.assignment.id
                     )));
                 }

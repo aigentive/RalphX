@@ -103,9 +103,10 @@ async fn assignment_reservation_locks_owned_fields_and_completion_is_two_phase()
         .unwrap();
     assert_eq!(planned.assignment.state, AgentTaskAssignmentState::Reserved);
     assert_eq!(
-        planned.assignment.delegated_agent_run_id,
+        planned.assignment.planned_delegated_agent_run_id,
         Some(delegated_run)
     );
+    assert_eq!(planned.assignment.delegated_agent_run_id, None);
     assert!(repo
         .bind_assignment_run(
             &reserved.assignment.assignment.id,

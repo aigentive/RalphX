@@ -101,6 +101,7 @@ pub struct AgentTaskAssignment {
     pub delegated_session_id: DelegatedSessionId,
     pub attempt_number: i64,
     pub caller_agent_run_id: AgentRunId,
+    pub planned_delegated_agent_run_id: Option<AgentRunId>,
     pub delegated_agent_run_id: Option<AgentRunId>,
     pub task_list_id: AgentTaskListId,
     pub task_id: AgentTaskId,

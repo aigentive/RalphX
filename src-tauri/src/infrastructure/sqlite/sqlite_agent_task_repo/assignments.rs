@@ -208,12 +208,17 @@ pub(super) async fn bind_run(
                 "delegate assignment does not belong to the requested session".to_string(),
             ));
         }
-        if assignment.delegated_agent_run_id.as_ref() != Some(&delegated_agent_run_id) {
+        if assignment.planned_delegated_agent_run_id.as_ref() != Some(&delegated_agent_run_id) {
             return Err(AppError::Conflict(
                 "delegate assignment was not planned for the requested run".to_string(),
             ));
         }
         if assignment.state == AgentTaskAssignmentState::Active {
+            if assignment.delegated_agent_run_id.as_ref() != Some(&delegated_agent_run_id) {
+                return Err(AppError::Conflict(
+                    "active delegate assignment is bound to a different run".to_string(),
+                ));
+            }
             return Ok(Some(view(conn, assignment)?));
         }
         if assignment.state != AgentTaskAssignmentState::Reserved {
@@ -224,14 +229,17 @@ pub(super) async fn bind_run(
         let now = Utc::now();
         let updated = conn.execute(
             "UPDATE agent_task_delegate_assignments
-             SET state = 'active',
-                 run_bound_at = ?1,
-                 updated_at = ?2
-             WHERE id = ?3
-               AND delegated_session_id = ?4
+             SET delegated_agent_run_id = ?1,
+                 state = 'active',
+                 run_bound_at = ?2,
+                 updated_at = ?3
+             WHERE id = ?4
+               AND delegated_session_id = ?5
                AND state = 'reserved'
-               AND delegated_agent_run_id = ?5",
+               AND planned_delegated_agent_run_id = ?6
+               AND delegated_agent_run_id IS NULL",
             params![
+                delegated_agent_run_id.as_str(),
                 now.to_rfc3339(),
                 now.to_rfc3339(),
                 assignment.id.as_str(),
@@ -282,7 +290,7 @@ pub(super) async fn plan_run(
                 "only a reserved delegate assignment can plan a run".to_string(),
             ));
         }
-        if let Some(planned) = assignment.delegated_agent_run_id.as_ref() {
+        if let Some(planned) = assignment.planned_delegated_agent_run_id.as_ref() {
             if planned != &delegated_agent_run_id {
                 return Err(AppError::Conflict(
                     "delegate assignment is already planned for a different run".to_string(),
@@ -293,11 +301,12 @@ pub(super) async fn plan_run(
         let now = Utc::now();
         let updated = conn.execute(
             "UPDATE agent_task_delegate_assignments
-             SET delegated_agent_run_id = ?1,
+             SET planned_delegated_agent_run_id = ?1,
                  updated_at = ?2
              WHERE id = ?3
                AND delegated_session_id = ?4
                AND state = 'reserved'
+               AND planned_delegated_agent_run_id IS NULL
                AND delegated_agent_run_id IS NULL",
             params![
                 delegated_agent_run_id.as_str(),
@@ -703,6 +712,7 @@ const ASSIGNMENT_SELECT: &str = "SELECT
     a.delegated_session_id,
     a.attempt_number,
     a.caller_agent_run_id,
+    a.planned_delegated_agent_run_id,
     a.delegated_agent_run_id,
     a.task_list_id,
     a.task_id,
@@ -787,6 +797,9 @@ fn row_to_assignment(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTaskAssig
         ),
         attempt_number: row.get("attempt_number")?,
         caller_agent_run_id: AgentRunId::from_string(row.get::<_, String>("caller_agent_run_id")?),
+        planned_delegated_agent_run_id: row
+            .get::<_, Option<String>>("planned_delegated_agent_run_id")?
+            .map(AgentRunId::from_string),
         delegated_agent_run_id: row
             .get::<_, Option<String>>("delegated_agent_run_id")?
             .map(AgentRunId::from_string),
