@@ -44,6 +44,69 @@ const TONE_COLORS: Record<AgentsPublishActionTone, string> = {
   error: "var(--status-error, #e5484d)",
 };
 
+export interface StatusActionButtonStyle {
+  backgroundColor: string;
+  borderColor: string;
+  borderStyle: "solid";
+  borderWidth: string;
+  color: string;
+}
+
+/**
+ * Non-actionable status buttons (repair pending, PR up to date, terminal
+ * merged/closed, managed-by-tasks) must NOT read as the solid accent CTA.
+ * They render as a calm, tone-tinted chip that sits beside the outlined
+ * StatusPill without competing with it. WKWebView-safe: explicit paint/border
+ * longhands with one-hop tokens + literal fallbacks (never shorthand).
+ */
+const STATUS_ACTION_BUTTON_TONE_STYLES: Record<
+  AgentsPublishActionTone,
+  StatusActionButtonStyle
+> = {
+  neutral: {
+    backgroundColor: "var(--bg-elevated, #232329)",
+    borderColor: "var(--border-default, #393940)",
+    borderStyle: "solid",
+    borderWidth: "1px",
+    color: "var(--text-secondary, #c7c7cc)",
+  },
+  success: {
+    backgroundColor: "var(--status-success-muted, hsla(164, 100%, 31%, 0.15))",
+    borderColor: "var(--status-success-border, hsla(164, 100%, 31%, 0.35))",
+    borderStyle: "solid",
+    borderWidth: "1px",
+    color: "var(--status-success, #3fbf7f)",
+  },
+  warning: {
+    backgroundColor: "var(--status-warning-muted, hsla(55, 85%, 60%, 0.15))",
+    borderColor: "var(--status-warning-border, hsla(55, 85%, 60%, 0.35))",
+    borderStyle: "solid",
+    borderWidth: "1px",
+    color: "var(--status-warning, #e0b341)",
+  },
+  error: {
+    backgroundColor: "var(--status-error-muted, hsla(27, 100%, 42%, 0.15))",
+    borderColor: "var(--status-error-border, hsla(27, 100%, 42%, 0.35))",
+    borderStyle: "solid",
+    borderWidth: "1px",
+    color: "var(--status-error, #d55e00)",
+  },
+};
+
+/** Inline style for a non-actionable status button of the given tone. */
+export function statusActionButtonStyle(
+  tone: AgentsPublishActionTone,
+): StatusActionButtonStyle {
+  return STATUS_ACTION_BUTTON_TONE_STYLES[tone];
+}
+
+/**
+ * className companion for {@link statusActionButtonStyle}: keeps the tinted
+ * chip fully legible instead of the default disabled-CTA half-opacity. Pair
+ * with `variant="ghost"` so no accent background is painted underneath.
+ */
+export const STATUS_ACTION_BUTTON_CLASSNAME = "disabled:opacity-100";
+
 function ActionStatusIcon({
   busy,
   tone,
@@ -93,7 +156,7 @@ export function AgentsPublishActionBar({
 }) {
   return (
     <section
-      className="-mx-4 grid max-w-[calc(100%+2rem)] grid-cols-1 gap-3 px-4 py-3"
+      className="-mx-4 grid max-w-[calc(100%+2rem)] grid-cols-1 gap-3 px-4 pb-5"
       data-testid="agents-publish-actionbar"
       data-tone={presentation.tone}
       style={{

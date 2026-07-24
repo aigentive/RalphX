@@ -73,14 +73,18 @@ import {
 import { summarizeChecks } from "@/components/pr/pullRequestChecksSummary";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
-import { AgentsPublishActionBar } from "./AgentsPublishActionBar";
+import {
+  AgentsPublishActionBar,
+  STATUS_ACTION_BUTTON_CLASSNAME,
+  statusActionButtonStyle,
+} from "./AgentsPublishActionBar";
 import { AgentsPublishChecksTab } from "./AgentsPublishChecksTab";
 import {
   AgentsPublishAutomationTab,
   deriveAgentsPublishAutomationSnapshot,
   type AgentsPublishAutomationSnapshot,
 } from "./AgentsPublishAutomationTab";
-import { PublishEventLog } from "./AgentsPublishEventLog";
+import { PublishEventLog, selectPublishHistory } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
 import {
   PublishWorkspaceDialog,
@@ -635,6 +639,10 @@ export function AgentPublishPanel({
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
   const isPublishingThisWorkspace = isPublishingWorkspace;
   const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
+  const publishHistoryCount = selectPublishHistory(
+    publicationEvents,
+    effectivePublishing,
+  ).visibleEvents.length;
   const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
   const latestActivePublishEvent = latestPublicationEventForActivePublish(
     publicationEvents,
@@ -1107,15 +1115,7 @@ export function AgentPublishPanel({
         value={activeSubTab}
         onValueChange={handleSubTabValueChange}
       >
-        <section
-          className="sticky top-0 z-20 -mx-4 border-b px-4 py-4"
-          style={{
-            backgroundColor: "var(--bg-surface)",
-            borderColor: "var(--border-subtle)",
-            borderStyle: "solid",
-            borderWidth: "0 0 1px",
-          }}
-        >
+        <section className="sticky top-0 z-20">
           <AgentsPublishActionBar
             presentation={publishPresentation}
             changeFacts={publishChangeFacts}
@@ -1125,7 +1125,9 @@ export function AgentPublishPanel({
               {isRepairPending ? (
                 <Button
                   type="button"
-                  className={primaryActionClassName}
+                  variant="ghost"
+                  className={`${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`}
+                  style={statusActionButtonStyle("warning")}
                   disabled
                   data-testid="agents-publish-repair-pending"
                 >
@@ -1217,7 +1219,17 @@ export function AgentPublishPanel({
               ) : (
                 <Button
                   type="button"
-                  className={primaryActionClassName}
+                  variant={publishDisabled ? "ghost" : undefined}
+                  className={
+                    publishDisabled
+                      ? `${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`
+                      : primaryActionClassName
+                  }
+                  style={
+                    publishDisabled
+                      ? statusActionButtonStyle(publishPresentation.tone)
+                      : undefined
+                  }
                   onClick={confirmPublishWorkspace}
                   disabled={publishDisabled}
                   data-testid="agents-publish-confirm"
@@ -1280,7 +1292,7 @@ export function AgentPublishPanel({
             }
           />
           <TabsList
-            className="mt-4 flex h-10 w-full min-w-0 justify-start gap-5 overflow-x-auto rounded-none border-y bg-transparent p-0 text-[var(--text-muted)]"
+            className="mt-3 flex h-10 w-full min-w-0 justify-start gap-5 overflow-x-auto rounded-none border-y bg-transparent p-0 text-[var(--text-muted)]"
             style={{
               borderColor: "var(--border-subtle)",
               borderStyle: "solid",
@@ -1374,16 +1386,18 @@ export function AgentPublishPanel({
             >
               <History className="h-3.5 w-3.5" aria-hidden="true" />
               <span>History</span>
-              <span
-                aria-label={`${publicationEvents.length} publication events`}
-                className="rounded-full px-1.5 py-0.5 text-[0.625rem] font-semibold"
-                style={{
-                  backgroundColor: "var(--bg-elevated)",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {publicationEvents.length}
-              </span>
+              {publishHistoryCount > 0 ? (
+                <span
+                  aria-label={`${publishHistoryCount} publication events`}
+                  className="rounded-full px-1.5 py-0.5 text-[0.625rem] font-semibold"
+                  style={{
+                    backgroundColor: "var(--bg-elevated)",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {publishHistoryCount}
+                </span>
+              ) : null}
             </TabsTrigger>
             {shouldShowPrSupervisionControls && (
               <TabsTrigger

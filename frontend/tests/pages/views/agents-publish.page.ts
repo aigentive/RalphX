@@ -5,6 +5,7 @@ import {
   seedWorkspaceReviewState,
   type WorkspaceReviewVisualState,
 } from "../../fixtures/agents-workspace-review.fixtures";
+import { seedRepairPendingWorkspace } from "../../fixtures/repair-pending-publish.fixtures";
 import { setupApp } from "../../fixtures/setup.fixtures";
 import { seedMergedWorkspace } from "../../fixtures/terminal-publish.fixtures";
 import {
@@ -14,6 +15,7 @@ import {
 import { BasePage } from "../base.page";
 
 const TERMINAL_CONVERSATION_ID = "conv-agent-terminal-publish-visual";
+const REPAIR_CONVERSATION_ID = "conv-agent-repair-pending-visual";
 const PROJECT_ID = "project-mock-1";
 
 export class AgentsPublishPage extends BasePage {
@@ -120,6 +122,45 @@ export class AgentsPublishPage extends BasePage {
 
   async installPagedDiffRoute() {
     await installPagedPublishDiffRoute(this.page);
+  }
+
+  async openRepairPendingScenario() {
+    await setupApp(this.page);
+    await seedRepairPendingWorkspace(
+      this.page,
+      REPAIR_CONVERSATION_ID,
+      PROJECT_ID,
+    );
+    await this.page.getByTestId("nav-agents").click();
+    await expect(this.page.getByTestId("agents-view")).toBeVisible();
+    await this.page.evaluate(() =>
+      window.__queryClient?.invalidateQueries({
+        queryKey: ["agents", "sidebar-conversations"],
+      }),
+    );
+    const conversation = this.page.getByTestId(
+      `agents-session-${REPAIR_CONVERSATION_ID}`,
+    );
+    await expect(conversation).toBeVisible();
+    await conversation.getByRole("button").first().click();
+    await this.page.evaluate(async (conversationId) => {
+      const { mockGetAgentConversationWorkspace } = await import(
+        "/src/api-mock/chat"
+      );
+      const workspace = await mockGetAgentConversationWorkspace(conversationId);
+      if (!workspace || !window.__queryClient) {
+        throw new Error("Expected repair-pending workspace query fixture");
+      }
+      window.__queryClient.setQueryData(
+        ["agents", "conversation-workspace", conversationId],
+        workspace,
+      );
+    }, REPAIR_CONVERSATION_ID);
+    await this.page.getByRole("button", { name: "Open artifacts" }).click();
+    const publishTab = this.page.getByTestId("agents-artifact-tab-publish");
+    await expect(publishTab).toBeVisible();
+    await publishTab.click();
+    await expect(this.page.getByTestId("agents-publish-pane")).toBeVisible();
   }
 
   async openMergedPublishScenario() {

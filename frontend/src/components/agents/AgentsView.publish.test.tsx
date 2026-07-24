@@ -422,6 +422,62 @@ describe("AgentsView publish", () => {
     });
   });
 
+  it("renders the repair-pending status button as a calm chip, not the accent CTA", async () => {
+    configurePublishPane({
+      workspace: { publicationPushStatus: "needs_agent" },
+    });
+
+    const actionbar = await openPublishPane();
+    const repairButton = await within(actionbar).findByTestId(
+      "agents-publish-repair-pending",
+    );
+
+    expect(repairButton).toBeDisabled();
+    // A non-actionable status must not be painted as the solid accent CTA.
+    expect(repairButton.className).not.toContain("bg-primary");
+    // Stays fully legible instead of the default disabled-CTA half opacity.
+    expect(repairButton.className).toContain("disabled:opacity-100");
+    // Warning-tinted status surface via WKWebView-safe longhand tokens.
+    const style = repairButton.getAttribute("style") ?? "";
+    expect(style).toContain("--status-warning-muted");
+    expect(style).toContain("--status-warning-border");
+  });
+
+  it("keeps the actionable Commit & Publish button as the accent CTA", async () => {
+    configurePublishPane({ changes: [reviewFile] });
+
+    const actionbar = await openPublishPane();
+    const confirm = await within(actionbar).findByTestId(
+      "agents-publish-confirm",
+    );
+
+    expect(confirm).toBeEnabled();
+    expect(confirm.className).toContain("bg-primary");
+    const style = confirm.getAttribute("style") ?? "";
+    expect(style).not.toContain("--status-warning-muted");
+  });
+
+  it("renders the up-to-date status button as a calm success chip, not the accent CTA", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+      freshness: { unpublishedCommitCount: 0 },
+    });
+
+    const actionbar = await openPublishPane();
+    const confirm = await within(actionbar).findByRole("button", {
+      name: "PR is up to date",
+    });
+
+    expect(confirm).toBeDisabled();
+    expect(confirm.className).not.toContain("bg-primary");
+    expect(confirm.className).toContain("disabled:opacity-100");
+    const style = confirm.getAttribute("style") ?? "";
+    expect(style).toContain("--status-success-muted");
+  });
+
   it("opens closed pull requests in count-free historical cumulative mode", async () => {
     configurePublishPane({
       workspace: {
