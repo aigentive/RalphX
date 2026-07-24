@@ -93,7 +93,7 @@ fn early_shutdown_cancels_startup_before_app_state_registration() {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
 
-    trigger_startup_cancellation(&app.handle());
+    trigger_startup_cancellation(app.handle());
 
     assert!(coordinator.is_cancelled());
 }
