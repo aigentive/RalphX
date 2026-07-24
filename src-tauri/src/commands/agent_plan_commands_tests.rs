@@ -1,6 +1,7 @@
 use super::agent_plan_commands::{
-    activate_agent_task_pipeline_for_state, copy_agent_conversation_plan_for_state,
-    import_agent_conversation_plan_for_state, validate_complete_task_pipeline_proposal_selection,
+    activate_agent_plan_direct_implementation_for_state, activate_agent_task_pipeline_for_state,
+    copy_agent_conversation_plan_for_state, import_agent_conversation_plan_for_state,
+    validate_complete_task_pipeline_proposal_selection, ActivateAgentPlanDirectImplementationInput,
     ActivateAgentTaskPipelineInput, CopyAgentConversationPlanInput,
     ImportAgentConversationPlanInput,
 };
@@ -77,6 +78,30 @@ fn file_plan(name: &str, path: &str, version: u32) -> Artifact {
         bucket_id: Some(ArtifactBucketId::from_string("prd-library")),
         archived_at: None,
     }
+}
+
+async fn seed_blueprint_for_session(state: &AppState, session_id: &str, content: &str) -> Artifact {
+    let blueprint = state
+        .artifact_repo
+        .create(inline_plan("Implementation Blueprint", content, 1))
+        .await
+        .unwrap();
+    let session_id = session_id.to_string();
+    let blueprint_id = blueprint.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_blueprint_artifact_id = ?2, plan_contract_version = 2
+                 WHERE id = ?1",
+                rusqlite::params![session_id, blueprint_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    blueprint
 }
 
 async fn setup_target_workspace(
@@ -280,6 +305,7 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -333,6 +359,76 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
 }
 
 #[tokio::test]
+async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Direct implementation".to_string(),
+            content: "# Overview".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint v1").await;
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint v2").await;
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+
+    let input = || ActivateAgentPlanDirectImplementationInput {
+        conversation_id: conversation.id.as_str().to_string(),
+        session_id: seeded.session_id.clone(),
+    };
+    let error = activate_agent_plan_direct_implementation_for_state(input(), &state)
+        .await
+        .unwrap_err();
+    assert!(error.contains("blueprint version requires explicit user approval"));
+    let unchanged = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.mode, AgentConversationWorkspaceMode::Plan);
+
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    let activated = activate_agent_plan_direct_implementation_for_state(input(), &state)
+        .await
+        .unwrap();
+    assert_eq!(activated.mode, "edit");
+}
+
+#[tokio::test]
 async fn task_pipeline_activation_atomically_applies_explicit_role_bindings() {
     let (state, _project, conversation, _test_root) =
         setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
@@ -346,6 +442,7 @@ async fn task_pipeline_activation_atomically_applies_explicit_role_bindings() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -434,6 +531,7 @@ async fn disabled_tasks_reject_pipeline_activation_without_attaching_workspace()
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -499,6 +597,7 @@ async fn activation_write_failure_cannot_advance_only_the_conversation_mode() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -575,6 +674,7 @@ async fn stale_conversation_projection_cannot_activate_tasks_pipeline() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -667,6 +767,7 @@ async fn stale_plan_approval_cannot_activate_tasks_pipeline() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint v1").await;
     let approval_session_id = seeded.session_id.clone();
     let approval_artifact_id = seeded.artifact.id.clone();
     state
@@ -800,6 +901,7 @@ async fn task_pipeline_validation_rejects_empty_stale_and_non_user_authority() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
 
     let wrong_mode = validate_supervised_task_pipeline(
         &state,
@@ -868,6 +970,7 @@ async fn start_authority_rejects_stale_state_and_accepts_restored_exact_state() 
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let approval_session_id = seeded.session_id.clone();
     let approval_artifact_id = seeded.artifact.id.clone();
     state
@@ -1091,6 +1194,7 @@ async fn supervised_apply_requires_the_owning_tasks_conversation() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let approval_session_id = seeded.session_id.clone();
     let approval_artifact_id = seeded.artifact.id.clone();
     state

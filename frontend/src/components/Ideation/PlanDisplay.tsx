@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect, type ReactNode } from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus, GitPullRequestArrow } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,10 @@ import { formatDateTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { ArtifactSelectableRegion } from "@/components/agents/artifact-selection/ArtifactSelectableRegion";
+import {
+  PlanBundleTabs,
+  type PlanBundleBodyMode,
+} from "./PlanBundleTabs";
 
 // ============================================================================
 // Types
@@ -39,7 +43,7 @@ export interface PlanDisplayConversationReference {
   version: number;
 }
 
-export type PlanDisplayBodyMode = "plan" | "proposals";
+export type PlanDisplayBodyMode = PlanBundleBodyMode;
 
 export interface PlanDisplayProps {
   plan: Artifact;
@@ -379,7 +383,7 @@ export function PlanDisplay({
   artifactLabel = "Plan",
   showApprove = false,
   linkedProposalsCount = 0,
-  bodyMode = "plan",
+  bodyMode = "overview",
   onBodyModeChange,
   hideBody = false,
   onEdit,
@@ -417,8 +421,7 @@ export function PlanDisplay({
   const showCreateProposals =
     onCreateProposals &&
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
-  const showProposalBodyToggle =
-    linkedProposalsCount > 0 && onBodyModeChange !== undefined;
+  const showPlanBodyTabs = onBodyModeChange !== undefined;
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
     !isPlanActionRecommendationPending &&
@@ -521,16 +524,7 @@ export function PlanDisplay({
   const renderedContent = preparedContent?.content ?? displayContent;
   const artifactPreamble = preparedContent?.preamble;
   const isViewingHistorical = selectedVersion !== plan.metadata.version;
-  const currentBodyMode = bodyMode ?? "plan";
-  const bodyModeButtonStyle = (isActive: boolean) => ({
-    color: isActive ? "var(--accent-primary)" : "var(--text-secondary)",
-    backgroundColor: isActive
-      ? withAlpha("var(--accent-primary)", 10)
-      : "transparent",
-    borderColor: isActive ? "var(--accent-border)" : "var(--border-subtle)",
-    borderStyle: "solid",
-    borderWidth: "1px",
-  });
+  const currentBodyMode = bodyMode ?? "overview";
 
   const handleBackToLatest = useCallback(() => {
     setSelectedVersion(plan.metadata.version);
@@ -601,7 +595,7 @@ export function PlanDisplay({
       !isViewingHistorical &&
       ((showApprove && !isApproved) ||
         isApproved ||
-        showProposalBodyToggle ||
+        showPlanBodyTabs ||
         onVerifyPlan ||
         showCreateProposals ||
         showImplementDirectly ||
@@ -797,36 +791,12 @@ export function PlanDisplay({
 
               {!isViewingHistorical && artifactActions}
 
-              {showProposalBodyToggle && (
-                <>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onBodyModeChange?.("plan")}
-                    aria-pressed={currentBodyMode === "plan"}
-                    data-testid="plan-overview-toggle"
-                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                    style={bodyModeButtonStyle(currentBodyMode === "plan")}
-                  >
-                    <FileText className="w-3 h-3" />
-                    Overview
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onBodyModeChange?.("proposals")}
-                    aria-pressed={currentBodyMode === "proposals"}
-                    data-testid="plan-proposals-toggle"
-                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                    style={bodyModeButtonStyle(currentBodyMode === "proposals")}
-                  >
-                    <GitPullRequestArrow className="w-3 h-3" />
-                    {linkedProposalsCount} Proposal
-                    {linkedProposalsCount !== 1 ? "s" : ""}
-                  </Button>
-                </>
+              {showPlanBodyTabs && (
+                <PlanBundleTabs
+                  value={currentBodyMode}
+                  onValueChange={(mode) => onBodyModeChange?.(mode)}
+                  linkedProposalsCount={linkedProposalsCount}
+                />
               )}
 
               {onVerifyPlan && (

@@ -369,15 +369,15 @@ Return exactly one JSON object:
   "reason": "string, <= 1000 chars",
   "confidence": "low" | "medium" | "high",
   "revisionInstructions": "string, required and at least 40 chars iff decision is revise, absent on approve",
-  "evaluatedArtifactId": "the exact plan artifact id from the plan section"
+  "evaluatedArtifactId": "the exact plan bundle target id from the plan section"
 }
 
 Rules:
-- Judge only the run plan against the automation goal, goal items, current phase, run prompt, advisory spec context, and advisory verification outcome.
+- Judge both the Plan Overview and Implementation Blueprint against the automation goal, goal items, current phase, run prompt, advisory spec context, and advisory verification outcome.
 - Verification gap findings inform the verdict but never mandate revise on their own; if verification is unavailable, proceed on the other evidence.
 - Choose approve only when the plan is aligned with the current phase, scoped, plausible, and ready for implementation.
 - Choose revise when the plan is missing required scope, recovery, validation, phase alignment, or feasibility detail.
-- `evaluatedArtifactId` must exactly match the `artifact_id` attribute on the plan section.
+- `evaluatedArtifactId` must exactly match the `artifact_id` attribute on the plan section. For v2 plans this target deterministically pins both artifact ids.
 - Do not include markdown fences, prose, tool calls, or fields outside the JSON verdict.
 </output_contract>
 "#

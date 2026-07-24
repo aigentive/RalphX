@@ -22,7 +22,7 @@ use crate::application::automation::judge::{
 use crate::application::automation::merged_run_finalizer::AutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
     approval_delivery_prompt, clear_plan_phase_publication_metadata,
-    current_plan_artifact_id_for_workspace, ideation_bridge_delivery_prompt,
+    current_plan_target_id_for_workspace, ideation_bridge_delivery_prompt,
     is_plan_gate_pause_reason, matching_plan_approval_for_workspace, refresh_plan_park_baseline,
     revision_delivery_prompt, AutomationPlanVerificationStartOutcome,
     AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
@@ -617,9 +617,10 @@ impl AutomationPlanJudgeTask {
             .await
             .map_err(|error| format!("failed to read planning session: {error}"))?
             .ok_or_else(|| "automation plan judge planning session not found".to_string())?;
-        let plan_artifact_id = session.plan_artifact_id.clone().ok_or_else(|| {
-            "automation plan judge planning session has no plan artifact".to_string()
+        let bundle = session.plan_artifact_bundle().ok_or_else(|| {
+            "automation plan judge planning session has no complete plan bundle".to_string()
         })?;
+        let plan_artifact_id = bundle.overview_id.clone();
         let artifact = self
             .artifact_repo
             .get_by_id(&plan_artifact_id)
@@ -636,15 +637,50 @@ impl AutomationPlanJudgeTask {
                     plan_artifact_id.as_str()
                 )
             })?;
-        let ArtifactContent::Inline { text } = artifact.content else {
+        let ArtifactContent::Inline {
+            text: overview_content,
+        } = artifact.content
+        else {
             return Err(format!(
                 "automation plan judge plan artifact {} is not inline-readable",
                 plan_artifact_id.as_str()
             ));
         };
+        let plan_content = if let Some(blueprint_id) = bundle.blueprint_id.as_ref() {
+            let blueprint = self
+                .artifact_repo
+                .get_by_id(blueprint_id)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "failed to read plan blueprint {}: {error}",
+                        blueprint_id.as_str()
+                    )
+                })?
+                .ok_or_else(|| {
+                    format!(
+                        "automation plan judge blueprint {} not found",
+                        blueprint_id.as_str()
+                    )
+                })?;
+            let ArtifactContent::Inline {
+                text: blueprint_content,
+            } = blueprint.content
+            else {
+                return Err(format!(
+                    "automation plan judge blueprint {} is not inline-readable",
+                    blueprint_id.as_str()
+                ));
+            };
+            format!(
+                "# Plan Overview\n\n{overview_content}\n\n# Implementation Blueprint\n\n{blueprint_content}"
+            )
+        } else {
+            overview_content
+        };
         Ok(AutomationPlanJudgePayload {
-            plan_artifact_id: plan_artifact_id.as_str().to_string(),
-            plan_content: text,
+            plan_artifact_id: bundle.action_target_id(),
+            plan_content,
             verification_context: self.verification_context.clone(),
         })
     }
@@ -778,9 +814,7 @@ impl AutomationPlanJudgeTask {
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .is_some_and(|approval| {
-                        approval.artifact_id.as_str() == current.plan_artifact_id
-                    })
+                    .is_some_and(|approval| current.matches_approval(&approval))
                 {
                     return Ok(AutomationPlanJudgeTaskOutcome {
                         judge_succeeded: true,
@@ -791,7 +825,7 @@ impl AutomationPlanJudgeTask {
                     .plan_approval_writer
                     .approve_current_plan_artifact(
                         current.session_id.clone(),
-                        Some(current.plan_artifact_id.clone()),
+                        Some(current.overview_artifact_id.clone()),
                         PlanApprovalActor::Judge,
                     )
                     .await
@@ -822,7 +856,7 @@ impl AutomationPlanJudgeTask {
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .filter(|approval| approval.artifact_id.as_str() == current.plan_artifact_id)
+                    .filter(|approval| current.matches_approval(approval))
                 {
                     tracing::warn!(
                         automation_id = %automation.id,
@@ -956,12 +990,14 @@ impl AutomationPlanJudgeTask {
         let Some(session) = self.ideation_session_repo.get_by_id(session_id).await? else {
             return Ok(None);
         };
-        let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+        let Some(bundle) = session.plan_artifact_bundle() else {
             return Ok(None);
         };
         Ok(Some(PlanApplicationContext {
             session_id: session_id.clone(),
-            plan_artifact_id: plan_artifact_id.as_str().to_string(),
+            plan_artifact_id: bundle.action_target_id(),
+            overview_artifact_id: bundle.overview_id.as_str().to_string(),
+            blueprint_artifact_id: bundle.blueprint_id.map(|id| id.as_str().to_string()),
         }))
     }
 
@@ -1015,6 +1051,22 @@ struct AutomationPlanJudgePayload {
 struct PlanApplicationContext {
     session_id: crate::domain::entities::IdeationSessionId,
     plan_artifact_id: String,
+    overview_artifact_id: String,
+    blueprint_artifact_id: Option<String>,
+}
+
+impl PlanApplicationContext {
+    fn matches_approval(
+        &self,
+        approval: &crate::domain::repositories::PlanArtifactApproval,
+    ) -> bool {
+        approval.artifact_id.as_str() == self.overview_artifact_id
+            && approval
+                .blueprint_artifact_id
+                .as_ref()
+                .map(|id| id.as_str())
+                == self.blueprint_artifact_id.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2243,7 +2295,7 @@ impl AutomationScheduler {
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<bool> {
         let plan_artifact_id =
-            current_plan_artifact_id_for_workspace(&self.ideation_session_repo, workspace).await?;
+            current_plan_target_id_for_workspace(&self.ideation_session_repo, workspace).await?;
         if plan_artifact_id.is_none() {
             return Ok(false);
         }
@@ -2883,7 +2935,7 @@ impl AutomationScheduler {
         }
 
         let plan_artifact_id =
-            current_plan_artifact_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
+            current_plan_target_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
         let baseline_changed = refresh_plan_park_baseline(
             &self.transition_service,
             &self.run_repo,
@@ -3674,16 +3726,14 @@ impl AutomationScheduler {
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .is_some_and(|approval| {
-                        approval.artifact_id.as_str() == current.plan_artifact_id
-                    })
+                    .is_some_and(|approval| current.matches_approval(&approval))
                 {
                     return Ok(());
                 }
                 self.plan_approval_writer
                     .approve_current_plan_artifact(
                         current.session_id.clone(),
-                        Some(current.plan_artifact_id),
+                        Some(current.overview_artifact_id.clone()),
                         PlanApprovalActor::Judge,
                     )
                     .await?;
@@ -3693,9 +3743,7 @@ impl AutomationScheduler {
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .is_some_and(|approval| {
-                        approval.artifact_id.as_str() == current.plan_artifact_id
-                    })
+                    .is_some_and(|approval| current.matches_approval(&approval))
                 {
                     return Ok(());
                 }
@@ -3733,12 +3781,14 @@ impl AutomationScheduler {
         let Some(session) = self.ideation_session_repo.get_by_id(session_id).await? else {
             return Ok(None);
         };
-        let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+        let Some(bundle) = session.plan_artifact_bundle() else {
             return Ok(None);
         };
         Ok(Some(PlanApplicationContext {
             session_id: session_id.clone(),
-            plan_artifact_id: plan_artifact_id.as_str().to_string(),
+            plan_artifact_id: bundle.action_target_id(),
+            overview_artifact_id: bundle.overview_id.as_str().to_string(),
+            blueprint_artifact_id: bundle.blueprint_id.map(|id| id.as_str().to_string()),
         }))
     }
 

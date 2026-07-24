@@ -56,7 +56,7 @@ impl SqliteTaskProposalRepository {
                     affected_paths,
                     suggested_priority, priority_score, priority_reason, priority_factors,
                     estimated_complexity, user_priority, user_modified, status, selected,
-                    created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at, archived_at,
+                    created_task_id, plan_artifact_id, plan_version_at_creation, blueprint_artifact_id, blueprint_version_at_creation, sort_order, created_at, updated_at, archived_at,
                     target_project, migrated_from_session_id, migrated_from_proposal_id
              FROM task_proposals
              WHERE plan_artifact_id = ?1
@@ -84,6 +84,44 @@ impl SqliteTaskProposalRepository {
         Ok(())
     }
 
+    pub(crate) fn get_by_blueprint_artifact_id_sync(
+        conn: &Connection,
+        artifact_id: &str,
+    ) -> AppResult<Vec<TaskProposal>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, title, description, category, steps, acceptance_criteria,
+                    affected_paths, suggested_priority, priority_score, priority_reason,
+                    priority_factors, estimated_complexity, user_priority, user_modified,
+                    status, selected, created_task_id, plan_artifact_id,
+                    plan_version_at_creation, blueprint_artifact_id,
+                    blueprint_version_at_creation, sort_order, created_at, updated_at,
+                    archived_at, target_project, migrated_from_session_id,
+                    migrated_from_proposal_id
+             FROM task_proposals
+             WHERE blueprint_artifact_id = ?1
+             ORDER BY sort_order ASC",
+        )?;
+        let proposals = stmt
+            .query_map([artifact_id], TaskProposal::from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)?;
+        Ok(proposals)
+    }
+
+    pub(crate) fn batch_update_blueprint_artifact_id_sync(
+        conn: &Connection,
+        old_artifact_id: &str,
+        new_artifact_id: &str,
+    ) -> AppResult<()> {
+        conn.execute(
+            "UPDATE task_proposals
+             SET blueprint_artifact_id = ?2, updated_at = ?3
+             WHERE blueprint_artifact_id = ?1",
+            rusqlite::params![old_artifact_id, new_artifact_id, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
     /// Update a proposal's plan_artifact_id and plan_version_at_creation for a batch of proposal IDs.
     /// Uses a single UPDATE with WHERE id IN (...) instead of per-row statements.
     pub(crate) fn batch_link_proposals_sync(
@@ -104,14 +142,16 @@ impl SqliteTaskProposalRepository {
              updated_at = ?3 WHERE id IN ({})",
             placeholders.join(", ")
         );
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(3 + proposal_ids.len());
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(3 + proposal_ids.len());
         params.push(Box::new(artifact_id.to_string()));
         params.push(Box::new(version));
         params.push(Box::new(now));
         for id in proposal_ids {
             params.push(Box::new(id.clone()));
         }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice())?;
         Ok(())
     }
@@ -132,11 +172,11 @@ impl SqliteTaskProposalRepository {
                 affected_paths,
                 suggested_priority, priority_score, priority_reason, priority_factors,
                 estimated_complexity, user_priority, user_modified, status, selected,
-                created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at,
+                created_task_id, plan_artifact_id, plan_version_at_creation, blueprint_artifact_id, blueprint_version_at_creation, sort_order, created_at, updated_at,
                 target_project, migrated_from_session_id, migrated_from_proposal_id
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-                ?24, ?25, ?26
+                ?24, ?25, ?26, ?27, ?28
             )",
             rusqlite::params![
                 proposal.id.as_str(),
@@ -159,6 +199,8 @@ impl SqliteTaskProposalRepository {
                 proposal.created_task_id.as_ref().map(|id| id.as_str()),
                 proposal.plan_artifact_id.as_ref().map(|id| id.as_str()),
                 proposal.plan_version_at_creation,
+                proposal.blueprint_artifact_id.as_ref().map(|id| id.as_str()),
+                proposal.blueprint_version_at_creation,
                 proposal.sort_order,
                 proposal.created_at.to_rfc3339(),
                 proposal.updated_at.to_rfc3339(),
@@ -172,10 +214,7 @@ impl SqliteTaskProposalRepository {
 
     /// Count proposals for a session within a transaction closure.
     /// Returns usize for direct use in sort_order calculations.
-    pub(crate) fn count_by_session_sync(
-        conn: &Connection,
-        session_id: &str,
-    ) -> AppResult<usize> {
+    pub(crate) fn count_by_session_sync(conn: &Connection, session_id: &str) -> AppResult<usize> {
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM task_proposals WHERE session_id = ?1",
             [session_id],
@@ -202,8 +241,9 @@ impl SqliteTaskProposalRepository {
                 affected_paths = ?7, suggested_priority = ?8, priority_score = ?9, priority_reason = ?10, priority_factors = ?11,
                 estimated_complexity = ?12, user_priority = ?13, user_modified = ?14, status = ?15,
                 selected = ?16, created_task_id = ?17, plan_artifact_id = ?18, plan_version_at_creation = ?19,
-                target_project = ?20, sort_order = ?21, updated_at = ?22,
-                migrated_from_session_id = ?23, migrated_from_proposal_id = ?24
+                blueprint_artifact_id = ?20, blueprint_version_at_creation = ?21,
+                target_project = ?22, sort_order = ?23, updated_at = ?24,
+                migrated_from_session_id = ?25, migrated_from_proposal_id = ?26
              WHERE id = ?1",
             rusqlite::params![
                 proposal.id.as_str(),
@@ -225,6 +265,8 @@ impl SqliteTaskProposalRepository {
                 proposal.created_task_id.as_ref().map(|id| id.as_str()),
                 proposal.plan_artifact_id.as_ref().map(|id| id.as_str()),
                 proposal.plan_version_at_creation,
+                proposal.blueprint_artifact_id.as_ref().map(|id| id.as_str()),
+                proposal.blueprint_version_at_creation,
                 proposal.target_project,
                 proposal.sort_order,
                 now.to_rfc3339(),
@@ -256,10 +298,7 @@ impl SqliteTaskProposalRepository {
     }
 
     /// Archive a proposal within a transaction closure.
-    pub(crate) fn archive_sync(
-        conn: &Connection,
-        id: &TaskProposalId,
-    ) -> AppResult<TaskProposal> {
+    pub(crate) fn archive_sync(conn: &Connection, id: &TaskProposalId) -> AppResult<TaskProposal> {
         let now = Utc::now();
         conn.execute(
             "UPDATE task_proposals SET archived_at = ?2, updated_at = ?3 WHERE id = ?1 AND archived_at IS NULL",
@@ -270,7 +309,7 @@ impl SqliteTaskProposalRepository {
                     affected_paths,
                     suggested_priority, priority_score, priority_reason, priority_factors,
                     estimated_complexity, user_priority, user_modified, status, selected,
-                    created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at, archived_at,
+                    created_task_id, plan_artifact_id, plan_version_at_creation, blueprint_artifact_id, blueprint_version_at_creation, sort_order, created_at, updated_at, archived_at,
                     target_project, migrated_from_session_id, migrated_from_proposal_id
              FROM task_proposals WHERE id = ?1",
             [id.as_str()],
@@ -278,7 +317,6 @@ impl SqliteTaskProposalRepository {
         )?;
         Ok(proposal)
     }
-
 }
 
 #[async_trait]
@@ -298,7 +336,7 @@ impl TaskProposalRepository for SqliteTaskProposalRepository {
                             affected_paths,
                             suggested_priority, priority_score, priority_reason, priority_factors,
                             estimated_complexity, user_priority, user_modified, status, selected,
-                            created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at, archived_at,
+                            created_task_id, plan_artifact_id, plan_version_at_creation, blueprint_artifact_id, blueprint_version_at_creation, sort_order, created_at, updated_at, archived_at,
                             target_project, migrated_from_session_id, migrated_from_proposal_id
                      FROM task_proposals WHERE id = ?1",
                     [&id],
@@ -317,7 +355,7 @@ impl TaskProposalRepository for SqliteTaskProposalRepository {
                             affected_paths,
                             suggested_priority, priority_score, priority_reason, priority_factors,
                             estimated_complexity, user_priority, user_modified, status, selected,
-                            created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at, archived_at,
+                            created_task_id, plan_artifact_id, plan_version_at_creation, blueprint_artifact_id, blueprint_version_at_creation, sort_order, created_at, updated_at, archived_at,
                             target_project, migrated_from_session_id, migrated_from_proposal_id
                      FROM task_proposals WHERE session_id = ?1 AND archived_at IS NULL ORDER BY sort_order ASC",
                 )?;
@@ -447,7 +485,8 @@ impl TaskProposalRepository for SqliteTaskProposalRepository {
                     case_parts.join(" "),
                     id_placeholders.join(", ")
                 );
-                let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                    params.iter().map(|p| p.as_ref()).collect();
                 conn.execute(&sql, param_refs.as_slice())?;
                 Ok(())
             })
@@ -466,7 +505,7 @@ impl TaskProposalRepository for SqliteTaskProposalRepository {
                             affected_paths,
                             suggested_priority, priority_score, priority_reason, priority_factors,
                             estimated_complexity, user_priority, user_modified, status, selected,
-                            created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at, archived_at,
+                            created_task_id, plan_artifact_id, plan_version_at_creation, blueprint_artifact_id, blueprint_version_at_creation, sort_order, created_at, updated_at, archived_at,
                             target_project, migrated_from_session_id, migrated_from_proposal_id
                      FROM task_proposals
                      WHERE session_id = ?1 AND selected = 1 AND archived_at IS NULL
@@ -516,7 +555,7 @@ impl TaskProposalRepository for SqliteTaskProposalRepository {
                             affected_paths,
                             suggested_priority, priority_score, priority_reason, priority_factors,
                             estimated_complexity, user_priority, user_modified, status, selected,
-                            created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at, archived_at,
+                            created_task_id, plan_artifact_id, plan_version_at_creation, blueprint_artifact_id, blueprint_version_at_creation, sort_order, created_at, updated_at, archived_at,
                             target_project, migrated_from_session_id, migrated_from_proposal_id
                      FROM task_proposals
                      WHERE plan_artifact_id = ?1 AND archived_at IS NULL

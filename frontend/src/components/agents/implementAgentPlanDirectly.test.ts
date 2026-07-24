@@ -15,14 +15,14 @@ vi.mock("@/api/chat", async (importOriginal) => {
     ...actual,
     chatApi: {
       ...actual.chatApi,
-      switchAgentConversationMode: vi.fn(),
+      activateAgentPlanDirectImplementation: vi.fn(),
       sendAgentMessage: vi.fn(),
     },
   };
 });
 
-const switchAgentConversationModeMock = vi.mocked(
-  chatApi.switchAgentConversationMode,
+const activateAgentPlanDirectImplementationMock = vi.mocked(
+  chatApi.activateAgentPlanDirectImplementation,
 );
 const sendAgentMessageMock = vi.mocked(chatApi.sendAgentMessage);
 
@@ -69,7 +69,7 @@ describe("implementAgentPlanDirectly", () => {
     const queryClient = new QueryClient();
     const editWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
-    switchAgentConversationModeMock.mockResolvedValue({ workspace: editWorkspace });
+    activateAgentPlanDirectImplementationMock.mockResolvedValue(editWorkspace);
 
     await implementAgentPlanDirectly({
       projectId: "project-1",
@@ -121,7 +121,7 @@ describe("implementAgentPlanDirectly", () => {
       onConversationModeSwitched,
     });
 
-    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(activateAgentPlanDirectImplementationMock).not.toHaveBeenCalled();
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",
       "edit",
@@ -130,33 +130,10 @@ describe("implementAgentPlanDirectly", () => {
     expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
   });
 
-  it("propagates a nullable switched workspace to the parent projection", async () => {
-    const queryClient = new QueryClient();
+  it("does not project or send when activation fails", async () => {
     const onConversationModeSwitched = vi.fn();
-    switchAgentConversationModeMock.mockResolvedValue({ workspace: null });
-
-    await implementAgentPlanDirectly({
-      projectId: "project-1",
-      workspace: workspace(),
-      queryClient,
-      onConversationModeSwitched,
-    });
-
-    expect(
-      queryClient.getQueryData(agentWorkspaceKeys.workspace("conversation-1")),
-    ).toBeUndefined();
-    expect(onConversationModeSwitched).toHaveBeenCalledWith(
-      "conversation-1",
-      "edit",
-      null,
-    );
-    expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not project or send when the mode switch fails", async () => {
-    const onConversationModeSwitched = vi.fn();
-    const error = new Error("switch failed");
-    switchAgentConversationModeMock.mockRejectedValue(error);
+    const error = new Error("activation failed");
+    activateAgentPlanDirectImplementationMock.mockRejectedValue(error);
 
     await expect(
       implementAgentPlanDirectly({
@@ -176,7 +153,7 @@ describe("implementAgentPlanDirectly", () => {
     const editWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
     const error = new Error("send failed");
-    switchAgentConversationModeMock.mockResolvedValue({ workspace: editWorkspace });
+    activateAgentPlanDirectImplementationMock.mockResolvedValue(editWorkspace);
     sendAgentMessageMock.mockRejectedValue(error);
 
     await expect(

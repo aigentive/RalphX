@@ -141,6 +141,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Execution defaults seeding | `execution_defaults` in `config/ralphx.yaml` may seed only pristine/default execution-settings rows at bootstrap; once DB rows diverge, live DB/UI values are authoritative |
 | Execution halt mode contract | Execution status/events must expose persisted halt mode (`running`/`paused`/`stopped`); don't collapse `stopped` into `isPaused` and accidentally re-enable resume UI |
 | Artifacts test quiesce | `artifacts_handlers` plan-mutation tests that create a plan first must quiesce auto-verify (reset parent + archive/unregister verification children) unless the test is explicitly asserting freeze/bypass behavior |
+| Plan bundle authority | `plan_artifact_id` remains the Overview compatibility anchor; v2 plan actions derive authority from the exact Overview + `plan_blueprint_artifact_id` pair and fail closed when either member is missing |
 | SQLite write transactions | `DbConnection::run_transaction()` uses `BEGIN IMMEDIATE`; keep read-then-write sync-helper flows inside it to avoid WAL upgrade failures surfaced as `database is locked` |
 | Tokio spawn | `tokio::spawn` → async fn ONLY. Sync code → `std::thread::spawn` \| `tauri::async_runtime::spawn`. See `.claude/rules/tokio-runtime-safety.md` |
 | Rust std API stability | Avoid unstable std APIs in production code (e.g., `is_multiple_of`) — use stable equivalents (e.g., `%`). See `.claude/rules/rust-stable-apis.md` |

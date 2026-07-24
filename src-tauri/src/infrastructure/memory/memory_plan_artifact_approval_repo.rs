@@ -33,6 +33,8 @@ impl MemoryPlanArtifactApprovalRepository {
             session_id: session_id.clone(),
             artifact_id,
             artifact_version,
+            blueprint_artifact_id: None,
+            blueprint_artifact_version: None,
             approved_at: Utc::now().to_rfc3339(),
             approved_by: approved_by.as_str().to_string(),
         };

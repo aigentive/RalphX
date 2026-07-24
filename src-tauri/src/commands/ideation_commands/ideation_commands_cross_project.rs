@@ -123,36 +123,39 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
         ));
     }
 
-    // 4. Resolve artifact: prefer own plan_artifact_id, fall back to inherited_plan_artifact_id
-    let artifact_id = source_session
-        .plan_artifact_id
-        .clone()
-        .or_else(|| source_session.inherited_plan_artifact_id.clone())
-        .ok_or_else(|| {
-            format!(
-                "Source session has no plan artifact to inherit (session: {})",
-                input.source_session_id
-            )
-        })?;
+    // 4. Resolve the exact overview/blueprint bundle.
+    let bundle = source_session.plan_artifact_bundle().ok_or_else(|| {
+        format!(
+            "Source session has no complete plan bundle to inherit (session: {})",
+            input.source_session_id
+        )
+    })?;
 
     // Build the new session entity
     let new_session_id = IdeationSessionId::new();
     let mut builder = IdeationSession::builder()
         .id(new_session_id)
         .project_id(ProjectId::from_string(target_project_id.clone()))
-        .inherited_plan_artifact_id(artifact_id)
+        .inherited_plan_artifact_id(bundle.overview_id)
+        .plan_contract_version(bundle.contract_version)
         .status(IdeationSessionStatus::Active)
         .verification_status(VerificationStatus::ImportedVerified)
         .source_project_id(source_session.project_id.as_str().to_string())
         .source_session_id(input.source_session_id.clone())
         .cross_project_checked(true)
         .origin(source_session.origin);
+    if let Some(blueprint_id) = bundle.blueprint_id {
+        builder = builder.inherited_plan_blueprint_artifact_id(blueprint_id);
+    }
 
     if let Some(title) = input.title {
         builder = builder.title(title);
     }
 
-    let new_session = builder.build();
+    let mut new_session = builder.build();
+    new_session.verified_plan_artifact_id = new_session.inherited_plan_artifact_id.clone();
+    new_session.verified_plan_blueprint_artifact_id =
+        new_session.inherited_plan_blueprint_artifact_id.clone();
 
     // 5+6. Circular import check + INSERT in a single db.run() closure (TOCTOU safety)
     let source_id_for_check = input.source_session_id.clone();

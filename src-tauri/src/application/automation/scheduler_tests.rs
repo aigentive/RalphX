@@ -6061,7 +6061,7 @@ async fn automation_scheduler_delivers_plan_revision_without_switching_modes_and
         .contains("Tighten the rollout and testing sections."));
     assert!(prompts[0]
         .1
-        .contains("Update the plan artifact and end the turn."));
+        .contains("Update the plan bundle and end the turn."));
     let workspace = scenario
         .workspace_repo
         .get_by_conversation_id(&scenario.conversation_id)

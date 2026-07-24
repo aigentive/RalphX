@@ -95,8 +95,35 @@ pub(crate) async fn import_agent_conversation_plan_reference(
     if source_session.session_purpose == SessionPurpose::Verification {
         return Err("Cannot import from a verification child session".to_string());
     }
+    let source_bundle = source_session
+        .plan_artifact_bundle()
+        .ok_or_else(|| "Source session has an incomplete plan bundle".to_string())?;
+    if source_bundle.overview_id != source_artifact.id {
+        return Err("Selected artifact is not the source session's current overview".to_string());
+    }
 
     let cloned_artifact = clone_plan_artifact(state, &source_artifact).await?;
+    let cloned_blueprint = if let Some(blueprint_id) = source_bundle.blueprint_id.as_ref() {
+        let source_blueprint = state
+            .artifact_repo
+            .get_by_id(blueprint_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Source plan blueprint not found: {}", blueprint_id.as_str()))?;
+        Some(clone_plan_artifact(state, &source_blueprint).await?)
+    } else {
+        None
+    };
+    if let Some(blueprint) = cloned_blueprint.as_ref() {
+        state
+            .artifact_repo
+            .add_relation(ArtifactRelation::related_to(
+                cloned_artifact.id.clone(),
+                blueprint.id.clone(),
+            ))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     let analysis = prepare_ideation_analysis_state_from_agent_workspace(project, workspace)
         .await
         .map_err(|error| error.to_string())?;
@@ -104,6 +131,7 @@ pub(crate) async fn import_agent_conversation_plan_reference(
         .project_id(workspace.project_id.clone())
         .session_flow(IdeationSessionFlow::Planning)
         .plan_artifact_id(cloned_artifact.id.clone())
+        .plan_contract_version(source_bundle.contract_version)
         .source_project_id(project.id.as_str())
         .source_session_id(source_session.id.as_str())
         .source_context_type("agent_conversation")
@@ -111,6 +139,10 @@ pub(crate) async fn import_agent_conversation_plan_reference(
         .spawn_reason(PLAN_REFERENCE_IMPORT_REASON)
         .analysis(analysis)
         .build();
+    let mut session = session;
+    session.plan_blueprint_artifact_id = cloned_blueprint
+        .as_ref()
+        .map(|artifact| artifact.id.clone());
     let session = hydrate_agent_conversation_planning_session_title(state, session)
         .await
         .map_err(|error| error.to_string())?;

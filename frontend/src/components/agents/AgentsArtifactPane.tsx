@@ -1066,6 +1066,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const workspaceReviewArtifactId = isReviewPrWorkspace
     ? null
     : (workspaceReviewContext?.monitor.reviewArtifactId ?? null);
+  const workspaceReviewRequestedChangesArtifactId = isReviewPrWorkspace
+    ? null
+    : (workspaceReviewContext?.monitor.reviewRequestedChangesArtifactId ??
+      null);
   const prReviewArtifactId = prReviewContext?.monitor?.reviewArtifactId ?? null;
   const reviewArtifactId = isReviewPrWorkspace
     ? prReviewArtifactId
@@ -1079,6 +1083,23 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const reviewArtifact =
     reviewArtifactId && reviewArtifactQuery.data?.id === reviewArtifactId
       ? reviewArtifactQuery.data
+      : null;
+  const reviewRequestedChangesArtifactQuery = useQuery({
+    queryKey: [
+      "agents",
+      "artifact",
+      workspaceReviewRequestedChangesArtifactId,
+    ],
+    queryFn: () =>
+      artifactApi.get(workspaceReviewRequestedChangesArtifactId!),
+    enabled: Boolean(workspaceReviewRequestedChangesArtifactId),
+    staleTime: 5_000,
+  });
+  const reviewRequestedChangesArtifact =
+    workspaceReviewRequestedChangesArtifactId &&
+    reviewRequestedChangesArtifactQuery.data?.id ===
+      workspaceReviewRequestedChangesArtifactId
+      ? reviewRequestedChangesArtifactQuery.data
       : null;
   const startWorkspaceReviewMutation = useMutation({
     mutationFn: ({
@@ -1128,6 +1149,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           queryKey: ["agents", "artifact", artifactId],
         });
       }
+      const requestedChangesArtifactId =
+        result.monitor.reviewRequestedChangesArtifactId;
+      if (requestedChangesArtifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", requestedChangesArtifactId],
+        });
+      }
     },
   });
   const startWorkspaceReviewFixerMutation = useMutation({
@@ -1163,6 +1191,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       if (artifactId) {
         void queryClient.invalidateQueries({
           queryKey: ["agents", "artifact", artifactId],
+        });
+      }
+      const requestedChangesArtifactId =
+        result.monitor.reviewRequestedChangesArtifactId;
+      if (requestedChangesArtifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", requestedChangesArtifactId],
         });
       }
     },
@@ -2237,6 +2272,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 sessionTitle={sessionData?.session.title ?? null}
                 taskMode={taskMode}
                 reviewArtifact={reviewArtifact}
+                reviewRequestedChangesArtifact={
+                  reviewRequestedChangesArtifact
+                }
                 reviewContext={
                   isReviewPrWorkspace ? null : workspaceReviewContext
                 }
@@ -2279,9 +2317,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                       workspaceReviewFixIssuesError)
                 }
                 isReviewLoading={
-                  Boolean(reviewArtifactId) &&
-                  !reviewArtifact &&
-                  reviewArtifactQuery.isFetching
+                  (Boolean(reviewArtifactId) &&
+                    !reviewArtifact &&
+                    reviewArtifactQuery.isFetching) ||
+                  (Boolean(workspaceReviewRequestedChangesArtifactId) &&
+                    !reviewRequestedChangesArtifact &&
+                    reviewRequestedChangesArtifactQuery.isFetching)
                 }
                 isReviewActionPending={
                   isReviewPrWorkspace ? false : isWorkspaceReviewActionPending
@@ -2386,6 +2427,7 @@ type ArtifactContentProps = {
   sessionTitle: string | null;
   taskMode: AgentTaskArtifactMode;
   reviewArtifact: Artifact | null;
+  reviewRequestedChangesArtifact: Artifact | null;
   reviewContext: AgentWorkspaceReviewContext | null;
   isReviewPrWorkspace: boolean;
   autoApproveEnabled: boolean;
@@ -2474,6 +2516,7 @@ function ArtifactContent({
   sessionTitle,
   taskMode,
   reviewArtifact,
+  reviewRequestedChangesArtifact,
   reviewContext,
   isReviewPrWorkspace,
   autoApproveEnabled,
@@ -2529,6 +2572,7 @@ function ArtifactContent({
   const renderReviewPanel = (embedded: boolean) => (
     <AgentReviewPanel
       reviewArtifact={reviewArtifact}
+      reviewRequestedChangesArtifact={reviewRequestedChangesArtifact}
       reviewContext={reviewContext}
       isReviewPrWorkspace={isReviewPrWorkspace}
       autoApproveEnabled={autoApproveEnabled}
@@ -2811,7 +2855,8 @@ function AgentPlanPanel({
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [isPlanExpanded, setIsPlanExpanded] = useState(true);
-  const [planBodyMode, setPlanBodyMode] = useState<PlanDisplayBodyMode>("plan");
+  const [planBodyMode, setPlanBodyMode] =
+    useState<PlanDisplayBodyMode>("overview");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [isApprovingPlan, setIsApprovingPlan] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] =
@@ -2851,7 +2896,7 @@ function AgentPlanPanel({
   useEffect(() => {
     setIsEditing(false);
     setIsPlanExpanded(true);
-    setPlanBodyMode("plan");
+    setPlanBodyMode("overview");
     setViewingProposalId(null);
     setViewingEnrichment(undefined);
   }, [planArtifact?.id, planArtifact?.metadata.version, session?.id]);
@@ -2964,6 +3009,8 @@ function AgentPlanPanel({
     session?.planArtifactId &&
     planArtifact?.id === session.planArtifactId,
   );
+  const isPlanBundleComplete =
+    planArtifact?.planContractVersion !== 2 || Boolean(planArtifact.blueprint);
   const planApprovalStatus = isOwnedCurrentPlan
     ? (planArtifact?.planApproval?.status ?? "draft")
     : undefined;
@@ -2984,6 +3031,7 @@ function AgentPlanPanel({
   const canApprovePlan =
     canShowPlanModeControls &&
     isOwnedCurrentPlan &&
+    isPlanBundleComplete &&
     planApprovalStatus === "draft";
   const canShowApprovedPlanActions =
     canShowPlanModeControls && !isImplementingPlanDirectly;
@@ -3000,15 +3048,18 @@ function AgentPlanPanel({
   const canVerifyPlan =
     canShowApprovedPlanActions &&
     isOwnedCurrentPlan &&
+    isPlanBundleComplete &&
     verificationState !== null;
   const canCreateProposals =
     (canShowManualPlanContinuationActions || canRetryTaskDecomposition) &&
     session !== null &&
+    isPlanBundleComplete &&
     (!isPlanningSession || isPlanApproved) &&
     tasksEnabled;
   const canImplementDirectly = Boolean(
     canShowManualPlanContinuationActions &&
     isOwnedCurrentPlan &&
+    isPlanBundleComplete &&
     isPlanApproved &&
     session?.projectId &&
     workspace?.conversationId,
@@ -3020,6 +3071,8 @@ function AgentPlanPanel({
       session?.id,
       planArtifact?.id,
       planArtifact?.metadata.version,
+      planArtifact?.blueprint?.id,
+      planArtifact?.blueprint?.metadata.version,
     ],
     queryFn: () => artifactApi.getPlanComplexityAssessment(session!.id),
     enabled: Boolean(
@@ -3754,6 +3807,10 @@ function AgentPlanPanel({
   if (isPlanLoading) {
     return <EmptyArtifactState title="Loading plan..." />;
   }
+  const selectedPlanArtifact =
+    planBodyMode === "blueprint" && planArtifact?.blueprint
+      ? planArtifact.blueprint
+      : planArtifact;
 
   return (
     <div className="min-h-full px-4 pb-4 pt-4">
@@ -3763,9 +3820,22 @@ function AgentPlanPanel({
             fallback={<EmptyArtifactState title="Loading plan editor..." />}
           >
             <LazyPlanEditor
-              plan={planArtifact}
+              plan={selectedPlanArtifact ?? planArtifact}
               onSave={(updated) => {
-                onPlanUpdated(updated);
+                if (planBodyMode === "blueprint" && session) {
+                  queryClient.setQueryData(
+                    ["agents", "artifact", updated.id],
+                    updated,
+                  );
+                  void queryClient.invalidateQueries({
+                    queryKey: ["agents", "session-plan", session.id],
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: ["agents", "plan-approval", session.id],
+                  });
+                } else {
+                  onPlanUpdated(updated);
+                }
                 setIsEditing(false);
               }}
               onCancel={() => setIsEditing(false)}
@@ -3810,15 +3880,19 @@ function AgentPlanPanel({
             ) : null}
             <Suspense fallback={<EmptyArtifactState title="Loading plan..." />}>
               <LazyPlanDisplay
-                plan={planArtifact}
+                plan={selectedPlanArtifact ?? planArtifact}
                 linkedProposalsCount={linkedProposalsCount}
                 bodyMode={planBodyMode}
-                hideBody={planBodyMode === "proposals"}
+                hideBody={
+                  planBodyMode === "proposals" ||
+                  (planBodyMode === "blueprint" && !planArtifact.blueprint)
+                }
                 onBodyModeChange={setPlanBodyMode}
                 onEdit={() => setIsEditing(true)}
                 onExport={() => setExportDialogOpen(true)}
                 {...(planReferenceSessionId &&
-                  !isAutomationRunConversation && {
+                  !isAutomationRunConversation &&
+                  planBodyMode === "overview" && {
                     onStartNewConversationWithPlan:
                       handleStartNewConversationWithPlan,
                   })}
@@ -3827,6 +3901,15 @@ function AgentPlanPanel({
                 chromeless
               />
             </Suspense>
+            {planBodyMode === "blueprint" && !planArtifact.blueprint ? (
+              <EmptyArtifactState
+                title={
+                  planArtifact.planContractVersion === 1
+                    ? "Blueprint not created for this legacy plan"
+                    : "Implementation blueprint is not available yet"
+                }
+              />
+            ) : null}
             {planBodyMode === "proposals" &&
               session &&
               proposals.length > 0 && (
@@ -3891,7 +3974,7 @@ function AgentPlanPanel({
             sessionId={session.id}
             sessionTitle={sessionTitle}
             verificationStatus={session.verificationStatus ?? "unverified"}
-            planArtifact={planArtifact}
+            planArtifact={selectedPlanArtifact}
             projectId={session.projectId}
           />
         </Suspense>

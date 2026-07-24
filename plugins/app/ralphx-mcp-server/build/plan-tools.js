@@ -9,8 +9,8 @@
 export const PLAN_TOOLS = [
     {
         name: "create_plan_artifact",
-        description: "Create a new implementation plan artifact linked to the ideation session. Use this when the user describes a complex feature that needs architectural planning before breaking into tasks. The plan is stored as a Specification artifact and can be referenced by task proposals. " +
-            "For child sessions that inherited a parent's plan: calling this creates a completely independent plan for the child session — it does NOT modify or copy from the parent's plan.",
+        description: "Atomically create the linked plan bundle: a concise overview plus a detailed, codebase-grounded implementation blueprint. Both are Specification artifacts and both must be supplied. " +
+            "For child sessions that inherited a parent's bundle, this creates a completely independent bundle for the child.",
         inputSchema: {
             type: "object",
             properties: {
@@ -24,10 +24,18 @@ export const PLAN_TOOLS = [
                 },
                 content: {
                     type: "string",
-                    description: "Plan content in markdown format. Should include architecture decisions, data flow, key implementation details, and considerations.",
+                    description: "Concise, human-oriented plan overview in markdown.",
+                },
+                blueprint_title: {
+                    type: "string",
+                    description: "Optional blueprint title. Defaults to '<overview title> — Implementation Blueprint'.",
+                },
+                blueprint_content: {
+                    type: "string",
+                    description: "Self-contained implementation blueprint with ordered steps, exact files and symbols, state/data effects, failure behavior, integration wiring, and focused proof obligations. It must not leave architecture-discovery steps unresolved.",
                 },
             },
-            required: ["session_id", "title", "content"],
+            required: ["session_id", "title", "content", "blueprint_content"],
         },
     },
     {
@@ -69,8 +77,8 @@ export const PLAN_TOOLS = [
     },
     {
         name: "get_session_plan",
-        description: "Get the implementation plan artifact for the current ideation session, if one exists. Use to check if a plan has already been created before suggesting a new one. " +
-            "Response includes an `is_inherited` boolean: if true, the plan was inherited from a parent session and is read-only — call create_plan_artifact to create an independent plan for this session.",
+        description: "Get the current plan bundle. The overview remains at the top level for compatibility; `blueprint_artifact` contains the detailed implementation blueprint and `plan_target_id` identifies the exact current pair. " +
+            "Read both before proposing, implementing, or reviewing work. `is_inherited` means the bundle is read-only.",
         inputSchema: {
             type: "object",
             properties: {
@@ -84,8 +92,8 @@ export const PLAN_TOOLS = [
     },
     {
         name: "submit_plan_complexity_assessment",
-        description: "Persist a complexity assessment for the current approved Plan-mode artifact version. " +
-            "Only the ralphx-utility-plan-complexity helper should call this after grading an approved plan.",
+        description: "Persist a complexity assessment for the current approved plan bundle. " +
+            "For v2 plans, both overview and blueprint ids/versions must match the approved pair.",
         inputSchema: {
             type: "object",
             properties: {
@@ -100,6 +108,14 @@ export const PLAN_TOOLS = [
                 artifact_version: {
                     type: "integer",
                     description: "Approved plan artifact version",
+                },
+                blueprint_artifact_id: {
+                    type: "string",
+                    description: "Approved implementation blueprint artifact ID; required for v2 plans",
+                },
+                blueprint_artifact_version: {
+                    type: "integer",
+                    description: "Approved implementation blueprint version; required for v2 plans",
                 },
                 level: {
                     type: "string",

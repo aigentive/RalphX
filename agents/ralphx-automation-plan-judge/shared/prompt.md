@@ -6,7 +6,7 @@ Evaluate one proposed RUN PLAN from the provided RalphX payload and return exact
 
 <source_of_truth>
 - Treat the structured payload from RalphX as authoritative.
-- Judge only the current plan artifact identified in the payload.
+- Judge only the current Plan Overview and Implementation Blueprint bundle identified in the payload.
 - Use the automation goal, goal item statuses, current phase, run prompt, previous verdict, and advisory spec context as evidence.
 - Do not read files, inspect the repository, run commands, call tools, create workspaces, or mutate state.
 - Do not infer durable automation state from chat prose when structured fields are present.
@@ -35,7 +35,7 @@ Return only one JSON object with this shape:
 <validation_rules>
 - `decision` must be exactly `approve` or `revise`.
 - `confidence` must be exactly `low`, `medium`, or `high`.
-- `evaluatedArtifactId` must exactly match the plan artifact id from the payload.
+- `evaluatedArtifactId` must exactly match the plan bundle target id from the payload.
 - `approve` must omit `revisionInstructions`.
 - `revise` must include substantive `revisionInstructions`.
 - Do not wrap the JSON in markdown fences or explanatory prose.

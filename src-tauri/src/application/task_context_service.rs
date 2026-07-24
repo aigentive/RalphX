@@ -10,8 +10,9 @@
 use std::sync::Arc;
 
 use crate::domain::entities::{
-    create_artifact_content_preview, generate_task_context_hints, ArtifactSummary, ScopeDriftStatus,
-    StepProgressSummary, TaskContext, TaskDependencySummary, TaskId, TaskProposalSummary,
+    create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
+    ScopeDriftStatus, StepProgressSummary, TaskContext, TaskDependencySummary, TaskId,
+    TaskProposalSummary,
 };
 use crate::domain::repositories::{
     ArtifactRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
@@ -113,6 +114,33 @@ impl TaskContextService {
             None
         };
 
+        let blueprint_artifact = {
+            let blueprint_id = if task.plan_blueprint_artifact_id.is_some() {
+                task.plan_blueprint_artifact_id.clone()
+            } else if let Some(proposal_id) = &task.source_proposal_id {
+                self.proposal_repo
+                    .get_by_id(proposal_id)
+                    .await?
+                    .and_then(|proposal| proposal.blueprint_artifact_id)
+            } else {
+                None
+            };
+            if let Some(blueprint_id) = blueprint_id {
+                self.artifact_repo
+                    .get_by_id(&blueprint_id)
+                    .await?
+                    .map(|artifact| ArtifactSummary {
+                        content_preview: create_artifact_content_preview(&artifact),
+                        id: artifact.id,
+                        title: artifact.name,
+                        artifact_type: artifact.artifact_type,
+                        current_version: artifact.metadata.version,
+                    })
+            } else {
+                None
+            }
+        };
+
         // 4. Fetch related artifacts via ArtifactRelation
         let related_artifacts = if let Some(artifact_id) = &task.plan_artifact_id {
             let related = self.artifact_repo.get_related(artifact_id).await?;
@@ -148,10 +176,7 @@ impl TaskContextService {
         let mut blocked_by: Vec<TaskDependencySummary> = Vec::new();
         for blocker_id in &blocker_ids {
             if let Some(blocker_task) = self.task_repo.get_by_id(blocker_id).await? {
-                if !blocker_task
-                    .internal_status
-                    .is_active_dependency_blocker()
-                {
+                if !blocker_task.internal_status.is_active_dependency_blocker() {
                     continue;
                 }
                 blocked_by.push(TaskDependencySummary {
@@ -201,6 +226,7 @@ impl TaskContextService {
             task,
             source_proposal,
             plan_artifact,
+            blueprint_artifact,
             related_artifacts,
             steps,
             step_progress,

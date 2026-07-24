@@ -31,6 +31,7 @@ const TaskContextResponseSchema = z.object({
   task: z.any(), // Task object from backend
   source_proposal: TaskProposalSummaryResponseSchema.nullable(),
   plan_artifact: ArtifactSummaryResponseSchema.nullable(),
+  blueprint_artifact: ArtifactSummaryResponseSchema.nullable(),
   related_artifacts: z.array(ArtifactSummaryResponseSchema),
   context_hints: z.array(z.string()),
 });
@@ -106,6 +107,9 @@ function transformTaskContext(raw: TaskContextResponse): TaskContext {
       : null,
     planArtifact: raw.plan_artifact
       ? transformArtifactSummary(raw.plan_artifact)
+      : null,
+    blueprintArtifact: raw.blueprint_artifact
+      ? transformArtifactSummary(raw.blueprint_artifact)
       : null,
     relatedArtifacts: raw.related_artifacts.map(transformArtifactSummary),
     contextHints: raw.context_hints,

@@ -15,6 +15,7 @@ use crate::infrastructure::sqlite::{DbConnection, SqliteArtifactRepository};
 pub(crate) struct ApprovedPlanArtifact {
     pub session_id: IdeationSessionId,
     pub artifact: Artifact,
+    pub blueprint_artifact: Option<Artifact>,
     pub approved_at: String,
 }
 
@@ -59,6 +60,14 @@ impl PlanArtifactApprovalWriter for DbPlanArtifactApprovalWriter {
                     session_id: approved.session_id,
                     artifact_id: approved.artifact.id,
                     artifact_version: approved.artifact.metadata.version,
+                    blueprint_artifact_id: approved
+                        .blueprint_artifact
+                        .as_ref()
+                        .map(|artifact| artifact.id.clone()),
+                    blueprint_artifact_version: approved
+                        .blueprint_artifact
+                        .as_ref()
+                        .map(|artifact| artifact.metadata.version),
                     approved_at: approved.approved_at,
                     approved_by: approved_by.as_str().to_string(),
                 })
@@ -107,11 +116,30 @@ pub(crate) fn approve_current_plan_artifact_sync(
                 plan_artifact_id.as_str()
             ))
         })?;
+    let blueprint_artifact = match session.plan_blueprint_artifact_id {
+        Some(blueprint_id) => Some(
+            SqliteArtifactRepository::get_by_id_sync(conn, blueprint_id.as_str())?.ok_or_else(
+                || {
+                    AppError::NotFound(format!(
+                        "Plan blueprint artifact {} not found",
+                        blueprint_id.as_str()
+                    ))
+                },
+            )?,
+        ),
+        None if session.plan_contract_version >= 2 => {
+            return Err(AppError::Validation(
+                "Cannot approve plan: implementation blueprint has not been created".to_string(),
+            ));
+        }
+        None => None,
+    };
     let approved_at = Utc::now().to_rfc3339();
     upsert_plan_approval_sync(
         conn,
         session_id.as_str(),
         &artifact,
+        blueprint_artifact.as_ref(),
         &approved_at,
         approved_by,
     )?;
@@ -119,6 +147,7 @@ pub(crate) fn approve_current_plan_artifact_sync(
     Ok(ApprovedPlanArtifact {
         session_id,
         artifact,
+        blueprint_artifact,
         approved_at,
     })
 }
@@ -127,16 +156,21 @@ pub(crate) fn upsert_plan_approval_sync(
     conn: &Connection,
     session_id: &str,
     artifact: &Artifact,
+    blueprint_artifact: Option<&Artifact>,
     approved_at: &str,
     approved_by: PlanApprovalActor,
 ) -> AppResult<()> {
     conn.execute(
         "INSERT INTO plan_artifact_approvals (
-            session_id, artifact_id, artifact_version, status, approved_at, approved_by
-         ) VALUES (?1, ?2, ?3, 'approved', ?4, ?5)
+            session_id, artifact_id, artifact_version,
+            blueprint_artifact_id, blueprint_artifact_version,
+            status, approved_at, approved_by
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'approved', ?6, ?7)
          ON CONFLICT(session_id) DO UPDATE SET
             artifact_id = excluded.artifact_id,
             artifact_version = excluded.artifact_version,
+            blueprint_artifact_id = excluded.blueprint_artifact_id,
+            blueprint_artifact_version = excluded.blueprint_artifact_version,
             status = excluded.status,
             approved_at = excluded.approved_at,
             approved_by = excluded.approved_by",
@@ -144,6 +178,8 @@ pub(crate) fn upsert_plan_approval_sync(
             session_id,
             artifact.id.as_str(),
             i64::from(artifact.metadata.version),
+            blueprint_artifact.map(|artifact| artifact.id.as_str()),
+            blueprint_artifact.map(|artifact| i64::from(artifact.metadata.version)),
             approved_at,
             approved_by.as_str(),
         ],
@@ -168,6 +204,8 @@ struct ApprovalSessionRow {
     status: IdeationSessionStatus,
     session_flow: IdeationSessionFlow,
     plan_artifact_id: Option<ArtifactId>,
+    plan_blueprint_artifact_id: Option<ArtifactId>,
+    plan_contract_version: i32,
 }
 
 fn get_session_for_approval_sync(
@@ -175,7 +213,8 @@ fn get_session_for_approval_sync(
     session_id: &str,
 ) -> AppResult<Option<ApprovalSessionRow>> {
     conn.query_row(
-        "SELECT status, session_flow, plan_artifact_id
+        "SELECT status, session_flow, plan_artifact_id,
+                plan_blueprint_artifact_id, plan_contract_version
          FROM ideation_sessions
          WHERE id = ?1",
         [session_id],
@@ -183,12 +222,15 @@ fn get_session_for_approval_sync(
             let status_raw: String = row.get(0)?;
             let flow_raw: String = row.get(1)?;
             let plan_artifact_id: Option<String> = row.get(2)?;
+            let plan_blueprint_artifact_id: Option<String> = row.get(3)?;
             Ok(ApprovalSessionRow {
                 status: IdeationSessionStatus::from_str(&status_raw)
                     .map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?,
                 session_flow: IdeationSessionFlow::from_str(&flow_raw)
                     .map_err(rusqlite::Error::InvalidParameterName)?,
                 plan_artifact_id: plan_artifact_id.map(ArtifactId::from_string),
+                plan_blueprint_artifact_id: plan_blueprint_artifact_id.map(ArtifactId::from_string),
+                plan_contract_version: row.get(4)?,
             })
         },
     )

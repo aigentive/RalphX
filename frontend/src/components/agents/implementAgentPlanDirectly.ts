@@ -41,20 +41,22 @@ export async function implementAgentPlanDirectly({
   const conversationId = workspace.conversationId;
 
   if (workspace.mode !== "edit") {
-    const result = await chatApi.switchAgentConversationMode({
-      conversationId,
-      mode: "edit",
-    });
-    if (result.workspace) {
-      queryClient.setQueryData(
-        agentWorkspaceKeys.workspace(conversationId),
-        result.workspace,
-      );
+    if (!workspace.linkedIdeationSessionId) {
+      throw new Error("Plan workspace is missing its linked planning session");
     }
+    const activatedWorkspace =
+      await chatApi.activateAgentPlanDirectImplementation({
+      conversationId,
+      sessionId: workspace.linkedIdeationSessionId,
+    });
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspace(conversationId),
+      activatedWorkspace,
+    );
     onConversationModeSwitched?.(
       conversationId,
       "edit",
-      result.workspace ?? null,
+      activatedWorkspace,
     );
     void invalidateWorkspaceQueries(queryClient, conversationId);
   } else {

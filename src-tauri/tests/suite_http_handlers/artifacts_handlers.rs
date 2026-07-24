@@ -126,6 +126,8 @@ async fn create_plan_artifact_quiesced(
             session_id: session_id.as_str().to_string(),
             title: title.to_string(),
             content: content.to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -142,9 +144,12 @@ fn make_active_session() -> IdeationSession {
         title: Some("Test Session".to_string()),
         status: IdeationSessionStatus::Active,
         plan_artifact_id: None,
+        plan_blueprint_artifact_id: None,
         verified_plan_artifact_id: None,
+        verified_plan_blueprint_artifact_id: None,
         verified_plan_agent_run_id: None,
         inherited_plan_artifact_id: None,
+        inherited_plan_blueprint_artifact_id: None,
         seed_task_id: None,
         parent_session_id: None,
         created_at: chrono::Utc::now(),
@@ -171,6 +176,8 @@ fn make_active_session() -> IdeationSession {
         session_flow: Default::default(),
         cross_project_checked: true,
         plan_version_last_read: None,
+        blueprint_version_last_read: None,
+        plan_contract_version: 1,
         origin: Default::default(),
         expected_proposal_count: None,
         auto_accept_status: None,
@@ -347,6 +354,8 @@ async fn test_child_creates_independent_plan_not_chained_to_parent() {
             session_id: child_id.as_str().to_string(),
             title: "Child Plan".to_string(),
             content: "Child's own plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -646,6 +655,8 @@ async fn creating_a_plan_does_not_launch_automatic_verification_during_drafting(
             session_id: session_id.as_str().to_string(),
             title: "Committed plan".to_string(),
             content: "Plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -776,6 +787,8 @@ async fn test_get_session_plan_returns_own_plan_as_not_inherited() {
             session_id: child_id.as_str().to_string(),
             title: "Child Own Plan".to_string(),
             content: "Child's own content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -984,6 +997,8 @@ async fn test_get_session_plan_includes_project_working_directory() {
             session_id: session_id.as_str().to_string(),
             title: "Test Plan".to_string(),
             content: "Plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -1025,6 +1040,8 @@ async fn test_child_second_plan_updates_child_not_parent() {
             session_id: child_id.as_str().to_string(),
             title: "Child Plan v1".to_string(),
             content: "v1".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -1038,6 +1055,8 @@ async fn test_child_second_plan_updates_child_not_parent() {
             session_id: child_id.as_str().to_string(),
             title: "Child Plan v2".to_string(),
             content: "v2".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -1174,6 +1193,8 @@ async fn test_update_plan_artifact_skips_reset_when_verification_in_progress() {
             session_id: session_id.as_str().to_string(),
             title: "Plan v1".to_string(),
             content: "Initial content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -1293,6 +1314,8 @@ async fn test_link_proposals_to_plan_batch_25() {
             created_task_id: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             sort_order: i as i32,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -1383,6 +1406,8 @@ async fn test_create_plan_artifact_session_not_found() {
             session_id: "nonexistent-session-id".to_string(),
             title: "Plan".to_string(),
             content: "content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;
@@ -1670,6 +1695,8 @@ async fn test_create_plan_artifact_skips_trigger_when_already_in_progress() {
             session_id: session_id.as_str().to_string(),
             title: "Plan".to_string(),
             content: "Plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -1826,6 +1853,8 @@ async fn test_update_plan_artifact_batch_updates_linked_proposals() {
             created_task_id: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             sort_order: i as i32,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -2725,6 +2754,8 @@ async fn test_edit_plan_artifact_batch_updates_linked_proposals() {
             created_task_id: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             sort_order: i as i32,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -3500,6 +3531,8 @@ async fn test_external_origin_plan_creation_waits_for_acceptance_before_auto_ver
             session_id: session_id.as_str().to_string(),
             title: "External Plan".to_string(),
             content: "Plan content from external agent".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;
@@ -3547,6 +3580,8 @@ async fn test_planning_flow_session_does_not_auto_verify_or_prompt_on_plan_creat
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;
@@ -3603,6 +3638,8 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3669,6 +3706,8 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3691,6 +3730,14 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
             session_id: session_id.as_str().to_string(),
             artifact_id: created.id.clone(),
             artifact_version: created.version,
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
             level: "complex".to_string(),
             score: 84,
             recommended_action: "create_proposals".to_string(),
@@ -3753,6 +3800,8 @@ async fn test_submit_plan_complexity_assessment_rejects_draft_plan() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan-mode content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3763,8 +3812,16 @@ async fn test_submit_plan_complexity_assessment_rejects_draft_plan() {
         State(state.clone()),
         Json(SubmitPlanComplexityAssessmentRequest {
             session_id: session_id.as_str().to_string(),
-            artifact_id: created.id,
+            artifact_id: created.id.clone(),
             artifact_version: created.version,
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
             level: "simple".to_string(),
             score: 20,
             recommended_action: "implement_directly".to_string(),
@@ -3852,6 +3909,8 @@ async fn test_approve_plan_artifact_rejects_stale_artifact_id() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan v1".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await
@@ -3913,6 +3972,8 @@ async fn test_plan_update_after_approval_returns_current_plan_to_draft() {
             session_id: session_id.as_str().to_string(),
             title: "Agent Plan".to_string(),
             content: "Plan v1".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await

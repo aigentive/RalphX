@@ -90,6 +90,8 @@ export interface TaskProposalResponse {
   createdTaskId: string | null;
   planArtifactId: string | null;
   planVersionAtCreation: number | null;
+  blueprintArtifactId: string | null;
+  blueprintVersionAtCreation: number | null;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;

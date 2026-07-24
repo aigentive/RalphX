@@ -35,6 +35,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::entities::{ArtifactId, IdeationSessionId, ProjectId, TaskId};
 
+pub const PLAN_CONTRACT_V1: i32 = 1;
+pub const PLAN_CONTRACT_V2: i32 = 2;
+
+const fn default_plan_contract_version() -> i32 {
+    PLAN_CONTRACT_V2
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanArtifactBundle {
+    pub overview_id: ArtifactId,
+    pub blueprint_id: Option<ArtifactId>,
+    pub contract_version: i32,
+    pub is_inherited: bool,
+}
+
+impl PlanArtifactBundle {
+    pub fn action_target_id(&self) -> String {
+        match &self.blueprint_id {
+            Some(blueprint_id) if self.contract_version >= PLAN_CONTRACT_V2 => format!(
+                "plan_bundle:v2:{}:{}",
+                self.overview_id.as_str(),
+                blueprint_id.as_str()
+            ),
+            _ => self.overview_id.to_string(),
+        }
+    }
+}
+
 /// An ideation session - a brainstorming conversation that produces task proposals
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdeationSession {
@@ -48,14 +76,26 @@ pub struct IdeationSession {
     pub status: IdeationSessionStatus,
     /// The implementation plan artifact for this session (owned by this session)
     pub plan_artifact_id: Option<ArtifactId>,
+    /// Detailed implementation blueprint paired with the owned plan overview.
+    #[serde(default)]
+    pub plan_blueprint_artifact_id: Option<ArtifactId>,
     /// Exact linked plan artifact version most recently proven implementation-ready.
     #[serde(default)]
     pub verified_plan_artifact_id: Option<ArtifactId>,
+    /// Exact blueprint version most recently proven with the current overview.
+    #[serde(default)]
+    pub verified_plan_blueprint_artifact_id: Option<ArtifactId>,
     /// Agent run whose bounded completion operation recorded the current proof.
     #[serde(default)]
     pub verified_plan_agent_run_id: Option<String>,
     /// Plan artifact inherited from parent session (read-only; child cannot modify)
     pub inherited_plan_artifact_id: Option<ArtifactId>,
+    /// Blueprint inherited with the read-only overview.
+    #[serde(default)]
+    pub inherited_plan_blueprint_artifact_id: Option<ArtifactId>,
+    /// v1 is grandfathered overview-only; v2 requires an exact overview/blueprint pair.
+    #[serde(default = "default_plan_contract_version")]
+    pub plan_contract_version: i32,
     /// Optional reference to a draft task that seeded this session
     pub seed_task_id: Option<TaskId>,
     /// Optional parent session for session linking (follow-on work, etc.)
@@ -119,6 +159,8 @@ pub struct IdeationSession {
     /// Used by the stale plan guard to detect if the agent's in-memory plan is outdated.
     /// None = agent has not read the plan yet (or pre-v75 row).
     pub plan_version_last_read: Option<i32>,
+    /// Blueprint version last acknowledged by the planning agent.
+    pub blueprint_version_last_read: Option<i32>,
     /// Origin of this session: Internal (default) or External (created via External MCP API).
     /// External sessions cannot skip plan verification.
     #[serde(default)]
@@ -170,9 +212,13 @@ pub struct IdeationSessionBuilder {
     title: Option<String>,
     status: Option<IdeationSessionStatus>,
     plan_artifact_id: Option<ArtifactId>,
+    plan_blueprint_artifact_id: Option<ArtifactId>,
     verified_plan_artifact_id: Option<ArtifactId>,
+    verified_plan_blueprint_artifact_id: Option<ArtifactId>,
     verified_plan_agent_run_id: Option<String>,
     inherited_plan_artifact_id: Option<ArtifactId>,
+    inherited_plan_blueprint_artifact_id: Option<ArtifactId>,
+    plan_contract_version: Option<i32>,
     seed_task_id: Option<TaskId>,
     parent_session_id: Option<IdeationSessionId>,
     created_at: Option<DateTime<Utc>>,
@@ -199,6 +245,7 @@ pub struct IdeationSessionBuilder {
     session_flow: Option<IdeationSessionFlow>,
     cross_project_checked: Option<bool>,
     plan_version_last_read: Option<i32>,
+    blueprint_version_last_read: Option<i32>,
     origin: Option<SessionOrigin>,
     expected_proposal_count: Option<u32>,
     auto_accept_status: Option<String>,
@@ -250,14 +297,34 @@ impl IdeationSessionBuilder {
         self
     }
 
+    pub fn plan_blueprint_artifact_id(mut self, artifact_id: ArtifactId) -> Self {
+        self.plan_blueprint_artifact_id = Some(artifact_id);
+        self
+    }
+
     pub fn verified_plan_artifact_id(mut self, artifact_id: ArtifactId) -> Self {
         self.verified_plan_artifact_id = Some(artifact_id);
+        self
+    }
+
+    pub fn verified_plan_blueprint_artifact_id(mut self, artifact_id: ArtifactId) -> Self {
+        self.verified_plan_blueprint_artifact_id = Some(artifact_id);
         self
     }
 
     /// Set the inherited plan artifact ID (read-only, from parent session)
     pub fn inherited_plan_artifact_id(mut self, inherited_plan_artifact_id: ArtifactId) -> Self {
         self.inherited_plan_artifact_id = Some(inherited_plan_artifact_id);
+        self
+    }
+
+    pub fn inherited_plan_blueprint_artifact_id(mut self, artifact_id: ArtifactId) -> Self {
+        self.inherited_plan_blueprint_artifact_id = Some(artifact_id);
+        self
+    }
+
+    pub fn plan_contract_version(mut self, version: i32) -> Self {
+        self.plan_contract_version = Some(version);
         self
     }
 
@@ -381,6 +448,11 @@ impl IdeationSessionBuilder {
         self
     }
 
+    pub fn blueprint_version_last_read(mut self, version: i32) -> Self {
+        self.blueprint_version_last_read = Some(version);
+        self
+    }
+
     /// Set the session origin (Internal or External)
     pub fn origin(mut self, origin: SessionOrigin) -> Self {
         self.origin = Some(origin);
@@ -460,9 +532,13 @@ impl IdeationSessionBuilder {
             title: self.title,
             status: self.status.unwrap_or_default(),
             plan_artifact_id: self.plan_artifact_id,
+            plan_blueprint_artifact_id: self.plan_blueprint_artifact_id,
             verified_plan_artifact_id: self.verified_plan_artifact_id,
+            verified_plan_blueprint_artifact_id: self.verified_plan_blueprint_artifact_id,
             verified_plan_agent_run_id: self.verified_plan_agent_run_id,
             inherited_plan_artifact_id: self.inherited_plan_artifact_id,
+            inherited_plan_blueprint_artifact_id: self.inherited_plan_blueprint_artifact_id,
+            plan_contract_version: self.plan_contract_version.unwrap_or(PLAN_CONTRACT_V2),
             seed_task_id: self.seed_task_id,
             parent_session_id: self.parent_session_id,
             created_at: self.created_at.unwrap_or(now),
@@ -489,6 +565,7 @@ impl IdeationSessionBuilder {
             session_flow: self.session_flow.unwrap_or_default(),
             cross_project_checked: self.cross_project_checked.unwrap_or(false),
             plan_version_last_read: self.plan_version_last_read,
+            blueprint_version_last_read: self.blueprint_version_last_read,
             origin: self.origin.unwrap_or_default(),
             expected_proposal_count: self.expected_proposal_count,
             auto_accept_status: self.auto_accept_status,
@@ -562,6 +639,45 @@ impl IdeationSession {
         self.updated_at = Utc::now();
     }
 
+    pub fn plan_artifact_bundle(&self) -> Option<PlanArtifactBundle> {
+        let (overview_id, blueprint_id, is_inherited) =
+            if let Some(overview_id) = self.plan_artifact_id.clone() {
+                (overview_id, self.plan_blueprint_artifact_id.clone(), false)
+            } else {
+                (
+                    self.inherited_plan_artifact_id.clone()?,
+                    self.inherited_plan_blueprint_artifact_id.clone(),
+                    true,
+                )
+            };
+
+        if self.plan_contract_version >= PLAN_CONTRACT_V2 && blueprint_id.is_none() {
+            return None;
+        }
+
+        Some(PlanArtifactBundle {
+            overview_id,
+            blueprint_id,
+            contract_version: self.plan_contract_version,
+            is_inherited,
+        })
+    }
+
+    pub fn has_exact_plan_verification(&self) -> bool {
+        let Some(bundle) = self.plan_artifact_bundle() else {
+            return false;
+        };
+        if self.verified_plan_artifact_id.as_ref() != Some(&bundle.overview_id) {
+            return false;
+        }
+        match bundle.blueprint_id {
+            Some(blueprint_id) => {
+                self.verified_plan_blueprint_artifact_id.as_ref() == Some(&blueprint_id)
+            }
+            None => true,
+        }
+    }
+
     /// Validates that setting a parent session ID won't create a circular reference
     /// This is a domain validation that checks the proposed parent chain
     /// In practice, this would be called before persisting and would need access to a repository
@@ -592,8 +708,16 @@ impl IdeationSession {
             plan_artifact_id: row
                 .get::<_, Option<String>>("plan_artifact_id")?
                 .map(ArtifactId::from_string),
+            plan_blueprint_artifact_id: row
+                .get::<_, Option<String>>("plan_blueprint_artifact_id")
+                .unwrap_or(None)
+                .map(ArtifactId::from_string),
             verified_plan_artifact_id: row
                 .get::<_, Option<String>>("verified_plan_artifact_id")
+                .unwrap_or(None)
+                .map(ArtifactId::from_string),
+            verified_plan_blueprint_artifact_id: row
+                .get::<_, Option<String>>("verified_plan_blueprint_artifact_id")
                 .unwrap_or(None)
                 .map(ArtifactId::from_string),
             verified_plan_agent_run_id: row
@@ -602,6 +726,14 @@ impl IdeationSession {
             inherited_plan_artifact_id: row
                 .get::<_, Option<String>>("inherited_plan_artifact_id")?
                 .map(ArtifactId::from_string),
+            inherited_plan_blueprint_artifact_id: row
+                .get::<_, Option<String>>("inherited_plan_blueprint_artifact_id")
+                .unwrap_or(None)
+                .map(ArtifactId::from_string),
+            plan_contract_version: row
+                .get::<_, Option<i64>>("plan_contract_version")
+                .unwrap_or(Some(i64::from(PLAN_CONTRACT_V1)))
+                .unwrap_or(i64::from(PLAN_CONTRACT_V1)) as i32,
             seed_task_id: row
                 .get::<_, Option<String>>("seed_task_id")?
                 .map(TaskId::from_string),
@@ -692,6 +824,10 @@ impl IdeationSession {
                 .unwrap_or(false),
             plan_version_last_read: row
                 .get::<_, Option<i64>>("plan_version_last_read")
+                .unwrap_or(None)
+                .map(|v| v as i32),
+            blueprint_version_last_read: row
+                .get::<_, Option<i64>>("blueprint_version_last_read")
                 .unwrap_or(None)
                 .map(|v| v as i32),
             origin: row

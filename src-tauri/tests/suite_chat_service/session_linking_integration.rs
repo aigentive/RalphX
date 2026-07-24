@@ -103,6 +103,8 @@ async fn create_session_with_plan_and_proposals(
             acceptance_criteria: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             created_task_id: None,
             selected: false,
             affected_paths: None,

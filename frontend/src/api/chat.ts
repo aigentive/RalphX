@@ -1875,6 +1875,7 @@ export const chatApi = {
   updateAgentConversationCoordinationMode,
   copyAgentConversationPlan,
   importAgentConversationPlan,
+  activateAgentPlanDirectImplementation,
   activateAgentTaskPipeline,
   startAgentTaskPipeline,
   sendAgentMessage,
@@ -2346,6 +2347,9 @@ export interface AgentWorkspaceReviewMonitor {
   reviewArtifactId: string | null;
   reviewArtifactVersion: number | null;
   reviewArtifactUpdatedAt: string | null;
+  reviewRequestedChangesArtifactId?: string | null;
+  reviewRequestedChangesArtifactVersion?: number | null;
+  reviewRequestedChangesArtifactUpdatedAt?: string | null;
   reviewGateBypassedAt: string | null;
   reviewGateBypassedTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewGateBypassedDiffFingerprint: string | null;
@@ -2364,6 +2368,7 @@ export interface AgentWorkspaceReviewMonitor {
   workspaceHeadSha: string | null;
   currentDiffFingerprint: string | null;
   previousVersionId: string | null;
+  reviewRequestedChangesPreviousVersionId?: string | null;
   reviewBlockingSummary: string | null;
   reviewBlockingFingerprint: string | null;
   reviewFixerRunId: string | null;
@@ -2759,6 +2764,21 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_artifact_id: z.string().nullable(),
   review_artifact_version: z.number().nullable(),
   review_artifact_updated_at: z.string().nullable(),
+  review_requested_changes_artifact_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
+  review_requested_changes_artifact_version: z
+    .number()
+    .nullable()
+    .optional()
+    .default(null),
+  review_requested_changes_artifact_updated_at: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   review_gate_bypassed_at: z.string().nullable().optional().default(null),
   review_gate_bypassed_target_scope: z
     .enum(["selected_source", "workspace_delta"])
@@ -2789,6 +2809,11 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   workspace_head_sha: z.string().nullable(),
   current_diff_fingerprint: z.string().nullable(),
   previous_version_id: z.string().nullable(),
+  review_requested_changes_previous_version_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   review_blocking_summary: z.string().nullable().optional().default(null),
   review_blocking_fingerprint: z.string().nullable().optional().default(null),
   review_fixer_run_id: z.string().nullable().optional().default(null),
@@ -3425,6 +3450,12 @@ function transformAgentWorkspaceReviewMonitor(
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
+    reviewRequestedChangesArtifactId:
+      raw.review_requested_changes_artifact_id,
+    reviewRequestedChangesArtifactVersion:
+      raw.review_requested_changes_artifact_version,
+    reviewRequestedChangesArtifactUpdatedAt:
+      raw.review_requested_changes_artifact_updated_at,
     reviewGateBypassedAt: raw.review_gate_bypassed_at,
     reviewGateBypassedTargetScope: raw.review_gate_bypassed_target_scope,
     reviewGateBypassedDiffFingerprint:
@@ -3444,6 +3475,8 @@ function transformAgentWorkspaceReviewMonitor(
     workspaceHeadSha: raw.workspace_head_sha,
     currentDiffFingerprint: raw.current_diff_fingerprint,
     previousVersionId: raw.previous_version_id,
+    reviewRequestedChangesPreviousVersionId:
+      raw.review_requested_changes_previous_version_id,
     reviewBlockingSummary: raw.review_blocking_summary,
     reviewBlockingFingerprint: raw.review_blocking_fingerprint,
     reviewFixerRunId: raw.review_fixer_run_id,
@@ -4426,6 +4459,23 @@ export async function activateAgentTaskPipeline(input: {
         ...(input.runtimeOverride
           ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
           : {}),
+      },
+    },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function activateAgentPlanDirectImplementation(input: {
+  conversationId: string;
+  sessionId: string;
+}): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "activate_agent_plan_direct_implementation",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
       },
     },
     AgentConversationWorkspaceResponseSchema,

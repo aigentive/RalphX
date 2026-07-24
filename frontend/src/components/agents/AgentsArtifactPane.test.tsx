@@ -1193,6 +1193,8 @@ function workspaceReviewContext(
       | "failed";
     reviewArtifactId?: string | null;
     reviewArtifactVersion?: number | null;
+    reviewRequestedChangesArtifactId?: string | null;
+    reviewRequestedChangesArtifactVersion?: number | null;
     reviewConversationId?: string | null;
     reviewBlockingSummary?: string | null;
     reviewBlockingFingerprint?: string | null;
@@ -1240,6 +1242,14 @@ function workspaceReviewContext(
       reviewArtifactId,
       reviewArtifactVersion: overrides.reviewArtifactVersion ?? null,
       reviewArtifactUpdatedAt: reviewArtifactId ? "2026-04-23T09:30:00Z" : null,
+      reviewRequestedChangesArtifactId:
+        overrides.reviewRequestedChangesArtifactId ?? null,
+      reviewRequestedChangesArtifactVersion:
+        overrides.reviewRequestedChangesArtifactVersion ?? null,
+      reviewRequestedChangesArtifactUpdatedAt:
+        overrides.reviewRequestedChangesArtifactId
+          ? "2026-04-23T09:30:00Z"
+          : null,
       reviewedHeadSha:
         overrides.reviewOutcome === "passed" ? (target?.headSha ?? null) : null,
       reviewedDiffFingerprint:
@@ -1268,6 +1278,7 @@ function workspaceReviewContext(
         target?.scope === "workspace_delta" ? target.headSha : null,
       currentDiffFingerprint: target?.diffFingerprint ?? null,
       previousVersionId: null,
+      reviewRequestedChangesPreviousVersionId: null,
       reviewGateBypassedAt: overrides.reviewGateBypassedAt ?? null,
       reviewGateBypassedTargetScope:
         overrides.reviewGateBypassedTargetScope ?? null,
@@ -1329,6 +1340,32 @@ function workspaceReviewArtifact(version = 2) {
     derivedFrom: [],
     bucketId: "prd-library",
   };
+}
+
+function workspaceReviewRequestedChangesArtifact(version = 2) {
+  return {
+    ...workspaceReviewArtifact(version),
+    id: `review-requested-changes-${version}`,
+    name: "Workspace Review — Requested Changes",
+    content: {
+      type: "inline",
+      text: "## Step 1\n\nImplement the exact repair.",
+    },
+  };
+}
+
+function primeWorkspaceReviewArtifactPair(
+  queryClient: QueryClient,
+  overview: ReturnType<typeof workspaceReviewArtifact>,
+  requestedChanges: ReturnType<
+    typeof workspaceReviewRequestedChangesArtifact
+  >,
+) {
+  queryClient.setQueryData(["agents", "artifact", overview.id], overview);
+  queryClient.setQueryData(
+    ["agents", "artifact", requestedChanges.id],
+    requestedChanges,
+  );
 }
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -4686,32 +4723,79 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("runs a forced update for an outdated Review artifact", async () => {
+    const queryClient = createTestQueryClient();
+    primeWorkspaceReviewArtifactPair(
+      queryClient,
+      { ...workspaceReviewArtifact(2), id: "review-artifact-1" },
+      workspaceReviewRequestedChangesArtifact(2),
+    );
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
         status: "ready",
         reviewArtifactId: "review-artifact-1",
         reviewArtifactVersion: 2,
+        reviewRequestedChangesArtifactId: "review-requested-changes-2",
+        reviewRequestedChangesArtifactVersion: 2,
         isOutdated: true,
         shouldShowTab: true,
       }),
     );
-    getArtifactMock.mockResolvedValue({
-      id: "review-artifact-1",
-      type: "workspace_review",
-      name: "Workspace Review",
-      content: {
-        type: "inline",
-        text: "# Workspace Review\n\nNo blocking findings.",
-      },
-      metadata: {
-        createdAt: "2026-04-23T09:30:00Z",
-        createdBy: "ralphx-workspace-reviewer",
-        version: 2,
-      },
-      derivedFrom: [],
-      bucketId: "prd-library",
-    });
+    getArtifactMock.mockImplementation(async (artifactId: string) =>
+      artifactId === "review-requested-changes-2"
+        ? workspaceReviewRequestedChangesArtifact(2)
+        : {
+            ...workspaceReviewArtifact(2),
+            id: "review-artifact-1",
+          },
+    );
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {},
+      queryClient,
+    );
+
+    expect(await screen.findByText("Review is outdated")).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Update review" },
+        deferredHydrationTimeout,
+      ),
+    );
+
+    await waitFor(() =>
+      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
+        force: true,
+      }),
+    );
+  });
+
+  it("loads and renders both Workspace Review documents", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewArtifactId: "review-artifact-2",
+        reviewArtifactVersion: 2,
+        reviewRequestedChangesArtifactId: "review-requested-changes-2",
+        reviewRequestedChangesArtifactVersion: 2,
+        reviewGateStatus: "blocking",
+        reviewOutcome: "blocking",
+        isCurrent: true,
+        shouldShowTab: true,
+      }),
+    );
+    getArtifactMock.mockImplementation(async (artifactId: string) =>
+      artifactId === "review-requested-changes-2"
+        ? workspaceReviewRequestedChangesArtifact(2)
+        : workspaceReviewArtifact(2),
+    );
 
     renderPane(
       "review",
@@ -4721,28 +4805,48 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    expect(await screen.findByText("Review is outdated")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Update review" }));
+    expect(
+      await screen.findByRole("tab", { name: "Overview" }),
+    ).toBeInTheDocument();
+    const requestedChangesTab = screen.getByRole("tab", {
+      name: "Requested Changes",
+    });
+    fireEvent.mouseDown(requestedChangesTab, { button: 0 });
+    fireEvent.click(requestedChangesTab);
 
-    await waitFor(() =>
-      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
-        force: true,
-      }),
+    expect(
+      await screen.findByText("Implement the exact repair."),
+    ).toBeInTheDocument();
+    expect(getArtifactMock).toHaveBeenCalledWith("review-artifact-2");
+    expect(getArtifactMock).toHaveBeenCalledWith(
+      "review-requested-changes-2",
     );
   });
 
   it("disables the Review update action while a related runtime is generating", async () => {
+    const queryClient = createTestQueryClient();
+    primeWorkspaceReviewArtifactPair(
+      queryClient,
+      workspaceReviewArtifact(2),
+      workspaceReviewRequestedChangesArtifact(2),
+    );
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
         status: "ready",
         reviewArtifactId: "review-artifact-2",
         reviewArtifactVersion: 2,
+        reviewRequestedChangesArtifactId: "review-requested-changes-2",
+        reviewRequestedChangesArtifactVersion: 2,
         isOutdated: true,
         shouldShowTab: true,
       }),
     );
-    getArtifactMock.mockResolvedValue(workspaceReviewArtifact(2));
+    getArtifactMock.mockImplementation(async (artifactId: string) =>
+      artifactId === "review-requested-changes-2"
+        ? workspaceReviewRequestedChangesArtifact(2)
+        : workspaceReviewArtifact(2),
+    );
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       "conversation-1": conversationRuntimeStatus(),
     });
@@ -4753,13 +4857,17 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
+      {},
+      queryClient,
     );
 
     expect(await screen.findByText("Review is outdated")).toBeInTheDocument();
 
-    const updateReviewButton = screen.getByRole("button", {
-      name: "Update review",
-    });
+    const updateReviewButton = await screen.findByRole(
+      "button",
+      { name: "Update review" },
+      deferredHydrationTimeout,
+    );
     await waitFor(() => expect(updateReviewButton).toBeDisabled());
     expect(
       screen.queryByTestId("agents-review-action-disabled-reason"),
@@ -4778,11 +4886,17 @@ describe("AgentsArtifactPane", () => {
         status: "ready",
         reviewArtifactId: "review-artifact-2",
         reviewArtifactVersion: 2,
+        reviewRequestedChangesArtifactId: "review-requested-changes-2",
+        reviewRequestedChangesArtifactVersion: 2,
         isOutdated: true,
         shouldShowTab: true,
       }),
     );
-    getArtifactMock.mockResolvedValue(workspaceReviewArtifact(2));
+    getArtifactMock.mockImplementation(async (artifactId: string) =>
+      artifactId === "review-requested-changes-2"
+        ? workspaceReviewRequestedChangesArtifact(2)
+        : workspaceReviewArtifact(2),
+    );
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       "conversation-1": conversationRuntimeStatus({
         primarySource: "workspace_review",
@@ -4827,17 +4941,29 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("keeps the Review update action enabled while a related runtime is waiting for input", async () => {
+    const queryClient = createTestQueryClient();
+    primeWorkspaceReviewArtifactPair(
+      queryClient,
+      workspaceReviewArtifact(2),
+      workspaceReviewRequestedChangesArtifact(2),
+    );
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
         status: "ready",
         reviewArtifactId: "review-artifact-2",
         reviewArtifactVersion: 2,
+        reviewRequestedChangesArtifactId: "review-requested-changes-2",
+        reviewRequestedChangesArtifactVersion: 2,
         isOutdated: true,
         shouldShowTab: true,
       }),
     );
-    getArtifactMock.mockResolvedValue(workspaceReviewArtifact(2));
+    getArtifactMock.mockImplementation(async (artifactId: string) =>
+      artifactId === "review-requested-changes-2"
+        ? workspaceReviewRequestedChangesArtifact(2)
+        : workspaceReviewArtifact(2),
+    );
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       "conversation-1": conversationRuntimeStatus({
         agentStatus: "waiting_for_input",
@@ -4857,13 +4983,17 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
+      {},
+      queryClient,
     );
 
     expect(await screen.findByText("Review is outdated")).toBeInTheDocument();
 
-    const updateReviewButton = screen.getByRole("button", {
-      name: "Update review",
-    });
+    const updateReviewButton = await screen.findByRole(
+      "button",
+      { name: "Update review" },
+      deferredHydrationTimeout,
+    );
     await waitFor(() => expect(updateReviewButton).toBeEnabled());
     fireEvent.click(updateReviewButton);
 
@@ -4930,6 +5060,12 @@ describe("AgentsArtifactPane", () => {
 
   it("offers a forced rerun for a current Review artifact without success toasts", async () => {
     const rerun = deferred<StartAgentWorkspaceReviewResult>();
+    const queryClient = createTestQueryClient();
+    primeWorkspaceReviewArtifactPair(
+      queryClient,
+      { ...workspaceReviewArtifact(2), id: "review-artifact-1" },
+      workspaceReviewRequestedChangesArtifact(2),
+    );
     startWorkspaceReviewMock.mockReturnValue(rerun.promise);
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
@@ -4937,27 +5073,21 @@ describe("AgentsArtifactPane", () => {
         status: "ready",
         reviewArtifactId: "review-artifact-1",
         reviewArtifactVersion: 2,
+        reviewRequestedChangesArtifactId: "review-requested-changes-2",
+        reviewRequestedChangesArtifactVersion: 2,
         reviewGateStatus: "passed",
         isCurrent: true,
         shouldShowTab: true,
       }),
     );
-    getArtifactMock.mockResolvedValue({
-      id: "review-artifact-1",
-      type: "workspace_review",
-      name: "Workspace Review",
-      content: {
-        type: "inline",
-        text: "# Workspace Review\n\nNo blocking findings.",
-      },
-      metadata: {
-        createdAt: "2026-04-23T09:30:00Z",
-        createdBy: "ralphx-workspace-reviewer",
-        version: 2,
-      },
-      derivedFrom: [],
-      bucketId: "prd-library",
-    });
+    getArtifactMock.mockImplementation(async (artifactId: string) =>
+      artifactId === "review-requested-changes-2"
+        ? workspaceReviewRequestedChangesArtifact(2)
+        : {
+            ...workspaceReviewArtifact(2),
+            id: "review-artifact-1",
+          },
+    );
 
     renderPane(
       "review",
@@ -4965,13 +5095,21 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
+      {},
+      queryClient,
     );
 
     expect(await screen.findByText("Review passed")).toBeInTheDocument();
     expect(
       screen.queryByTestId("agents-review-open-publish"),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Run again" },
+        deferredHydrationTimeout,
+      ),
+    );
 
     await waitFor(() =>
       expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
@@ -4990,33 +5128,48 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("does not let stale completed start data override the current Review context", async () => {
+    const queryClient = createTestQueryClient();
+    primeWorkspaceReviewArtifactPair(
+      queryClient,
+      { ...workspaceReviewArtifact(2), id: "review-artifact-v2" },
+      {
+        ...workspaceReviewRequestedChangesArtifact(2),
+        id: "review-requested-changes-v2",
+      },
+    );
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
         status: "ready",
         reviewArtifactId: "review-artifact-v2",
         reviewArtifactVersion: 2,
+        reviewRequestedChangesArtifactId: "review-requested-changes-v2",
+        reviewRequestedChangesArtifactVersion: 2,
         reviewGateStatus: "passed",
         isCurrent: true,
         shouldShowTab: true,
       }),
     );
-    getArtifactMock.mockResolvedValue({
-      id: "review-artifact-v2",
-      type: "workspace_review",
-      name: "Workspace Review",
-      content: {
-        type: "inline",
-        text: "# Workspace Review\n\nCurrent v2 findings.",
-      },
-      metadata: {
-        createdAt: "2026-04-23T09:35:00Z",
-        createdBy: "ralphx-workspace-reviewer",
-        version: 2,
-      },
-      derivedFrom: [],
-      bucketId: "prd-library",
-    });
+    getArtifactMock.mockImplementation(async (artifactId: string) =>
+      artifactId === "review-requested-changes-v2"
+        ? {
+            ...workspaceReviewRequestedChangesArtifact(2),
+            id: "review-requested-changes-v2",
+          }
+        : {
+            ...workspaceReviewArtifact(2),
+            id: "review-artifact-v2",
+            content: {
+              type: "inline",
+              text: "# Workspace Review\n\nCurrent v2 findings.",
+            },
+            metadata: {
+              createdAt: "2026-04-23T09:35:00Z",
+              createdBy: "ralphx-workspace-reviewer",
+              version: 2,
+            },
+          },
+    );
     startWorkspaceReviewMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
@@ -5034,10 +5187,18 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
+      {},
+      queryClient,
     );
 
     expect(await screen.findByText("Review passed")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "Run again" },
+        deferredHydrationTimeout,
+      ),
+    );
 
     await waitFor(() =>
       expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
@@ -7026,8 +7187,8 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByTestId("agents-artifact-tab-verification"),
     ).not.toBeInTheDocument();
-    const proposalsToggle = await screen.findByRole("button", {
-      name: /1 Proposal/i,
+    const proposalsToggle = await screen.findByRole("tab", {
+      name: /Proposals \(1\)/i,
     });
 
     await user.click(proposalsToggle);
@@ -7083,8 +7244,8 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
 
     const planDisplay = await screen.findByTestId("plan-display-chromeless");
-    const proposalsToggle = within(planDisplay).getByRole("button", {
-      name: /1 Proposal/i,
+    const proposalsToggle = within(planDisplay).getByRole("tab", {
+      name: /Proposals \(1\)/i,
     });
 
     expect(
@@ -8216,7 +8377,7 @@ describe("AgentsArtifactPane", () => {
     expect(within(banner).queryByText("Plan approved")).not.toBeInTheDocument();
   });
 
-  it("leaves only the Plan proposals toggle in the plan title action row", async () => {
+  it("leaves only the Plan proposals tab in the plan document row", async () => {
     getIdeationSessionMock.mockResolvedValue(
       ideationSessionResponse({}, [
         taskProposal({
@@ -8250,7 +8411,7 @@ describe("AgentsArtifactPane", () => {
       within(banner).getByRole("button", { name: /Verify Plan/i }),
     ).toBeInTheDocument();
     expect(
-      within(planDisplay).getByTestId("plan-proposals-toggle"),
+      within(planDisplay).getByTestId("plan-proposals-tab"),
     ).toBeInTheDocument();
     expect(
       within(planDisplay).queryByTestId("plan-approve-button"),

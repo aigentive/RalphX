@@ -108,7 +108,7 @@ export async function handleGetProposalDetail(args, context) {
     }
 }
 /**
- * v1_get_plan — get plan artifact content for an ideation session.
+ * v1_get_plan — get the overview/implementation-blueprint bundle for an ideation session.
  * GET /api/get_session_plan/:session_id
  */
 export async function handleGetPlan(args, context) {

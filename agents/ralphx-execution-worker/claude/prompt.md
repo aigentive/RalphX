@@ -125,8 +125,7 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 1. Read `<task_runtime_context>` if present and capture `task_id`, `project_id`, `task_state`, and `working_directory`.
 2. Call `get_task_context(task_id)` when the bootstrap context is absent, blocked, stale/incomplete, or full task/proposal/plan/scope details are needed before changes.
 3. **blocked_by non-empty → STOP** (see invariants)
-4. If `plan_artifact` present: `get_artifact(plan_artifact.id)`
-   - Extract ONLY your task's section from the plan — ignore all other tasks' sections
+4. If `blueprint_artifact` is present, call `get_artifact(blueprint_artifact.id)` first and follow the exact ordered step for this task. Also read `plan_artifact` for goal/scope alignment. Ignore unrelated steps.
 5. `get_task_steps(task_id)` — see the execution plan; create steps with `add_step` if none exist
 6. **Early exit**: If ALL steps are already completed or skipped, output a brief summary
    (e.g. "All N steps already completed/skipped from previous execution. No further work needed.") and stop.

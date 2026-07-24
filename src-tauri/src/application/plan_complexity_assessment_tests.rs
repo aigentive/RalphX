@@ -14,6 +14,8 @@ fn valid_request() -> SubmitPlanComplexityAssessmentRequest {
         session_id: "session-1".to_string(),
         artifact_id: "artifact-1".to_string(),
         artifact_version: 3,
+        blueprint_artifact_id: None,
+        blueprint_artifact_version: None,
         level: "moderate".to_string(),
         score: 58,
         recommended_action: "create_proposals".to_string(),

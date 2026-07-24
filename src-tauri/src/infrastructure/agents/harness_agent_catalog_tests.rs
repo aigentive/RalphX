@@ -1022,7 +1022,7 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         assert!(prompt.contains("<planning_session_id>"));
         assert!(prompt.contains("do not invent a session id"));
         assert!(prompt.contains("ask_user_question"));
-        assert!(prompt.contains("Create or update exactly one linked plan artifact"));
+        assert!(prompt.contains("Create or update exactly one linked plan bundle"));
         assert!(prompt.contains("Call `get_session_plan` before"));
         assert!(prompt.contains("clicks the Plan-mode UI action `Approve Plan`"));
         assert!(prompt.contains("approval is backend/UI-owned"));

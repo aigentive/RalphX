@@ -5,7 +5,7 @@ pub(crate) use crate::application::agent_task_pipeline_service::validate_complet
 use crate::application::{
     agent_task_pipeline_service::{
         activate_agent_task_pipeline as activate_agent_task_pipeline_service,
-        validate_supervised_task_pipeline,
+        validate_direct_implementation_authority_sync, validate_supervised_task_pipeline,
     },
     AppState,
 };
@@ -54,6 +54,13 @@ pub struct ActivateAgentTaskPipelineInput {
     pub conversation_id: String,
     pub session_id: String,
     pub runtime_override: Option<crate::domain::agents::ManualRoleRuntimeOverride>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateAgentPlanDirectImplementationInput {
+    pub conversation_id: String,
+    pub session_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,6 +165,14 @@ pub async fn activate_agent_task_pipeline(
 }
 
 #[tauri::command]
+pub async fn activate_agent_plan_direct_implementation(
+    input: ActivateAgentPlanDirectImplementationInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    activate_agent_plan_direct_implementation_for_state(input, state.inner()).await
+}
+
+#[tauri::command]
 pub async fn start_agent_task_pipeline(
     input: StartAgentTaskPipelineInput,
     state: State<'_, AppState>,
@@ -231,6 +246,55 @@ pub(crate) async fn activate_agent_task_pipeline_for_state(
         input.runtime_override.as_ref(),
     )
     .await?;
+    agent_workspace_response_for_state(state, workspace).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
+    input: ActivateAgentPlanDirectImplementationInput,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
+    let tx_conversation_id = input.conversation_id;
+    let tx_session_id = input.session_id;
+    state
+        .db
+        .run_transaction(move |conn| {
+            validate_direct_implementation_authority_sync(
+                conn,
+                &tx_conversation_id,
+                &tx_session_id,
+            )?;
+            let now = chrono::Utc::now().to_rfc3339();
+            let workspace_updated = conn.execute(
+                "UPDATE agent_conversation_workspaces
+                 SET mode = 'edit', updated_at = ?2
+                 WHERE conversation_id = ?1 AND mode = 'plan'
+                   AND linked_ideation_session_id = ?3",
+                rusqlite::params![tx_conversation_id, now, tx_session_id],
+            )?;
+            let conversation_updated = conn.execute(
+                "UPDATE chat_conversations
+                 SET agent_mode = 'edit', updated_at = ?2
+                 WHERE id = ?1 AND agent_mode = 'plan'",
+                rusqlite::params![tx_conversation_id, now],
+            )?;
+            if workspace_updated != 1 || conversation_updated != 1 {
+                return Err(AppError::Conflict(
+                    "Plan changed before direct implementation activation".to_string(),
+                ));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Activated Edit workspace was not found".to_string())?;
     agent_workspace_response_for_state(state, workspace).await
 }
 

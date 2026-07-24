@@ -31,6 +31,8 @@ pub struct PlanArtifactApproval {
     pub session_id: IdeationSessionId,
     pub artifact_id: ArtifactId,
     pub artifact_version: u32,
+    pub blueprint_artifact_id: Option<ArtifactId>,
+    pub blueprint_artifact_version: Option<u32>,
     pub approved_at: String,
     pub approved_by: String,
 }

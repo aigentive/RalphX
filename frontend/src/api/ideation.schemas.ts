@@ -100,6 +100,8 @@ export const TaskProposalResponseSchema = z.object({
   created_task_id: z.string().nullable(),
   plan_artifact_id: z.string().nullable(),
   plan_version_at_creation: z.number().nullable(),
+  blueprint_artifact_id: z.string().nullable().optional(),
+  blueprint_version_at_creation: z.number().nullable().optional(),
   sort_order: z.number(),
   created_at: z.string(),
   updated_at: z.string(),

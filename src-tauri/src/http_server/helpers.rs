@@ -281,6 +281,23 @@ pub async fn create_proposal_impl(
                 .ok_or_else(|| {
                     AppError::NotFound(format!("Plan artifact {} not found", plan_artifact_id))
                 })?;
+            let blueprint = match session.plan_blueprint_artifact_id.clone() {
+                Some(blueprint_id) => Some(
+                    ArtifactRepo::get_by_id_sync(conn, blueprint_id.as_str())?.ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "Plan blueprint artifact {} not found",
+                            blueprint_id
+                        ))
+                    })?,
+                ),
+                None if session.plan_contract_version >= 2 => {
+                    return Err(AppError::Validation(
+                        "Proposals require a complete plan overview and implementation blueprint"
+                            .to_string(),
+                    ));
+                }
+                None => None,
+            };
 
             // Stale plan guard — ensure agent has read the current plan version
             if let Some(last_read) = session.plan_version_last_read {
@@ -293,6 +310,21 @@ pub async fn create_proposal_impl(
                 }
             }
             // NULL plan_version_last_read → legacy session, no gate (backward compat)
+            if let Some(blueprint) = blueprint.as_ref() {
+                let last_read = session.blueprint_version_last_read.ok_or_else(|| {
+                    AppError::Validation(
+                        "Call get_session_plan to read the current implementation blueprint before creating proposals"
+                            .to_string(),
+                    )
+                })?;
+                if blueprint.metadata.version as i32 > last_read {
+                    return Err(AppError::Validation(format!(
+                        "Blueprint has been updated since you last read it (current: v{}, last read: v{}). \
+                         Call get_session_plan before creating proposals.",
+                        blueprint.metadata.version, last_read
+                    )));
+                }
+            }
 
             // Count proposals for sort_order (within same lock — no TOCTOU)
             let count = ProposalRepo::count_by_session_sync(conn, session_id.as_str())?;
@@ -311,6 +343,10 @@ pub async fn create_proposal_impl(
             proposal.sort_order = count as i32;
             proposal.plan_version_at_creation = Some(artifact.metadata.version);
             proposal.plan_artifact_id = Some(plan_artifact_id);
+            proposal.blueprint_artifact_id =
+                blueprint.as_ref().map(|artifact| artifact.id.clone());
+            proposal.blueprint_version_at_creation =
+                blueprint.as_ref().map(|artifact| artifact.metadata.version);
             if let Some(complexity_str) = options.estimated_complexity {
                 if let Ok(c) = complexity_str.parse::<Complexity>() {
                     proposal.estimated_complexity = c;
@@ -1384,6 +1420,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         task,
         source_proposal,
         plan_artifact,
+        blueprint_artifact: None,
         related_artifacts,
         steps,
         step_progress,
