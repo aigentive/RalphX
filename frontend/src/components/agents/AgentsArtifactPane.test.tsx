@@ -11623,7 +11623,11 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
-    expect(screen.getByText(/retry Commit & Publish/i)).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("agents-publish-pipeline")).getByText(
+        /no pull request was opened/i,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows auto-merge deferred warning after the pull request is published with waiting status", () => {
