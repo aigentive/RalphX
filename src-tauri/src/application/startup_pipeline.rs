@@ -881,21 +881,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         });
     }
 
-    if let Some(github_service) = github_service.as_ref().map(Arc::clone) {
+    if let Some(deps) = crate::application::agent_workspace_pr_supervision_recovery::build_agent_workspace_pr_supervision_recovery_deps(
+        &app_state,
+        Some(app_handle.clone()),
+        Some(Arc::clone(&transition_service)),
+        Some(Arc::clone(&recovery_chat_service)),
+        pr_fix_review_publish_resumer.clone(),
+    ) {
         tracing::info!("Scheduling agent workspace PR supervision startup recovery...");
-        let deps =
-            crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryDeps {
-                workspace_repo: Arc::clone(&agent_conversation_workspace_repo),
-                project_repo: Arc::clone(&project_repo),
-                plan_branch_repo: Arc::clone(&plan_branch_repo),
-                github: github_service,
-                pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
-                transition_service: Some(Arc::clone(&transition_service)),
-                chat_service: Some(Arc::clone(&recovery_chat_service)),
-                agent_run_repo: Arc::clone(&agent_run_repo),
-                app_handle: Some(app_handle.clone()),
-                pr_fix_review_publish_resumer: pr_fix_review_publish_resumer.clone(),
-            };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
             crate::application::agent_workspace_pr_supervision_recovery::recover_recent_agent_workspace_pr_supervision_on_startup(

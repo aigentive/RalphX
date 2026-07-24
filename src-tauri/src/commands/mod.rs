@@ -14,6 +14,8 @@ pub mod agent_profile_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
 pub(crate) mod agent_workspace_auto_publish;
+#[cfg(test)]
+mod agent_workspace_auto_publish_tests;
 pub(crate) mod agent_workspace_auto_review;
 #[cfg(test)]
 mod agent_workspace_auto_review_tests;

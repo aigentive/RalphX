@@ -3375,6 +3375,16 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
     handoff.pr_autofix_enabled = true;
     repo.create_or_update(handoff).await.unwrap();
 
+    let stranded_id = ChatConversationId::from_string("45454545-4545-4545-4545-454545454545");
+    seed_conversation(&db, &stranded_id);
+    let mut stranded = make_workspace(stranded_id.clone());
+    stranded.publication_pr_number = Some(88);
+    stranded.publication_pr_status = Some("open".to_string());
+    stranded.publication_push_status = Some("refreshed".to_string());
+    stranded.pr_supervision_status = Some("fixing".to_string());
+    stranded.pr_autofix_enabled = true;
+    repo.create_or_update(stranded).await.unwrap();
+
     let closed_id = ChatConversationId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     seed_conversation(&db, &closed_id);
     let mut closed = make_workspace(closed_id);
@@ -3390,13 +3400,16 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
         .await
         .unwrap();
 
-    assert_eq!(workspaces.len(), 2);
+    assert_eq!(workspaces.len(), 3);
     assert!(workspaces
         .iter()
         .any(|workspace| workspace.conversation_id == candidate.conversation_id));
     assert!(workspaces
         .iter()
         .any(|workspace| workspace.conversation_id == handoff_id));
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == stranded_id));
 
     let limited = repo
         .list_active_direct_pr_supervision_recovery_candidates(0)

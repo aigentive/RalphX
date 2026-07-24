@@ -1322,7 +1322,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND publication_pr_number IS NOT NULL
                        AND (
                            (publication_push_status = 'failed' AND pr_supervision_status = 'blocked')
-                           OR (publication_push_status = 'refreshed' AND pr_supervision_status = 'reviewing')
+                           OR (
+                               publication_push_status = 'refreshed'
+                               AND pr_supervision_status IN ('fixing', 'reviewing')
+                           )
                        )
                        AND auto_publish_enabled = 1
                        AND (pr_autofix_enabled = 1 OR pr_auto_merge_desired = 1)

@@ -170,6 +170,10 @@ coverage:
           - "!src-tauri/src/commands/automation_commands.rs"
           - "!src-tauri/src/commands/manual_role_default_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
+          # Agent-workspace PR auto-publish listener wiring depends on Tauri's
+          # managed runtime state and background scheduling. Its deterministic
+          # authorization and publication decisions are covered in sidecar tests.
+          - "!src-tauri/src/commands/agent_workspace_auto_publish.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
 parsers:

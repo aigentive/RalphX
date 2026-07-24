@@ -361,6 +361,7 @@ pub async fn update_automation_from_base(
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            created_by_run_id: None,
         }),
     )
     .await
