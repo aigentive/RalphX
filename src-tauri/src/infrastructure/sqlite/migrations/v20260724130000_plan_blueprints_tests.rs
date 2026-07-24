@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-use super::v20260724130000_plan_blueprints;
+use super::{v20260523145711_plan_complexity_assessments, v20260724130000_plan_blueprints};
 
 fn setup_test_db() -> Connection {
     let conn = Connection::open_in_memory().expect("open migration test database");
@@ -32,15 +32,11 @@ fn setup_test_db() -> Connection {
          CREATE TABLE automation_runs (
              id TEXT PRIMARY KEY,
              plan_last_parked_artifact_id TEXT
-         );
-         CREATE TABLE plan_complexity_assessments (
-             id TEXT PRIMARY KEY,
-             session_id TEXT NOT NULL,
-             artifact_id TEXT NOT NULL,
-             artifact_version INTEGER NOT NULL
          );",
     )
     .expect("create legacy schema");
+    v20260523145711_plan_complexity_assessments::migrate(&conn)
+        .expect("create production legacy complexity assessment schema");
     conn
 }
 
@@ -123,6 +119,17 @@ fn migration_adds_pair_lineage_and_backfills_notification_target() {
 #[test]
 fn complexity_pair_indexes_distinguish_legacy_and_v2_rows() {
     let conn = setup_test_db();
+    conn.execute_batch(
+        "INSERT INTO artifacts (id) VALUES ('o1'), ('o2'), ('b1'), ('b2');
+         INSERT INTO ideation_sessions (id, plan_artifact_id)
+         VALUES ('s1', 'o1'), ('s2', 'o2');
+         INSERT INTO plan_complexity_assessments
+         (id, session_id, artifact_id, artifact_version, level, score,
+          recommended_action, confidence, reason_summary, created_at, updated_at)
+         VALUES ('existing', 's1', 'o1', 1, 'simple', 20, 'implement_directly',
+                 0.6, 'preserve me', 'before', 'before');",
+    )
+    .unwrap();
     v20260724130000_plan_blueprints::migrate(&conn).unwrap();
 
     assert!(super::helpers::index_exists(
@@ -133,37 +140,64 @@ fn complexity_pair_indexes_distinguish_legacy_and_v2_rows() {
         &conn,
         "idx_plan_complexity_assessments_pair_unique"
     ));
+    assert!(super::helpers::index_exists(
+        &conn,
+        "idx_plan_complexity_assessments_session"
+    ));
+    assert!(super::helpers::index_exists(
+        &conn,
+        "idx_plan_complexity_assessments_artifact"
+    ));
 
-    conn.execute(
-        "INSERT INTO plan_complexity_assessments
-         (id, session_id, artifact_id, artifact_version)
-         VALUES ('legacy-1', 's1', 'o1', 1)",
-        [],
-    )
-    .unwrap();
+    let preserved_summary: String = conn
+        .query_row(
+            "SELECT reason_summary
+             FROM plan_complexity_assessments
+             WHERE id = 'existing'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved_summary, "preserve me");
     assert!(conn
         .execute(
             "INSERT INTO plan_complexity_assessments
-             (id, session_id, artifact_id, artifact_version)
-             VALUES ('legacy-2', 's1', 'o1', 1)",
+             (id, session_id, artifact_id, artifact_version, level, score,
+              recommended_action, confidence, reason_summary, created_at, updated_at)
+             VALUES ('legacy-duplicate', 's1', 'o1', 1, 'simple', 25, 'implement_directly',
+                     0.7, 'duplicate legacy', 'later', 'later')",
             [],
         )
         .is_err());
 
-    conn.execute("INSERT INTO artifacts (id) VALUES ('b2')", [])
-        .unwrap();
     conn.execute(
         "INSERT INTO plan_complexity_assessments
-         (id, session_id, artifact_id, artifact_version, blueprint_artifact_id, blueprint_artifact_version)
-         VALUES ('pair-1', 's2', 'o2', 1, 'b2', 1)",
+         (id, session_id, artifact_id, artifact_version, blueprint_artifact_id,
+          blueprint_artifact_version, level, score, recommended_action, confidence,
+          reason_summary, created_at, updated_at)
+         VALUES ('pair-1', 's2', 'o2', 1, 'b1', 1, 'moderate', 50,
+                 'implement_directly', 0.8, 'first bundle', 'now', 'now')",
         [],
     )
     .unwrap();
+    conn.execute(
+        "INSERT INTO plan_complexity_assessments
+         (id, session_id, artifact_id, artifact_version, blueprint_artifact_id,
+          blueprint_artifact_version, level, score, recommended_action, confidence,
+          reason_summary, created_at, updated_at)
+         VALUES ('pair-2', 's2', 'o2', 1, 'b2', 1, 'complex', 75,
+                 'create_proposals', 0.9, 'revised blueprint', 'later', 'later')",
+        [],
+    )
+    .expect("blueprint-only revision should allow a distinct pair assessment");
     assert!(conn
         .execute(
             "INSERT INTO plan_complexity_assessments
-             (id, session_id, artifact_id, artifact_version, blueprint_artifact_id, blueprint_artifact_version)
-             VALUES ('pair-2', 's2', 'o2', 1, 'b2', 1)",
+             (id, session_id, artifact_id, artifact_version, blueprint_artifact_id,
+              blueprint_artifact_version, level, score, recommended_action, confidence,
+              reason_summary, created_at, updated_at)
+             VALUES ('pair-duplicate', 's2', 'o2', 1, 'b2', 1, 'complex', 75,
+                     'create_proposals', 0.9, 'duplicate', 'later', 'later')",
             [],
         )
         .is_err());
