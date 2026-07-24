@@ -58,7 +58,7 @@ pub struct MockGithubService {
     update_pr_base_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     find_pr_by_head_branch_result: Arc<Mutex<Option<AppResult<Option<(i64, String)>>>>>,
-    fetch_pr_detail_result: Arc<Mutex<Option<AppResult<PrDetail>>>>,
+    fetch_pr_detail_responses: Arc<Mutex<VecDeque<AppResult<PrDetail>>>>,
     fetch_pr_review_thread_result: Arc<Mutex<Option<AppResult<PrReviewThread>>>>,
     submit_pr_review_result: Arc<Mutex<Option<AppResult<PrSubmittedReview>>>>,
 }
@@ -94,7 +94,7 @@ impl MockGithubService {
             last_patch_pr_metadata_body: Arc::new(Mutex::new(None)),
             update_pr_base_result: Arc::new(Mutex::new(None)),
             find_pr_by_head_branch_result: Arc::new(Mutex::new(None)),
-            fetch_pr_detail_result: Arc::new(Mutex::new(None)),
+            fetch_pr_detail_responses: Arc::new(Mutex::new(VecDeque::new())),
             fetch_pr_review_thread_result: Arc::new(Mutex::new(None)),
             submit_pr_review_result: Arc::new(Mutex::new(None)),
         }
@@ -163,13 +163,18 @@ impl MockGithubService {
 
     /// Make the next `fetch_pr_detail` call return the given detail.
     pub fn will_return_pr_detail(&self, detail: PrDetail) {
-        *self.fetch_pr_detail_result.lock().unwrap() = Some(Ok(detail));
+        self.fetch_pr_detail_responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(detail));
     }
 
     /// Make the next `fetch_pr_detail` call fail with the given message.
     pub fn will_fail_pr_detail(&self, msg: impl Into<String>) {
-        *self.fetch_pr_detail_result.lock().unwrap() =
-            Some(Err(AppError::Infrastructure(msg.into())));
+        self.fetch_pr_detail_responses
+            .lock()
+            .unwrap()
+            .push_back(Err(AppError::Infrastructure(msg.into())));
     }
 
     /// Make the next `fetch_pr_review_thread` call return the given thread.
@@ -228,6 +233,9 @@ impl MockGithubService {
     pub fn find_pr_calls(&self) -> u32 {
         *self.find_pr_by_head_branch_calls.lock().unwrap()
     }
+    pub fn fetch_pr_detail_calls(&self) -> u32 {
+        *self.fetch_pr_detail_calls.lock().unwrap()
+    }
 
     pub fn submit_review_calls(&self) -> u32 {
         *self.submit_pr_review_calls.lock().unwrap()
@@ -269,10 +277,10 @@ impl GithubServiceTrait for MockGithubService {
 
     async fn fetch_pr_detail(&self, _wd: &Path, _pr_number: i64) -> AppResult<PrDetail> {
         *self.fetch_pr_detail_calls.lock().unwrap() += 1;
-        self.fetch_pr_detail_result
+        self.fetch_pr_detail_responses
             .lock()
             .unwrap()
-            .take()
+            .pop_front()
             .unwrap_or_else(|| {
                 Err(AppError::Infrastructure(
                     "MockGithubService::fetch_pr_detail not configured".to_string(),

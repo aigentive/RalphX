@@ -11,6 +11,7 @@ import {
   classifyAgentWorkspacePublishTerminalEvent,
   getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
+  getAgentWorkspaceDescriptionFailurePresentation,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
@@ -20,6 +21,20 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+
+describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
+  it("distinguishes an unopened PR from an existing linked target", () => {
+    expect(getAgentWorkspaceDescriptionFailurePresentation(null).summary).toContain(
+      "no pull request was opened",
+    );
+
+    const linked = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
+    expect(linked.summary).toContain("metadata step for PR #888");
+    expect(linked.summary).toContain("did not apply an unsafe replacement body");
+    expect(linked.summary).not.toContain("no pull request was opened");
+    expect(linked.summary).not.toContain("branch was unchanged");
+  });
+});
 
 describe("getAgentWorkspaceReviewActionBlocker", () => {
   it("blocks Review actions while an authoritative repair is active", () => {

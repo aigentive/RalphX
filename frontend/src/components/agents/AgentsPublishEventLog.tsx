@@ -7,6 +7,7 @@ import type { AgentConversationWorkspacePublicationEvent } from "@/api/chat";
  * renders. Used by both the timeline and the History tab badge so the count
  * never disagrees with the rendered rows.
  */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with the History tab badge
 export function selectPublishHistory(
   events: AgentConversationWorkspacePublicationEvent[],
   isPublishing: boolean,
@@ -101,13 +102,13 @@ export function PublishEventLog({
                     eventState === "failed"
                       ? "var(--status-error, #d55e00)"
                       : eventState === "active"
-                        ? "var(--accent-primary, #ff6b35)"
+                        ? "var(--accent-primary)"
                         : "var(--bg-elevated, #232329)",
                   borderColor:
                     eventState === "failed"
                       ? "var(--status-error, #d55e00)"
                       : eventState === "active"
-                        ? "var(--accent-primary, #ff6b35)"
+                        ? "var(--accent-primary)"
                         : "var(--border-default, #393940)",
                   borderStyle: "solid",
                   borderWidth: "1px",
