@@ -4031,7 +4031,6 @@ describe("AgentsActiveConversationPanel", () => {
 
   it("does not switch or continue a backend-handled plan-mode proposal after retries", async () => {
     vi.useFakeTimers();
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "edit" },
@@ -4039,7 +4038,7 @@ describe("AgentsActiveConversationPanel", () => {
       activeWorkspace: { ...workspace(), mode: "edit" },
     });
 
-    await user.click(
+    fireEvent.click(
       screen.getByTestId("accept-backend-handled-plan-mode-proposal"),
     );
     await act(async () => {
