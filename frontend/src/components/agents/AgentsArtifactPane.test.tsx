@@ -39,6 +39,7 @@ import {
 } from "@/stores/agentSessionStore";
 import { usePlanStore } from "@/stores/planStore";
 import { useChatStore } from "@/stores/chatStore";
+import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { chatKeys } from "@/hooks/useChat";
@@ -47,6 +48,7 @@ import { ticketingKeys } from "@/hooks/useTicketing";
 import type { Task } from "@/types/task";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
+import { agentProjectFixture } from "./agentsTestFixtures";
 import { agentGranolaNoteKeys } from "./agentGranolaNoteQueries";
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
@@ -1613,6 +1615,8 @@ describe("AgentsArtifactPane", () => {
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockResolvedValue(defaultReviewSettings);
     tasksEnabledRef.current = true;
+    useProjectStore.getState().setProjects([agentProjectFixture]);
+    useProjectStore.getState().selectProject(agentProjectFixture.id);
     useChatStore.setState({ activeConversationIds: {} });
     getWorkspaceChangesMock.mockResolvedValue([
       {
