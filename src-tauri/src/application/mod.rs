@@ -33,6 +33,9 @@ pub mod agent_task_service;
 pub(crate) mod agent_task_pipeline_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
+pub mod agent_workspace_local_commit;
+#[cfg(test)]
+mod agent_workspace_local_commit_tests;
 pub mod agent_workspace_continuation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 pub mod agent_workspace_external_pr_reconciliation;
