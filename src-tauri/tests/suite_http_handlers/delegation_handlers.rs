@@ -2288,6 +2288,31 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
     .expect("first workspace delegate should start")
     .0;
     wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    let first_terminal = {
+        let mut snapshot = None;
+        for _ in 0..40 {
+            let candidate = wait_delegate(
+                State(state.clone()),
+                Json(DelegateWaitRequest {
+                    job_id: first.job_id.clone(),
+                    include_delegated_status: Some(false),
+                    include_child_status: None,
+                    include_messages: Some(false),
+                    message_limit: None,
+                }),
+            )
+            .await
+            .expect("first workspace delegate status should load")
+            .0;
+            if candidate.status != "running" {
+                snapshot = Some(candidate);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        snapshot.expect("first workspace delegate should settle before nested delegation")
+    };
+    assert_eq!(first_terminal.status, "completed");
 
     let delegated_conversation_id = first
         .delegated_conversation_id
