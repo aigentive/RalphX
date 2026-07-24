@@ -65,7 +65,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { useConversations } from "@/hooks/useChat";
 import { cn } from "@/lib/utils";
-import type { Project } from "@/types/project";
+import {
+  getProjectRepositoryCapability,
+  isGithubRepositoryCapability,
+  type Project,
+} from "@/types/project";
 
 import { GranolaIcon } from "./GranolaIcon";
 import { granolaDashboardKeys } from "./granolaDashboardKeys";
@@ -1481,10 +1485,20 @@ export function GranolaDashboardView({
       })),
     [conversationsQuery.data],
   );
+  const contextProject =
+    project?.id === contextProjectId
+      ? project
+      : projects.find((candidate) => candidate.id === contextProjectId) ?? null;
+  const canLoadGithubOverview = isGithubRepositoryCapability(
+    getProjectRepositoryCapability(contextProject),
+  );
   const githubOverviewQuery = useQuery({
     queryKey: githubBranchOverviewKeys.project(contextProjectId || projectId),
     queryFn: () => githubApi.getBranchOverview({ projectId: contextProjectId || projectId }),
-    enabled: contextDialogOpen && Boolean(contextProjectId || projectId),
+    enabled:
+      contextDialogOpen &&
+      Boolean(contextProjectId || projectId) &&
+      canLoadGithubOverview,
     staleTime: 15_000,
   });
   const prConversationOptions = useMemo<GranolaPrConversationOption[]>(

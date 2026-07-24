@@ -1540,6 +1540,52 @@ async fn skips_recovery_when_workspace_or_project_state_blocks_it() {
 }
 
 #[tokio::test]
+async fn supervision_recovers_existing_pr_without_origin_when_future_pr_preference_is_disabled() {
+    let (_temp_dir, mut project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-no-origin-disabled").await;
+    project.github_pr_enabled = false;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(
+        "ralphx/test/pr-supervision-no-origin-disabled",
+        &head_sha,
+    ));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("persisted PR should remain recoverable without an origin remote");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
+            pr_number: 257,
+            head_sha,
+        }
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, Some(257));
+    assert_eq!(github.state().check_pr_sync_state_calls, 2);
+}
+
+#[tokio::test]
 async fn active_run_does_not_hide_terminal_pr_during_supervision_recovery() {
     let (_temp_dir, project, workspace, _head_sha) =
         setup_recovery_workspace("pr-supervision-active-terminal").await;

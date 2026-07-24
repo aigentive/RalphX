@@ -364,6 +364,7 @@ pub use unified_chat_commands::{
     list_agent_conversation_workspaces_by_project, list_agent_conversations,
     list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
     publish_agent_conversation_workspace, queue_agent_message,
+    commit_agent_conversation_workspace_locally,
     reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision, start_agent_conversation, stop_agent,

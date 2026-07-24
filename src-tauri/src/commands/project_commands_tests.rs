@@ -1,5 +1,6 @@
 use super::project_commands::*;
 use crate::application::AppState;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{Project, ProjectId};
 use crate::domain::services::github_service::GithubConnectionState;
 use crate::domain::services::{GithubServiceTrait, PrSearchResult};
@@ -139,6 +140,107 @@ fn diagnostics_response_exposes_github_https_credential_helper_state() {
     assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
     assert_eq!(response.push_kind.as_deref(), Some("HTTPS"));
     assert!(response.github_https_credential_helper_configured);
+}
+
+#[tokio::test]
+async fn enabling_github_pr_mode_requires_current_github_repository_capability() {
+    let temporary = tempfile::tempdir().expect("temporary repository");
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Local only".to_string(),
+        temporary.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-local-only".to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+    let app = mock_builder()
+        .manage(state)
+        .manage(Arc::new(ExecutionState::new()))
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let error = update_github_pr_enabled_with_app(
+        project.id.as_str().to_string(),
+        true,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+    )
+    .await
+    .expect_err("local-only projects cannot enable GitHub PR mode");
+
+    assert!(error.contains("supported GitHub origin push URL"));
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&project.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!persisted.github_pr_enabled);
+
+    update_github_pr_enabled_with_app(
+        project.id.as_str().to_string(),
+        false,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+    )
+    .await
+    .expect("disabling remains allowed for a local-only project");
+}
+
+#[tokio::test]
+async fn create_project_persists_worktree_parent_and_resolved_local_only_contract() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = create_project(
+        CreateProjectInput {
+            name: "Picker project".to_string(),
+            working_directory: temporary.path().to_string_lossy().to_string(),
+            git_mode: Some("worktree".to_string()),
+            base_branch: Some("main".to_string()),
+            worktree_parent_directory: Some("/custom/worktrees".to_string()),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("GUI project creation should bootstrap before persistence");
+
+    assert_eq!(response.base_branch.as_deref(), Some("main"));
+    assert_eq!(
+        response.worktree_parent_directory.as_deref(),
+        Some("/custom/worktrees")
+    );
+    assert!(!response.github_pr_enabled);
+    let response_json = serde_json::to_value(&response).expect("response serializes");
+    assert_eq!(response_json["repository_capability"]["kind"], "local_only");
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string(response.id))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist");
+    assert_eq!(persisted.base_branch.as_deref(), Some("main"));
+    assert_eq!(
+        persisted.worktree_parent_directory.as_deref(),
+        Some("/custom/worktrees")
+    );
+    assert!(
+        !persisted.github_pr_enabled,
+        "fresh local-only GUI projects must remain opted out of PR mode"
+    );
 }
 
 #[test]

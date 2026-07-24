@@ -1016,6 +1016,14 @@ pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {
     matches!(status, None | Some("pushed" | "refreshed"))
 }
 
+/// Whether a workspace publication workflow is actively mutating its branch.
+pub fn is_publication_push_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
+}
+
 pub const DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD: &str = "squash";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

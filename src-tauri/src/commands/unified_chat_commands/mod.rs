@@ -68,6 +68,9 @@ use crate::application::agent_workspace_external_pr_reconciliation::{
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };
+use crate::application::agent_workspace_local_commit::{
+    commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
+};
 use crate::application::agent_workspace_pr_description::{
     draft_agent_workspace_pr_metadata_decision, get_or_draft_agent_workspace_pr_metadata_decision,
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
@@ -84,7 +87,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     settle_agent_workspace_failure_without_repair, settle_agent_workspace_repair_failure,
     AgentWorkspaceRepairClaim, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
-use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
+use crate::application::agent_workspace_review::{
+    load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
+};
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::agent_workspace_terminal_cleanup::TerminalAgentWorkspaceOutcome;
 use crate::application::chat_service::tool_result_preview::{
@@ -153,6 +158,7 @@ use crate::error::AppError;
 use crate::infrastructure::agents::agent_personas_enabled;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::{git_runtime_config, ui_feature_flags_config};
+use crate::infrastructure::git_auth::{inspect_repository_capability, RepositoryCapability};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
@@ -1210,6 +1216,32 @@ pub struct PublishAgentConversationWorkspaceResponse {
     pub created_pr: bool,
     pub pr_number: Option<i64>,
     pub pr_url: Option<String>,
+}
+
+/// Input for an explicit local commit of an Agent workspace branch.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAgentConversationWorkspaceLocallyInput {
+    pub conversation_id: String,
+    pub expected_head_sha: String,
+    pub review_artifact_id: Option<String>,
+    pub review_artifact_version: Option<u32>,
+    pub reviewed_head_sha: Option<String>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub attempt_token: String,
+}
+
+/// Result of an explicit local Agent workspace commit.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAgentConversationWorkspaceLocallyResponse {
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub outcome: String,
+    pub branch_name: String,
+    pub previous_head_sha: String,
+    pub commit_sha: String,
+    pub had_changes: bool,
+    pub attempt_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -6197,6 +6229,44 @@ pub async fn publish_agent_conversation_workspace(
     .await
 }
 
+/// Commit an isolated Agent workspace branch without creating or updating a PR.
+#[tauri::command]
+pub async fn commit_agent_conversation_workspace_locally(
+    input: CommitAgentConversationWorkspaceLocallyInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<CommitAgentConversationWorkspaceLocallyResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let result = commit_agent_workspace_locally(
+        state.inner(),
+        conversation_id.clone(),
+        AgentWorkspaceLocalCommitRequest {
+            expected_head_sha: input.expected_head_sha,
+            review_artifact_id: input.review_artifact_id,
+            review_artifact_version: input.review_artifact_version,
+            reviewed_head_sha: input.reviewed_head_sha,
+            reviewed_diff_fingerprint: input.reviewed_diff_fingerprint,
+            attempt_token: input.attempt_token,
+            #[cfg(test)]
+            before_staging: None,
+        },
+    )
+    .await?;
+    let _ = app.emit(
+        "agent:workspace_changed",
+        serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+    );
+    Ok(CommitAgentConversationWorkspaceLocallyResponse {
+        workspace: agent_workspace_response_for_state(state.inner(), result.workspace).await?,
+        outcome: result.outcome.as_str().to_string(),
+        branch_name: result.branch_name,
+        previous_head_sha: result.previous_head_sha,
+        commit_sha: result.commit_sha,
+        had_changes: result.had_changes,
+        attempt_token: result.attempt_token,
+    })
+}
+
 /// Precompute the PR description for a stable edit-agent workspace.
 #[tauri::command]
 pub async fn precompute_agent_conversation_workspace_pr_description(
@@ -7196,6 +7266,22 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
+    let _workspace_review_lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    publish_agent_conversation_workspace_for_app_state_unlocked(
+        state,
+        execution_state,
+        conversation_id,
+        route_fixable_failures_to_agent,
+    )
+    .await
+}
+
+async fn publish_agent_conversation_workspace_for_app_state_unlocked(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    conversation_id: ChatConversationId,
+    route_fixable_failures_to_agent: bool,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, false);
@@ -7290,6 +7376,30 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                 return Err(error.to_string());
             }
         };
+    if workspace.publication_pr_number.is_none() {
+        if !project.github_pr_enabled {
+            return Err(
+                "GitHub PR publishing is disabled for this project. Enable it before publishing a new pull request."
+                    .to_string(),
+            );
+        }
+        match inspect_repository_capability(&worktree_path).await {
+            RepositoryCapability::Github { .. } => {}
+            RepositoryCapability::LocalOnly => return Err(
+                "This project has no GitHub origin, so RalphX cannot publish a new pull request."
+                    .to_string(),
+            ),
+            RepositoryCapability::OtherRemote { .. } => return Err(
+                "This project origin is not GitHub, so RalphX cannot publish a new pull request."
+                    .to_string(),
+            ),
+            RepositoryCapability::InspectionFailed { message } => {
+                return Err(format!(
+                    "Could not inspect this project's Git origin before publishing: {message}"
+                ))
+            }
+        }
+    }
     let mut repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
 
     let github = match state.github_service.as_ref() {

@@ -42,6 +42,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     current_agent_workspace_repair_claim_for_completion,
     settle_agent_workspace_failure_without_repair, AgentWorkspaceRepairClaim,
 };
+use crate::application::agent_workspace_local_commit::{
+    commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
+};
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
@@ -85,7 +88,8 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
 use crate::domain::entities::{
-    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    is_publication_push_active, pr_comment_body_excerpt, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
@@ -143,6 +147,29 @@ pub struct UpdateAgentWorkspaceFromBaseRequest {
     pub base_display_name: Option<String>,
     /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
     pub created_by_run_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommitAgentWorkspaceLocallyRequest {
+    pub expected_head_sha: String,
+    pub review_artifact_id: Option<String>,
+    pub review_artifact_version: Option<u32>,
+    pub reviewed_head_sha: Option<String>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub attempt_token: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CommitAgentWorkspaceLocallyResponse {
+    pub success: bool,
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub outcome: String,
+    pub branch_name: String,
+    pub previous_head_sha: String,
+    pub commit_sha: String,
+    pub had_changes: bool,
+    pub attempt_token: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1326,6 +1353,44 @@ pub async fn publish_agent_workspace(
                 .await
         }
     }
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/commit-local
+pub async fn commit_agent_workspace_locally_handler(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<CommitAgentWorkspaceLocallyRequest>,
+) -> Result<Json<CommitAgentWorkspaceLocallyResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = commit_agent_workspace_locally(
+        state.app_state.as_ref(),
+        conversation_id,
+        AgentWorkspaceLocalCommitRequest {
+            expected_head_sha: req.expected_head_sha,
+            review_artifact_id: req.review_artifact_id,
+            review_artifact_version: req.review_artifact_version,
+            reviewed_head_sha: req.reviewed_head_sha,
+            reviewed_diff_fingerprint: req.reviewed_diff_fingerprint,
+            attempt_token: req.attempt_token,
+            #[cfg(test)]
+            before_staging: None,
+        },
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
+    let workspace = agent_workspace_response_for_state(state.app_state.as_ref(), result.workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    Ok(Json(CommitAgentWorkspaceLocallyResponse {
+        success: true,
+        workspace,
+        outcome: result.outcome.as_str().to_string(),
+        branch_name: result.branch_name,
+        previous_head_sha: result.previous_head_sha,
+        commit_sha: result.commit_sha,
+        had_changes: result.had_changes,
+        attempt_token: result.attempt_token,
+    }))
 }
 
 /// GET /api/agent-workspaces/{conversation_id}/pr-fix-context
@@ -4638,10 +4703,7 @@ fn parse_update_base_kind(
 }
 
 fn is_publish_in_progress(push_status: Option<&str>) -> bool {
-    matches!(
-        push_status,
-        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
-    )
+    is_publication_push_active(push_status)
 }
 
 fn update_only_repair_pr_supervision_state(

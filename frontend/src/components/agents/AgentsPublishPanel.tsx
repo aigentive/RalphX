@@ -50,6 +50,8 @@ import {
 } from "@/components/ui/tooltip";
 import { extractErrorMessage } from "@/lib/errors";
 import { useUiStore } from "@/stores/uiStore";
+import { selectProjectById, useProjectStore } from "@/stores/projectStore";
+import { getProjectWorkspacePublishMode } from "@/types/project";
 import type { SettingsSectionId } from "@/components/settings/settings-registry";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
@@ -101,6 +103,11 @@ import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSu
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
 import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
+import {
+  agentWorkspaceOperationErrorDetail,
+  agentWorkspaceOperationToastId,
+  startAgentWorkspaceOperationToast,
+} from "./agentWorkspaceOperationToast";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -289,6 +296,10 @@ export function AgentPublishPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const reviewSettingsQuery = useReviewSettings();
   const conversationId = workspace?.conversationId ?? null;
+  const project = useProjectStore(
+    selectProjectById(workspace?.projectId ?? ""),
+  );
+  const localCommitTokenRef = useRef(0);
   const [mountedSubTabs, setMountedSubTabs] = useState<{
     changes: boolean;
     conversationId: string | null;
@@ -332,6 +343,9 @@ export function AgentPublishPanel({
     workspace?.publicationPushStatus === "needs_agent" &&
     !getAgentWorkspaceTerminalPublicationStatus(workspace);
   const hasPublishedPr = hasPublishedWorkspacePr(workspace);
+  const workspacePublishMode = getProjectWorkspacePublishMode(project, hasPublishedPr);
+  const isLocalCommitPrimary = workspacePublishMode.kind === "localCommit";
+  const repositoryInspectionFailed = workspacePublishMode.kind === "unavailable";
   const terminalPublicationStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
   // Workspace-only flag computed early so reviewQuery can decide whether the
@@ -532,6 +546,63 @@ export function AgentPublishPanel({
       toast.error(
         error instanceof Error ? error.message : "Failed to close pull request",
       );
+    },
+  });
+  const commitLocallyMutation = useMutation({
+    mutationFn: async () => {
+      if (!conversationId || !workspace) {
+        throw new Error("No workspace selected");
+      }
+      const expectedHeadSha = reviewContext?.monitor.workspaceHeadSha;
+      if (!expectedHeadSha) {
+        throw new Error("Refresh workspace changes before committing locally.");
+      }
+      const attemptToken = String(++localCommitTokenRef.current);
+      const toastController = startAgentWorkspaceOperationToast({
+        conversationTitle,
+        detail: "Commit isolated workspace branch",
+        id: agentWorkspaceOperationToastId(conversationId, "local-commit"),
+        title: "Committing locally",
+      });
+      try {
+        const result = await chatApi.commitAgentConversationWorkspaceLocally(conversationId, {
+          expectedHeadSha,
+          reviewArtifactId: reviewContext?.monitor.reviewArtifactId ?? null,
+          reviewArtifactVersion: reviewContext?.monitor.reviewArtifactVersion ?? null,
+          reviewedHeadSha: reviewContext?.monitor.reviewedHeadSha ?? null,
+          reviewedDiffFingerprint: reviewContext?.monitor.reviewedDiffFingerprint ?? null,
+          attemptToken,
+        });
+        if (
+          result.attemptToken !== attemptToken ||
+          localCommitTokenRef.current !== Number(attemptToken)
+        ) {
+          toastController.dismiss();
+          return result;
+        }
+        const shortSha = result.commitSha.slice(0, 7);
+        if (result.outcome === "committed_local") {
+          toastController.success(`Committed locally on ${result.branchName}`, { detail: shortSha });
+        } else if (result.outcome === "already_committed") {
+          toastController.info("Already committed locally", { detail: shortSha });
+        } else {
+          toastController.info("No local changes to commit");
+        }
+        return result;
+      } catch (error) {
+        toastController.error("Failed to commit locally", {
+          detail: agentWorkspaceOperationErrorDetail(error, "Failed to commit locally"),
+        });
+        throw error;
+      }
+    },
+    onSuccess: async (result) => {
+      if (
+        !conversationId ||
+        result.attemptToken !== String(localCommitTokenRef.current)
+      ) return;
+      queryClient.setQueryData(agentWorkspaceKeys.workspace(conversationId), result.workspace);
+      await invalidateWorkspaceQueries(queryClient, conversationId);
     },
   });
   const autoPublishMutation = useMutation<
@@ -823,6 +894,7 @@ export function AgentPublishPanel({
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
     Boolean(terminalPublicationStatus) ||
+    repositoryInspectionFailed ||
     (hasNoDetectedChanges && !isPipelinePrAutomationWorkspace) ||
     workspace.status === "missing";
   const publishButtonLabel = (() => {
@@ -836,10 +908,19 @@ export function AgentPublishPanel({
     if (isPublishCurrent) return "PR is up to date";
     return "Commit & Publish";
   })();
+  const localCommitDisabled =
+    commitLocallyMutation.isPending ||
+    effectivePublishing ||
+    reviewBlocksPublish ||
+    isRepairPending ||
+    workspace.status === "missing" ||
+    !reviewContext?.monitor.workspaceHeadSha;
   const canClosePr = hasPublishedPr && !isRepairPending && !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
   const shouldShowPrSupervisionControls =
-    workspace.mode === "edit" || isPipelinePrAutomationWorkspace;
+    (workspacePublishMode.kind === "newPr" ||
+      workspacePublishMode.kind === "persistedPr") &&
+    (workspace.mode === "edit" || isPipelinePrAutomationWorkspace);
   const shouldShowPublishNotices = !isRepairPending;
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
@@ -958,6 +1039,18 @@ export function AgentPublishPanel({
           workspace.publicationPrNumber || workspace.publicationPrUrl
             ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
             : "Publishing is managed by this ideation plan's task pipeline.",
+      };
+    }
+    if (workspacePublishMode.kind === "unavailable") {
+      return {
+        title: "Repository configuration unavailable",
+        summary: workspacePublishMode.guidance,
+      };
+    }
+    if (workspacePublishMode.kind === "localCommit") {
+      return {
+        title: "Ready to commit locally",
+        summary: workspacePublishMode.guidance,
       };
     }
     if (isDescriptionFailed) {
@@ -1121,6 +1214,16 @@ export function AgentPublishPanel({
       phase: "confirm",
     });
   };
+  const confirmCommitLocally = () => {
+    if (localCommitDisabled) return;
+    void confirm({
+      title: "Commit workspace locally?",
+      description: `This commits the isolated branch ${branch} only. It will not push, open a pull request, or merge ${base}.`,
+      confirmText: "Commit locally",
+      pendingText: "Committing...",
+      onConfirm: () => commitLocallyMutation.mutateAsync(),
+    });
+  };
   const handleConfirmPublishWorkspace = () => {
     const publishConversationId = workspace.conversationId;
     setPublishDialogState({
@@ -1264,6 +1367,16 @@ export function AgentPublishPanel({
                   )}
                   Rebase branch
                 </Button>
+              ) : repositoryInspectionFailed ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  disabled
+                  data-testid="agents-publish-unavailable"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Repository setup required
+                </Button>
               ) : reviewBlocksPublish ? (
                 <Button
                   type="button"
@@ -1282,6 +1395,21 @@ export function AgentPublishPanel({
                     <AlertTriangle className="h-3.5 w-3.5" />
                   )}
                   {publishButtonLabel}
+                </Button>
+              ) : isLocalCommitPrimary ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={confirmCommitLocally}
+                  disabled={localCommitDisabled}
+                  data-testid="agents-commit-locally"
+                >
+                  {commitLocallyMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <GitBranch className="h-3.5 w-3.5" />
+                  )}
+                  Commit locally
                 </Button>
               ) : (
                 <Button
