@@ -738,7 +738,7 @@ mod with_repo {
     }
 
     #[tokio::test]
-    async fn test_resolve_removes_from_hashmap_even_when_repo_errors() {
+    async fn test_resolve_keeps_live_waiter_pending_when_durable_commit_fails() {
         use crate::error::AppError;
 
         // Use a failing repo that always errors on resolve
@@ -811,12 +811,12 @@ mod with_repo {
                 },
             )
             .await;
-        assert!(result.resolved);
-        assert!(result.delivered_to_waiting_agent);
+        assert!(!result.resolved);
+        assert!(!result.delivered_to_waiting_agent);
 
-        // HashMap must be empty even though repo.resolve() errored
+        // The live waiter must remain available for a later durable retry.
         let pending_after = state.pending.lock().await;
-        assert!(pending_after.is_empty());
+        assert!(pending_after.contains_key("req-fail"));
     }
 
     #[tokio::test]
@@ -1119,5 +1119,252 @@ mod with_repo {
 
         let error = state.get_pending_info_strict().await.unwrap_err();
         assert!(matches!(error, AppError::Database(message) if message == "durable read failed"));
+    }
+
+    #[tokio::test]
+    async fn claim_pending_reserves_without_waking_the_live_waiter() {
+        let (state, _repo) = make_state_with_repo();
+        let receiver = state
+            .register_with_metadata(
+                "claim-without-wake".to_string(),
+                "session-1".to_string(),
+                "Wait for a durable commit?".to_string(),
+                None,
+                vec![],
+                false,
+                true,
+                None,
+                None,
+                Some(serde_json::json!({
+                    "kind": "plan_mode_proposal",
+                    "conversation_id": "conversation-live",
+                    "reason": "live claim metadata",
+                })),
+            )
+            .await;
+
+        let claim = state
+            .claim_pending("claim-without-wake")
+            .await
+            .unwrap()
+            .expect("claim the live question");
+
+        let claimed_question = claim.pending_question();
+        assert_eq!(claimed_question.request_id, "claim-without-wake");
+        assert_eq!(claimed_question.session_id, "session-1");
+        assert_eq!(
+            claimed_question.metadata,
+            Some(serde_json::json!({
+                "kind": "plan_mode_proposal",
+                "conversation_id": "conversation-live",
+                "reason": "live claim metadata",
+            }))
+        );
+        assert!(receiver.borrow().is_none());
+        assert!(state.release_claim(claim).await);
+        assert!(receiver.borrow().is_none());
+    }
+
+    #[tokio::test]
+    async fn claim_pending_exposes_metadata_from_the_durable_record() {
+        let repo = Arc::new(MemoryQuestionRepository::new());
+        let durable_question = PendingQuestionInfo {
+            request_id: "claim-durable-metadata".to_string(),
+            session_id: "session-durable".to_string(),
+            question: "Use the persisted proposal?".to_string(),
+            header: None,
+            options: vec![],
+            multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: Some(serde_json::json!({
+                "kind": "plan_mode_proposal",
+                "conversation_id": "conversation-durable",
+                "reason": "durable claim metadata",
+            })),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        repo.create_pending(&durable_question).await.unwrap();
+        let state = QuestionState::with_repo(repo);
+
+        let claim = state
+            .claim_pending("claim-durable-metadata")
+            .await
+            .unwrap()
+            .expect("claim the durable question");
+
+        assert_eq!(
+            claim.pending_question().request_id,
+            durable_question.request_id
+        );
+        assert_eq!(
+            claim.pending_question().session_id,
+            durable_question.session_id
+        );
+        assert_eq!(claim.pending_question().metadata, durable_question.metadata);
+        assert!(state.release_claim(claim).await);
+    }
+
+    #[tokio::test]
+    async fn commit_claim_persists_before_waking_the_live_waiter() {
+        let (state, repo) = make_state_with_repo();
+        let receiver = state
+            .register(
+                "commit-live-durable".to_string(),
+                "session-1".to_string(),
+                "Commit both states?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+        let claim = state
+            .claim_pending("commit-live-durable")
+            .await
+            .unwrap()
+            .expect("claim the live question");
+        let answer = QuestionAnswer {
+            selected_options: vec!["yes".to_string()],
+            text: None,
+            skipped: false,
+        };
+
+        let result = state.commit_claim(claim, answer).await;
+
+        assert!(result.resolved);
+        assert!(result.delivered_to_waiting_agent);
+        assert_eq!(
+            receiver.borrow().as_ref().unwrap().selected_options,
+            vec!["yes"]
+        );
+        let persisted_answer = repo
+            .get_resolved_answer("commit-live-durable")
+            .await
+            .unwrap()
+            .expect("answer is durably persisted before the live waiter wakes");
+        assert_eq!(persisted_answer.selected_options, vec!["yes"]);
+        assert_eq!(persisted_answer.text, None);
+        assert!(!persisted_answer.skipped);
+    }
+
+    #[tokio::test]
+    async fn only_one_concurrent_claim_can_reserve_a_question() {
+        let (state, _repo) = make_state_with_repo();
+        state
+            .register(
+                "concurrent-claim".to_string(),
+                "session-1".to_string(),
+                "Only one claim?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+        let state = Arc::new(state);
+
+        let (first, second) = tokio::join!(
+            state.claim_pending("concurrent-claim"),
+            state.claim_pending("concurrent-claim")
+        );
+
+        let claims = [first.unwrap(), second.unwrap()];
+        assert_eq!(claims.iter().filter(|claim| claim.is_some()).count(), 1);
+        let claim = claims.into_iter().flatten().next().unwrap();
+        assert!(state.release_claim(claim).await);
+    }
+
+    #[tokio::test]
+    async fn failed_durable_commit_keeps_the_live_waiter_unwoken_and_releasable() {
+        use crate::error::AppError;
+
+        struct FailingResolveRepo(MemoryQuestionRepository);
+
+        #[async_trait::async_trait]
+        impl QuestionRepository for FailingResolveRepo {
+            async fn create_pending(
+                &self,
+                info: &PendingQuestionInfo,
+            ) -> crate::error::AppResult<()> {
+                self.0.create_pending(info).await
+            }
+
+            async fn resolve(
+                &self,
+                _request_id: &str,
+                _answer: &QuestionAnswer,
+            ) -> crate::error::AppResult<bool> {
+                Err(AppError::Database("durable write failed".to_string()))
+            }
+
+            async fn get_pending(&self) -> crate::error::AppResult<Vec<PendingQuestionInfo>> {
+                self.0.get_pending().await
+            }
+
+            async fn get_by_request_id(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<Option<PendingQuestionInfo>> {
+                self.0.get_by_request_id(request_id).await
+            }
+
+            async fn expire_all_pending(&self) -> crate::error::AppResult<u64> {
+                self.0.expire_all_pending().await
+            }
+
+            async fn expire_by_request_id(&self, request_id: &str) -> crate::error::AppResult<()> {
+                self.0.expire_by_request_id(request_id).await
+            }
+
+            async fn remove(&self, request_id: &str) -> crate::error::AppResult<bool> {
+                self.0.remove(request_id).await
+            }
+
+            async fn get_resolved_answer(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<Option<QuestionAnswer>> {
+                self.0.get_resolved_answer(request_id).await
+            }
+        }
+
+        let state = QuestionState::with_repo(Arc::new(FailingResolveRepo(
+            MemoryQuestionRepository::new(),
+        )));
+        let receiver = state
+            .register(
+                "failed-durable-commit".to_string(),
+                "session-1".to_string(),
+                "Stay pending?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+        let claim = state
+            .claim_pending("failed-durable-commit")
+            .await
+            .unwrap()
+            .expect("claim the live question");
+
+        let result = state
+            .commit_claim(
+                claim,
+                QuestionAnswer {
+                    selected_options: vec![],
+                    text: Some("not yet".to_string()),
+                    skipped: false,
+                },
+            )
+            .await;
+
+        assert!(!result.resolved);
+        assert!(!result.delivered_to_waiting_agent);
+        assert!(receiver.borrow().is_none());
+        assert!(state
+            .claim_pending("failed-durable-commit")
+            .await
+            .unwrap()
+            .is_some());
     }
 }
