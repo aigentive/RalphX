@@ -736,6 +736,16 @@ mod mode_switch_tests {
             .current_dir(repo_path)
             .output()
             .expect("checkout main");
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:ralphx/test-repository.git",
+            ])
+            .current_dir(repo_path)
+            .output()
+            .expect("configure GitHub origin");
         let mut project = Project::new(
             "PR Toggle".to_string(),
             working_dir.path().to_string_lossy().into_owned(),
