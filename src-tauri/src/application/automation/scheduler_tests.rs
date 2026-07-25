@@ -5759,7 +5759,7 @@ async fn automation_scheduler_delivers_matching_plan_approval_once_and_clears_st
     let prompts = scenario.resumer.prompts();
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0].0, scenario.conversation_id);
-    assert!(prompts[0].1.contains("Run plan v3 approved"));
+    assert!(prompts[0].1.contains("Run plan bundle v3 approved"));
     assert!(prompts[0].1.contains("publish the run pull request"));
     let cleared_workspace = scenario
         .workspace_repo
