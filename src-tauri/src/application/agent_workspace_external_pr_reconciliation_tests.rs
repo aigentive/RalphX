@@ -85,6 +85,7 @@ impl ClickUpApiClient for StaticClickUpClient {
 fn test_project() -> Project {
     let mut project = Project::new("Demo".to_string(), "/tmp/ralphx-demo".to_string());
     project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
     project
 }
 

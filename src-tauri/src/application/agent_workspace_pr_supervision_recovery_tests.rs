@@ -1520,6 +1520,14 @@ async fn skips_recovery_when_workspace_or_project_state_blocks_it() {
 
     project.archived_at = None;
     project.github_pr_enabled = false;
+    let mut unlinked_workspace = workspace;
+    unlinked_workspace.publication_pr_number = None;
+    unlinked_workspace.publication_pr_url = None;
+    unlinked_workspace.publication_pr_status = None;
+    workspace_repo
+        .create_or_update(unlinked_workspace)
+        .await
+        .expect("future-PR-disabled workspace should persist");
     let outcome = recover_agent_workspace_pr_supervision(
         recovery_deps(
             workspace_repo,

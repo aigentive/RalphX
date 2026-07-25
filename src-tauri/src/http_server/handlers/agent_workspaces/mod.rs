@@ -2102,7 +2102,7 @@ pub async fn complete_agent_workspace_review_run(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
         .await
         .map_err(workspace_review_action_error)?;
@@ -2146,6 +2146,9 @@ pub async fn complete_agent_workspace_review_run(
         summary_bytes,
         "Handled workspace Review completion"
     );
+    // Publishing takes the same lifecycle lock to serialize against review mutations. The review
+    // result is durable now, so release this handler's guard before resuming publication.
+    drop(lifecycle_guard);
     settle_workspace_review_publish_authorization(&state, &conversation_id, &workspace, &monitor)
         .await?;
     // R3: on a Blocking/Failed gate for an automation-owned conversation, pause the automation and

@@ -262,8 +262,12 @@ pub(super) fn derive_plan_branch_pr_eligibility(
 }
 
 pub(super) async fn inspect_plan_branch_pr_eligibility(project: &Project) -> AppResult<bool> {
+    if !project.github_pr_enabled {
+        return Ok(false);
+    }
+
     derive_plan_branch_pr_eligibility(
-        project.github_pr_enabled,
+        true,
         inspect_repository_capability(std::path::Path::new(&project.working_directory)).await,
     )
 }

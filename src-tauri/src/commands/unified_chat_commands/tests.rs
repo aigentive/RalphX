@@ -5846,9 +5846,9 @@ fn publication_event_status_helpers_include_description_states() {
 #[tokio::test]
 async fn publish_workspace_syncs_requested_auto_merge_before_returning() {
     let github = Arc::new(MockGithubService::new());
-    let (_temp, state, conversation_id, github) =
+    let (temp, state, conversation_id, github) =
         setup_publish_command_state("auto-merge-publish", true, None, github).await;
-    let project = state
+    let mut project = state
         .project_repo
         .get_all()
         .await
@@ -5856,9 +5856,55 @@ async fn publish_workspace_syncs_requested_auto_merge_before_returning() {
         .into_iter()
         .next()
         .expect("project exists");
+    project.github_pr_enabled = true;
+    state
+        .project_repo
+        .update(&project)
+        .await
+        .expect("GitHub-enabled project should persist");
+    let fake_remote = temp.path().join("github-remote.git");
     git(
         Path::new(&project.working_directory),
-        &["remote", "add", "origin", &project.working_directory],
+        &[
+            "clone",
+            "--bare",
+            &project.working_directory,
+            fake_remote.to_str().expect("remote path should be UTF-8"),
+        ],
+    );
+    let fake_ssh = temp.path().join("fake-github-ssh");
+    std::fs::write(
+        &fake_ssh,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-G\" ]; then exit 0; fi\ncase \"$*\" in\n  *git-upload-pack*) exec git-upload-pack '{}' ;;\n  *git-receive-pack*) exec git-receive-pack '{}' ;;\nesac\nexit 2\n",
+            fake_remote.display(),
+            fake_remote.display(),
+        ),
+    )
+    .expect("fake GitHub SSH transport should be written");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(&fake_ssh)
+        .expect("fake GitHub SSH transport should exist")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_ssh, permissions)
+        .expect("fake GitHub SSH transport should be executable");
+    git(
+        Path::new(&project.working_directory),
+        &[
+            "config",
+            "core.sshCommand",
+            fake_ssh.to_str().expect("SSH path should be UTF-8"),
+        ],
+    );
+    git(
+        Path::new(&project.working_directory),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:ralphx/test-repository.git",
+        ],
     );
     let mut workspace = state
         .agent_conversation_workspace_repo

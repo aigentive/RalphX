@@ -1,5 +1,6 @@
 use super::ideation_commands_apply::{
-    derive_plan_branch_pr_eligibility, phase_insert_execution_plan,
+    derive_plan_branch_pr_eligibility, inspect_plan_branch_pr_eligibility,
+    phase_insert_execution_plan,
 };
 use crate::application::AppState;
 use crate::domain::entities::{IdeationSession, Project, ProposalCategory, TaskProposal};
@@ -52,7 +53,7 @@ async fn apply_rejects_capability_inspection_failure_before_creating_pipeline_ro
     std::fs::create_dir(workspace.path().join(".git")).expect("git directory should exist");
     std::fs::create_dir(workspace.path().join(".git/config"))
         .expect("invalid origin config should be represented by a directory");
-    let project = state
+    let mut project = state
         .project_repo
         .create(Project::new(
             "Broken origin inspection".to_string(),
@@ -60,6 +61,12 @@ async fn apply_rejects_capability_inspection_failure_before_creating_pipeline_ro
         ))
         .await
         .expect("project should persist");
+    project.github_pr_enabled = true;
+    state
+        .project_repo
+        .update(&project)
+        .await
+        .expect("PR-enabled project should persist");
     let session = state
         .ideation_session_repo
         .create(IdeationSession::new(project.id.clone()))
@@ -118,6 +125,20 @@ async fn apply_rejects_capability_inspection_failure_before_creating_pipeline_ro
             .is_none(),
         "failed preflight must not link the proposal to a task"
     );
+}
+
+#[tokio::test]
+async fn disabled_pr_preference_skips_repository_capability_inspection() {
+    let project = Project::new(
+        "Local-only project".to_string(),
+        "/missing/local-only-project".to_string(),
+    );
+
+    let eligible = inspect_plan_branch_pr_eligibility(&project)
+        .await
+        .expect("local-only preference must not inspect a remote");
+
+    assert!(!eligible);
 }
 
 #[tokio::test]
