@@ -284,6 +284,27 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
         </div>
       )}
 
+      {isDelegateCall && delegation.assignment?.title && (
+        <div
+          className="px-3 pb-1.5"
+          style={{ paddingLeft: "2.25rem" }}
+        >
+          <span
+            className="text-[0.6875rem] truncate block"
+            style={{ color: "var(--accent-primary)" }}
+          >
+            Assigned work
+            {delegation.assignment.taskNumber != null
+              ? ` #${delegation.assignment.taskNumber}`
+              : ""}
+            {` · ${delegation.assignment.title}`}
+            {delegation.assignment.assignmentState
+              ? ` · ${delegation.assignment.assignmentState.replace(/_/g, " ")}`
+              : ""}
+          </span>
+        </div>
+      )}
+
       {/* Stats summary (shown below header when collapsed) */}
       {(
         taskStats.totalDurationMs != null ||

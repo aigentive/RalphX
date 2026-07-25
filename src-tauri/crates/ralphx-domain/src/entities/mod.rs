@@ -11,6 +11,9 @@ pub mod agent_workspace_pr_metadata;
 mod agent_workspace_pr_metadata_tests;
 pub mod agent_run;
 pub mod agent_task;
+pub mod agent_task_assignment;
+#[cfg(test)]
+mod agent_task_assignment_tests;
 pub mod agent_workflow_protocol;
 #[cfg(test)]
 mod agent_workflow_protocol_tests;
@@ -117,6 +120,11 @@ pub use agent_task::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
     AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
     AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
+};
+pub use agent_task_assignment::{
+    AgentTaskAssignment, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
+    AgentTaskAssignmentSettlement, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
+    AgentTaskAssignmentView,
 };
 pub use api_key::{
     ApiKey, AuditLogEntry, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX,

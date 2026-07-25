@@ -60,6 +60,7 @@ Do not edit a `TOOL_ALLOWLIST` mirror to grant production access. The compatibil
 | Provider-native subagent | Use generated explicit tool entries when that harness surface requires them; do not generalize Claude frontmatter or `mcpServers` behavior to Codex. |
 | Codex | Load canonical MCP capabilities through Codex runtime overrides/sidecars; do not reuse Claude plugin/frontmatter assumptions. |
 | RalphX-native delegation | `delegate_start` caller→target authorization and delegation-tool visibility derive from `delegation.allowed_targets`; caller identity is transport-owned. |
+| Delegate task coordination | Generic task tools stay scoped to the delegated session; `get/complete/release_delegate_assignment` use trusted current conversation/run headers to address only the exact caller task assignment. |
 | Mixed external/internal transport | Public/high-level `mcp_tools` and `harnesses.<harness>.internal_mcp_tools` remain separate surfaces. |
 | Provider-native third-party MCP | Native definitions/auth/trust remain provider-owned; canonical RalphX grants authorize only RalphX tools, while global/project policy may deny native servers/tools at launch. |
 

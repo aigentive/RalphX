@@ -546,7 +546,11 @@ describe("AgentsView", () => {
     await screen.findByTestId("integrated-chat-panel");
     fireEvent.click(await screen.findByRole("button", { name: "Open artifacts" }));
     fireEvent.click(
-      await screen.findByTestId("mock-focus-workspace-review-with-stale-runtime"),
+      await screen.findByTestId(
+        "mock-focus-workspace-review-with-stale-runtime",
+        {},
+        { timeout: 5_000 },
+      ),
     );
 
     await waitFor(() => {

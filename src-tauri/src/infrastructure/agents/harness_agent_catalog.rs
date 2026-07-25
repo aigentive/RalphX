@@ -1071,6 +1071,7 @@ fn build_generated_delegation_appendix(definition: &CanonicalAgentDefinition) ->
         ),
         "- Prefer the narrowest delegate that matches the required capability. Keep read-only analysis on read-only delegates.".to_string(),
         "- Use `delegate_start` to launch an allowed canonical agent with a bounded prompt and exact output contract.".to_string(),
+        "- When delegating an existing item from your current task ledger, pass its `task_ref`; RalphX assigns it atomically, so the delegate must not claim or mirror it.".to_string(),
         "- Use `delegate_wait` before depending on delegated output.".to_string(),
         "- Use `delegate_cancel` only when delegated work is stale, superseded, or invalidated.".to_string(),
         "- The MCP transport injects caller identity automatically; do not spoof another agent.".to_string(),
@@ -1127,6 +1128,9 @@ fn build_generated_agent_task_appendix(
     let update_tool = tool_name("update_agent_task");
     let claim_tool = tool_name("claim_agent_task");
     let complete_tool = tool_name("complete_agent_task");
+    let get_assignment_tool = tool_name("get_delegate_assignment");
+    let complete_assignment_tool = tool_name("complete_delegate_assignment");
+    let release_assignment_tool = tool_name("release_delegate_assignment");
     if [
         create_tool,
         get_tool,
@@ -1228,6 +1232,23 @@ fn build_generated_agent_task_appendix(
         lines.push(format!("<rule>Use `{tool}` when you need full details, including resolved blockers that list views may omit.</rule>"));
     }
     lines.push("</tool_guidance>".to_string());
+
+    if let Some(get_assignment_tool) = get_assignment_tool {
+        lines.extend(
+            [
+                "<delegate_assignment_contract>".to_string(),
+                "<rule>In a delegated context, the ordinary agent-task tools operate only on your private delegate-local ledger. They never expose or mirror the caller ledger.</rule>".to_string(),
+                format!("<rule>Use `{get_assignment_tool}` to inspect the exact caller task bound to this delegated run. Do not recreate that assigned task in your local ledger.</rule>"),
+            ],
+        );
+        if let Some(complete_assignment_tool) = complete_assignment_tool {
+            lines.push(format!("<rule>After every meaningful local task is done or dropped, use `{complete_assignment_tool}` to request settlement. The caller task becomes done only if this exact run then terminates successfully.</rule>"));
+        }
+        if let Some(release_assignment_tool) = release_assignment_tool {
+            lines.push(format!("<rule>If the assigned work cannot be completed, use `{release_assignment_tool}` with a concise reason. Then stop work and return the final handoff so backend settlement can reopen the caller task.</rule>"));
+        }
+        lines.push("</delegate_assignment_contract>".to_string());
+    }
 
     if supports_full_task_flow {
         lines.extend(
