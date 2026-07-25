@@ -30,6 +30,29 @@ fn built_in_registry_tracks_provider_model_effort_compatibility() {
     );
     assert_eq!(opus.default_effort, LogicalEffort::XHigh);
 
+    for (model_id, label) in [
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-opus-4-8", "Claude Opus 4.8"),
+        ("claude-opus-5", "Claude Opus 5"),
+    ] {
+        let model = snapshot
+            .find_enabled(AgentHarnessKind::Claude, model_id)
+            .expect("pinned Opus model should be registered");
+        assert_eq!(model.label, label);
+        assert_eq!(model.menu_label, label);
+        assert_eq!(
+            model.supported_efforts,
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ]
+        );
+        assert_eq!(model.default_effort, LogicalEffort::High);
+    }
+
     let sonnet_5 = snapshot
         .find_enabled(AgentHarnessKind::Claude, "claude-sonnet-5")
         .expect("Sonnet 5 should be registered");
@@ -160,7 +183,7 @@ fn custom_models_override_built_ins() {
 fn built_in_registry_exposes_expected_defaults_for_each_provider() {
     let models = built_in_agent_models();
 
-    assert_eq!(models.len(), 14);
+    assert_eq!(models.len(), 17);
     assert_eq!(
         default_model_for_provider(AgentHarnessKind::Claude),
         "sonnet"
@@ -230,6 +253,9 @@ fn built_in_registry_exposes_expected_defaults_for_each_provider() {
             "claude-sonnet-4-6",
             "claude-sonnet-5",
             "opus",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
             "haiku",
             "fable",
         ]

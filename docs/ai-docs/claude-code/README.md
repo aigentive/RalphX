@@ -17,3 +17,4 @@ Local files in this directory:
 
 - Topic stubs such as `cli-reference.md`, `settings.md`, `mcp.md`, `agent-teams.md`
 - RalphX-specific note: `task-tool-parallel-dispatch.md`
+- RalphX-specific [model compatibility](model-compatibility.md)
