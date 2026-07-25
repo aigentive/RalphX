@@ -29,7 +29,8 @@ fn cross_project_import_rejects_grandfathered_v1_source() {
 #[tokio::test]
 async fn cross_project_import_clones_the_verified_bundle_into_owned_pointers() {
     let state = AppState::new_sqlite_test();
-    let temp = tempfile::tempdir().expect("temporary project root should be created");
+    let temp = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("temporary project root should be created");
     let target_path = temp.path().join("target-project");
     std::fs::create_dir_all(&target_path).expect("target project directory should exist");
     let overview = state

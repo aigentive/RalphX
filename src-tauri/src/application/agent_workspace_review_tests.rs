@@ -4197,7 +4197,7 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
     assert!(sent_messages[0].contains("<workspace_goal_context>"));
     assert!(sent_messages[0].contains("RX-42"));
     assert!(sent_messages[0].contains(plan_artifact.id.as_str()));
-    assert!(sent_messages[0].contains("Review artifact content injected by RalphX"));
+    assert!(sent_messages[0].contains("Review Overview content injected by RalphX"));
     assert!(sent_messages[0].contains("Preserve parent references in the repair."));
     assert!(!sent_messages[0].contains("Fetch the full Review artifact before editing"));
 }

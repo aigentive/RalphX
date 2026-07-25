@@ -1960,6 +1960,11 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-current"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "requested-changes-artifact-current",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.reviewed_target_scope = Some(review_target.scope);
     monitor.reviewed_head_sha = review_target.head_sha.clone();
     monitor.reviewed_diff_fingerprint = Some(review_target.diff_fingerprint.clone());

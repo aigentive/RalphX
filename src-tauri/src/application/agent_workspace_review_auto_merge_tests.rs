@@ -1147,6 +1147,11 @@ async fn passing_workspace_delta_review_defers_restore_until_publish_proof() {
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("workspace-delta-review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "workspace-delta-requested-changes-artifact",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some(diff_fingerprint.clone());
