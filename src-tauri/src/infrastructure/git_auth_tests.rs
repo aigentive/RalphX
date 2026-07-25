@@ -49,6 +49,19 @@ fn write_fake_gh(path: &Path, body: &str) {
     }
 }
 
+fn write_fake_git(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("write fake git");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake git metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark fake git executable");
+    }
+}
+
 async fn probe_with_fake_gh(script_body: &str) -> GithubConnectionStatus {
     let script_body = script_body.to_owned();
 
@@ -90,6 +103,26 @@ async fn probe_with_fake_gh_timeout(
     })
     .await
     .expect("probe task")
+}
+
+async fn inspect_capability_with_fake_git(script_body: &str) -> RepositoryCapability {
+    let script_body = script_body.to_owned();
+
+    tokio::task::spawn_blocking(move || {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let fake_git = temp_dir.path().join("git");
+        write_fake_git(&fake_git, &script_body);
+        let _path = EnvGuard::set_os("PATH", temp_dir.path().as_os_str());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(inspect_repository_capability(temp_dir.path()))
+    })
+    .await
+    .expect("capability task")
 }
 
 #[tokio::test]
@@ -352,6 +385,32 @@ async fn repository_capability_uses_git_effective_urls_for_included_push_rewrite
         RepositoryCapability::OtherRemote { push_url, .. }
             if push_url == "https://gitlab.com/rewritten/owner/repo.git"
     ));
+}
+
+#[tokio::test]
+async fn repository_capability_uses_push_only_origin_url() {
+    let capability = inspect_capability_with_fake_git(
+        r#"#!/bin/sh
+if [ "$1" = "rev-parse" ]; then
+  echo true
+  exit 0
+fi
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "--push" ]; then
+  echo git@github.com:owner/repo.git
+  exit 0
+fi
+exit 1
+"#,
+    )
+    .await;
+
+    assert_eq!(
+        capability,
+        RepositoryCapability::Github {
+            fetch_url: None,
+            push_url: "git@github.com:owner/repo.git".to_string(),
+        }
+    );
 }
 
 #[cfg(unix)]

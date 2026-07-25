@@ -336,7 +336,6 @@ export function AgentPublishPanel({
     !getAgentWorkspaceTerminalPublicationStatus(workspace);
   const hasPublishedPr = hasPublishedWorkspacePr(workspace);
   const workspacePublishMode = getProjectWorkspacePublishMode(project, hasPublishedPr);
-  const isLocalCommitPrimary = workspacePublishMode.kind === "localCommit";
   const repositoryInspectionFailed = workspacePublishMode.kind === "unavailable";
   const checksShell = hasPublishedPr
     ? pullRequestShellFromWorkspace(workspace)
@@ -432,6 +431,10 @@ export function AgentPublishPanel({
         ? "Pull request changes"
         : undefined;
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
+  const canCommitLocally =
+    workspace?.mode === "edit" && !isPipelineOwnedWorkspace;
+  const isLocalCommitPrimary =
+    workspacePublishMode.kind === "localCommit" && canCommitLocally;
   const isPipelinePrAutomationWorkspace =
     workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
   const shouldShowPrSupervisionControls =
@@ -841,6 +844,7 @@ export function AgentPublishPanel({
     return "Commit & Publish";
   })();
   const localCommitDisabled =
+    !canCommitLocally ||
     commitLocallyMutation.isPending ||
     effectivePublishing ||
     reviewBlocksPublish ||

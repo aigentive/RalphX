@@ -280,6 +280,27 @@ describe("AgentsView publish", () => {
 
   });
 
+  it("keeps local commit unavailable for local-only task-pipeline workspaces", async () => {
+    configurePublishPane({
+      workspace: {
+        linkedPlanBranchId: "plan-branch-1",
+        mode: "ideation",
+      },
+    });
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+
+    const actionbar = await openPublishPane();
+
+    expect(screen.queryByTestId("agents-commit-locally")).not.toBeInTheDocument();
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toHaveTextContent(
+      "Managed by Tasks",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toBeDisabled();
+  });
+
   it("keeps a persisted pull request on the publish action when inspection is unavailable", async () => {
     configurePublishPane({ workspace: { publicationPrNumber: 42 } });
     useProjectStore.getState().updateProject("project-1", {

@@ -146,17 +146,13 @@ async fn inspect_effective_origin_topology_config(
     let fetch_url =
         read_origin_url_with_timeout(working_dir, &["remote", "get-url", "origin"], deadline)
             .await?;
-    let push_url = if fetch_url.is_some() {
-        read_origin_url_with_timeout(
-            working_dir,
-            &["remote", "get-url", "--push", "origin"],
-            deadline,
-        )
-        .await?
-        .or_else(|| fetch_url.clone())
-    } else {
-        None
-    };
+    let push_url = read_origin_url_with_timeout(
+        working_dir,
+        &["remote", "get-url", "--push", "origin"],
+        deadline,
+    )
+    .await?
+    .or_else(|| fetch_url.clone());
 
     Ok(GitRemoteAuthConfig {
         fetch_url,
