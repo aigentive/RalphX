@@ -885,8 +885,8 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
     }
 
     async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
-        let mut state = self.state.lock().await;
-        let Some(run) = state.runs.get_mut(id.as_str()) else {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
             return Ok(false);
         };
         run.plan_judge_verdict_json = None;
