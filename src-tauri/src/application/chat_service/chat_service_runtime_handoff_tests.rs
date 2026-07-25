@@ -1,7 +1,9 @@
 use super::chat_service_runtime_handoff::{
-    cancel_armed_runtime_handoff_owner, capture_runtime_handoff_owner,
-    map_runtime_handoff_kick_send_result, stage_runtime_handoff, RuntimeHandoffCapture,
-    RuntimeHandoffKickOutcome, RuntimeHandoffOutcome,
+    activate_runtime_handoff_watchdog, cancel_armed_runtime_handoff_owner,
+    capture_runtime_handoff_owner, finalize_idle_runtime_handoff,
+    map_runtime_handoff_kick_send_result, release_no_owner_runtime_handoff,
+    reserve_no_owner_runtime_handoff, stage_runtime_handoff, RuntimeHandoffCapture,
+    RuntimeHandoffKickOutcome, RuntimeHandoffOutcome, RuntimeHandoffReleaseOutcome,
 };
 use super::chat_service_streaming::is_armed_mode_handoff_disposition;
 use super::{ChatService, MockChatService, SendResult};
@@ -72,6 +74,60 @@ async fn register_interactive(
         )
         .await;
     (token, child)
+}
+
+#[tokio::test]
+async fn no_owner_reservation_excludes_competing_launch_and_releases_exact_slot() {
+    let running = Arc::new(MemoryRunningAgentRegistry::new());
+    let running_trait: Arc<dyn RunningAgentRegistry> = running.clone();
+    let key = RunningAgentKey::new("project", "handoff-reservation");
+
+    let reservation = reserve_no_owner_runtime_handoff(
+        &running_trait,
+        ChatContextType::Project,
+        "handoff-reservation",
+        "request-a",
+    )
+    .await
+    .expect("a stable no-owner slot should be reserved");
+
+    let reserved = running
+        .get(&key)
+        .await
+        .expect("the reservation must exclude competing launches");
+    assert_eq!(reserved.pid, 0);
+    assert_eq!(
+        reserved.agent_run_id,
+        "plan-mode-handoff-reservation:request-a"
+    );
+
+    let occupied = match reserve_no_owner_runtime_handoff(
+        &running_trait,
+        ChatContextType::Project,
+        "handoff-reservation",
+        "request-b",
+    )
+    .await
+    {
+        Ok(_) => panic!("a competing request must not replace the exact reservation"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        occupied
+            .occupied()
+            .expect("the competing reservation should report its owner")
+            .agent_run_id,
+        "plan-mode-handoff-reservation:request-a"
+    );
+
+    assert_eq!(
+        release_no_owner_runtime_handoff(&running_trait, &reservation).await,
+        RuntimeHandoffReleaseOutcome::Released
+    );
+    assert!(
+        running.get(&key).await.is_none(),
+        "release must remove only the request-owned PID-0 row"
+    );
 }
 
 #[tokio::test]
@@ -575,6 +631,139 @@ async fn watchdog_cancels_only_an_armed_exact_owner() {
     ));
     assert!(cancel_armed_runtime_handoff_owner(&running_trait, &interactive, &owner,).await);
     assert!(cancellation.is_cancelled());
+}
+
+#[tokio::test(start_paused = true)]
+async fn activated_watchdog_cancels_the_exact_armed_owner_after_configured_grace() {
+    let running = Arc::new(MemoryRunningAgentRegistry::new());
+    let interactive = Arc::new(InteractiveProcessRegistry::new());
+    let (token, _child) =
+        register_interactive(&interactive, "handoff-activated-watchdog", "run-a").await;
+    let owner = super::RuntimeHandoffOwner {
+        context_type: ChatContextType::Project,
+        runtime_context_id: "handoff-activated-watchdog".to_string(),
+        agent_run_id: "run-a".to_string(),
+        interactive_process_token: token,
+    };
+    let cancellation = CancellationToken::new();
+    register_running(
+        &running,
+        "handoff-activated-watchdog",
+        "run-a",
+        Some(cancellation.clone()),
+    )
+    .await;
+    assert!(matches!(
+        interactive
+            .arm_retire_after_turn_if_owner(
+                &InteractiveProcessKey::new("project", "handoff-activated-watchdog"),
+                token,
+                "run-a",
+            )
+            .await,
+        crate::application::interactive_process_registry::InteractiveProcessRetireArmDisposition::AwaitingTurn
+    ));
+
+    activate_runtime_handoff_watchdog(
+        running.clone() as Arc<dyn RunningAgentRegistry>,
+        Arc::clone(&interactive),
+        owner,
+    );
+    tokio::task::yield_now().await;
+    let grace = std::time::Duration::from_secs(
+        crate::infrastructure::agents::claude::stream_timeouts().completion_grace_secs,
+    );
+    tokio::time::advance(grace).await;
+    tokio::task::yield_now().await;
+
+    assert!(
+        cancellation.is_cancelled(),
+        "the configured watchdog must cancel the exact still-armed source runtime"
+    );
+}
+
+#[tokio::test]
+async fn idle_finalization_requires_armed_idle_exact_owner_and_removes_it_after_commit() {
+    let interactive = InteractiveProcessRegistry::new();
+    let (token, _child) =
+        register_interactive(&interactive, "handoff-idle-finalize", "run-a").await;
+    let owner = super::RuntimeHandoffOwner {
+        context_type: ChatContextType::Project,
+        runtime_context_id: "handoff-idle-finalize".to_string(),
+        agent_run_id: "run-a".to_string(),
+        interactive_process_token: token,
+    };
+    let key = InteractiveProcessKey::new("project", "handoff-idle-finalize");
+    assert!(matches!(
+        interactive
+            .arm_retire_after_turn_if_owner(&key, token, "run-a")
+            .await,
+        crate::application::interactive_process_registry::InteractiveProcessRetireArmDisposition::AwaitingTurn
+    ));
+
+    assert!(
+        !finalize_idle_runtime_handoff(&interactive, &owner).await,
+        "an active owner must remain available to finish its current turn"
+    );
+    assert!(interactive.has_process(&key).await);
+
+    assert!(interactive.mark_idle_if_token(&key, token).await);
+    assert!(
+        finalize_idle_runtime_handoff(&interactive, &owner).await,
+        "the exact armed idle owner must retire after answer commit"
+    );
+    assert!(
+        !interactive.has_process(&key).await,
+        "post-commit finalization must remove the retired owner"
+    );
+}
+
+#[tokio::test]
+async fn armed_watchdog_rejects_missing_foreign_and_uncancellable_running_owners() {
+    let running = Arc::new(MemoryRunningAgentRegistry::new());
+    let running_trait: Arc<dyn RunningAgentRegistry> = running.clone();
+    let interactive = InteractiveProcessRegistry::new();
+    let (token, _child) =
+        register_interactive(&interactive, "handoff-watchdog-guards", "run-a").await;
+    let owner = super::RuntimeHandoffOwner {
+        context_type: ChatContextType::Project,
+        runtime_context_id: "handoff-watchdog-guards".to_string(),
+        agent_run_id: "run-a".to_string(),
+        interactive_process_token: token,
+    };
+    assert!(matches!(
+        interactive
+            .arm_retire_after_turn_if_owner(
+                &InteractiveProcessKey::new("project", "handoff-watchdog-guards"),
+                token,
+                "run-a",
+            )
+            .await,
+        crate::application::interactive_process_registry::InteractiveProcessRetireArmDisposition::AwaitingTurn
+    ));
+
+    assert!(
+        !cancel_armed_runtime_handoff_owner(&running_trait, &interactive, &owner).await,
+        "a missing running owner must fail closed"
+    );
+
+    register_running(
+        &running,
+        "handoff-watchdog-guards",
+        "foreign-run",
+        Some(CancellationToken::new()),
+    )
+    .await;
+    assert!(
+        !cancel_armed_runtime_handoff_owner(&running_trait, &interactive, &owner).await,
+        "a foreign running owner must not be cancelled"
+    );
+
+    register_running(&running, "handoff-watchdog-guards", "run-a", None).await;
+    assert!(
+        !cancel_armed_runtime_handoff_owner(&running_trait, &interactive, &owner).await,
+        "an exact owner without a cancellation token must remain untouched"
+    );
 }
 
 #[test]
