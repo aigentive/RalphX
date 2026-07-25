@@ -713,6 +713,10 @@ async fn passing_selected_source_review_clears_guard_without_restore_when_source
     );
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("requested-changes-artifact"));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
