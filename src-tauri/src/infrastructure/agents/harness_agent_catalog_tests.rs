@@ -2168,6 +2168,21 @@ fn codex_spawn_capable_prompts_reference_explicit_delegation_tools() {
 #[test]
 fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents() {
     let root = project_root();
+    let required_coordinator_clauses = [
+        "### Delegated Implementation Coordination",
+        "otherwise do not direct mutation or validation",
+        "Retain the full objective, integration decisions, integrated review, and final verification",
+        "bounded, dependency-aware slices",
+        "outcome, exclusive writable files or modules, established seam, required behavior, prohibited scope, acceptance criteria, permitted validation, and dependencies",
+        "Exploration may cover owned files and immediate dependencies needed for safe implementation",
+        "disjoint mutation sets, including generated artifacts, and disjoint command resource sets",
+        "one serialized heavyweight-validation lane",
+        "behavioral tests and only permitted cheap or local checks",
+        "Directly verify suspected defects before a narrow, evidence-backed revision",
+        "review the integrated workspace and run final focused validation once after revisions settle",
+        "Do not publish unless the user requested it",
+        "Repository and profile rules remain authoritative for exact commands, cleanup, resource conflicts, and stricter permissions",
+    ];
 
     for agent_name in CODEX_DELEGATION_GUIDE_AGENTS {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
@@ -2176,6 +2191,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating codex prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_coordinator_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating codex prompt for {agent_name} should include coordinator clause: {clause}"
+            );
+        }
     }
 
     for agent_name in CLAUDE_DELEGATION_GUIDE_AGENTS {
@@ -2185,6 +2206,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating claude prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_coordinator_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating claude prompt for {agent_name} should include coordinator clause: {clause}"
+            );
+        }
     }
 
     let session_namer = load_harness_agent_prompt(
@@ -2196,6 +2223,10 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
     assert!(
         !session_namer.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
         "non-delegating codex prompt should not include the generated delegation appendix"
+    );
+    assert!(
+        !session_namer.contains("### Delegated Implementation Coordination"),
+        "non-delegating codex prompt should not include coordinator guidance"
     );
 }
 
