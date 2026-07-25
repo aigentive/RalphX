@@ -1,5 +1,5 @@
 use super::plan_reference_import::{
-    import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
+    import_agent_conversation_plan_reference, rewrite_imported_plan_references,
     selected_plan_reference,
 };
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
@@ -200,7 +200,7 @@ fn selected_plan_reference_rejects_multiple_plan_references() {
 }
 
 #[test]
-fn rewrite_imported_plan_reference_replaces_only_matching_plan() {
+fn rewrite_imported_plan_references_replaces_only_matching_plan_with_bundle() {
     let source = ComposerArtifactReference {
         artifact_id: "source-artifact".to_string(),
         kind: "PLAN".to_string(),
@@ -217,6 +217,14 @@ fn rewrite_imported_plan_reference_replaces_only_matching_plan() {
         version: Some(1),
         status: Some("draft".to_string()),
     };
+    let imported_blueprint = ComposerArtifactReference {
+        artifact_id: "cloned-blueprint".to_string(),
+        kind: "plan_blueprint".to_string(),
+        title: Some("Clone Blueprint".to_string()),
+        session_id: Some("fresh-session".to_string()),
+        version: Some(1),
+        status: Some("draft".to_string()),
+    };
     let unrelated = ComposerArtifactReference {
         artifact_id: "source-artifact".to_string(),
         kind: "issue".to_string(),
@@ -226,10 +234,13 @@ fn rewrite_imported_plan_reference_replaces_only_matching_plan() {
         status: None,
     };
 
-    let rewritten =
-        rewrite_imported_plan_reference(&[source.clone(), unrelated.clone()], &source, &imported);
+    let rewritten = rewrite_imported_plan_references(
+        &[source.clone(), unrelated.clone()],
+        &source,
+        &[imported.clone(), imported_blueprint.clone()],
+    );
 
-    assert_eq!(rewritten, vec![imported, unrelated]);
+    assert_eq!(rewritten, vec![imported, imported_blueprint, unrelated]);
 }
 
 #[tokio::test]
@@ -305,16 +316,29 @@ async fn import_plan_reference_clones_draft_session_without_source_state() {
     assert_ne!(cloned_blueprint_id, source_blueprint);
     assert_eq!(linked_session.plan_contract_version, PLAN_CONTRACT_V2);
 
-    assert_eq!(import.composer_reference.kind, "plan");
+    assert_eq!(import.composer_references.len(), 2);
+    assert_eq!(import.composer_references[0].kind, "plan");
     assert_eq!(
-        import.composer_reference.artifact_id,
+        import.composer_references[0].artifact_id,
         cloned_artifact_id.as_str()
     );
     assert_eq!(
-        import.composer_reference.session_id.as_deref(),
+        import.composer_references[0].session_id.as_deref(),
         Some(linked_session.id.as_str())
     );
-    assert_eq!(import.composer_reference.status.as_deref(), Some("draft"));
+    assert_eq!(
+        import.composer_references[0].status.as_deref(),
+        Some("draft")
+    );
+    assert_eq!(import.composer_references[1].kind, "plan_blueprint");
+    assert_eq!(
+        import.composer_references[1].artifact_id,
+        cloned_blueprint_id.as_str()
+    );
+    assert_eq!(
+        import.composer_references[1].session_id.as_deref(),
+        Some(linked_session.id.as_str())
+    );
 }
 
 #[tokio::test]

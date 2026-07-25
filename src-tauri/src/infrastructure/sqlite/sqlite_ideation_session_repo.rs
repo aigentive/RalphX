@@ -137,7 +137,8 @@ impl SqliteIdeationSessionRepository {
         conn.execute(
             "INSERT INTO ideation_sessions \
              (id, project_id, title, title_source, status, plan_artifact_id, \
-              plan_blueprint_artifact_id, inherited_plan_artifact_id, inherited_plan_blueprint_artifact_id, \
+              plan_blueprint_artifact_id, verified_plan_artifact_id, verified_plan_blueprint_artifact_id, verified_plan_agent_run_id, \
+              inherited_plan_artifact_id, inherited_plan_blueprint_artifact_id, \
               plan_contract_version, seed_task_id, parent_session_id, created_at, \
              updated_at, archived_at, converted_at, \
               verification_status, verification_in_progress, verification_generation, \
@@ -149,7 +150,7 @@ impl SqliteIdeationSessionRepository {
               pending_initial_prompt, source_task_id, source_context_type, source_context_id, spawn_reason, blocker_fingerprint, \
               analysis_base_ref_kind, analysis_base_ref, analysis_base_display_name, analysis_workspace_kind, \
               analysis_workspace_path, analysis_base_commit, analysis_base_locked_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51)",
             rusqlite::params![
                 session.id.as_str(),
                 session.project_id.as_str(),
@@ -161,6 +162,12 @@ impl SqliteIdeationSessionRepository {
                     .plan_blueprint_artifact_id
                     .as_ref()
                     .map(|id| id.as_str()),
+                session.verified_plan_artifact_id.as_ref().map(|id| id.as_str()),
+                session
+                    .verified_plan_blueprint_artifact_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
+                session.verified_plan_agent_run_id.as_deref(),
                 session.inherited_plan_artifact_id.as_ref().map(|id| id.as_str()),
                 session
                     .inherited_plan_blueprint_artifact_id

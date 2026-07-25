@@ -69,6 +69,8 @@ export interface PlanDisplayProps {
   onStartNewConversationWithPlan?: (
     reference: PlanDisplayConversationReference,
   ) => void;
+  /** A v2 bundle cannot safely copy a historical overview without its paired blueprint. */
+  disableHistoricalNewConversation?: boolean;
   onApprove?: () => void;
   isApproving?: boolean;
   approveLabel?: string;
@@ -401,6 +403,7 @@ export function PlanDisplay({
   onEdit,
   onExport,
   onStartNewConversationWithPlan,
+  disableHistoricalNewConversation = false,
   onApprove,
   isApproving = false,
   approveLabel = "Approve Plan",
@@ -760,7 +763,8 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
-                    {onStartNewConversationWithPlan && (
+                    {onStartNewConversationWithPlan &&
+                      (!disableHistoricalNewConversation || !isViewingHistorical) && (
                       <DropdownMenuItem
                         onClick={handleStartNewConversationWithPlan}
                         className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
@@ -1335,7 +1339,8 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
-                    {onStartNewConversationWithPlan && (
+                    {onStartNewConversationWithPlan &&
+                      (!disableHistoricalNewConversation || !isViewingHistorical) && (
                       <DropdownMenuItem
                         onClick={handleStartNewConversationWithPlan}
                         className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"

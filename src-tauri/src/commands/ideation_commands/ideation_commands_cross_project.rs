@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use ralphx_domain::entities::EventType;
 use tauri::{Emitter, State};
 
+use crate::application::plan_reference_import::clone_plan_artifact_for_import;
 use crate::application::AppState;
 use crate::domain::entities::ideation::{PlanArtifactBundle, PLAN_CONTRACT_V2};
 use crate::domain::entities::{
@@ -128,18 +129,56 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
     // pre-existing sessions only; importing it must not mint a new ready v1 session.
     let bundle = require_importable_plan_bundle(&source_session)?;
 
-    // Build the new session entity
+    let source_overview = state
+        .artifact_repo
+        .get_by_id(&bundle.overview_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "Source plan overview not found: {}",
+                bundle.overview_id.as_str()
+            )
+        })?;
+    let source_blueprint_id = bundle
+        .blueprint_id
+        .as_ref()
+        .expect("complete v2 bundle has blueprint");
+    let source_blueprint = state
+        .artifact_repo
+        .get_by_id(source_blueprint_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "Source plan blueprint not found: {}",
+                source_blueprint_id.as_str()
+            )
+        })?;
+    let cloned_overview =
+        clone_plan_artifact_for_import(state, &source_overview, "cross_project_plan_import")
+            .await?;
+    let cloned_blueprint =
+        clone_plan_artifact_for_import(state, &source_blueprint, "cross_project_plan_import")
+            .await?;
+    state
+        .artifact_repo
+        .add_relation(crate::domain::entities::ArtifactRelation::related_to(
+            cloned_overview.id.clone(),
+            cloned_blueprint.id.clone(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // Build the new session entity with target-owned artifact pointers. This
+    // keeps proposal admission/read acknowledgements local to the target
+    // project while the derived-from relations retain source provenance.
     let new_session_id = IdeationSessionId::new();
     let mut builder = IdeationSession::builder()
         .id(new_session_id)
         .project_id(ProjectId::from_string(target_project_id.clone()))
-        .inherited_plan_artifact_id(bundle.overview_id)
-        .inherited_plan_blueprint_artifact_id(
-            bundle
-                .blueprint_id
-                .clone()
-                .expect("complete v2 bundle has blueprint"),
-        )
+        .plan_artifact_id(cloned_overview.id.clone())
+        .plan_blueprint_artifact_id(cloned_blueprint.id.clone())
         .plan_contract_version(PLAN_CONTRACT_V2)
         .status(IdeationSessionStatus::Active)
         .verification_status(VerificationStatus::ImportedVerified)
@@ -152,9 +191,9 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
     }
 
     let mut new_session = builder.build();
-    new_session.verified_plan_artifact_id = new_session.inherited_plan_artifact_id.clone();
+    new_session.verified_plan_artifact_id = new_session.plan_artifact_id.clone();
     new_session.verified_plan_blueprint_artifact_id =
-        new_session.inherited_plan_blueprint_artifact_id.clone();
+        new_session.plan_blueprint_artifact_id.clone();
 
     // 5+6. Circular import check + INSERT in a single db.run() closure (TOCTOU safety)
     let source_id_for_check = input.source_session_id.clone();

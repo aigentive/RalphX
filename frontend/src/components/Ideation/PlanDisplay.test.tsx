@@ -534,7 +534,7 @@ describe("PlanDisplay", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("calls the action with the selected historical version", async () => {
+    it("hides the action for a selected historical version", async () => {
       const user = userEvent.setup();
       const onStartNewConversationWithPlan = vi.fn();
       const multiVersionPlan: Artifact = {
@@ -555,6 +555,7 @@ describe("PlanDisplay", () => {
         <PlanDisplay
           plan={multiVersionPlan}
           onStartNewConversationWithPlan={onStartNewConversationWithPlan}
+          disableHistoricalNewConversation
         />,
       );
 
@@ -567,13 +568,10 @@ describe("PlanDisplay", () => {
       });
 
       await user.click(screen.getByLabelText("Plan actions"));
-      await user.click(screen.getByText("New Conversation"));
-
-      expect(onStartNewConversationWithPlan).toHaveBeenCalledWith({
-        artifactId: multiVersionPlan.id,
-        title: multiVersionPlan.name,
-        version: 1,
-      });
+      expect(
+        screen.queryByRole("menuitem", { name: /new conversation/i }),
+      ).not.toBeInTheDocument();
+      expect(onStartNewConversationWithPlan).not.toHaveBeenCalled();
     });
   });
 

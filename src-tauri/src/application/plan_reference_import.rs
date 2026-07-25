@@ -16,7 +16,7 @@ const PLAN_REFERENCE_IMPORT_REASON: &str = "agent_plan_reference_import";
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentPlanReferenceImport {
-    pub composer_reference: ComposerArtifactReference,
+    pub composer_references: Vec<ComposerArtifactReference>,
 }
 
 pub(crate) fn selected_plan_reference(
@@ -39,18 +39,18 @@ pub(crate) fn selected_plan_reference(
         .map(|reference| (*reference).clone()))
 }
 
-pub(crate) fn rewrite_imported_plan_reference(
+pub(crate) fn rewrite_imported_plan_references(
     references: &[ComposerArtifactReference],
     source_reference: &ComposerArtifactReference,
-    imported_reference: &ComposerArtifactReference,
+    imported_references: &[ComposerArtifactReference],
 ) -> Vec<ComposerArtifactReference> {
     references
         .iter()
-        .map(|reference| {
+        .flat_map(|reference| {
             if is_same_plan_reference(reference, source_reference) {
-                imported_reference.clone()
+                imported_references.to_vec()
             } else {
-                reference.clone()
+                vec![reference.clone()]
             }
         })
         .collect()
@@ -109,7 +109,9 @@ pub(crate) async fn import_agent_conversation_plan_reference(
         return Err("Selected artifact is not the source session's current overview".to_string());
     }
 
-    let cloned_artifact = clone_plan_artifact(state, &source_artifact).await?;
+    let cloned_artifact =
+        clone_plan_artifact_for_import(state, &source_artifact, PLAN_REFERENCE_IMPORT_CREATOR)
+            .await?;
     let source_blueprint_id = source_bundle
         .blueprint_id
         .as_ref()
@@ -125,7 +127,9 @@ pub(crate) async fn import_agent_conversation_plan_reference(
                 source_blueprint_id.as_str()
             )
         })?;
-    let cloned_blueprint = clone_plan_artifact(state, &source_blueprint).await?;
+    let cloned_blueprint =
+        clone_plan_artifact_for_import(state, &source_blueprint, PLAN_REFERENCE_IMPORT_CREATOR)
+            .await?;
     state
         .artifact_repo
         .add_relation(ArtifactRelation::related_to(
@@ -164,17 +168,27 @@ pub(crate) async fn import_agent_conversation_plan_reference(
     workspace.updated_at = chrono::Utc::now();
 
     Ok(AgentPlanReferenceImport {
-        composer_reference: ComposerArtifactReference {
-            artifact_id: cloned_artifact.id.as_str().to_string(),
-            kind: "plan".to_string(),
-            title: reference
-                .title
-                .clone()
-                .or_else(|| Some(source_artifact.name.clone())),
-            session_id: Some(session.id.as_str().to_string()),
-            version: Some(cloned_artifact.metadata.version),
-            status: Some("draft".to_string()),
-        },
+        composer_references: vec![
+            ComposerArtifactReference {
+                artifact_id: cloned_artifact.id.as_str().to_string(),
+                kind: "plan".to_string(),
+                title: reference
+                    .title
+                    .clone()
+                    .or_else(|| Some(source_artifact.name.clone())),
+                session_id: Some(session.id.as_str().to_string()),
+                version: Some(cloned_artifact.metadata.version),
+                status: Some("draft".to_string()),
+            },
+            ComposerArtifactReference {
+                artifact_id: cloned_blueprint.id.as_str().to_string(),
+                kind: "plan_blueprint".to_string(),
+                title: Some(cloned_blueprint.name.clone()),
+                session_id: Some(session.id.as_str().to_string()),
+                version: Some(cloned_blueprint.metadata.version),
+                status: Some("draft".to_string()),
+            },
+        ],
     })
 }
 
@@ -200,13 +214,17 @@ fn clean_required_value(value: &str, label: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-async fn clone_plan_artifact(state: &AppState, source: &Artifact) -> Result<Artifact, String> {
+pub(crate) async fn clone_plan_artifact_for_import(
+    state: &AppState,
+    source: &Artifact,
+    creator: &str,
+) -> Result<Artifact, String> {
     let new_artifact = Artifact {
         id: ArtifactId::new(),
         artifact_type: source.artifact_type,
         name: source.name.clone(),
         content: source.content.clone(),
-        metadata: ArtifactMetadata::new(PLAN_REFERENCE_IMPORT_CREATOR).with_version(1),
+        metadata: ArtifactMetadata::new(creator).with_version(1),
         derived_from: vec![source.id.clone()],
         bucket_id: source.bucket_id.clone(),
         archived_at: None,
@@ -223,7 +241,7 @@ async fn clone_plan_artifact(state: &AppState, source: &Artifact) -> Result<Arti
             cloned_artifact_id = %created.id,
             source_artifact_id = %source.id,
             error = %error,
-            "Failed to record derived_from relation for agent plan-reference import"
+            "Failed to record derived_from relation for imported plan artifact"
         );
     }
 

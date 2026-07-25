@@ -3909,6 +3909,8 @@ function AgentPlanPanel({
                   planBodyMode === "overview" && {
                     onStartNewConversationWithPlan:
                       handleStartNewConversationWithPlan,
+                    disableHistoricalNewConversation:
+                      planArtifact.planContractVersion === 2,
                   })}
                 isExpanded={isPlanExpanded}
                 onExpandedChange={setIsPlanExpanded}
