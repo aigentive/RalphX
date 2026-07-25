@@ -12,6 +12,9 @@ use super::{
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
+};
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
@@ -23,6 +26,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
 };
+use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
@@ -451,9 +455,9 @@ async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::
     let mut command = Command::new("sh");
     command
         .arg("-c")
-        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; sleep 10")
+        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; exec sleep 10")
         .env("RALPHX_STREAM_LINE", line)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -626,6 +630,91 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
     );
 }
 
+#[tokio::test]
+async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for_eof() {
+    let mut child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"result","session_id":"sess-handoff","is_error":false,"result":"Handoff complete.","cost_usd":0.0}"#,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = "handoff-stream-context";
+    let run_id = "handoff-stream-run";
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    let interactive_registry = Arc::new(InteractiveProcessRegistry::new());
+    let token = interactive_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("handoff fixture stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(matches!(
+        interactive_registry
+            .arm_retire_after_turn_if_owner(&interactive_key, token, run_id)
+            .await,
+        crate::application::interactive_process_registry::InteractiveProcessRetireArmDisposition::AwaitingTurn
+    ));
+
+    let running_impl = Arc::new(MemoryRunningAgentRegistry::new());
+    running_impl
+        .register(
+            RunningAgentKey::new("project", context_id),
+            0,
+            conversation_id.as_str(),
+            run_id.to_string(),
+            None,
+            Some(CancellationToken::new()),
+        )
+        .await;
+    let running_registry: Arc<dyn RunningAgentRegistry> = running_impl;
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process_stream_background::<MockRuntime>(
+            child,
+            AgentHarnessKind::Claude,
+            ChatContextType::Project,
+            context_id,
+            &conversation_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            StreamingStateCache::new(),
+            Some(running_registry),
+            None,
+            Some(run_id.to_string()),
+            None,
+            None,
+            false,
+            false,
+            Some(interactive_registry.clone()),
+            Some(interactive_key.clone()),
+            Some(token),
+        ),
+    )
+    .await
+    .expect("TurnComplete mode handoff should not wait for process EOF")
+    .expect("mode handoff is a successful retirement, never a user cancellation");
+
+    assert!(outcome.mode_handoff_exit);
+    assert!(outcome.silent_interactive_exit);
+    assert!(
+        interactive_registry
+            .capture_owner(&interactive_key)
+            .await
+            .is_none(),
+        "TurnComplete must retire exactly the armed IPR owner"
+    );
+}
+
 async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
@@ -699,6 +788,10 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
     assert_eq!(outcome.response_text, "Done.");
     assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
     assert_eq!(outcome.turns_finalized, 0);
+    assert!(
+        !outcome.mode_handoff_exit,
+        "Codex no-EOF completion remains a normal provider completion"
+    );
 }
 
 #[tokio::test]

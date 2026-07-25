@@ -207,8 +207,14 @@ function getWorkspaceBasePickerKey(
 
 interface PendingPlanModeSwitch {
   conversationId: string;
+  proposalKey: string;
   attempt: number;
   autoContinueMessage: string | null;
+}
+
+interface PlanModeProposalAttempt {
+  committed: boolean;
+  inFlight: Promise<boolean> | null;
 }
 
 function getPlanModeProposalConversationId(
@@ -910,6 +916,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const pendingPlanModeSwitchConversationIdRef = useRef<string | null>(null);
   const pendingPlanModeSwitchAutoContinueMessageRef = useRef<string | null>(null);
   const pendingPlanModeSwitchRetryCountRef = useRef(0);
+  const planModeProposalAttemptsRef = useRef(
+    new Map<string, PlanModeProposalAttempt>(),
+  );
   const workspaceBasePullRequestRequestRef = useRef(0);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
@@ -2447,6 +2456,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         deferIfRunning?: boolean;
         showDeferredToast?: boolean;
         autoContinueMessage?: string | null;
+        proposalKey: string;
       },
     ): Promise<boolean> => {
       try {
@@ -2515,6 +2525,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           pendingPlanModeSwitchRetryCountRef.current = nextAttempt;
           setPendingPlanModeSwitch({
             conversationId,
+            proposalKey: options.proposalKey,
             attempt: nextAttempt,
             autoContinueMessage:
               pendingPlanModeSwitchAutoContinueMessageRef.current,
@@ -2535,6 +2546,86 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     [continuePlanModeConversation, onConversationModeSwitched, queryClient],
   );
 
+  const attemptPlanModeProposal = useCallback(
+    (
+      proposalKey: string,
+      conversationId: string,
+      autoContinueMessage: string,
+      options?: { initiallyPlan?: true },
+    ): Promise<boolean> => {
+      let attempt = planModeProposalAttemptsRef.current.get(proposalKey);
+      if (!attempt) {
+        attempt = { committed: false, inFlight: null };
+        planModeProposalAttemptsRef.current.set(proposalKey, attempt);
+      }
+      if (attempt.committed) {
+        return Promise.resolve(true);
+      }
+      if (attempt.inFlight) {
+        return attempt.inFlight;
+      }
+
+      const activation = (async () => {
+        const cachedWorkspace =
+          queryClient.getQueryData<AgentConversationWorkspace>(
+            agentWorkspaceKeys.workspace(conversationId),
+          );
+        const isAlreadyPlan =
+          cachedWorkspace?.mode === "plan" || options?.initiallyPlan === true;
+        if (isAlreadyPlan) {
+          attempt.committed = true;
+          if (
+            pendingPlanModeSwitchConversationIdRef.current === conversationId
+          ) {
+            pendingPlanModeSwitchConversationIdRef.current = null;
+            pendingPlanModeSwitchAutoContinueMessageRef.current = null;
+            pendingPlanModeSwitchRetryCountRef.current = 0;
+            setPendingPlanModeSwitch(null);
+          }
+          onConversationModeSwitched(
+            conversationId,
+            "plan",
+            cachedWorkspace ?? activeWorkspace,
+          );
+          await continuePlanModeConversation(conversationId, autoContinueMessage);
+          return true;
+        }
+
+        const switched = await switchConversationToPlanMode(conversationId, {
+          deferIfRunning: true,
+          showDeferredToast: false,
+          autoContinueMessage,
+          proposalKey,
+        });
+        if (switched) {
+          attempt.committed = true;
+        }
+        return switched;
+      })();
+      attempt.inFlight = activation;
+      void activation.then(
+        () => {
+          if (attempt.inFlight === activation) {
+            attempt.inFlight = null;
+          }
+        },
+        () => {
+          if (attempt.inFlight === activation) {
+            attempt.inFlight = null;
+          }
+        },
+      );
+      return activation;
+    },
+    [
+      activeWorkspace,
+      continuePlanModeConversation,
+      onConversationModeSwitched,
+      queryClient,
+      switchConversationToPlanMode,
+    ],
+  );
+
   useEffect(() => {
     if (!pendingPlanModeSwitch) {
       return;
@@ -2553,18 +2644,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
       eventRetryTimer = window.setTimeout(() => {
         eventRetryTimer = undefined;
-        void switchConversationToPlanMode(conversationId, {
-          deferIfRunning: true,
-          showDeferredToast: false,
-        });
+        void attemptPlanModeProposal(
+          pendingPlanModeSwitch.proposalKey,
+          conversationId,
+          pendingPlanModeSwitch.autoContinueMessage ?? "",
+        );
       }, PLAN_MODE_SWITCH_EVENT_RETRY_DELAY_MS);
     };
     fallbackRetryTimer = window.setTimeout(() => {
       fallbackRetryTimer = undefined;
-      void switchConversationToPlanMode(conversationId, {
-        deferIfRunning: true,
-        showDeferredToast: false,
-      });
+      void attemptPlanModeProposal(
+        pendingPlanModeSwitch.proposalKey,
+        conversationId,
+        pendingPlanModeSwitch.autoContinueMessage ?? "",
+      );
     }, PLAN_MODE_SWITCH_FALLBACK_RETRY_DELAY_MS);
 
     const unsubscribeRunCompleted = bus.subscribe<AgentRunCompletedPayload>(
@@ -2586,7 +2679,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         window.clearTimeout(fallbackRetryTimer);
       }
     };
-  }, [bus, pendingPlanModeSwitch, switchConversationToPlanMode]);
+  }, [attemptPlanModeProposal, bus, pendingPlanModeSwitch]);
 
   const handleQuestionAnswered = useCallback(
     async (
@@ -2623,16 +2716,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
       const autoContinueMessage =
         buildPlanModeProposalContinuationMessage(question);
+      const cachedWorkspace = queryClient.getQueryData<AgentConversationWorkspace>(
+        agentWorkspaceKeys.workspace(selectedConversationId),
+      );
+      const isAlreadyPlan =
+        activeConversationMode === "plan" ||
+        activeWorkspace?.mode === "plan" ||
+        cachedWorkspace?.mode === "plan";
 
-      if (activeConversationMode === "plan") {
-        onConversationModeSwitched(
-          selectedConversationId,
-          "plan",
-          activeWorkspace,
-        );
-        await continuePlanModeConversation(
+      if (isAlreadyPlan) {
+        await attemptPlanModeProposal(
+          `${proposalConversationId}:${question.requestId}`,
           selectedConversationId,
           autoContinueMessage,
+          { initiallyPlan: true },
         );
         return;
       }
@@ -2645,10 +2742,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return;
       }
 
-      await switchConversationToPlanMode(selectedConversationId, {
-        deferIfRunning: true,
+      await attemptPlanModeProposal(
+        `${proposalConversationId}:${question.requestId}`,
+        selectedConversationId,
         autoContinueMessage,
-      });
+      );
     },
     [
       activeConversation.agentMode,
@@ -2658,12 +2756,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       resolvedConversationModeLocked,
       activeWorkspace,
       automationConfigId,
-      continuePlanModeConversation,
+      attemptPlanModeProposal,
       isFocusedChildChat,
-      onConversationModeSwitched,
       queryClient,
       selectedConversationId,
-      switchConversationToPlanMode,
     ],
   );
 

@@ -43,12 +43,48 @@ pub struct InteractiveProcess {
     pub metadata: InteractiveProcessMetadata,
     token: InteractiveProcessToken,
     state: InteractiveProcessState,
+    retire_after_turn: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractiveProcessState {
     Active,
     Idle,
+}
+
+/// Result of completing a concrete interactive-process turn.
+///
+/// Only the entry's original token and launch run id may settle a turn. This keeps
+/// delayed stream events from changing the lifecycle of a replacement registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractiveProcessTurnCompleteDisposition {
+    Stale,
+    KeepAlive,
+    RetireAfterTurn,
+}
+
+/// Result of staging retirement for one concrete interactive-process registration.
+///
+/// The caller must commit an `IdleReady` retirement separately after its reversible
+/// staging work succeeds. Keeping the idle entry registered until that point lets a
+/// failed stage disarm it and resume normal writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractiveProcessRetireArmDisposition {
+    Stale,
+    AwaitingTurn,
+    IdleReady,
+}
+
+/// Read-only retirement status for one exact interactive-process owner.
+///
+/// `Stale` covers a missing entry, a missing/blank run id, or a token/run-id
+/// mismatch. The other variants expose the current state without arming or
+/// otherwise changing the registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractiveProcessRetireAfterTurnDisposition {
+    Stale,
+    Active { is_armed: bool },
+    Idle { is_armed: bool },
 }
 
 /// Monotonic identity for one concrete registry entry.
@@ -58,6 +94,38 @@ pub enum InteractiveProcessState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InteractiveProcessToken(u64);
 
+/// Why a write through an interactive-process registration did not complete.
+///
+/// `StdinIo` carries the exact registration token that owned the handle when the
+/// I/O operation failed. Callers may remove only that token, never whichever
+/// process later happens to use the same context key.
+#[derive(Debug, thiserror::Error)]
+pub enum InteractiveProcessWriteError {
+    #[error("no interactive process for {context_type}/{context_id}")]
+    Missing {
+        context_type: String,
+        context_id: String,
+    },
+    #[error(
+        "interactive process for {context_type}/{context_id} is retiring after the current turn"
+    )]
+    Retiring {
+        context_type: String,
+        context_id: String,
+    },
+    #[error(
+        "failed to {operation} interactive process stdin for {context_type}/{context_id}: {source}"
+    )]
+    StdinIo {
+        context_type: String,
+        context_id: String,
+        token: InteractiveProcessToken,
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteractiveProcessMetadata {
     pub agent_run_id: Option<String>,
@@ -65,6 +133,18 @@ pub struct InteractiveProcessMetadata {
     pub provider_session_id: Option<String>,
     pub persona_id: Option<String>,
     pub persona_content_hash: Option<String>,
+}
+
+/// Immutable identity and metadata captured from the current registry entry.
+///
+/// A snapshot is available only when the entry has a non-blank launch run id.
+/// Callers must still pass both the token and run id to exact-owner operations,
+/// because a later registration under the same key can replace this owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractiveProcessOwnerSnapshot {
+    pub token: InteractiveProcessToken,
+    pub agent_run_id: String,
+    pub metadata: InteractiveProcessMetadata,
 }
 
 /// Registry for interactive CLI processes with open stdin handles.
@@ -134,6 +214,7 @@ impl InteractiveProcessRegistry {
             metadata,
             token,
             state: InteractiveProcessState::Active,
+            retire_after_turn: false,
         };
         processes.insert(key, entry);
         (completion_signal, token)
@@ -147,21 +228,29 @@ impl InteractiveProcessRegistry {
 
     /// Write a message to the stdin of a running interactive process.
     ///
-    /// Returns Ok(()) if the write succeeded, Err if no process found or write failed.
+    /// Returns Ok(()) if the write succeeded, otherwise a typed outcome for the
+    /// missing, retiring, or exact-token stdin I/O failure case.
     /// The Claude CLI reads stdin line-by-line in interactive mode, so messages
     /// should end with a newline (this method appends one if missing).
     pub async fn write_message(
         &self,
         key: &InteractiveProcessKey,
         message: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), InteractiveProcessWriteError> {
         let mut processes = self.processes.lock().await;
-        let entry = processes.get_mut(key).ok_or_else(|| {
-            format!(
-                "No interactive process for {}/{}",
-                key.context_type, key.context_id
-            )
-        })?;
+        let entry =
+            processes
+                .get_mut(key)
+                .ok_or_else(|| InteractiveProcessWriteError::Missing {
+                    context_type: key.context_type.clone(),
+                    context_id: key.context_id.clone(),
+                })?;
+        if entry.retire_after_turn {
+            return Err(InteractiveProcessWriteError::Retiring {
+                context_type: key.context_type.clone(),
+                context_id: key.context_id.clone(),
+            });
+        }
         // The registry lock serializes this ownership transition against idle retirement.
         entry.state = InteractiveProcessState::Active;
 
@@ -172,19 +261,30 @@ impl InteractiveProcessRegistry {
             format!("{}\n", message)
         };
 
-        entry.stdin.write_all(msg.as_bytes()).await.map_err(|e| {
-            format!(
-                "Failed to write to interactive process stdin for {}/{}: {}",
-                key.context_type, key.context_id, e
-            )
-        })?;
+        let token = entry.token;
+        entry
+            .stdin
+            .write_all(msg.as_bytes())
+            .await
+            .map_err(|source| InteractiveProcessWriteError::StdinIo {
+                context_type: key.context_type.clone(),
+                context_id: key.context_id.clone(),
+                token,
+                operation: "write to",
+                source,
+            })?;
 
-        entry.stdin.flush().await.map_err(|e| {
-            format!(
-                "Failed to flush interactive process stdin for {}/{}: {}",
-                key.context_type, key.context_id, e
-            )
-        })
+        entry
+            .stdin
+            .flush()
+            .await
+            .map_err(|source| InteractiveProcessWriteError::StdinIo {
+                context_type: key.context_type.clone(),
+                context_id: key.context_id.clone(),
+                token,
+                operation: "flush",
+                source,
+            })
     }
 
     /// Remove and return the InteractiveProcess for a context (e.g., on process exit).
@@ -230,13 +330,123 @@ impl InteractiveProcessRegistry {
         true
     }
 
-    /// Atomically retire only an idle registration so a concurrent stdin write wins.
+    /// Stage retirement after the current turn for exactly one launch registration.
+    ///
+    /// An already idle entry remains registered but armed until the caller commits
+    /// its retirement with `retire_armed_idle_if_owner`. A stale token or run id
+    /// cannot arm a replacement.
+    pub async fn arm_retire_after_turn_if_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+    ) -> InteractiveProcessRetireArmDisposition {
+        let mut processes = self.processes.lock().await;
+        let Some(entry) = processes.get_mut(key) else {
+            return InteractiveProcessRetireArmDisposition::Stale;
+        };
+        if entry.token != token || entry.metadata.agent_run_id.as_deref() != Some(agent_run_id) {
+            return InteractiveProcessRetireArmDisposition::Stale;
+        }
+
+        entry.retire_after_turn = true;
+        if entry.state == InteractiveProcessState::Idle {
+            InteractiveProcessRetireArmDisposition::IdleReady
+        } else {
+            InteractiveProcessRetireArmDisposition::AwaitingTurn
+        }
+    }
+
+    /// Retire exactly one staged, idle registration after the caller commits its work.
+    ///
+    /// The returned entry exposes the exact launch metadata to the caller. A stale
+    /// owner, active entry, or unarmed idle entry remains registered and returns None.
+    pub async fn retire_armed_idle_if_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+    ) -> Option<InteractiveProcess> {
+        let mut processes = self.processes.lock().await;
+        let is_exact_armed_idle = match processes.get(key) {
+            Some(entry)
+                if entry.token == token
+                    && entry.metadata.agent_run_id.as_deref() == Some(agent_run_id) =>
+            {
+                entry.retire_after_turn && entry.state == InteractiveProcessState::Idle
+            }
+            _ => false,
+        };
+
+        if is_exact_armed_idle {
+            processes.remove(key)
+        } else {
+            None
+        }
+    }
+
+    /// Cancel a staged exact-owner retirement while preserving the entry and its state.
+    pub async fn disarm_retire_after_turn_if_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+    ) -> bool {
+        let mut processes = self.processes.lock().await;
+        let Some(entry) = processes.get_mut(key) else {
+            return false;
+        };
+        if entry.token != token || entry.metadata.agent_run_id.as_deref() != Some(agent_run_id) {
+            return false;
+        }
+        if !entry.retire_after_turn {
+            return false;
+        }
+        entry.retire_after_turn = false;
+        true
+    }
+
+    /// Settle a turn only for its exact registration and launch run owner.
+    ///
+    /// Retirement removes the entry atomically so the returned disposition is enough
+    /// for the caller to choose terminal event handling without a second registry read.
+    pub async fn complete_turn_if_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+    ) -> InteractiveProcessTurnCompleteDisposition {
+        let mut processes = self.processes.lock().await;
+        let retire_after_turn = match processes.get(key) {
+            Some(entry)
+                if entry.token == token
+                    && entry.metadata.agent_run_id.as_deref() == Some(agent_run_id) =>
+            {
+                entry.retire_after_turn
+            }
+            _ => return InteractiveProcessTurnCompleteDisposition::Stale,
+        };
+
+        if retire_after_turn {
+            processes.remove(key);
+            InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+        } else if let Some(entry) = processes.get_mut(key) {
+            entry.state = InteractiveProcessState::Idle;
+            InteractiveProcessTurnCompleteDisposition::KeepAlive
+        } else {
+            InteractiveProcessTurnCompleteDisposition::Stale
+        }
+    }
+
+    /// Atomically retire only an unarmed idle registration so a concurrent stdin write wins.
+    ///
+    /// A staged owner retirement must use `retire_armed_idle_if_owner` after commit;
+    /// this keeps reversible staging from being bypassed by generic idle cleanup.
     pub async fn retire_if_idle(&self, key: &InteractiveProcessKey) -> Option<InteractiveProcess> {
         let mut processes = self.processes.lock().await;
-        if processes
-            .get(key)
-            .is_some_and(|entry| entry.state == InteractiveProcessState::Idle)
-        {
+        if processes.get(key).is_some_and(|entry| {
+            entry.state == InteractiveProcessState::Idle && !entry.retire_after_turn
+        }) {
             processes.remove(key)
         } else {
             None
@@ -261,6 +471,62 @@ impl InteractiveProcessRegistry {
     ) -> Option<InteractiveProcessMetadata> {
         let processes = self.processes.lock().await;
         processes.get(key).map(|entry| entry.metadata.clone())
+    }
+
+    /// Capture the current exact owner and metadata for a key.
+    ///
+    /// Entries without a usable run id fail closed so callers never guess an
+    /// owner from a key alone. The returned snapshot is read-only and may become
+    /// stale if a subsequent registration replaces the key.
+    pub async fn capture_owner(
+        &self,
+        key: &InteractiveProcessKey,
+    ) -> Option<InteractiveProcessOwnerSnapshot> {
+        let processes = self.processes.lock().await;
+        let entry = processes.get(key)?;
+        let agent_run_id = entry.metadata.agent_run_id.as_deref()?;
+        if agent_run_id.trim().is_empty() {
+            return None;
+        }
+
+        Some(InteractiveProcessOwnerSnapshot {
+            token: entry.token,
+            agent_run_id: agent_run_id.to_owned(),
+            metadata: entry.metadata.clone(),
+        })
+    }
+
+    /// Read the retirement state only when the supplied token and run id still
+    /// identify the current entry. This never arms, disarms, retires, or marks
+    /// the process idle, making it safe for cancellation and watchdog checks.
+    pub async fn retire_after_turn_disposition_if_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+    ) -> InteractiveProcessRetireAfterTurnDisposition {
+        if agent_run_id.trim().is_empty() {
+            return InteractiveProcessRetireAfterTurnDisposition::Stale;
+        }
+
+        let processes = self.processes.lock().await;
+        let Some(entry) = processes.get(key) else {
+            return InteractiveProcessRetireAfterTurnDisposition::Stale;
+        };
+        if entry.token != token || entry.metadata.agent_run_id.as_deref() != Some(agent_run_id) {
+            return InteractiveProcessRetireAfterTurnDisposition::Stale;
+        }
+
+        match entry.state {
+            InteractiveProcessState::Active => {
+                InteractiveProcessRetireAfterTurnDisposition::Active {
+                    is_armed: entry.retire_after_turn,
+                }
+            }
+            InteractiveProcessState::Idle => InteractiveProcessRetireAfterTurnDisposition::Idle {
+                is_armed: entry.retire_after_turn,
+            },
+        }
     }
 
     /// Remove all registered processes.

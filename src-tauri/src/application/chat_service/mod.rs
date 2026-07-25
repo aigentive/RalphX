@@ -21,6 +21,7 @@ mod chat_service_merge;
 mod chat_service_mock;
 mod chat_service_queue;
 mod chat_service_recovery;
+mod chat_service_runtime_handoff;
 #[cfg(test)]
 mod mcp_policy_launch_seam_tests;
 mod resolved_conversation_spawn_context;
@@ -47,6 +48,8 @@ mod verification_child_process_registry_tests;
 #[cfg(test)]
 mod chat_service_runtime_continuity_tests;
 #[cfg(test)]
+mod chat_service_runtime_handoff_tests;
+#[cfg(test)]
 mod continuation_runtime_tests;
 
 use crate::application::agent_conversation_workspace::{
@@ -65,7 +68,7 @@ use crate::application::integration_reference_expansion::{
 };
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
-    InteractiveProcessToken,
+    InteractiveProcessToken, InteractiveProcessWriteError,
 };
 use crate::application::notification_service::NotificationService;
 use crate::application::persona_prompt::ResolvedPersona;
@@ -169,6 +172,11 @@ pub use chat_service_queue::{
     process_queued_messages_for_test, process_queued_messages_for_test_with_persona_feature,
 };
 pub use chat_service_replay::{build_rehydration_prompt, ConversationReplay, ReplayBuilder, Turn};
+pub use chat_service_runtime_handoff::{
+    RuntimeHandoffCapture, RuntimeHandoffCompensationOutcome, RuntimeHandoffKickOutcome,
+    RuntimeHandoffOutcome, RuntimeHandoffOwner, RuntimeHandoffReleaseOutcome,
+    RuntimeHandoffReservation,
+};
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_assistant_message_for_test;
 #[doc(hidden)]
@@ -1250,6 +1258,15 @@ pub enum SendQueuePolicy {
     RequireImmediateStart,
 }
 
+/// Selects the ownership rule for a queued-message delivery transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueuedMessageSendPolicy {
+    /// User-triggered send-now retains the historical stop-then-relaunch behavior.
+    ManualNow,
+    /// Runtime handoff may only reserve a fresh slot; it must not disturb an owner.
+    RuntimeHandoff,
+}
+
 /// Options for customizing message sending behavior.
 #[derive(Debug, Default, Clone)]
 pub struct SendMessageOptions {
@@ -1257,6 +1274,9 @@ pub struct SendMessageOptions {
     pub preallocated_agent_run_id: Option<AgentRunId>,
     /// Queue/defer behavior for this send. Reserved workflow attempts require an immediate start.
     pub queue_policy: SendQueuePolicy,
+    /// Internal recovery send: refuse any existing IPR owner before the normal
+    /// interactive path can retire, remove, or write to it.
+    pub runtime_handoff_recovery: bool,
     /// Backend-owned semantic role for orchestrated launches whose parent context
     /// cannot be reconstructed from the delegated conversation alone.
     pub routing_role_override: Option<RoutingRole>,
@@ -1415,6 +1435,78 @@ pub trait ChatService: Send + Sync {
         message_id: &str,
     ) -> Result<SendResult, ChatServiceError>;
 
+    /// Launch one stable handoff row without interrupting an existing owner.
+    /// Implementations must restore the row when immediate launch authority is
+    /// unavailable or spawn fails.
+    async fn send_queued_message_for_runtime_handoff(
+        &self,
+        _context_type: ChatContextType,
+        _context_id: &str,
+        _message_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        Err(ChatServiceError::SpawnFailed(
+            "runtime-handoff queued send is unavailable".to_string(),
+        ))
+    }
+
+    /// Re-enter the canonical queued-send path for one durable project handoff.
+    ///
+    /// Recovery callers pass the conversation-scoped queue key and stable queued
+    /// message ID. A result is "started" only when the normal send path actually
+    /// reserved a replacement run; all retained/deferred rows remain recoverable.
+    async fn kick_runtime_handoff(
+        &self,
+        conversation_id: &ChatConversationId,
+        message_id: &str,
+    ) -> RuntimeHandoffKickOutcome {
+        if message_id.trim().is_empty() {
+            return RuntimeHandoffKickOutcome::Failed;
+        }
+        let conversation_id = conversation_id.as_str();
+
+        match self
+            .send_queued_message_for_runtime_handoff(
+                ChatContextType::Project,
+                &conversation_id,
+                message_id,
+            )
+            .await
+        {
+            Ok(result) => chat_service_runtime_handoff::map_runtime_handoff_kick_send_result(
+                Some(&result),
+                false,
+            ),
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    queued_message_id = message_id,
+                    error = %error,
+                    "Runtime-handoff queue kick did not start immediately"
+                );
+                match self
+                    .get_queued_messages(ChatContextType::Project, &conversation_id)
+                    .await
+                {
+                    Ok(messages) => {
+                        chat_service_runtime_handoff::map_runtime_handoff_kick_send_result(
+                            None,
+                            messages.iter().any(|message| message.id == message_id),
+                        )
+                    }
+                    Err(read_error) => {
+                        tracing::warn!(
+                            conversation_id = %conversation_id,
+                            queued_message_id = message_id,
+                            error = %read_error,
+                            "Could not verify post-commit runtime-handoff recovery row"
+                        );
+                        RuntimeHandoffKickOutcome::Failed
+                    }
+                }
+            }
+        }
+    }
+
     /// Get or create a conversation for a context.
     /// Returns `(conversation, is_new)` where `is_new` is `true` when a new conversation was created.
     async fn get_or_create_conversation(
@@ -1476,6 +1568,68 @@ pub trait ChatService: Send + Sync {
     /// Override the InteractiveProcessRegistry at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses std::sync::Mutex.
     fn set_interactive_process_registry(&self, _registry: Arc<InteractiveProcessRegistry>) {}
+
+    /// Capture an exact interactive owner only when the running-agent and
+    /// interactive-process registries agree on the same live launch identity.
+    async fn capture_runtime_handoff_owner(
+        &self,
+        _context_type: ChatContextType,
+        _runtime_context_id: &str,
+    ) -> RuntimeHandoffCapture {
+        RuntimeHandoffCapture::FailedOrUncertain
+    }
+
+    /// Atomically reserve a stable no-owner slot for a request while it stages
+    /// its durable handoff. Only callers that already captured `NoOwner` may use
+    /// this; the reservation is exclusion-only and must release before a kick.
+    async fn reserve_no_owner_runtime_handoff(
+        &self,
+        _context_type: ChatContextType,
+        _runtime_context_id: &str,
+        _request_id: &str,
+    ) -> Result<RuntimeHandoffReservation, String> {
+        Err("runtime-handoff reservation is unavailable".to_string())
+    }
+
+    /// Release only the request-owned no-owner handoff reservation and verify
+    /// that it no longer owns the running-agent slot.
+    async fn release_no_owner_runtime_handoff(
+        &self,
+        _reservation: &RuntimeHandoffReservation,
+    ) -> RuntimeHandoffReleaseOutcome {
+        RuntimeHandoffReleaseOutcome::FailedOrUncertain
+    }
+
+    /// Stage one durable continuation and exact runtime retirement before an
+    /// accepted mode-change answer is committed. The caller must preserve the
+    /// returned durable state on `DurablyRecoverable` and only compensate before
+    /// answer commit.
+    async fn stage_runtime_handoff(
+        &self,
+        _owner: RuntimeHandoffOwner,
+        _continuation: QueuedMessage,
+    ) -> RuntimeHandoffOutcome {
+        RuntimeHandoffOutcome::Failed
+    }
+
+    /// Arm the post-commit watchdog for an accepted handoff. The source stream
+    /// performs the eventual canonical queue drain with a fresh cancellation token.
+    fn activate_runtime_handoff_watchdog(&self, _owner: RuntimeHandoffOwner) {}
+
+    /// Undo an uncommitted handoff's request-owned queue row and retirement arm.
+    async fn compensate_runtime_handoff(
+        &self,
+        _owner: RuntimeHandoffOwner,
+        _continuation_id: &str,
+    ) -> RuntimeHandoffCompensationOutcome {
+        RuntimeHandoffCompensationOutcome::DurablyRecoverable
+    }
+
+    /// Finalize an already-idle retiring owner after answer commit. A false result
+    /// leaves the durable continuation available to normal recovery.
+    async fn finalize_idle_runtime_handoff(&self, _owner: RuntimeHandoffOwner) -> bool {
+        false
+    }
 }
 
 // ============================================================================
@@ -1840,6 +1994,132 @@ impl<R: Runtime> AppChatService<R> {
                 "failed to restore durable queued message"
             );
         }
+    }
+
+    /// Deliver one selected queue row according to its ownership policy.
+    ///
+    /// This owns the whole take/resolve/send/restore transaction so manual send-now
+    /// and runtime handoff cannot drift in payload construction or queue accounting.
+    async fn send_queued_message_with_policy(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+        policy: QueuedMessageSendPolicy,
+    ) -> Result<SendResult, ChatServiceError> {
+        let queued_msg = self
+            .take_queued_message(context_type, context_id, message_id)
+            .await?;
+
+        let (send_context_id, conversation_id_override) = if context_type
+            == ChatContextType::Project
+            && uuid::Uuid::parse_str(context_id).is_ok()
+        {
+            let conversation_id = ChatConversationId::from_string(context_id.to_string());
+            match self
+                .conversation_repo
+                .get_by_id(&conversation_id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+            {
+                Ok(Some(conversation)) if conversation.context_type == context_type => {
+                    (conversation.context_id.clone(), Some(conversation.id))
+                }
+                Ok(Some(conversation)) => {
+                    self.restore_queued_front(context_type, context_id, queued_msg)
+                        .await;
+                    return Err(ChatServiceError::ContextNotFound(format!(
+                        "Conversation {} belongs to {} not {}",
+                        conversation_id, conversation.context_type, context_type
+                    )));
+                }
+                Ok(None) => (context_id.to_string(), None),
+                Err(error) => {
+                    self.restore_queued_front(context_type, context_id, queued_msg)
+                        .await;
+                    return Err(error);
+                }
+            }
+        } else {
+            (context_id.to_string(), None)
+        };
+
+        if policy == QueuedMessageSendPolicy::ManualNow {
+            let running_key = RunningAgentKey::new(context_type.to_string(), context_id);
+            let interactive_key = InteractiveProcessKey::new(context_type.to_string(), context_id);
+            let has_running_process = self.running_agent_registry.is_running(&running_key).await
+                || self.ipr().has_process(&interactive_key).await;
+
+            if has_running_process {
+                if let Err(error) = self.stop_agent(context_type, context_id).await {
+                    self.restore_queued_front(context_type, context_id, queued_msg)
+                        .await;
+                    return Err(error);
+                }
+            }
+        }
+
+        let created_at = queued_msg
+            .created_at_override
+            .as_deref()
+            .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+            .map(|timestamp| timestamp.with_timezone(&chrono::Utc));
+        let queued_message_id = queued_msg.id.clone();
+        let send_options = SendMessageOptions {
+            queue_policy: if policy == QueuedMessageSendPolicy::RuntimeHandoff {
+                SendQueuePolicy::RequireImmediateStart
+            } else {
+                SendQueuePolicy::default()
+            },
+            runtime_handoff_recovery: policy == QueuedMessageSendPolicy::RuntimeHandoff,
+            metadata: queued_msg.metadata_override.clone(),
+            created_at,
+            harness_override: queued_msg.harness_override,
+            agent_name_override: queued_msg.agent_name_override.clone(),
+            persona_directive: queued_msg.persona_directive.clone(),
+            model_override: queued_msg.model_override.clone(),
+            logical_effort_override: queued_msg.logical_effort_override,
+            service_tier_override: queued_msg.service_tier_override.clone(),
+            preserve_conversation_provider_session_ref: queued_msg
+                .preserve_conversation_provider_session_ref,
+            force_new_provider_session: queued_msg.force_new_provider_session,
+            conversation_id_override,
+            composer_project_references: queued_msg.composer_project_references.clone(),
+            composer_integration_references: queued_msg.composer_integration_references.clone(),
+            composer_artifact_references: queued_msg.composer_artifact_references.clone(),
+            composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
+            composer_excerpt_references: queued_msg.composer_excerpt_references.clone(),
+            attachment_ids: queued_msg.attachment_ids.clone(),
+            ..Default::default()
+        };
+        let result = match self
+            .send_message(
+                context_type,
+                &send_context_id,
+                &queued_msg.content,
+                send_options,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.restore_queued_front(context_type, context_id, queued_msg)
+                    .await;
+                return Err(error);
+            }
+        };
+
+        self.emit_event(
+            "agent:queue_sent",
+            AgentQueueSentPayload {
+                message_id: queued_message_id,
+                conversation_id: result.conversation_id.clone(),
+                context_type: context_type.to_string(),
+                context_id: context_id.to_string(),
+            },
+        );
+
+        Ok(result)
     }
 
     pub fn with_execution_settings_repo(
@@ -4629,6 +4909,98 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         *self.webhook_publisher.lock().unwrap() = webhook_publisher;
     }
 
+    async fn capture_runtime_handoff_owner(
+        &self,
+        context_type: ChatContextType,
+        runtime_context_id: &str,
+    ) -> RuntimeHandoffCapture {
+        chat_service_runtime_handoff::capture_runtime_handoff_owner(
+            &self.running_agent_registry,
+            &self.ipr(),
+            context_type,
+            runtime_context_id,
+        )
+        .await
+    }
+
+    async fn reserve_no_owner_runtime_handoff(
+        &self,
+        context_type: ChatContextType,
+        runtime_context_id: &str,
+        request_id: &str,
+    ) -> Result<RuntimeHandoffReservation, String> {
+        chat_service_runtime_handoff::reserve_no_owner_runtime_handoff(
+            &self.running_agent_registry,
+            context_type,
+            runtime_context_id,
+            request_id,
+        )
+        .await
+        .map_err(|error| match error {
+            TryRegisterError::Occupied(existing) => format!(
+                "runtime-handoff slot is owned by agent run {}",
+                existing.agent_run_id
+            ),
+            TryRegisterError::Storage(error) => {
+                format!("failed to reserve runtime-handoff slot: {error}")
+            }
+        })
+    }
+
+    async fn release_no_owner_runtime_handoff(
+        &self,
+        reservation: &RuntimeHandoffReservation,
+    ) -> RuntimeHandoffReleaseOutcome {
+        chat_service_runtime_handoff::release_no_owner_runtime_handoff(
+            &self.running_agent_registry,
+            reservation,
+        )
+        .await
+    }
+
+    async fn stage_runtime_handoff(
+        &self,
+        owner: RuntimeHandoffOwner,
+        continuation: QueuedMessage,
+    ) -> RuntimeHandoffOutcome {
+        chat_service_runtime_handoff::stage_runtime_handoff(
+            self.queued_message_repo.as_ref(),
+            &self.message_queue,
+            &self.running_agent_registry,
+            &self.ipr(),
+            &owner,
+            continuation,
+        )
+        .await
+    }
+
+    fn activate_runtime_handoff_watchdog(&self, owner: RuntimeHandoffOwner) {
+        chat_service_runtime_handoff::activate_runtime_handoff_watchdog(
+            Arc::clone(&self.running_agent_registry),
+            self.ipr(),
+            owner,
+        );
+    }
+
+    async fn compensate_runtime_handoff(
+        &self,
+        owner: RuntimeHandoffOwner,
+        continuation_id: &str,
+    ) -> RuntimeHandoffCompensationOutcome {
+        chat_service_runtime_handoff::compensate_runtime_handoff(
+            self.queued_message_repo.as_ref(),
+            &self.message_queue,
+            &self.ipr(),
+            &owner,
+            continuation_id,
+        )
+        .await
+    }
+
+    async fn finalize_idle_runtime_handoff(&self, owner: RuntimeHandoffOwner) -> bool {
+        chat_service_runtime_handoff::finalize_idle_runtime_handoff(&self.ipr(), &owner).await
+    }
+
     async fn send_message(
         &self,
         context_type: ChatContextType,
@@ -4836,6 +5208,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             InteractiveProcessKey::new(context_type.to_string(), &runtime_context_id);
         let ipr_ref = self.ipr();
         let mut has_ipr_entry = ipr_ref.has_process(&interactive_key).await;
+        if has_ipr_entry && options.runtime_handoff_recovery {
+            return Err(ChatServiceError::SpawnFailed(
+                "immediate runtime-handoff launch blocked by an interactive process".to_string(),
+            ));
+        }
         let mut interactive_process_metadata = if has_ipr_entry {
             ipr_ref.get_metadata(&interactive_key).await
         } else {
@@ -5402,17 +5779,49 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         ..Default::default()
                     });
                 }
-                Err(e) => {
+                Err(InteractiveProcessWriteError::Retiring { .. }) => {
+                    let queued = self
+                        .enqueue_pending_send(
+                            context_type,
+                            &runtime_context_id,
+                            message,
+                            &options,
+                            Some(conversation.id.as_str().to_string()),
+                        )
+                        .await?;
+                    tracing::info!(
+                        %context_type,
+                        context_id,
+                        runtime_context_id = %runtime_context_id,
+                        queued_message_id = %queued.id,
+                        "chat_service.send_message: retiring interactive owner queued follow-up"
+                    );
+                    return Ok(SendResult {
+                        conversation_id: conversation.id.as_str().to_string(),
+                        agent_run_id: interactive_process_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.agent_run_id.clone())
+                            .unwrap_or_default(),
+                        is_new_conversation: false,
+                        was_queued: true,
+                        queued_message_id: Some(queued.id),
+                        queued_as_pending: false,
+                    });
+                }
+                Err(error @ InteractiveProcessWriteError::StdinIo { token, .. }) => {
                     tracing::warn!(
                         %context_type,
                         context_id,
-                        error = %e,
+                        error = %error,
                         "chat_service.send_message: interactive stdin write failed, \
                          falling back to new spawn"
                     );
-                    // Remove the broken entry so we don't keep trying
-                    self.ipr().remove(&interactive_key).await;
-                    // Fall through to normal spawn path
+                    self.ipr().remove_if_token(&interactive_key, token).await;
+                    // Fall through to normal spawn path.
+                }
+                Err(InteractiveProcessWriteError::Missing { .. }) => {
+                    // A concurrent retirement/replacement may have removed this entry.
+                    // Do not key-remove a registration that appeared after this write.
                 }
             }
         }
@@ -7213,15 +7622,25 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
                         return Ok(queued_msg);
                     }
-                    Err(e) => {
+                    Err(InteractiveProcessWriteError::Retiring { .. }) => {
+                        tracing::info!(
+                            %context_type,
+                            context_id,
+                            "queue_message: retiring interactive owner queued follow-up"
+                        );
+                    }
+                    Err(error @ InteractiveProcessWriteError::StdinIo { token, .. }) => {
                         tracing::warn!(
                             %context_type,
                             context_id,
-                            error = %e,
+                            error = %error,
                             "queue_message: interactive stdin write failed, falling back to normal queue"
                         );
-                        // Remove broken entry, fall through to normal queue
-                        self.ipr().remove(&interactive_key).await;
+                        self.ipr().remove_if_token(&interactive_key, token).await;
+                    }
+                    Err(InteractiveProcessWriteError::Missing { .. }) => {
+                        // A concurrent retirement/replacement may have removed this entry.
+                        // Do not key-remove a registration that appeared after this write.
                     }
                 }
             }
@@ -7279,111 +7698,28 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         context_id: &str,
         message_id: &str,
     ) -> Result<SendResult, ChatServiceError> {
-        let queued_msg = self
-            .take_queued_message(context_type, context_id, message_id)
-            .await?;
+        self.send_queued_message_with_policy(
+            context_type,
+            context_id,
+            message_id,
+            QueuedMessageSendPolicy::ManualNow,
+        )
+        .await
+    }
 
-        let (send_context_id, conversation_id_override) = if context_type
-            == ChatContextType::Project
-            && uuid::Uuid::parse_str(context_id).is_ok()
-        {
-            let conversation_id = ChatConversationId::from_string(context_id.to_string());
-            match self
-                .conversation_repo
-                .get_by_id(&conversation_id)
-                .await
-                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
-            {
-                Ok(Some(conversation)) => {
-                    if conversation.context_type != context_type {
-                        self.restore_queued_front(context_type, context_id, queued_msg)
-                            .await;
-                        return Err(ChatServiceError::ContextNotFound(format!(
-                            "Conversation {} belongs to {} not {}",
-                            conversation_id, conversation.context_type, context_type
-                        )));
-                    }
-                    (conversation.context_id.clone(), Some(conversation.id))
-                }
-                Ok(None) => (context_id.to_string(), None),
-                Err(error) => {
-                    self.restore_queued_front(context_type, context_id, queued_msg)
-                        .await;
-                    return Err(error);
-                }
-            }
-        } else {
-            (context_id.to_string(), None)
-        };
-
-        let running_key = RunningAgentKey::new(context_type.to_string(), context_id);
-        let interactive_key = InteractiveProcessKey::new(context_type.to_string(), context_id);
-        let has_running_process = self.running_agent_registry.is_running(&running_key).await
-            || self.ipr().has_process(&interactive_key).await;
-
-        if has_running_process {
-            if let Err(error) = self.stop_agent(context_type, context_id).await {
-                self.restore_queued_front(context_type, context_id, queued_msg)
-                    .await;
-                return Err(error);
-            }
-        }
-
-        let created_at = queued_msg
-            .created_at_override
-            .as_deref()
-            .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
-            .map(|timestamp| timestamp.with_timezone(&chrono::Utc));
-        let queued_message_id = queued_msg.id.clone();
-        let send_options = SendMessageOptions {
-            metadata: queued_msg.metadata_override.clone(),
-            created_at,
-            harness_override: queued_msg.harness_override,
-            agent_name_override: queued_msg.agent_name_override.clone(),
-            persona_directive: queued_msg.persona_directive.clone(),
-            model_override: queued_msg.model_override.clone(),
-            logical_effort_override: queued_msg.logical_effort_override,
-            service_tier_override: queued_msg.service_tier_override.clone(),
-            preserve_conversation_provider_session_ref: queued_msg
-                .preserve_conversation_provider_session_ref,
-            force_new_provider_session: queued_msg.force_new_provider_session,
-            conversation_id_override,
-            composer_project_references: queued_msg.composer_project_references.clone(),
-            composer_integration_references: queued_msg.composer_integration_references.clone(),
-            composer_artifact_references: queued_msg.composer_artifact_references.clone(),
-            composer_selection_snapshot: queued_msg.composer_selection_snapshot.clone(),
-            composer_excerpt_references: queued_msg.composer_excerpt_references.clone(),
-            attachment_ids: queued_msg.attachment_ids.clone(),
-            ..Default::default()
-        };
-        let result = match self
-            .send_message(
-                context_type,
-                &send_context_id,
-                &queued_msg.content,
-                send_options,
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                self.restore_queued_front(context_type, context_id, queued_msg)
-                    .await;
-                return Err(error);
-            }
-        };
-
-        self.emit_event(
-            "agent:queue_sent",
-            AgentQueueSentPayload {
-                message_id: queued_message_id,
-                conversation_id: result.conversation_id.clone(),
-                context_type: context_type.to_string(),
-                context_id: context_id.to_string(),
-            },
-        );
-
-        Ok(result)
+    async fn send_queued_message_for_runtime_handoff(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        self.send_queued_message_with_policy(
+            context_type,
+            context_id,
+            message_id,
+            QueuedMessageSendPolicy::RuntimeHandoff,
+        )
+        .await
     }
 
     async fn get_or_create_conversation(
@@ -9052,98 +9388,6 @@ mod agent_workspace_send_tests {
                 .to_string()
                 .contains("edit mode but has no isolated workspace"),
             "missing workspace should produce a clear spawn failure: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn send_queued_message_now_stops_project_runtime_and_restores_on_launch_failure() {
-        let state = AppState::new_test();
-        let project_dir = tempfile::tempdir().expect("project dir should be created");
-        let project = Project::new(
-            "Queued Send Now Project".to_string(),
-            project_dir.path().to_string_lossy().to_string(),
-        );
-        state
-            .project_repo
-            .create(project.clone())
-            .await
-            .expect("project should persist");
-
-        let mut conversation = ChatConversation::new_project(project.id.clone());
-        conversation.set_provider_session_ref(ProviderSessionRef {
-            harness: AgentHarnessKind::Claude,
-            provider_session_id: "provider-session-1".to_string(),
-        });
-        let conversation_id = conversation.id;
-        state
-            .chat_conversation_repo
-            .create(conversation)
-            .await
-            .expect("conversation should persist");
-
-        let first = state.message_queue.queue(
-            ChatContextType::Project,
-            conversation_id.as_str(),
-            "wait first".to_string(),
-        );
-        let selected = state.message_queue.queue(
-            ChatContextType::Project,
-            conversation_id.as_str(),
-            "send me now".to_string(),
-        );
-        let third = state.message_queue.queue(
-            ChatContextType::Project,
-            conversation_id.as_str(),
-            "wait third".to_string(),
-        );
-        state
-            .running_agent_registry
-            .register(
-                RunningAgentKey::new("project", conversation_id.as_str()),
-                0,
-                conversation_id.as_str().to_string(),
-                "active-run".to_string(),
-                None,
-                None,
-            )
-            .await;
-
-        let service = state
-            .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
-            .with_cli_path(project_dir.path().join("missing-claude-cli"))
-            .with_working_directory(project_dir.path());
-
-        let error = service
-            .send_queued_message_now(
-                ChatContextType::Project,
-                &conversation_id.as_str(),
-                &selected.id,
-            )
-            .await
-            .expect_err("missing CLI should restore the selected queued prompt");
-
-        assert!(
-            error.to_string().contains("Claude CLI not found"),
-            "send-now should resolve the project conversation before attempting launch: {error}"
-        );
-        assert!(
-            !state
-                .running_agent_registry
-                .is_running(&RunningAgentKey::new("project", conversation_id.as_str()))
-                .await,
-            "send-now should stop the active runtime key before relaunch"
-        );
-
-        let queued = state
-            .message_queue
-            .get_queued(ChatContextType::Project, &conversation_id.as_str());
-        assert_eq!(
-            queued
-                .iter()
-                .map(|message| message.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![selected.id.as_str(), first.id.as_str(), third.id.as_str()],
-            "failed immediate launch should restore the selected prompt at the front"
         );
     }
 
