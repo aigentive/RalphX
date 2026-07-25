@@ -12,6 +12,7 @@ use super::{
 use super::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata,
+    InteractiveProcessRetireAfterTurnDisposition, InteractiveProcessTurnCompleteDisposition,
 };
 use crate::application::persona_prompt::ResolvedPersona;
 use crate::application::AppState;
@@ -35,6 +36,197 @@ async fn interactive_test_stdin() -> (tokio::process::ChildStdin, tokio::process
         .expect("spawn stdin fixture");
     let stdin = child.stdin.take().expect("stdin fixture");
     (stdin, child)
+}
+
+#[cfg(unix)]
+async fn capturing_interactive_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Child) {
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin capture fixture");
+    let stdin = child.stdin.take().expect("stdin capture fixture");
+    (stdin, child)
+}
+
+#[cfg(unix)]
+async fn assert_retiring_owner_remains_armed_until_turn_complete(
+    state: &AppState,
+    key: &InteractiveProcessKey,
+    token: crate::application::interactive_process_registry::InteractiveProcessToken,
+    run_id: &str,
+) {
+    assert_eq!(
+        state
+            .interactive_process_registry
+            .retire_after_turn_disposition_if_owner(key, token, run_id)
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Active { is_armed: true },
+        "a follow-up must not remove or disarm the exact retiring owner"
+    );
+    assert_eq!(
+        state
+            .interactive_process_registry
+            .complete_turn_if_owner(key, token, run_id)
+            .await,
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn,
+        "the original TurnComplete must still retire its exact owner"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn send_message_queues_follow_up_without_writing_or_disarming_retiring_owner() {
+    let state = AppState::new_test();
+    let context_id = "task-retiring-send";
+    let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+    let conversation_id = conversation.id.as_str().to_string();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist retiring owner conversation");
+    let key = InteractiveProcessKey::new("task", context_id);
+    let (stdin, mut child) = capturing_interactive_test_stdin().await;
+    let token = state
+        .interactive_process_registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("retiring-send-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .interactive_process_registry
+        .arm_retire_after_turn_if_owner(&key, token, "retiring-send-run")
+        .await;
+    state
+        .running_agent_registry
+        .register(
+            crate::domain::services::RunningAgentKey::new("task", context_id),
+            0,
+            conversation_id,
+            "retiring-send-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let result = state
+        .build_chat_service()
+        .send_message(
+            ChatContextType::Task,
+            context_id,
+            "queue this after retirement",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect("retiring owner follow-up should queue");
+
+    assert!(result.was_queued);
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Task, context_id)
+            .len(),
+        1,
+        "send_message must queue the follow-up exactly once"
+    );
+    assert_retiring_owner_remains_armed_until_turn_complete(
+        &state,
+        &key,
+        token,
+        "retiring-send-run",
+    )
+    .await;
+
+    let mut observed = Vec::new();
+    use tokio::io::AsyncReadExt;
+    child
+        .stdout
+        .take()
+        .expect("capture stdout")
+        .read_to_end(&mut observed)
+        .await
+        .expect("read captured stdin output");
+    let _ = child.wait().await;
+    assert!(
+        observed.is_empty(),
+        "a retiring owner must not receive the follow-up on its old stdin"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queue_message_queues_follow_up_without_writing_or_disarming_retiring_owner() {
+    let state = AppState::new_test();
+    let context_id = "task-retiring-queue";
+    let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist retiring owner conversation");
+    let key = InteractiveProcessKey::new("task", context_id);
+    let (stdin, mut child) = capturing_interactive_test_stdin().await;
+    let token = state
+        .interactive_process_registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("retiring-queue-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .interactive_process_registry
+        .arm_retire_after_turn_if_owner(&key, token, "retiring-queue-run")
+        .await;
+
+    state
+        .build_chat_service()
+        .queue_message(
+            ChatContextType::Task,
+            context_id,
+            "queue this after retirement",
+            Some("retiring-queue-message"),
+        )
+        .await
+        .expect("retiring owner follow-up should queue");
+
+    let queued = state
+        .message_queue
+        .get_queued(ChatContextType::Task, context_id);
+    assert_eq!(queued.len(), 1, "queue_message must enqueue exactly once");
+    assert_eq!(queued[0].id, "retiring-queue-message");
+    assert_retiring_owner_remains_armed_until_turn_complete(
+        &state,
+        &key,
+        token,
+        "retiring-queue-run",
+    )
+    .await;
+
+    let mut observed = Vec::new();
+    use tokio::io::AsyncReadExt;
+    child
+        .stdout
+        .take()
+        .expect("capture stdout")
+        .read_to_end(&mut observed)
+        .await
+        .expect("read captured stdin output");
+    let _ = child.wait().await;
+    assert!(
+        observed.is_empty(),
+        "a retiring owner must not receive the queued follow-up on its old stdin"
+    );
 }
 
 #[cfg(unix)]

@@ -1106,6 +1106,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 let stderr_text = crate::utils::secret_redactor::redact(&outcome.stderr_text);
                 let turns_finalized = outcome.turns_finalized;
                 let turn_completion_applied = outcome.completion_applied;
+                let mode_handoff_exit = outcome.mode_handoff_exit;
                 // Debug: Log what we got from stream processing
                 tracing::info!(
                     "[CHAT_SERVICE] Stream complete: context={}/{}, response_len={}, tool_calls={}, session_id={:?}",
@@ -1738,11 +1739,15 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     0
                 };
                 let initial_queue_count = initial_memory_queue_count + initial_durable_queue_count;
+                // A runtime-handoff watchdog cancels only the retiring owner. Its
+                // replacement must not inherit that cancelled token or be mistaken
+                // for a user-requested stop.
+                let queue_cancellation_requested = cancellation_requested && !mode_handoff_exit;
                 let will_process_queue = should_process_stream_queue(
                     initial_queue_count,
                     has_session_for_queue,
                     outcome.silent_interactive_exit,
-                    cancellation_requested,
+                    queue_cancellation_requested,
                 );
 
                 tracing::info!(
@@ -1751,6 +1756,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     turns_finalized,
                     skip_post_loop_finalization,
                     silent_interactive_exit = outcome.silent_interactive_exit,
+                    mode_handoff_exit,
                     cancellation_requested,
                     initial_queue_count,
                     has_session_for_queue,
@@ -1893,7 +1899,11 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         app_handle.clone(),
                         resolved_project_id.as_deref(),
                         conversation_coordination_mode,
-                        cancellation_token.clone(),
+                        if mode_handoff_exit {
+                            CancellationToken::new()
+                        } else {
+                            cancellation_token.clone()
+                        },
                         run_chain_id.as_deref(),
                         Some(&agent_run_id),
                         streaming_state_cache.clone(),
