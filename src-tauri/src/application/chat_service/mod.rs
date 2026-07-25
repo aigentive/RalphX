@@ -1497,7 +1497,7 @@ pub trait ChatService: Send + Sync {
                             error = %read_error,
                             "Could not verify post-commit runtime-handoff recovery row"
                         );
-                        RuntimeHandoffKickOutcome::DurablyRecoverable
+                        RuntimeHandoffKickOutcome::Failed
                     }
                 }
             }

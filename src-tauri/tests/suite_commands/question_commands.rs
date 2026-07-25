@@ -456,7 +456,7 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
 }
 
 #[tokio::test]
-async fn accepted_plan_mode_proposal_stays_handled_when_post_commit_handoff_kick_cannot_verify_row()
+async fn accepted_plan_mode_proposal_is_unhandled_when_post_commit_handoff_kick_cannot_verify_row()
 {
     struct PostCommitKickVerificationFailureRepo {
         inner: Arc<MemoryQueuedMessageRepository>,
@@ -541,13 +541,13 @@ async fn accepted_plan_mode_proposal_stays_handled_when_post_commit_handoff_kick
         },
     )
     .await
-    .expect("a committed accepted proposal must remain backend handled");
+    .expect("the question answer should still commit");
 
     assert!(response.success);
     assert!(response.delivered_to_waiting_agent);
     assert!(
-        response.plan_mode_proposal_handled,
-        "frontend fallback must stay closed after durable backend staging"
+        !response.plan_mode_proposal_handled,
+        "an unreadable recovery row must not suppress the frontend fallback"
     );
     assert!(
         receiver.borrow().is_some(),
