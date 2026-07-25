@@ -147,11 +147,32 @@ pub async fn get_manual_role_defaults(
     project_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ManualRoleCatalogResponse, String> {
+    let started_at = std::time::Instant::now();
+    let phase_started_at = std::time::Instant::now();
     let project_root = project_root(state.inner(), project_id.as_deref()).await?;
+    tracing::info!(
+        operation = "manual_role_defaults_phase",
+        phase = "load_project_root",
+        project_id = %project_id.as_deref().unwrap_or("global"),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Manual role defaults phase completed"
+    );
+    let phase_started_at = std::time::Instant::now();
     let configured = configured_rows(state.inner(), project_id.as_deref()).await?;
+    tracing::info!(
+        operation = "manual_role_defaults_phase",
+        phase = "load_configured_defaults",
+        project_id = %project_id.as_deref().unwrap_or("global"),
+        configured_roles = configured.len(),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Manual role defaults phase completed"
+    );
     let mut roles = Vec::with_capacity(ROUTING_ROLES.len());
 
     for role in ROUTING_ROLES {
+        let phase_started_at = std::time::Instant::now();
         let configured_value = configured.get(&role).map(|row| response(&row.value));
         let resolution = state
             .resolve_effective_manual_role_default(
@@ -160,6 +181,15 @@ pub async fn get_manual_role_defaults(
                 role,
             )
             .await;
+        tracing::info!(
+            operation = "manual_role_defaults_phase",
+            phase = "resolve_role",
+            project_id = %project_id.as_deref().unwrap_or("global"),
+            role = %role,
+            elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+            total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+            "Manual role defaults phase completed"
+        );
         roles.push(catalog_entry(
             role,
             configured_value,
@@ -169,6 +199,15 @@ pub async fn get_manual_role_defaults(
         ));
     }
 
+    tracing::info!(
+        operation = "manual_role_defaults_phase",
+        phase = "total",
+        project_id = %project_id.as_deref().unwrap_or("global"),
+        role_count = roles.len(),
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Manual role defaults phase completed"
+    );
     Ok(ManualRoleCatalogResponse { project_id, roles })
 }
 

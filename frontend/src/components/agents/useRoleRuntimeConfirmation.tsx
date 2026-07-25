@@ -7,6 +7,7 @@ import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation, type ConfirmOptions } from "@/hooks/useConfirmation";
 import { usePersonas } from "@/hooks/usePersonas";
 import { extractErrorMessage } from "@/lib/errors";
+import { logger } from "@/lib/logger";
 import {
   useAgentSessionStore,
   type LaunchRuntimeRoleKey,
@@ -15,6 +16,58 @@ import {
 import { RoleRuntimeConfirmationBody } from "./RoleRuntimeConfirmationBody";
 import { buildAgentProviderAvailabilityOptions } from "./agentProviderAvailability";
 import { getManualRoleRuntimeSelectionIssue } from "./composer/runtime/manualRoleRuntimeValidation";
+
+type RoleRuntimeTimingOutcome = "completed" | "failed" | "superseded";
+
+function timingNow(): number {
+  return globalThis.performance?.now() ?? Date.now();
+}
+
+function logRoleRuntimeTiming(
+  role: LaunchRuntimeRoleKey,
+  phase: string,
+  phaseStartedAt: number,
+  totalStartedAt: number,
+  outcome: RoleRuntimeTimingOutcome,
+): void {
+  const now = timingNow();
+  logger.debug("[RoleRuntimeConfirmationTiming]", {
+    role,
+    phase,
+    elapsedMs: Math.max(0, Math.round(now - phaseStartedAt)),
+    totalElapsedMs: Math.max(0, Math.round(now - totalStartedAt)),
+    outcome,
+  });
+}
+
+async function runRoleRuntimeTimedPhase<T>(
+  role: LaunchRuntimeRoleKey,
+  phase: string,
+  totalStartedAt: number,
+  work: () => Promise<T> | T,
+): Promise<T> {
+  const phaseStartedAt = timingNow();
+  try {
+    const result = await work();
+    logRoleRuntimeTiming(
+      role,
+      phase,
+      phaseStartedAt,
+      totalStartedAt,
+      "completed",
+    );
+    return result;
+  } catch (error) {
+    logRoleRuntimeTiming(
+      role,
+      phase,
+      phaseStartedAt,
+      totalStartedAt,
+      "failed",
+    );
+    throw error;
+  }
+}
 
 export function useRoleRuntimeConfirmation({
   conversationId,
@@ -87,6 +140,14 @@ export function useRoleRuntimeConfirmation({
       onConfirm: (selection: ManualRoleRuntimeSelection) => Promise<unknown>;
     }) => {
       if (!conversationId) return Promise.resolve(false);
+      const totalStartedAt = timingNow();
+      logRoleRuntimeTiming(
+        role,
+        "dialog_opened",
+        totalStartedAt,
+        totalStartedAt,
+        "completed",
+      );
       latestSelectionRef.current = null;
       return confirm({
         title,
@@ -95,12 +156,38 @@ export function useRoleRuntimeConfirmation({
         ...(pendingText ? { pendingText } : {}),
         confirmDisabled: true,
         prepare: async (controller) => {
+          const prepareStartedAt = timingNow();
           const [catalog, providerSettings, preparedDescription] = await Promise.all([
-            manualRoleDefaultsApi.list(projectId),
-            harnessProvidersApi.list({ refreshRuntime: true }),
-            prepareDescription?.(),
+            runRoleRuntimeTimedPhase(
+              role,
+              "load_role_defaults",
+              totalStartedAt,
+              () => manualRoleDefaultsApi.list(projectId),
+            ),
+            runRoleRuntimeTimedPhase(
+              role,
+              "refresh_provider_runtime",
+              totalStartedAt,
+              () => harnessProvidersApi.list({ refreshRuntime: true }),
+            ),
+            runRoleRuntimeTimedPhase(
+              role,
+              "prepare_description",
+              totalStartedAt,
+              () => prepareDescription?.(),
+            ),
           ]);
-          if (!controller.isCurrent()) return {};
+          if (!controller.isCurrent()) {
+            logRoleRuntimeTiming(
+              role,
+              "prepare_completed",
+              prepareStartedAt,
+              totalStartedAt,
+              "superseded",
+            );
+            return {};
+          }
+          const buildStartedAt = timingNow();
           const entry = catalog.roles.find((candidate) => candidate.role === role);
           if (!entry?.effective) {
             throw new Error(`No effective runtime is available for ${role}`);
@@ -121,7 +208,7 @@ export function useRoleRuntimeConfirmation({
             personas,
           });
           latestSelectionRef.current = initial;
-          return {
+          const prepared = {
             confirmDisabled: Boolean(initialIssue),
             ...(preparedDescription ? { description: preparedDescription } : {}),
             body: (
@@ -150,20 +237,46 @@ export function useRoleRuntimeConfirmation({
               />
             ),
           };
+          logRoleRuntimeTiming(
+            role,
+            "build_confirmation",
+            buildStartedAt,
+            totalStartedAt,
+            "completed",
+          );
+          logRoleRuntimeTiming(
+            role,
+            "prepare_completed",
+            prepareStartedAt,
+            totalStartedAt,
+            "completed",
+          );
+          return prepared;
         },
         ...(recoverFromPrepareError ? { recoverFromPrepareError } : {}),
         onConfirm: async () => {
           const selection = latestSelectionRef.current;
           if (!selection) throw new Error("Runtime selection is not ready");
-          await onConfirm({ ...selection });
+          await runRoleRuntimeTimedPhase(
+            role,
+            "confirm_action",
+            totalStartedAt,
+            () => onConfirm({ ...selection }),
+          );
         },
         recoverFromError: async (error) =>
-          (await recoverFromError?.(error)) ?? {
-            description: extractErrorMessage(
-              error,
-              "The action did not start. Review the runtime and try again.",
-            ),
-          },
+          runRoleRuntimeTimedPhase(
+            role,
+            "recover_confirm_error",
+            totalStartedAt,
+            async () =>
+              (await recoverFromError?.(error)) ?? {
+                description: extractErrorMessage(
+                  error,
+                  "The action did not start. Review the runtime and try again.",
+                ),
+              },
+          ),
       });
     },
     [confirm, conversationId, personas, projectId, registry],
