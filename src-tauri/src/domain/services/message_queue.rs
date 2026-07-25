@@ -307,6 +307,25 @@ impl MessageQueue {
         queues.entry(key).or_default().insert(0, message);
     }
 
+    /// Re-insert an existing queued message at the back of the queue.
+    ///
+    /// Message IDs are stable queue identities. Re-enqueuing one replaces its
+    /// earlier occurrence and leaves all unrelated messages in their order.
+    pub fn queue_back_existing(
+        &self,
+        context_type: ChatContextType,
+        context_id: impl Into<String>,
+        message: QueuedMessage,
+    ) {
+        let key = QueueKey::new(context_type, context_id);
+        let mut queues = self.queues.lock().unwrap();
+        queues.retain(|_, queue| {
+            queue.retain(|queued| queued.id != message.id);
+            !queue.is_empty()
+        });
+        queues.entry(key).or_default().push(message);
+    }
+
     /// Queue a message using a QueueKey
     pub fn queue_with_key(&self, key: QueueKey, content: String) -> QueuedMessage {
         let message = QueuedMessage::new(content);
