@@ -399,6 +399,10 @@ if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "--push" ]; then
   echo git@github.com:owner/repo.git
   exit 0
 fi
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then
+  echo "error: No such remote 'origin'" >&2
+  exit 2
+fi
 exit 1
 "#,
     )
@@ -411,6 +415,29 @@ exit 1
             push_url: "git@github.com:owner/repo.git".to_string(),
         }
     );
+}
+
+#[tokio::test]
+async fn repository_capability_fails_closed_when_origin_url_inspection_fails() {
+    let capability = inspect_capability_with_fake_git(
+        r#"#!/bin/sh
+if [ "$1" = "rev-parse" ]; then
+  echo true
+  exit 0
+fi
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then
+  echo "fatal: unable to read repository configuration" >&2
+  exit 128
+fi
+exit 1
+"#,
+    )
+    .await;
+
+    assert!(matches!(
+        capability,
+        RepositoryCapability::InspectionFailed { .. }
+    ));
 }
 
 #[cfg(unix)]

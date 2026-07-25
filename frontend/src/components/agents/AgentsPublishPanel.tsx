@@ -271,6 +271,21 @@ export function AgentPublishPanel({
     selectProjectById(workspace?.projectId ?? ""),
   );
   const localCommitTokenRef = useRef(0);
+  const localCommitAttemptRef = useRef<{
+    conversationId: string;
+    attemptToken: string;
+  } | null>(null);
+  const activeConversationIdRef = useRef<string | null>(conversationId);
+  useEffect(() => {
+    activeConversationIdRef.current = conversationId;
+    if (
+      localCommitAttemptRef.current &&
+      localCommitAttemptRef.current.conversationId !== conversationId
+    ) {
+      localCommitAttemptRef.current = null;
+      localCommitTokenRef.current += 1;
+    }
+  }, [conversationId]);
   const [mountedSubTabs, setMountedSubTabs] = useState<{
     automation: boolean;
     changes: boolean;
@@ -586,19 +601,24 @@ export function AgentPublishPanel({
       if (!conversationId || !workspace) {
         throw new Error("No workspace selected");
       }
+      const initiatingConversationId = conversationId;
       const expectedHeadSha = reviewContext?.monitor.workspaceHeadSha;
       if (!expectedHeadSha) {
         throw new Error("Refresh workspace changes before committing locally.");
       }
       const attemptToken = String(++localCommitTokenRef.current);
+      localCommitAttemptRef.current = {
+        conversationId: initiatingConversationId,
+        attemptToken,
+      };
       const toastController = startAgentWorkspaceOperationToast({
         conversationTitle,
         detail: "Commit isolated workspace branch",
-        id: agentWorkspaceOperationToastId(conversationId, "local-commit"),
+        id: agentWorkspaceOperationToastId(initiatingConversationId, "local-commit"),
         title: "Committing locally",
       });
       try {
-        const result = await chatApi.commitAgentConversationWorkspaceLocally(conversationId, {
+        const result = await chatApi.commitAgentConversationWorkspaceLocally(initiatingConversationId, {
           expectedHeadSha,
           reviewArtifactId: reviewContext?.monitor.reviewArtifactId ?? null,
           reviewArtifactVersion: reviewContext?.monitor.reviewArtifactVersion ?? null,
@@ -606,12 +626,14 @@ export function AgentPublishPanel({
           reviewedDiffFingerprint: reviewContext?.monitor.reviewedDiffFingerprint ?? null,
           attemptToken,
         });
-        if (
-          result.attemptToken !== attemptToken ||
-          localCommitTokenRef.current !== Number(attemptToken)
-        ) {
+        const isCurrentAttempt =
+          activeConversationIdRef.current === initiatingConversationId &&
+          localCommitAttemptRef.current?.conversationId === initiatingConversationId &&
+          localCommitAttemptRef.current?.attemptToken === attemptToken &&
+          result.attemptToken === attemptToken;
+        if (!isCurrentAttempt) {
           toastController.dismiss();
-          return result;
+          return { attemptToken, initiatingConversationId, result };
         }
         const shortSha = result.commitSha.slice(0, 7);
         if (result.outcome === "committed_local") {
@@ -621,21 +643,34 @@ export function AgentPublishPanel({
         } else {
           toastController.info("No local changes to commit");
         }
-        return result;
+        return { attemptToken, initiatingConversationId, result };
       } catch (error) {
-        toastController.error("Failed to commit locally", {
-          detail: agentWorkspaceOperationErrorDetail(error, "Failed to commit locally"),
-        });
+        if (
+          activeConversationIdRef.current === initiatingConversationId &&
+          localCommitAttemptRef.current?.conversationId === initiatingConversationId &&
+          localCommitAttemptRef.current?.attemptToken === attemptToken
+        ) {
+          toastController.error("Failed to commit locally", {
+            detail: agentWorkspaceOperationErrorDetail(error, "Failed to commit locally"),
+          });
+        } else {
+          toastController.dismiss();
+        }
         throw error;
       }
     },
-    onSuccess: async (result) => {
+    onSuccess: async ({ attemptToken, initiatingConversationId, result }) => {
       if (
-        !conversationId ||
-        result.attemptToken !== String(localCommitTokenRef.current)
+        activeConversationIdRef.current !== initiatingConversationId ||
+        localCommitAttemptRef.current?.conversationId !== initiatingConversationId ||
+        localCommitAttemptRef.current?.attemptToken !== attemptToken ||
+        result.attemptToken !== attemptToken
       ) return;
-      queryClient.setQueryData(agentWorkspaceKeys.workspace(conversationId), result.workspace);
-      await invalidateWorkspaceQueries(queryClient, conversationId);
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(initiatingConversationId),
+        result.workspace,
+      );
+      await invalidateWorkspaceQueries(queryClient, initiatingConversationId);
     },
   });
   const changesError = reviewQuery.error;

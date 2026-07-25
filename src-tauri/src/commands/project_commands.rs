@@ -307,25 +307,29 @@ pub async fn update_project(
     if let Some(name) = input.name {
         project.name = name;
     }
-    if let Some(working_directory) = input.working_directory {
+    if input.working_directory.is_some() || input.base_branch.is_some() {
         let selected_base = input
             .base_branch
             .clone()
             .or_else(|| project.base_branch.clone());
+        let bootstrap_working_directory = input
+            .working_directory
+            .as_deref()
+            .unwrap_or(&project.working_directory)
+            .to_string();
         let bootstrap = GitService::bootstrap_project_repository(
-            Path::new(&working_directory),
+            Path::new(&bootstrap_working_directory),
             crate::application::git_service::GitBootstrapRequest::new(selected_base),
         )
         .await
         .map_err(|error| error.to_string())?;
-        project.working_directory = working_directory;
+        if let Some(working_directory) = input.working_directory {
+            project.working_directory = working_directory;
+        }
         project.base_branch = Some(bootstrap.base_branch);
     }
     if let Some(git_mode_str) = input.git_mode {
         project.git_mode = git_mode_str.parse().unwrap_or(GitMode::Worktree);
-    }
-    if let Some(base_branch) = input.base_branch {
-        project.base_branch = Some(base_branch);
     }
     if let Some(mode_str) = input.merge_validation_mode {
         project.merge_validation_mode = parse_merge_validation_mode_or_default(&mode_str);

@@ -244,6 +244,108 @@ async fn create_project_persists_worktree_parent_and_resolved_local_only_contrac
 }
 
 #[tokio::test]
+async fn updating_project_preserves_the_bootstrap_resolved_unborn_branch() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "develop"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Unborn project".to_string(),
+        temporary.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-unborn-update".to_string());
+    project.base_branch = Some("develop".to_string());
+    state.project_repo.create(project).await.unwrap();
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = update_project(
+        "project-unborn-update".to_string(),
+        UpdateProjectInput {
+            name: None,
+            working_directory: Some(temporary.path().to_string_lossy().to_string()),
+            git_mode: None,
+            base_branch: Some("main".to_string()),
+            merge_validation_mode: None,
+            merge_strategy: None,
+            worktree_parent_directory: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("unborn repository should preserve its symbolic branch");
+
+    assert_eq!(response.base_branch.as_deref(), Some("develop"));
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string("project-unborn-update".to_string()))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist");
+    assert_eq!(persisted.base_branch.as_deref(), Some("develop"));
+}
+
+#[tokio::test]
+async fn updating_only_the_base_branch_validates_the_current_repository() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Validated project".to_string(),
+        temporary.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-base-only-update".to_string());
+    project.base_branch = Some("main".to_string());
+    state.project_repo.create(project).await.unwrap();
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let error = update_project(
+        "project-base-only-update".to_string(),
+        UpdateProjectInput {
+            name: None,
+            working_directory: None,
+            git_mode: None,
+            base_branch: Some("missing".to_string()),
+            merge_validation_mode: None,
+            merge_strategy: None,
+            worktree_parent_directory: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("a base-only update must validate the existing repository");
+
+    assert!(error.contains("does not exist"));
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string(
+            "project-base-only-update".to_string(),
+        ))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should remain");
+    assert_eq!(persisted.base_branch.as_deref(), Some("main"));
+}
+
+#[tokio::test]
 async fn create_project_enables_pr_mode_for_a_github_capable_repository() {
     let temporary = tempfile::tempdir().expect("temporary project directory");
     let project_path = temporary.path();

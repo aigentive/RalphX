@@ -143,10 +143,13 @@ async fn inspect_effective_origin_topology_config(
 ) -> AppResult<GitRemoteAuthConfig> {
     let deadline = Duration::from_secs(5);
     ensure_git_worktree(working_dir).await?;
-    let fetch_url =
-        read_origin_url_with_timeout(working_dir, &["remote", "get-url", "origin"], deadline)
-            .await?;
-    let push_url = read_origin_url_with_timeout(
+    let fetch_url = read_origin_url_strict_with_timeout(
+        working_dir,
+        &["remote", "get-url", "origin"],
+        deadline,
+    )
+    .await?;
+    let push_url = read_origin_url_strict_with_timeout(
         working_dir,
         &["remote", "get-url", "--push", "origin"],
         deadline,
@@ -859,10 +862,45 @@ fn format_git_auth_recovery(
     parts.join(" ")
 }
 
+#[derive(Clone, Copy)]
+enum OriginUrlReadFailureMode {
+    TreatAsMissing,
+    FailClosed,
+}
+
 async fn read_origin_url_with_timeout(
     working_dir: &Path,
     args: &[&str],
     deadline: Duration,
+) -> AppResult<Option<String>> {
+    read_origin_url_with_timeout_and_failure_mode(
+        working_dir,
+        args,
+        deadline,
+        OriginUrlReadFailureMode::TreatAsMissing,
+    )
+    .await
+}
+
+async fn read_origin_url_strict_with_timeout(
+    working_dir: &Path,
+    args: &[&str],
+    deadline: Duration,
+) -> AppResult<Option<String>> {
+    read_origin_url_with_timeout_and_failure_mode(
+        working_dir,
+        args,
+        deadline,
+        OriginUrlReadFailureMode::FailClosed,
+    )
+    .await
+}
+
+async fn read_origin_url_with_timeout_and_failure_mode(
+    working_dir: &Path,
+    args: &[&str],
+    deadline: Duration,
+    failure_mode: OriginUrlReadFailureMode,
 ) -> AppResult<Option<String>> {
     let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
     let started_at = std::time::Instant::now();
@@ -872,7 +910,7 @@ async fn read_origin_url_with_timeout(
         .args(args)
         .current_dir(&working_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| AppError::GitOperation(format!("failed to spawn git: {error}")))?;
@@ -903,11 +941,26 @@ async fn read_origin_url_with_timeout(
     }
 
     if !output.status.success() {
-        return Ok(None);
+        if matches!(failure_mode, OriginUrlReadFailureMode::TreatAsMissing)
+            || origin_url_is_absent(&output.stderr)
+        {
+            return Ok(None);
+        }
+
+        return Err(AppError::GitOperation(format!(
+            "failed to inspect origin URL with `git {}`: {}",
+            args.join(" "),
+            redact(&String::from_utf8_lossy(&output.stderr)).trim()
+        )));
     }
 
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok((!url.is_empty()).then_some(url))
+}
+
+fn origin_url_is_absent(stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    stderr.contains("no such remote") || stderr.contains("no such url")
 }
 
 fn gui_safe_path() -> String {
