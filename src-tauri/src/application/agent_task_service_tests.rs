@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::application::AgentTaskService;
 use serde_json::json;
 
-use crate::domain::entities::{AgentTaskCreate, AgentTaskPatch, AgentTaskScope, AgentTaskState};
+use crate::domain::entities::{
+    AgentRunId, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus, AgentTaskCreate,
+    AgentTaskPatch, AgentTaskScope, AgentTaskState, DelegatedSessionId,
+};
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::infrastructure::memory::MemoryAgentTaskRepository;
 
@@ -291,4 +294,137 @@ async fn complete_task_marks_done_and_merges_metadata() {
         Some(json!({"priority": "high", "verified": true}))
     );
     assert_eq!(completed.state_change.unwrap().to, AgentTaskState::Done);
+}
+
+#[tokio::test]
+async fn service_drives_assignment_completion_and_release_lifecycles() {
+    let service = service();
+    let scope = scope();
+    let session = DelegatedSessionId::from_string("delegate-session-1");
+    let caller_run = AgentRunId::from_string("caller-run-1");
+    assert!(service
+        .reserve_assignment(
+            &AgentTaskScope::new("conversation", "missing"),
+            "1",
+            &session,
+            &caller_run,
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .is_none());
+    for title in ["Implement", "Validate"] {
+        service.create_task(&scope, create(title)).await.unwrap();
+    }
+    assert!(service
+        .reserve_assignment(
+            &scope,
+            "missing",
+            &session,
+            &caller_run,
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    let delegated_run = AgentRunId::from_string("delegate-run-1");
+    let reserved = service
+        .reserve_assignment(&scope, "1", &session, &caller_run, "ralphx-general-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reserved.assignment.assignment.state,
+        AgentTaskAssignmentState::Reserved
+    );
+    assert!(service
+        .reserve_assignment(&scope, "1", &session, &caller_run, "ralphx-general-worker",)
+        .await
+        .is_err());
+    assert!(service
+        .plan_assignment_run(
+            &reserved.assignment.assignment.id,
+            &DelegatedSessionId::from_string("wrong-session"),
+            &delegated_run,
+        )
+        .await
+        .is_err());
+
+    let planned = service
+        .plan_assignment_run(&reserved.assignment.assignment.id, &session, &delegated_run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        planned.assignment.planned_delegated_agent_run_id,
+        Some(delegated_run)
+    );
+    assert_eq!(
+        service
+            .get_unresolved_assignment(&session)
+            .await
+            .unwrap()
+            .unwrap()
+            .assignment
+            .id,
+        reserved.assignment.assignment.id
+    );
+
+    service
+        .bind_assignment_run(&reserved.assignment.assignment.id, &session, &delegated_run)
+        .await
+        .unwrap()
+        .unwrap();
+    let requested = service
+        .request_assignment_completion(&session, &delegated_run, Some(json!({"verified": true})))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        requested.assignment.state,
+        AgentTaskAssignmentState::CompletionRequested
+    );
+    assert!(
+        service
+            .settle_assignment_for_run(
+                &delegated_run,
+                AgentTaskAssignmentTerminalStatus::Completed,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .task_completed
+    );
+
+    let second_run = AgentRunId::from_string("delegate-run-2");
+    let reserved = service
+        .reserve_assignment(&scope, "2", &session, &caller_run, "ralphx-general-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    service
+        .plan_assignment_run(&reserved.assignment.assignment.id, &session, &second_run)
+        .await
+        .unwrap()
+        .unwrap();
+    service
+        .bind_assignment_run(&reserved.assignment.assignment.id, &session, &second_run)
+        .await
+        .unwrap()
+        .unwrap();
+    let requested = service
+        .request_assignment_release(&session, &second_run, "delegate requested release")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        requested.assignment.state,
+        AgentTaskAssignmentState::ReleaseRequested
+    );
+    assert!(service
+        .fail_reserved_assignment(&session, "too late to fail before launch")
+        .await
+        .is_err());
 }

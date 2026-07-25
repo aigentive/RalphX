@@ -5,7 +5,7 @@ use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType, C
 use crate::domain::repositories::{ConversationFolderReferenceRepository, ProjectRepository};
 
 use super::chat_service_context::{
-    build_mcp_runtime_context, folder_references_skip_reason, project_mcp_parent_conversation_id,
+    build_mcp_runtime_context, folder_references_skip_reason, mcp_lineage_parent_conversation_id,
     resolve_mcp_filesystem_read_roots, resolve_mcp_filesystem_read_roots_with_folder_references,
     FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
 };
@@ -128,7 +128,7 @@ pub async fn resolve_conversation_spawn_context(
         project_id,
         &folder_roots,
         None,
-        project_mcp_parent_conversation_id(conversation),
+        mcp_lineage_parent_conversation_id(conversation),
         effective_mode,
     )
     .enforce_filesystem_roots;

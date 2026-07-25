@@ -216,6 +216,9 @@ export const TOOL_CALL_WIDGETS: ToolCallWidgetRegistry = {
   "update_agent_task": AgentTaskWidget,
   "claim_agent_task": AgentTaskWidget,
   "complete_agent_task": AgentTaskWidget,
+  "get_delegate_assignment": AgentTaskWidget,
+  "complete_delegate_assignment": AgentTaskWidget,
+  "release_delegate_assignment": AgentTaskWidget,
   // Task management tools → TaskWidgets
   "taskcreate": TaskCreateWidget,
   "taskupdate": TaskUpdateWidget,

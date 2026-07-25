@@ -140,6 +140,47 @@ export const AGENT_TASK_TOOLS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "get_delegate_assignment",
+    description:
+      "Inspect the exact caller task bound to the current delegated run. This does not enumerate the caller ledger and accepts no orchestration identity.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "complete_delegate_assignment",
+    description:
+      "Request completion of the exact task bound to the current delegated run. All meaningful delegate-local tasks must already be resolved; the caller task remains active until this exact run exits successfully.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        metadata: {
+          ...metadataSchema,
+          description: "Optional completion metadata to merge after successful terminal settlement.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "release_delegate_assignment",
+    description:
+      "Request release of the exact task bound to the current delegated run when the work cannot be completed. The task remains unavailable until this exact run terminates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: {
+          type: "string",
+          description: "Concise reason the assigned work must return to its caller.",
+        },
+      },
+      required: ["reason"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export const AGENT_TASK_TOOL_NAMES = AGENT_TASK_TOOLS.map((tool) => tool.name);

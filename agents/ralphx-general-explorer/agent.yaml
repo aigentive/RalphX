@@ -12,8 +12,15 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - create_agent_task
     - get_agent_task
     - list_agent_tasks
+    - update_agent_task
+    - claim_agent_task
+    - complete_agent_task
+    - get_delegate_assignment
+    - complete_delegate_assignment
+    - release_delegate_assignment
     - search_memories
     - get_memory
     - get_memories_for_paths

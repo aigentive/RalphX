@@ -20,6 +20,15 @@ pub struct DelegationHistoryEntry {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct DelegationAssignmentSummary {
+    pub task_number: i64,
+    pub title: String,
+    pub task_state: String,
+    pub assignment_state: String,
+    pub delegate_agent_name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DelegationJobSnapshot {
     pub job_id: String,
     pub parent_context_type: String,
@@ -33,6 +42,7 @@ pub struct DelegationJobSnapshot {
     pub delegated_conversation_id: Option<String>,
     pub delegated_agent_run_id: Option<String>,
     pub agent_name: String,
+    pub assignment: Option<DelegationAssignmentSummary>,
     pub harness: String,
     pub provider_session_id: Option<String>,
     pub upstream_provider: Option<String>,
@@ -83,6 +93,7 @@ impl DelegationService {
         delegated_conversation_id: Option<String>,
         delegated_agent_run_id: Option<String>,
         agent_name: String,
+        assignment: Option<DelegationAssignmentSummary>,
         harness: impl Into<String>,
         provider_session_id: Option<String>,
         upstream_provider: Option<String>,
@@ -108,6 +119,7 @@ impl DelegationService {
             delegated_conversation_id,
             delegated_agent_run_id,
             agent_name,
+            assignment,
             harness: harness.into(),
             provider_session_id,
             upstream_provider,

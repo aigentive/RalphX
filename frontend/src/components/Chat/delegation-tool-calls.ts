@@ -40,6 +40,13 @@ export interface DelegationMetadata {
   completedAt?: number;
   clockSource?: "delegated-run" | "delegation-job";
   textOutput?: string;
+  assignment?: {
+    taskNumber?: number;
+    title?: string;
+    taskState?: string;
+    assignmentState?: string;
+    delegateAgentName?: string;
+  };
 }
 
 export type DelegationEvidenceSource =
@@ -685,6 +692,7 @@ export function extractDelegationMetadata(
     getFirstRecord(resultRecord, "delegated_status", "delegatedStatus");
   const latestRun = getFirstRecord(delegatedStatus, "latest_run", "latestRun");
   const session = getFirstRecord(delegatedStatus, "session");
+  const assignment = getFirstRecord(resultRecord, "assignment");
   const providerHarness =
     getFirstString(latestRun, "harness")
     ?? getFirstString(resultRecord, "harness")
@@ -802,6 +810,40 @@ export function extractDelegationMetadata(
     getFirstString(latestRun, "completed_at", "completedAt")
       ?? getFirstString(resultRecord, "completed_at", "completedAt"),
   );
+  const assignmentTaskNumber = getFirstNumber(
+    assignment,
+    "task_number",
+    "taskNumber",
+  );
+  const assignmentTitle = getFirstString(assignment, "title");
+  const assignmentTaskState = getFirstString(
+    assignment,
+    "task_state",
+    "taskState",
+  );
+  const assignmentState = getFirstString(
+    assignment,
+    "assignment_state",
+    "assignmentState",
+  );
+  const assignmentDelegateAgentName = getFirstString(
+    assignment,
+    "delegate_agent_name",
+    "delegateAgentName",
+  );
+  const assignmentMetadata = assignment
+    ? {
+        ...(assignmentTaskNumber != null
+          ? { taskNumber: assignmentTaskNumber }
+          : {}),
+        ...(assignmentTitle ? { title: assignmentTitle } : {}),
+        ...(assignmentTaskState ? { taskState: assignmentTaskState } : {}),
+        ...(assignmentState ? { assignmentState } : {}),
+        ...(assignmentDelegateAgentName
+          ? { delegateAgentName: assignmentDelegateAgentName }
+          : {}),
+      }
+    : undefined;
 
   return {
     ...(jobId ? { jobId } : {}),
@@ -809,6 +851,7 @@ export function extractDelegationMetadata(
     ...(agentName ? { agentName } : {}),
     ...(prompt ? { prompt } : {}),
     ...(title ? { title } : {}),
+    ...(assignmentMetadata ? { assignment: assignmentMetadata } : {}),
     ...(providerHarness ? { providerHarness } : {}),
     ...(providerSessionId ? { providerSessionId } : {}),
     ...(upstreamProvider ? { upstreamProvider } : {}),
