@@ -1698,7 +1698,7 @@ describe('delegation bridge tools', () => {
     it.each(['delegate_start', 'delegate_wait', 'delegate_cancel'])('%s should exist in ALL_TOOLS', (toolName) => {
         expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
     });
-    it('delegate_start should expose optional parent_session_id plus required agent_name and prompt', () => {
+    it('delegate_start should hide session selection and require only agent_name and prompt', () => {
         const tool = allTools.find((entry) => entry.name === 'delegate_start');
         expect(tool?.inputSchema.type).toBe('object');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_session_id');
@@ -1708,7 +1708,10 @@ describe('delegation bridge tools', () => {
         expect(tool?.inputSchema.properties).not.toHaveProperty('parent_agent_run_id');
         expect(tool?.inputSchema.properties).not.toHaveProperty('caller_agent_run_id');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_tool_use_id');
-        expect(tool?.inputSchema.properties).toHaveProperty('delegated_session_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('delegated_session_id');
+        expect(tool?.inputSchema.properties).not.toHaveProperty('child_session_id');
+        expect(tool?.inputSchema.properties).toHaveProperty('task_ref');
+        expect(tool?.inputSchema.additionalProperties).toBe(false);
         expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['agent_name', 'prompt']));
         expect(tool?.inputSchema.required).not.toContain('parent_session_id');
     });
@@ -1773,6 +1776,9 @@ describe('agent task tools', () => {
         'update_agent_task',
         'claim_agent_task',
         'complete_agent_task',
+        'get_delegate_assignment',
+        'complete_delegate_assignment',
+        'release_delegate_assignment',
     ])('%s should exist in ALL_TOOLS', (toolName) => {
         expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
     });
@@ -1803,6 +1809,33 @@ describe('agent task tools', () => {
         const toolNames = getFilteredTools().map((tool) => tool.name);
         expect(toolNames).toContain('create_agent_task');
         expect(toolNames).toContain('list_agent_tasks');
+    });
+    it('delegate assignment schemas expose no orchestration identity fields', () => {
+        for (const toolName of [
+            'get_delegate_assignment',
+            'complete_delegate_assignment',
+            'release_delegate_assignment',
+        ]) {
+            const tool = allTools.find((entry) => entry.name === toolName);
+            expect(tool).toBeDefined();
+            for (const forbidden of [
+                'delegated_session_id',
+                'conversation_id',
+                'agent_run_id',
+                'assignment_id',
+                'task_list_id',
+            ]) {
+                expect(tool?.inputSchema.properties).not.toHaveProperty(forbidden);
+            }
+        }
+    });
+    it.each([GENERAL_EXPLORER, GENERAL_WORKER])('%s should expose delegate-local and narrow assignment lifecycles', (agent) => {
+        expect(toolsByAgent()[agent]).toEqual(loadCanonicalMcpTools(agent));
+        expect(toolsByAgent()[agent]).toContain('create_agent_task');
+        expect(toolsByAgent()[agent]).toContain('complete_agent_task');
+        expect(toolsByAgent()[agent]).toContain('get_delegate_assignment');
+        expect(toolsByAgent()[agent]).toContain('complete_delegate_assignment');
+        expect(toolsByAgent()[agent]).toContain('release_delegate_assignment');
     });
 });
 // ===========================================================================

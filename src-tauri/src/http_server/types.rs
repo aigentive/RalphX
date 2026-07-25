@@ -512,6 +512,34 @@ pub struct CompleteAgentTaskRequest {
     pub metadata: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CompleteDelegateAssignmentRequest {
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleaseDelegateAssignmentRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DelegateAssignmentDto {
+    pub task_number: i64,
+    pub title: String,
+    pub details: String,
+    pub task_state: String,
+    pub assignment_state: String,
+    pub delegate_agent_name: String,
+    pub caller_scope_type: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DelegateAssignmentResponse {
+    pub success: bool,
+    pub assignment: Option<DelegateAssignmentDto>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentTaskStateChangeDto {
     pub from: String,
@@ -1673,6 +1701,7 @@ pub struct DelegateStartRequest {
     pub parent_tool_use_id: Option<String>,
     pub delegated_session_id: Option<String>,
     pub child_session_id: Option<String>,
+    pub task_ref: Option<String>,
     pub agent_name: String,
     #[serde(alias = "message")]
     pub prompt: String,

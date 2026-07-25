@@ -28,7 +28,10 @@ type AgentTaskToolName =
   | "list_agent_tasks"
   | "update_agent_task"
   | "claim_agent_task"
-  | "complete_agent_task";
+  | "complete_agent_task"
+  | "get_delegate_assignment"
+  | "complete_delegate_assignment"
+  | "release_delegate_assignment";
 
 interface AgentTaskView {
   taskId: string | undefined;
@@ -63,6 +66,9 @@ const TOOL_LABELS: Record<AgentTaskToolName, string> = {
   update_agent_task: "Update agent task",
   claim_agent_task: "Claim agent task",
   complete_agent_task: "Complete agent task",
+  get_delegate_assignment: "Assigned work",
+  complete_delegate_assignment: "Request assignment completion",
+  release_delegate_assignment: "Request assignment release",
 };
 
 const TOOL_DONE_LABELS: Record<AgentTaskToolName, string> = {
@@ -72,6 +78,9 @@ const TOOL_DONE_LABELS: Record<AgentTaskToolName, string> = {
   update_agent_task: "Agent task updated",
   claim_agent_task: "Agent task claimed",
   complete_agent_task: "Agent task completed",
+  get_delegate_assignment: "Assigned work",
+  complete_delegate_assignment: "Completion requested",
+  release_delegate_assignment: "Release requested",
 };
 
 const STATE_VARIANT: Record<string, BadgeVariant> = {
@@ -82,6 +91,11 @@ const STATE_VARIANT: Record<string, BadgeVariant> = {
   done: "success",
   completed: "success",
   dropped: "error",
+  completion_requested: "blue",
+  release_requested: "muted",
+  released: "muted",
+  failed: "error",
+  cancelled: "error",
 };
 
 function isAgentTaskToolName(toolName: string): toolName is AgentTaskToolName {
@@ -102,6 +116,12 @@ function iconForTool(toolName: AgentTaskToolName) {
       return <UserCheck size={14} style={{ color: colors.accent }} />;
     case "complete_agent_task":
       return <CheckCircle2 size={14} style={{ color: colors.success }} />;
+    case "get_delegate_assignment":
+      return <ClipboardCheck size={14} style={{ color: colors.accent }} />;
+    case "complete_delegate_assignment":
+      return <CheckCircle2 size={14} style={{ color: colors.accent }} />;
+    case "release_delegate_assignment":
+      return <TriangleAlert size={14} style={{ color: colors.textMuted }} />;
   }
 }
 
@@ -115,6 +135,16 @@ function stateLabel(state: string): string {
       return "done";
     case "dropped":
       return "dropped";
+    case "completion_requested":
+      return "completion requested";
+    case "release_requested":
+      return "release requested";
+    case "released":
+      return "released";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
     default:
       return "open";
   }
@@ -173,8 +203,14 @@ function parseTask(value: unknown): AgentTaskView | null {
     taskNumber: pickNumber(value, ["task_number", "taskNumber"]),
     title,
     details: pickString(value, ["details", "description"]),
-    state: pickString(value, ["state", "status"]),
-    ownerAgent: pickString(value, ["owner_agent", "ownerAgent", "owner"]),
+    state: pickString(value, ["assignment_state", "assignmentState", "state", "status", "task_state"]),
+    ownerAgent: pickString(value, [
+      "delegate_agent_name",
+      "delegateAgentName",
+      "owner_agent",
+      "ownerAgent",
+      "owner",
+    ]),
     blockedBy: pickStringArray(value, ["unresolved_blocked_by", "blocked_by", "blockedBy"]),
     blocks: pickStringArray(value, ["blocks"]),
     availability: pickString(value, ["availability"]),
@@ -258,7 +294,7 @@ function parseAgentTaskResult(result: unknown): AgentTaskResult {
   return {
     success: typeof parsed.success === "boolean" ? parsed.success : undefined,
     error: typeof parsed.error === "string" ? parsed.error : undefined,
-    task: parseTask(parsed.task) ?? parsePreviewTask(result),
+    task: parseTask(parsed.task) ?? parseTask(parsed.assignment) ?? parsePreviewTask(result),
     tasks: parseTasks(parsed),
     changedFields: getArray(parsed, "changed_fields")?.filter(
       (field): field is string => typeof field === "string"

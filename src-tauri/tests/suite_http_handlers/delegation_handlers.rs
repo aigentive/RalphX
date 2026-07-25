@@ -13,23 +13,31 @@ use ralphx_lib::domain::agents::{
     AgentHarnessKind, AgentProviderSettings, LogicalEffort, ManualRoleDefault, ManualServiceTier,
     RoutingRole,
 };
+use ralphx_lib::domain::entities::agent_run::PersonaRunAttribution;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
-    ChatContextType, ChatConversation, DelegatedSession, DelegatedSessionId,
-    IdeationAnalysisBaseRefKind, IdeationSession, Persona, PersonaId, PersonaStatus, Project,
-    ProjectId, SessionPurpose,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
+    AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AgentTaskAssignmentId,
+    AgentTaskAssignmentReservation, AgentTaskAssignmentSettlement,
+    AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail,
+    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
+    AgentTaskState, AgentTaskSummary, ChatContextType, ChatConversation, ChatConversationId,
+    DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession,
+    InterruptedConversation, Persona, PersonaId, PersonaStatus, Project, ProjectId, SessionPurpose,
+    UsageCapture,
 };
-use ralphx_lib::domain::repositories::DelegatedSessionRepository;
+use ralphx_lib::domain::repositories::{
+    AgentRunRepository, AgentTaskListOptions, AgentTaskRepository, DelegatedSessionRepository,
+};
 use ralphx_lib::error::{AppError, AppResult};
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
-    get_delegated_session_status, start_delegate, start_delegate_with_runtime_context,
-    wait_delegate,
+    complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
+    start_delegate, start_delegate_with_runtime_context, wait_delegate,
 };
 use ralphx_lib::http_server::types::{
-    DelegateCancelRequest, DelegateStartRequest, DelegateWaitRequest, DelegatedRunSummary,
-    HttpServerState,
+    CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateStartRequest,
+    DelegateWaitRequest, DelegatedRunSummary, HttpServerState,
 };
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -204,6 +212,347 @@ impl DelegatedSessionRepository for RemoveWorkspaceOnRunningDelegatedSessionRepo
     }
 }
 
+struct FailBindingAgentTaskRepository {
+    inner: Arc<dyn AgentTaskRepository>,
+}
+
+#[async_trait]
+impl AgentTaskRepository for FailBindingAgentTaskRepository {
+    async fn create_task(
+        &self,
+        scope: &AgentTaskScope,
+        input: AgentTaskCreate,
+    ) -> AppResult<AgentTaskMutationResult> {
+        self.inner.create_task(scope, input).await
+    }
+
+    async fn get_task(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+    ) -> AppResult<Option<AgentTaskDetail>> {
+        self.inner.get_task(scope, task_ref).await
+    }
+
+    async fn list_tasks(
+        &self,
+        scope: &AgentTaskScope,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>> {
+        self.inner.list_tasks(scope, options).await
+    }
+
+    async fn list_task_lists(
+        &self,
+        scope: &AgentTaskScope,
+    ) -> AppResult<Vec<AgentTaskListSummary>> {
+        self.inner.list_task_lists(scope).await
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        scope: &AgentTaskScope,
+        list_id: &AgentTaskListId,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>> {
+        self.inner
+            .list_tasks_for_list(scope, list_id, options)
+            .await
+    }
+
+    async fn update_task(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+        patch: AgentTaskPatch,
+    ) -> AppResult<Option<AgentTaskMutationResult>> {
+        self.inner.update_task(scope, task_ref, patch).await
+    }
+
+    async fn reserve_assignment(
+        &self,
+        scope: &AgentTaskScope,
+        task_ref: &str,
+        delegated_session_id: &DelegatedSessionId,
+        caller_agent_run_id: &AgentRunId,
+        delegate_agent_name: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentReservation>> {
+        self.inner
+            .reserve_assignment(
+                scope,
+                task_ref,
+                delegated_session_id,
+                caller_agent_run_id,
+                delegate_agent_name,
+            )
+            .await
+    }
+
+    async fn bind_assignment_run(
+        &self,
+        _assignment_id: &AgentTaskAssignmentId,
+        _delegated_session_id: &DelegatedSessionId,
+        _delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        Err(AppError::Infrastructure(
+            "injected assignment binding failure".to_string(),
+        ))
+    }
+
+    async fn plan_assignment_run(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .plan_assignment_run(assignment_id, delegated_session_id, delegated_agent_run_id)
+            .await
+    }
+
+    async fn get_unresolved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .get_unresolved_assignment(delegated_session_id)
+            .await
+    }
+
+    async fn request_assignment_completion(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        local_scope: &AgentTaskScope,
+        completion_metadata: Option<serde_json::Value>,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .request_assignment_completion(
+                delegated_session_id,
+                delegated_agent_run_id,
+                local_scope,
+                completion_metadata,
+            )
+            .await
+    }
+
+    async fn request_assignment_release(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        delegated_agent_run_id: &AgentRunId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .request_assignment_release(delegated_session_id, delegated_agent_run_id, reason)
+            .await
+    }
+
+    async fn settle_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+        terminal_status: AgentTaskAssignmentTerminalStatus,
+        reason: Option<&str>,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        self.inner
+            .settle_assignment_for_run(delegated_agent_run_id, terminal_status, reason)
+            .await
+    }
+
+    async fn get_assignment_for_run(
+        &self,
+        delegated_agent_run_id: &AgentRunId,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .get_assignment_for_run(delegated_agent_run_id)
+            .await
+    }
+
+    async fn fail_reserved_assignment(
+        &self,
+        delegated_session_id: &DelegatedSessionId,
+        reason: &str,
+    ) -> AppResult<Option<AgentTaskAssignmentSettlement>> {
+        self.inner
+            .fail_reserved_assignment(delegated_session_id, reason)
+            .await
+    }
+
+    async fn list_unresolved_assignments(&self) -> AppResult<Vec<AgentTaskAssignmentView>> {
+        self.inner.list_unresolved_assignments().await
+    }
+}
+
+struct FailCancelAgentRunRepository {
+    inner: Arc<dyn AgentRunRepository>,
+}
+
+#[async_trait]
+impl AgentRunRepository for FailCancelAgentRunRepository {
+    async fn create(&self, run: AgentRun) -> AppResult<AgentRun> {
+        self.inner.create(run).await
+    }
+
+    async fn get_by_id(&self, id: &AgentRunId) -> AppResult<Option<AgentRun>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_by_ids(&self, ids: &[AgentRunId]) -> AppResult<Vec<AgentRun>> {
+        self.inner.get_by_ids(ids).await
+    }
+
+    async fn get_latest_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_latest_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_latest_completed_for_provider_session(
+        &self,
+        conversation_id: &ChatConversationId,
+        harness: AgentHarnessKind,
+        provider_session_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_latest_completed_for_provider_session(
+                conversation_id,
+                harness,
+                provider_session_id,
+            )
+            .await
+    }
+
+    async fn get_active_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_active_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_latest_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_latest_action(
+                conversation_id,
+                action_kind,
+                action_context_id,
+                action_target_id,
+            )
+            .await
+    }
+
+    async fn get_active_action(
+        &self,
+        conversation_id: &ChatConversationId,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        self.inner
+            .get_active_action(
+                conversation_id,
+                action_kind,
+                action_context_id,
+                action_target_id,
+            )
+            .await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentRun>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn update_status(&self, id: &AgentRunId, status: AgentRunStatus) -> AppResult<()> {
+        self.inner.update_status(id, status).await
+    }
+
+    async fn update_usage(&self, id: &AgentRunId, usage: &AgentRunUsage) -> AppResult<()> {
+        self.inner.update_usage(id, usage).await
+    }
+
+    async fn replace_usage_capture(
+        &self,
+        id: &AgentRunId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        self.inner.replace_usage_capture(id, capture).await
+    }
+
+    async fn update_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: &AgentRunAttribution,
+    ) -> AppResult<()> {
+        self.inner.update_attribution(id, attribution).await
+    }
+
+    async fn set_persona_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: PersonaRunAttribution,
+    ) -> AppResult<()> {
+        self.inner.set_persona_attribution(id, attribution).await
+    }
+
+    async fn complete(&self, id: &AgentRunId) -> AppResult<()> {
+        self.inner.complete(id).await
+    }
+
+    async fn complete_if_running(&self, id: &AgentRunId) -> AppResult<bool> {
+        self.inner.complete_if_running(id).await
+    }
+
+    async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
+        self.inner.fail(id, error_message).await
+    }
+
+    async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "injected agent-run cancellation failure".to_string(),
+        ))
+    }
+
+    async fn delete(&self, id: &AgentRunId) -> AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn delete_by_conversation(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.inner.delete_by_conversation(conversation_id).await
+    }
+
+    async fn count_by_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: AgentRunStatus,
+    ) -> AppResult<u32> {
+        self.inner.count_by_status(conversation_id, status).await
+    }
+
+    async fn cancel_all_running(&self) -> AppResult<u32> {
+        self.inner.cancel_all_running().await
+    }
+
+    async fn cancel_running_started_before(&self, cutoff: DateTime<Utc>) -> AppResult<u32> {
+        self.inner.cancel_running_started_before(cutoff).await
+    }
+
+    async fn get_interrupted_conversations(&self) -> AppResult<Vec<InterruptedConversation>> {
+        self.inner.get_interrupted_conversations().await
+    }
+}
+
 async fn seed_bound_active_project_persona(
     state: &HttpServerState,
     project_id: &ProjectId,
@@ -256,6 +605,115 @@ fn build_state(app_state: Arc<AppState>) -> HttpServerState {
     }
 }
 
+struct NestedAssignmentCaller {
+    project: Project,
+    parent_conversation: ChatConversation,
+    delegated_session: DelegatedSession,
+    delegated_conversation: Option<ChatConversation>,
+    local_scope: AgentTaskScope,
+}
+
+async fn seed_nested_assignment_caller(
+    state: &HttpServerState,
+    with_active_conversation: bool,
+) -> NestedAssignmentCaller {
+    let project = state
+        .app_state
+        .project_repo
+        .create(Project::new(
+            "Nested assignment project".to_string(),
+            repo_root().display().to_string(),
+        ))
+        .await
+        .expect("create nested assignment project");
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create nested assignment parent conversation");
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id.clone(),
+            "project",
+            project.id.as_str(),
+            "ralphx-general-worker",
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .expect("create caller delegated session");
+    let delegated_conversation = if with_active_conversation {
+        let mut conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+        conversation.parent_conversation_id = Some(parent_conversation.id.as_str());
+        Some(
+            state
+                .app_state
+                .chat_conversation_repo
+                .create(conversation)
+                .await
+                .expect("create active caller delegated conversation"),
+        )
+    } else {
+        None
+    };
+    let local_scope = AgentTaskScope::new("delegation", delegated_session.id.as_str());
+    for title in ["Nested assigned task", "Meaningful local sibling"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &local_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create caller-local task");
+    }
+
+    NestedAssignmentCaller {
+        project,
+        parent_conversation,
+        delegated_session,
+        delegated_conversation,
+        local_scope,
+    }
+}
+
+fn nested_assignment_start_request(caller: &NestedAssignmentCaller) -> DelegateStartRequest {
+    DelegateStartRequest {
+        caller_agent_name: Some("ralphx-general-worker".to_string()),
+        caller_agent_profile: None,
+        caller_context_type: Some("delegation".to_string()),
+        caller_context_id: Some(caller.delegated_session.id.as_str().to_string()),
+        parent_session_id: None,
+        parent_turn_id: None,
+        parent_message_id: None,
+        parent_conversation_id: Some(caller.parent_conversation.id.as_str()),
+        parent_tool_use_id: None,
+        delegated_session_id: None,
+        child_session_id: None,
+        task_ref: Some("1".to_string()),
+        agent_name: "ralphx-general-explorer".to_string(),
+        prompt: "Inspect the exact nested assignment.".to_string(),
+        title: None,
+        inherit_context: true,
+        harness: Some(AgentHarnessKind::Codex),
+        model: None,
+        logical_effort: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    }
+}
+
 async fn seed_codex_provider_default(app_state: &AppState, model: &str, effort: LogicalEffort) {
     let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
     codex.enabled = true;
@@ -305,6 +763,7 @@ fn routed_delegate_start_request(
         parent_tool_use_id: None,
         delegated_session_id: None,
         child_session_id: None,
+        task_ref: None,
         agent_name: "ralphx-general-explorer".to_string(),
         prompt: "Review the current change.".to_string(),
         title: None,
@@ -441,6 +900,7 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
             parent_tool_use_id: Some("toolu-parent-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the proposal set and summarize the main implementation risks."
                 .to_string(),
@@ -610,6 +1070,7 @@ async fn delegate_start_child_command_excludes_bound_project_persona() {
             parent_tool_use_id: Some("toolu-persona-isolation".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Inspect delegated child persona isolation.".to_string(),
             title: Some("Delegated persona isolation".to_string()),
@@ -689,6 +1150,7 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
             parent_tool_use_id: Some("toolu-project-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the workspace and summarize the requested evidence.".to_string(),
             title: Some("Delegated Project Workspace Inspection".to_string()),
@@ -739,6 +1201,556 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
 }
 
 #[tokio::test]
+async fn bound_delegate_false_success_reopens_exact_parent_task() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create active parent run");
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    for title in ["Inspect delegation", "Validate outcome"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create parent agent task");
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        parent_run.id.as_str().parse().unwrap(),
+    );
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: Some("tool-bound-task".to_string()),
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: Some("1".to_string()),
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the assigned work and return without requesting completion."
+                .to_string(),
+            title: Some("Bound exploration".to_string()),
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("start bound delegate")
+    .0;
+    let assignment = started.assignment.expect("start response assignment");
+    assert_eq!(assignment.task_number, 1);
+    assert_eq!(assignment.title, "Inspect delegation");
+    assert_eq!(assignment.task_state, "active");
+    assert_eq!(assignment.assignment_state, "active");
+
+    let task = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let task = state
+                .app_state
+                .agent_task_repo
+                .get_task(&parent_scope, "1")
+                .await
+                .expect("load parent task")
+                .expect("parent task");
+            if task.state == AgentTaskState::Open {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("false-success settlement should reopen task");
+    assert_eq!(task.owner_agent.as_deref(), Some("ralphx-general-worker"));
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&DelegatedSessionId::from_string(
+            started.delegated_session_id
+        ))
+        .await
+        .expect("load assignment")
+        .is_none());
+}
+
+#[tokio::test]
+async fn binding_failure_keeps_parent_task_reserved_when_run_cancellation_fails() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let mut app_state = AppState::new_sqlite_test();
+    app_state.agent_task_repo = Arc::new(FailBindingAgentTaskRepository {
+        inner: Arc::clone(&app_state.agent_task_repo),
+    });
+    app_state.agent_run_repo = Arc::new(FailCancelAgentRunRepository {
+        inner: Arc::clone(&app_state.agent_run_repo),
+    });
+    let state = build_state(Arc::new(app_state));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create active parent run");
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    for title in ["Inspect binding failure", "Keep meaningful ledger"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create parent agent task");
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        parent_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: Some("tool-binding-failure".to_string()),
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: Some("1".to_string()),
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the assigned work.".to_string(),
+            title: Some("Binding failure".to_string()),
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect_err("injected binding failure should reject delegate_start");
+    assert_eq!(error.0, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&parent_scope, "1")
+        .await
+        .expect("load parent task")
+        .expect("parent task");
+    assert_eq!(task.state, AgentTaskState::Active);
+    assert_eq!(task.owner_agent.as_deref(), Some("ralphx-general-explorer"));
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("project", project.id.as_str())
+        .await
+        .expect("load delegated sessions")
+        .into_iter()
+        .next()
+        .expect("delegated session");
+    let assignment = state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&delegated_session.id)
+        .await
+        .expect("load unresolved assignment")
+        .expect("reservation must remain unavailable");
+    assert_eq!(assignment.assignment.state.as_str(), "reserved");
+}
+
+#[tokio::test]
+async fn reused_unassigned_launch_does_not_bind_stale_reserved_attempt() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .expect("create active parent run");
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    for title in ["Stale reserved work", "Keep meaningful ledger"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create parent agent task");
+    }
+
+    let mut delegated_session = DelegatedSession::new(
+        project.id.clone(),
+        "project",
+        project.id.as_str(),
+        "ralphx-general-explorer",
+        AgentHarnessKind::Codex,
+    );
+    delegated_session.status = "failed".to_string();
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(delegated_session)
+        .await
+        .expect("create reusable delegated session");
+    let mut delegated_conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+    delegated_conversation.parent_conversation_id = Some(parent_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .expect("create delegated conversation");
+    let reserved = state
+        .app_state
+        .agent_task_repo
+        .reserve_assignment(
+            &parent_scope,
+            "1",
+            &delegated_session.id,
+            &parent_run.id,
+            "ralphx-general-explorer",
+        )
+        .await
+        .expect("reserve stale assignment")
+        .expect("reserved assignment");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        parent_run.id.as_str().parse().unwrap(),
+    );
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: Some("tool-unassigned-retry".to_string()),
+            delegated_session_id: Some(delegated_session.id.as_str().to_string()),
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Perform unrelated unassigned exploration.".to_string(),
+            title: Some("Unassigned retry".to_string()),
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("unassigned reused launch should start")
+    .0;
+
+    assert!(
+        started.assignment.is_none(),
+        "an unassigned launch must not inherit an older reservation"
+    );
+    let unresolved = state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&delegated_session.id)
+        .await
+        .expect("load unresolved assignment")
+        .expect("stale reservation remains fenced for recovery");
+    assert_eq!(unresolved.assignment.id, reserved.assignment.assignment.id);
+    assert_eq!(
+        unresolved.assignment.state.as_str(),
+        "reserved",
+        "the stale attempt must remain unbound"
+    );
+    assert!(unresolved.assignment.delegated_agent_run_id.is_none());
+}
+
+#[tokio::test]
+async fn assignment_endpoints_require_exact_prebound_run_and_guard_unfinished_local_tasks() {
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    let project = state
+        .app_state
+        .project_repo
+        .create(Project::new(
+            "Assignment endpoint project".to_string(),
+            repo_root().display().to_string(),
+        ))
+        .await
+        .unwrap();
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let caller_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(parent_conversation.id))
+        .await
+        .unwrap();
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id,
+            "project".to_string(),
+            parent_conversation.context_id.clone(),
+            "ralphx-general-worker".to_string(),
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .unwrap();
+    state
+        .app_state
+        .delegated_session_repo
+        .update_status(&delegated_session.id, "running", None, None)
+        .await
+        .unwrap();
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_delegation(
+            delegated_session.id.clone(),
+        ))
+        .await
+        .unwrap();
+    let delegated_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .unwrap();
+    let parent_scope = AgentTaskScope::new("conversation", parent_conversation.id.as_str());
+    let local_scope = AgentTaskScope::new("delegation", delegated_session.id.as_str());
+    for (scope, titles) in [
+        (&parent_scope, ["Assigned", "Sibling"]),
+        (&local_scope, ["Local implementation", "Local validation"]),
+    ] {
+        for title in titles {
+            state
+                .app_state
+                .agent_task_repo
+                .create_task(
+                    scope,
+                    AgentTaskCreate {
+                        title: title.to_string(),
+                        details: format!("Requirements for {title}"),
+                        active_label: None,
+                        owner_agent: None,
+                        metadata: None,
+                        blocked_by: Vec::new(),
+                        blocks: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
+    let reservation = state
+        .app_state
+        .agent_task_repo
+        .reserve_assignment(
+            &parent_scope,
+            "1",
+            &delegated_session.id,
+            &caller_run.id,
+            "ralphx-general-worker",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        delegated_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        delegated_run.id.as_str().parse().unwrap(),
+    );
+
+    let unbound = get_delegate_assignment(State(state.clone()), headers.clone())
+        .await
+        .0;
+    assert!(unbound.success);
+    assert!(unbound.assignment.is_none());
+    let unresolved = state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&delegated_session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unresolved.assignment.state.as_str(), "reserved");
+    assert!(unresolved.assignment.delegated_agent_run_id.is_none());
+
+    state
+        .app_state
+        .agent_task_repo
+        .plan_assignment_run(
+            &reservation.assignment.assignment.id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .app_state
+        .agent_task_repo
+        .bind_assignment_run(
+            &reservation.assignment.assignment.id,
+            &delegated_session.id,
+            &delegated_run.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let inspected = get_delegate_assignment(State(state.clone()), headers.clone())
+        .await
+        .0;
+    assert!(inspected.success);
+    assert_eq!(inspected.assignment.unwrap().assignment_state, "active");
+    let blocked = complete_delegate_assignment(
+        State(state.clone()),
+        headers.clone(),
+        Json(CompleteDelegateAssignmentRequest { metadata: None }),
+    )
+    .await
+    .0;
+    assert!(!blocked.success);
+    assert!(blocked
+        .error
+        .unwrap()
+        .contains("delegate-local tasks must be resolved"));
+
+    for task_ref in ["1", "2"] {
+        state
+            .app_state
+            .agent_task_repo
+            .update_task(
+                &local_scope,
+                task_ref,
+                ralphx_lib::domain::entities::AgentTaskPatch {
+                    state: Some(AgentTaskState::Done),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let requested = complete_delegate_assignment(
+        State(state),
+        headers,
+        Json(CompleteDelegateAssignmentRequest {
+            metadata: Some(serde_json::json!({"verified": true})),
+        }),
+    )
+    .await
+    .0;
+    assert!(requested.success);
+    assert_eq!(
+        requested.assignment.unwrap().assignment_state,
+        "completion_requested"
+    );
+}
+
+#[tokio::test]
 async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
     let _env_lock = codex_cli_env_lock().lock().await;
     let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
@@ -773,6 +1785,7 @@ async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the project using delegated defaults.".to_string(),
             title: Some("Delegated provider defaults".to_string()),
@@ -868,6 +1881,7 @@ async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the project with only a model override.".to_string(),
             title: Some("Delegated partial defaults".to_string()),
@@ -939,6 +1953,7 @@ async fn test_delegate_start_rejects_reused_session_identity_conflicts() {
             parent_tool_use_id: None,
             delegated_session_id: Some(existing.id.as_str().to_string()),
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-worker".to_string(),
             prompt: "This conflicting specialist must not launch.".to_string(),
             title: None,
@@ -970,6 +1985,7 @@ async fn test_delegate_start_rejects_reused_session_identity_conflicts() {
             parent_tool_use_id: None,
             delegated_session_id: Some(existing.id.as_str().to_string()),
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "This conflicting harness must not launch.".to_string(),
             title: None,
@@ -1021,6 +2037,183 @@ async fn test_delegate_start_rejects_reused_session_identity_conflicts() {
         1,
         "conflicts must not create another session"
     );
+
+    let mut delegated_conversation = ChatConversation::new_delegation(existing.id.clone());
+    delegated_conversation.parent_conversation_id = Some(parent_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .expect("create matching delegated conversation lineage");
+    let resumed = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: Some(existing.id.as_str().to_string()),
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Resume the matching delegated session.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("matching caller lineage should permit session reuse")
+    .0;
+    assert_eq!(resumed.delegated_session_id, existing.id.as_str());
+}
+
+#[tokio::test]
+async fn test_delegate_start_rejects_reused_session_from_another_project_conversation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir
+        .path()
+        .join("cross-conversation-reuse-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, first_parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let second_parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create second same-project parent conversation");
+    let second_parent_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(second_parent_conversation.id))
+        .await
+        .expect("create active second parent run");
+
+    let mut existing = DelegatedSession::new(
+        project.id.clone(),
+        "project",
+        project.id.as_str(),
+        "ralphx-general-explorer",
+        AgentHarnessKind::Codex,
+    );
+    existing.status = "pending".to_string();
+    let existing = state
+        .app_state
+        .delegated_session_repo
+        .create(existing)
+        .await
+        .expect("existing delegated session should persist");
+    let mut delegated_conversation = ChatConversation::new_delegation(existing.id.clone());
+    delegated_conversation.parent_conversation_id = Some(first_parent_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .expect("create delegated conversation under first parent");
+
+    let second_parent_scope =
+        AgentTaskScope::new("conversation", second_parent_conversation.id.as_str());
+    for title in ["Assigned from second conversation", "Meaningful sibling"] {
+        state
+            .app_state
+            .agent_task_repo
+            .create_task(
+                &second_parent_scope,
+                AgentTaskCreate {
+                    title: title.to_string(),
+                    details: format!("Requirements for {title}"),
+                    active_label: None,
+                    owner_agent: Some("ralphx-general-worker".to_string()),
+                    metadata: None,
+                    blocked_by: Vec::new(),
+                    blocks: Vec::new(),
+                },
+            )
+            .await
+            .expect("create second parent task");
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        second_parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        second_parent_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(second_parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: Some(existing.id.as_str().to_string()),
+            child_session_id: None,
+            task_ref: Some("1".to_string()),
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "This cross-conversation reuse must not launch.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect_err("same-project cross-conversation session reuse should fail");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("lineage")));
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&second_parent_scope, "1")
+        .await
+        .expect("load second parent task")
+        .expect("second parent task");
+    assert_eq!(task.state, AgentTaskState::Open);
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .get_unresolved_assignment(&existing.id)
+        .await
+        .expect("load unresolved assignment")
+        .is_none());
+    assert!(
+        !captured_args_path.exists(),
+        "cross-conversation reuse must fail before process spawn"
+    );
 }
 
 #[tokio::test]
@@ -1059,6 +2252,7 @@ async fn test_delegate_start_from_project_without_workspace_uses_project_checkou
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the project checkout.".to_string(),
             title: None,
@@ -1077,6 +2271,155 @@ async fn test_delegate_start_from_project_without_workspace_uses_project_checkou
     assert_eq!(
         captured_cwds,
         vec![PathBuf::from(project.working_directory)]
+    );
+}
+
+#[tokio::test]
+async fn nested_assignment_rejects_missing_active_caller_conversation_before_reservation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir
+        .path()
+        .join("missing-nested-caller-conversation-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let caller = seed_nested_assignment_caller(&state, false).await;
+    let trusted_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(caller.parent_conversation.id))
+        .await
+        .expect("create unrelated trusted caller run");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        caller.parent_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        trusted_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(nested_assignment_start_request(&caller)),
+    )
+    .await
+    .expect_err("nested assignment must require an active caller conversation");
+
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("delegated conversation")));
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&caller.local_scope, "1")
+        .await
+        .expect("load caller-local task")
+        .expect("caller-local task");
+    assert_eq!(task.state, AgentTaskState::Open);
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .list_unresolved_assignments()
+        .await
+        .expect("list unresolved assignments")
+        .is_empty());
+    assert!(state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("delegation", caller.delegated_session.id.as_str())
+        .await
+        .expect("list nested delegated sessions")
+        .is_empty());
+    assert!(
+        !captured_args_path.exists(),
+        "missing caller conversation must fail before process spawn"
+    );
+}
+
+#[tokio::test]
+async fn nested_assignment_rejects_mismatched_trusted_caller_conversation_before_reservation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir
+        .path()
+        .join("mismatched-nested-caller-conversation-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let caller = seed_nested_assignment_caller(&state, true).await;
+    let other_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(caller.project.id.clone()))
+        .await
+        .expect("create mismatched trusted conversation");
+    let trusted_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(other_conversation.id))
+        .await
+        .expect("create mismatched trusted caller run");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        other_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        trusted_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        headers,
+        Json(nested_assignment_start_request(&caller)),
+    )
+    .await
+    .expect_err("nested assignment must reject a mismatched trusted caller conversation");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("does not match")));
+    assert!(caller.delegated_conversation.is_some());
+    let task = state
+        .app_state
+        .agent_task_repo
+        .get_task(&caller.local_scope, "1")
+        .await
+        .expect("load caller-local task")
+        .expect("caller-local task");
+    assert_eq!(task.state, AgentTaskState::Open);
+    assert!(state
+        .app_state
+        .agent_task_repo
+        .list_unresolved_assignments()
+        .await
+        .expect("list unresolved assignments")
+        .is_empty());
+    assert!(state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("delegation", caller.delegated_session.id.as_str())
+        .await
+        .expect("list nested delegated sessions")
+        .is_empty());
+    assert!(
+        !captured_args_path.exists(),
+        "mismatched caller conversation must fail before process spawn"
     );
 }
 
@@ -1112,6 +2455,7 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-worker".to_string(),
             prompt: "Start the first workspace delegate.".to_string(),
             title: None,
@@ -1127,9 +2471,57 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
     .expect("first workspace delegate should start")
     .0;
     wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    let first_terminal = {
+        let mut snapshot = None;
+        for _ in 0..40 {
+            let candidate = wait_delegate(
+                State(state.clone()),
+                Json(DelegateWaitRequest {
+                    job_id: first.job_id.clone(),
+                    include_delegated_status: Some(false),
+                    include_child_status: None,
+                    include_messages: Some(false),
+                    message_limit: None,
+                }),
+            )
+            .await
+            .expect("first workspace delegate status should load")
+            .0;
+            if candidate.status != "running" {
+                snapshot = Some(candidate);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        snapshot.expect("first workspace delegate should settle before nested delegation")
+    };
+    assert_eq!(first_terminal.status, "completed");
 
-    let _ = start_delegate(
+    let delegated_conversation_id = first
+        .delegated_conversation_id
+        .clone()
+        .expect("first delegate should expose its conversation");
+    let nested_caller_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::from_string(
+            delegated_conversation_id.clone(),
+        )))
+        .await
+        .expect("create active outer delegate run");
+    let mut nested_headers = HeaderMap::new();
+    nested_headers.insert(
+        "x-ralphx-agent-run-id",
+        nested_caller_run.id.as_str().parse().unwrap(),
+    );
+    nested_headers.insert(
+        "x-ralphx-conversation-id",
+        delegated_conversation_id.parse().unwrap(),
+    );
+
+    let _ = start_delegate_with_runtime_context(
         State(state),
+        nested_headers,
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-general-worker".to_string()),
             caller_agent_profile: None,
@@ -1142,6 +2534,7 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "Inspect the same workspace from the nested delegate.".to_string(),
             title: None,
@@ -1213,6 +2606,7 @@ async fn test_workspace_removed_before_delegate_spawn_marks_session_failed() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-general-explorer".to_string(),
             prompt: "This launch must fail closed.".to_string(),
             title: None,
@@ -1272,6 +2666,7 @@ async fn test_get_delegated_session_status_exposes_parent_context() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Publish a verification finding.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1323,6 +2718,7 @@ async fn test_delegate_start_does_not_invent_child_model_when_model_is_omitted()
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1395,6 +2791,7 @@ async fn test_delegate_start_rejects_unknown_agent_name() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-does-not-exist".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1440,6 +2837,7 @@ async fn test_delegate_start_rejects_standalone_caller_context() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1480,6 +2878,7 @@ async fn test_delegate_start_rejects_missing_caller_agent_name() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1520,6 +2919,7 @@ async fn test_delegate_start_rejects_disallowed_target_for_caller() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1560,6 +2960,7 @@ async fn test_delegate_start_enforces_profile_specific_allowed_targets() {
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -1618,6 +3019,7 @@ async fn test_delegate_start_infers_parent_session_from_verification_child_conte
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1683,6 +3085,7 @@ async fn test_delegate_start_verifier_context_survives_external_generated_plugin
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1761,6 +3164,7 @@ async fn test_legacy_verification_child_uses_ideation_subagent_harness_when_omit
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -1882,6 +3286,7 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
             parent_tool_use_id: Some("toolu-ideation-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Analyze the plan intent and summarize any scope drift risks.".to_string(),
             title: Some("Delegated Intent Specialist".to_string()),
@@ -2001,6 +3406,7 @@ async fn test_delegate_start_links_parent_conversation_to_verification_child_cha
             parent_tool_use_id: Some("toolu-verifier-1".to_string()),
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "Review the plan for completeness and summarize any gaps.".to_string(),
             title: Some("Delegated Completeness Critic".to_string()),
@@ -2023,6 +3429,97 @@ async fn test_delegate_start_links_parent_conversation_to_verification_child_cha
     assert_ne!(
         start.parent_conversation_id.as_deref(),
         Some(parent_conversation_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn verification_child_runtime_uses_current_run_authority_and_root_lineage() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let parent_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .await
+        .unwrap();
+    let mut verification_child = IdeationSession::builder()
+        .project_id(parent.project_id.clone())
+        .title("Verification Child")
+        .cross_project_checked(true)
+        .build();
+    verification_child.parent_session_id = Some(parent.id.clone());
+    verification_child.session_purpose = SessionPurpose::Verification;
+    let verification_child = state
+        .app_state
+        .ideation_session_repo
+        .create(verification_child)
+        .await
+        .unwrap();
+    let verification_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(
+            verification_child.id.clone(),
+        ))
+        .await
+        .unwrap();
+    let verification_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(verification_conversation.id))
+        .await
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        verification_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        verification_run.id.as_str().parse().unwrap(),
+    );
+
+    let started = start_delegate_with_runtime_context(
+        State(state),
+        headers,
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-ideation".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("ideation".to_string()),
+            caller_context_id: Some(verification_child.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
+            prompt: "Inspect the verified plan.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+
+    assert_eq!(
+        started.parent_conversation_id,
+        Some(parent_conversation.id.as_str())
+    );
+    assert_eq!(
+        started.parent_agent_run_id,
+        Some(verification_run.id.as_str())
     );
 }
 
@@ -2060,6 +3557,7 @@ async fn test_delegate_start_rejects_parent_session_mismatch_against_verificatio
             parent_tool_use_id: None,
             delegated_session_id: None,
             child_session_id: None,
+            task_ref: None,
             agent_name: "ralphx-ideation-specialist-backend".to_string(),
             prompt: "noop".to_string(),
             title: None,
@@ -2123,6 +3621,7 @@ async fn test_routed_delegate_start_requires_trusted_parent_run_context() {
 async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_runs() {
     let state = build_state(Arc::new(AppState::new_sqlite_test()));
     let parent = create_parent_session(&state).await;
+    let other_parent = create_parent_session(&state).await;
     let parent_conversation = state
         .app_state
         .chat_conversation_repo
@@ -2132,7 +3631,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     let other_conversation = state
         .app_state
         .chat_conversation_repo
-        .create(ChatConversation::new_ideation(parent.id.clone()))
+        .create(ChatConversation::new_ideation(other_parent.id))
         .await
         .expect("create other conversation");
 
@@ -2161,7 +3660,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     assert!(wrong_error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("does not belong to the parent conversation"));
+        .contains("does not belong to the caller conversation"));
 
     let mut stale_run = AgentRun::new(parent_conversation.id);
     stale_run.status = AgentRunStatus::Completed;
@@ -2197,7 +3696,7 @@ async fn test_routed_delegate_start_rejects_wrong_conversation_and_stale_parent_
     assert!(stale_error.1 .0["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("is not the active parent run"));
+        .contains("is not the active caller run"));
 }
 
 #[tokio::test]
@@ -2264,6 +3763,7 @@ async fn test_delegate_wait_hydrates_the_jobs_exact_run_when_session_has_newer_r
             Some(delegated_conversation.id.as_str()),
             Some(exact_run.id.as_str()),
             "ralphx-general-explorer".to_string(),
+            None,
             "codex",
             None,
             None,
@@ -2316,6 +3816,7 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
         delegated_conversation_id: Some("delegated-conv-1".to_string()),
         delegated_agent_run_id: Some("run-1".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
+        assignment: None,
         harness: "codex".to_string(),
         provider_session_id: Some("provider-thread-start".to_string()),
         upstream_provider: Some("openai".to_string()),
@@ -2407,6 +3908,7 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
         delegated_conversation_id: Some("delegated-conv-2".to_string()),
         delegated_agent_run_id: Some("run-2".to_string()),
         agent_name: "ralphx-execution-reviewer".to_string(),
+        assignment: None,
         harness: "codex".to_string(),
         provider_session_id: None,
         upstream_provider: None,
@@ -2535,6 +4037,7 @@ fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
         delegated_conversation_id: Some("delegated-conversation".to_string()),
         delegated_agent_run_id: Some("delegated-run".to_string()),
         agent_name: "ralphx-general-explorer".to_string(),
+        assignment: None,
         harness: "codex".to_string(),
         provider_session_id: None,
         upstream_provider: Some("openai".to_string()),

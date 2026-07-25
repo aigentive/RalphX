@@ -532,4 +532,32 @@ describe("delegation-tool-calls", () => {
     expect(metadata.textOutput).toBe("Final delegated handoff summary.");
     expect(metadata.providerHarness).toBe("codex");
   });
+
+  it("extracts the bound task summary without treating it as a local ledger task", () => {
+    const metadata = extractDelegationMetadata(
+      {
+        agent_name: "ralphx-general-explorer",
+        task_ref: "4",
+      },
+      {
+        job_id: "job-assigned",
+        status: "running",
+        assignment: {
+          task_number: 4,
+          title: "Inspect restart recovery",
+          task_state: "active",
+          assignment_state: "active",
+          delegate_agent_name: "ralphx-general-explorer",
+        },
+      },
+    );
+
+    expect(metadata.assignment).toEqual({
+      taskNumber: 4,
+      title: "Inspect restart recovery",
+      taskState: "active",
+      assignmentState: "active",
+      delegateAgentName: "ralphx-general-explorer",
+    });
+  });
 });

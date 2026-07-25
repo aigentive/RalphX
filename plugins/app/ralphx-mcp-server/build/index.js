@@ -23,7 +23,7 @@ import { getFilteredTools, isToolAllowed, getAllowedToolNames, parseAllowedTools
 import { FILESYSTEM_TOOL_NAMES, formatFilesystemToolError, handleFilesystemToolCall, } from "./filesystem-tools.js";
 import { permissionRequestTool, handlePermissionRequest, } from "./permission-handler.js";
 import { handleAskUserQuestion, handleProposePlanMode, } from "./question-handler.js";
-import { buildArtifactMutationTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
+import { buildArtifactMutationTransportHeaders, buildRuntimeIdentityTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
@@ -794,9 +794,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 caller_context_type: RALPHX_CONTEXT_TYPE,
                 caller_context_id: RALPHX_CONTEXT_ID,
             }, {
-                headers: {
-                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
-                },
+                headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
             });
         }
         else if (name === "delegate_wait") {
@@ -814,14 +812,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 claim_agent_task: "agent_tasks/claim",
                 complete_agent_task: "agent_tasks/complete",
             };
-            const endpoint = endpointByTool[name];
-            result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
-                contextType: RALPHX_CONTEXT_TYPE,
-                contextId: RALPHX_CONTEXT_ID,
-                projectId: RALPHX_PROJECT_ID,
-                actorAgent: AGENT_TYPE,
-                parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
-            }));
+            if (name === "get_delegate_assignment" ||
+                name === "complete_delegate_assignment" ||
+                name === "release_delegate_assignment") {
+                const assignmentEndpointByTool = {
+                    get_delegate_assignment: "agent_tasks/delegate_assignment/get",
+                    complete_delegate_assignment: "agent_tasks/delegate_assignment/complete",
+                    release_delegate_assignment: "agent_tasks/delegate_assignment/release",
+                };
+                result = await callTauri(assignmentEndpointByTool[name], args, {
+                    headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+                });
+            }
+            else {
+                const endpoint = endpointByTool[name];
+                result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
+                    contextType: RALPHX_CONTEXT_TYPE,
+                    contextId: RALPHX_CONTEXT_ID,
+                    projectId: RALPHX_PROJECT_ID,
+                    actorAgent: AGENT_TYPE,
+                    parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+                }));
+            }
         }
         else if (name === "get_project_analysis") {
             // GET /api/projects/:project_id/analysis?task_id=
