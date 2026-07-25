@@ -474,6 +474,18 @@ async fn non_planning_publish_clears_deferred_attention_without_recording() {
     let (mut session, _) = planning_session_with_workspace(&state).await;
     seed_deferred_marker(&state, &session, "plan-current").await;
     session.session_flow = IdeationSessionFlow::Ideation;
+    let session_id = session.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions SET session_flow = 'ideation' WHERE id = ?1",
+                [session_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     reconcile_plan_approval_on_publish(
         &state,

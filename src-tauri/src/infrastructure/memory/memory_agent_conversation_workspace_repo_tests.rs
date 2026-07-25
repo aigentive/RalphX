@@ -936,6 +936,9 @@ async fn approve_workspace_review_anyway_is_exact_and_single_use() {
     monitor.reviewed_diff_fingerprint = Some("diff-1".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(2);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("changes-review-bypass"));
+    monitor.review_requested_changes_artifact_version = Some(2);
     repo.upsert_workspace_review_monitor(monitor)
         .await
         .expect("insert blocking monitor");

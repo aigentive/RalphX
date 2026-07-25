@@ -640,6 +640,10 @@ async fn automated_review_settles_current_passing_selected_source_after_pausing_
     );
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("requested-changes-artifact"));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
@@ -1332,6 +1336,11 @@ async fn passing_review_cancels_guard_when_target_disappears() {
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("missing-target-review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "missing-target-requested-changes-artifact",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some("missing-delta".to_string());
