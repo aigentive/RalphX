@@ -16,6 +16,12 @@ pub enum ModelLevel {
     Inherit,
     Sonnet,
     Opus,
+    #[serde(rename = "claude-opus-4-7")]
+    ClaudeOpus47,
+    #[serde(rename = "claude-opus-4-8")]
+    ClaudeOpus48,
+    #[serde(rename = "claude-opus-5")]
+    ClaudeOpus5,
     Haiku,
     Fable,
 }
@@ -32,6 +38,9 @@ impl fmt::Display for ModelLevel {
             Self::Inherit => write!(f, "inherit"),
             Self::Sonnet => write!(f, "sonnet"),
             Self::Opus => write!(f, "opus"),
+            Self::ClaudeOpus47 => write!(f, "claude-opus-4-7"),
+            Self::ClaudeOpus48 => write!(f, "claude-opus-4-8"),
+            Self::ClaudeOpus5 => write!(f, "claude-opus-5"),
             Self::Haiku => write!(f, "haiku"),
             Self::Fable => write!(f, "fable"),
         }
@@ -46,10 +55,13 @@ impl FromStr for ModelLevel {
             "inherit" => Ok(Self::Inherit),
             "sonnet" => Ok(Self::Sonnet),
             "opus" => Ok(Self::Opus),
+            "claude-opus-4-7" => Ok(Self::ClaudeOpus47),
+            "claude-opus-4-8" => Ok(Self::ClaudeOpus48),
+            "claude-opus-5" => Ok(Self::ClaudeOpus5),
             "haiku" => Ok(Self::Haiku),
             "fable" => Ok(Self::Fable),
             other => Err(format!(
-                "Invalid model level '{}'. Valid values: inherit, sonnet, opus, haiku, fable",
+                "Invalid model level '{}'. Valid values: inherit, sonnet, opus, claude-opus-4-7, claude-opus-4-8, claude-opus-5, haiku, fable",
                 other
             )),
         }

@@ -4767,6 +4767,15 @@ mod ipc_contract {
             .await
             .expect("models should list");
         assert!(initial.iter().any(|model| model.model_id == "gpt-5.5"));
+        for model_id in ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"] {
+            assert!(
+                initial
+                    .iter()
+                    .any(|model| model.model_id == model_id && model.source == "built_in"),
+                "expected built-in model '{}' in command response",
+                model_id
+            );
+        }
         assert!(initial
             .iter()
             .any(|model| model.default_effort == "max" || model.default_effort == "xhigh"));
@@ -4798,6 +4807,46 @@ mod ipc_contract {
             .iter()
             .any(|model| model.model_id == "gpt-5.6" && model.default_effort == "low"));
 
+        let opus_override = upsert_custom_agent_model(
+            UpsertCustomAgentModelInput {
+                provider: "claude".to_string(),
+                model_id: "claude-opus-5".to_string(),
+                label: "Private Opus 5".to_string(),
+                menu_label: Some("Private Opus 5".to_string()),
+                description: None,
+                supported_efforts: vec!["low".to_string(), "high".to_string()],
+                default_effort: "high".to_string(),
+                enabled: true,
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("same-ID custom override should save");
+        assert_eq!(opus_override.source, "custom");
+        let overridden = list_agent_models(app.state::<AppState>())
+            .await
+            .expect("models should list custom override");
+        assert!(overridden.iter().any(|model| {
+            model.model_id == "claude-opus-5"
+                && model.source == "custom"
+                && model.label == "Private Opus 5"
+        }));
+        assert!(delete_custom_agent_model(
+            "claude".to_string(),
+            "claude-opus-5".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("custom override should delete"));
+        let restored = list_agent_models(app.state::<AppState>())
+            .await
+            .expect("models should list restored built-in");
+        assert!(restored.iter().any(|model| {
+            model.model_id == "claude-opus-5"
+                && model.source == "built_in"
+                && model.label == "Claude Opus 5"
+        }));
+
         let deleted = delete_custom_agent_model(
             "codex".to_string(),
             "gpt-5.6".to_string(),
@@ -4820,7 +4869,22 @@ mod ipc_contract {
     #[test]
     fn agent_model_registry_ipc_contract_covers_provider_defaults() {
         let built_ins = built_in_agent_models();
-        assert_eq!(built_ins.len(), 14);
+        assert_eq!(built_ins.len(), 17);
+        for (model_id, label) in [
+            ("claude-opus-4-7", "Claude Opus 4.7"),
+            ("claude-opus-4-8", "Claude Opus 4.8"),
+            ("claude-opus-5", "Claude Opus 5"),
+        ] {
+            let model = built_ins
+                .iter()
+                .find(|model| {
+                    model.provider == AgentHarnessKind::Claude && model.model_id == model_id
+                })
+                .expect("pinned Opus model should be exposed as a built-in Claude model");
+            assert_eq!(model.source, AgentModelSource::BuiltIn);
+            assert_eq!(model.label, label);
+            assert_eq!(model.default_effort, LogicalEffort::High);
+        }
         let sonnet_4_6 = built_ins
             .iter()
             .find(|model| {
