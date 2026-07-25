@@ -54,7 +54,7 @@ fn write_fake_claude_cli(path: &std::path::Path) {
         path,
         r#"#!/bin/sh
 if [ "$1" = "--version" ]; then
-  printf 'claude-code 2.1.170\n'
+  printf 'claude-code 2.1.219\n'
 elif [ "$1" = "--help" ]; then
   printf '%s\n' 'Claude Code' 'Options:' '  --model <MODEL>' '  --effort <EFFORT>'
 else
@@ -438,6 +438,33 @@ fn test_build_cli_args_with_model() {
 
     assert!(args.contains(&"--model".to_string()));
     assert!(args.contains(&"opus".to_string()));
+}
+
+#[test]
+fn test_build_cli_args_preserves_supported_model_values_byte_for_byte() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let custom_claude_path = temp_dir.path().join("claude-wrapper");
+    write_fake_claude_cli(&custom_claude_path);
+    let client = ClaudeCodeClient::new().with_cli_path("/missing/default/claude");
+
+    for model in [
+        "sonnet",
+        "opus",
+        "haiku",
+        "fable",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+    ] {
+        let mut config = AgentConfig::worker("Test").with_model(model);
+        config.cli_path_override = Some(custom_claude_path.clone());
+
+        let args = client
+            .build_cli_args(&config, None, false)
+            .expect("supported model should build CLI args");
+
+        assert_eq!(arg_value(&args, "--model"), Some(model));
+    }
 }
 
 #[test]

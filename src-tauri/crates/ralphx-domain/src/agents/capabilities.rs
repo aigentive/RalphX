@@ -62,6 +62,9 @@ impl ClientCapabilities {
                 ModelInfo::new("claude-sonnet-4-6", "Claude Sonnet 4.6", 128_000),
                 ModelInfo::new("claude-sonnet-5", "Claude Sonnet 5", 128_000),
                 ModelInfo::new("claude-opus-4-5-20251101", "Claude Opus 4.5", 32_000),
+                ModelInfo::new("claude-opus-4-7", "Claude Opus 4.7", 1_000_000),
+                ModelInfo::new("claude-opus-4-8", "Claude Opus 4.8", 1_000_000),
+                ModelInfo::new("claude-opus-5", "Claude Opus 5", 1_000_000),
                 ModelInfo::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 32_000),
             ],
         }
