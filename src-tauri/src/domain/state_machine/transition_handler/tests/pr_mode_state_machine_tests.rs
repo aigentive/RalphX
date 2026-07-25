@@ -819,6 +819,95 @@ async fn plan_merge_without_plan_branch_row_stays_merge_incomplete_without_local
 }
 
 #[tokio::test]
+async fn plan_merge_without_a_plan_branch_repository_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    setup_project(&project_repo).await;
+    let task_id =
+        create_pending_merge_task(&task_repo, "task-plan-branch-repository-unavailable").await;
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler.on_enter(&State::PendingMerge).await.expect(
+        "missing plan branch repository should use the canonical merge-incomplete transition",
+    );
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_repository_unavailable".to_string())
+    );
+}
+
+#[tokio::test]
+async fn plan_merge_with_a_plan_branch_lookup_error_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    setup_project(&project_repo).await;
+    let task_id = create_pending_merge_task(&task_repo, "task-plan-branch-lookup-error").await;
+    plan_branch_repo.fail_next_merge_task_lookup("planned repository outage");
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("plan branch lookup failures should use the canonical merge-incomplete transition");
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_lookup_failed".to_string())
+    );
+    assert_eq!(
+        metadata["cause"],
+        Value::String("Infrastructure error: planned repository outage".to_string())
+    );
+}
+
+#[tokio::test]
 async fn github_eligible_pre_pr_branch_without_github_service_stays_merge_incomplete() {
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
@@ -1040,6 +1129,80 @@ async fn stale_pre_pr_eligibility_without_origin_uses_local_merge_without_github
         .expect("plan branch should remain");
     assert!(!updated_plan_branch.pr_eligible);
     assert_eq!(updated_plan_branch.pr_number, None);
+}
+
+#[tokio::test]
+async fn stale_pre_pr_eligibility_update_failure_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/stale-pre-pr-update-failure";
+    let repo = setup_plan_git_repo(branch_name, true);
+    run_git(repo.path(), &["remote", "remove", "origin"]);
+    let main_before = run_git(repo.path(), &["rev-parse", "main"]);
+    let mut project = Project::new(
+        "stale pre-PR eligibility update failure".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-stale-pre-pr-update-failure").await;
+    let mut plan_branch = make_pr_eligible_plan_branch(&task_id, None, false);
+    plan_branch.branch_name = branch_name.to_string();
+    let plan_branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+    plan_branch_repo.fail_next_pr_eligibility_update("planned persistence outage");
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("stale eligibility persistence failures should use the canonical merge-incomplete transition");
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_pr_eligibility_update_failed".to_string())
+    );
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .expect("plan branch should remain");
+    assert!(
+        updated_plan_branch.pr_eligible,
+        "failed persistence must not claim the branch was routed to local merge"
+    );
+    assert_eq!(
+        run_git(repo.path(), &["rev-parse", "main"]),
+        main_before,
+        "failed eligibility persistence must never start a local merge"
+    );
 }
 
 #[tokio::test]
