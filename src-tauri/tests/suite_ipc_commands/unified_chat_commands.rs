@@ -4138,7 +4138,7 @@ mod ipc_contract {
                     response.send_result.queued_message_id.as_deref() == Some(message.id.as_str())
                 })
                 .unwrap_or_else(|| panic!("{mode} queued message should be retained"));
-            assert_eq!(queued.composer_artifact_references.len(), 1);
+            assert_eq!(queued.composer_artifact_references.len(), 2);
             let queued_reference = &queued.composer_artifact_references[0];
             assert_eq!(queued_reference.kind, "plan");
             assert_eq!(queued_reference.artifact_id, cloned_artifact_id.as_str());
@@ -4149,6 +4149,20 @@ mod ipc_contract {
             assert_ne!(
                 queued_reference.artifact_id,
                 fix.source_artifact_id.as_str()
+            );
+            let queued_blueprint_reference = &queued.composer_artifact_references[1];
+            assert_eq!(queued_blueprint_reference.kind, "plan_blueprint");
+            assert_eq!(
+                queued_blueprint_reference.artifact_id,
+                cloned_blueprint_id.as_str()
+            );
+            assert_eq!(
+                queued_blueprint_reference.session_id.as_deref(),
+                Some(new_session.id.as_str())
+            );
+            assert_ne!(
+                queued_blueprint_reference.artifact_id,
+                fix.source_blueprint_id.as_str()
             );
         }
 
