@@ -1593,10 +1593,21 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .create(plan_artifact)
         .await
         .expect("plan artifact should persist");
+    let blueprint_artifact = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Implementation blueprint",
+            ArtifactType::Specification,
+            "# Blueprint\n\nImplement the workspace review plan.",
+            "ralphx-ideation",
+        ))
+        .await
+        .expect("blueprint artifact should persist");
     let planning_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
         .plan_artifact_id(plan_artifact.id.clone())
+        .plan_blueprint_artifact_id(blueprint_artifact.id.clone())
         .build();
     let planning_session = state
         .ideation_session_repo
@@ -1835,7 +1846,7 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .any(|reference| reference.provider == "clickup"
             && reference.kind == "clickup"
             && reference.id == "task-1"));
-    assert_eq!(options.composer_artifact_references.len(), 2);
+    assert_eq!(options.composer_artifact_references.len(), 3);
     assert!(options
         .composer_artifact_references
         .iter()
@@ -1851,6 +1862,14 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
                 && reference.session_id.as_deref() == Some(planning_session.id.as_str())
                 && reference.title.as_deref() == Some("Approved implementation plan")
                 && reference.version == Some(4)
+        ));
+    assert!(options
+        .composer_artifact_references
+        .iter()
+        .any(
+            |reference| reference.artifact_id == blueprint_artifact.id.as_str()
+                && reference.kind == "plan_blueprint"
+                && reference.session_id.as_deref() == Some(planning_session.id.as_str())
         ));
     assert!(options.force_new_provider_session);
     let metadata: serde_json::Value = serde_json::from_str(
