@@ -1117,6 +1117,9 @@ async fn normalize_agent_runtime_falls_back_when_provider_models_disabled() {
         "claude-sonnet-4-6",
         "claude-sonnet-5",
         "opus",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
         "haiku",
         "fable",
     ] {
