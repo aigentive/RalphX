@@ -872,9 +872,7 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             return Ok(false);
         }
         run.plan_judge_state = to;
-        if to == AutomationPlanJudgeState::None {
-            run.plan_judge_verdict_json = None;
-        } else if let Some(verdict) = plan_judge_verdict_json {
+        if let Some(verdict) = plan_judge_verdict_json {
             run.plan_judge_verdict_json = Some(verdict);
         }
         if to == AutomationPlanJudgeState::InProgress {
@@ -882,6 +880,16 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         } else {
             run.plan_judge_lease_expires_at = None;
         }
+        run.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let mut state = self.state.lock().await;
+        let Some(run) = state.runs.get_mut(id.as_str()) else {
+            return Ok(false);
+        };
+        run.plan_judge_verdict_json = None;
         run.updated_at = Utc::now();
         Ok(true)
     }

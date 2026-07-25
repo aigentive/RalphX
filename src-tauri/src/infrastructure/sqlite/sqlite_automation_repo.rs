@@ -1201,10 +1201,7 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                 let affected = conn.execute(
                     "UPDATE automation_runs
                      SET plan_judge_state = ?1,
-                         plan_judge_verdict_json = CASE
-                             WHEN ?1 = 'none' THEN NULL
-                             ELSE COALESCE(?2, plan_judge_verdict_json)
-                         END,
+                         plan_judge_verdict_json = COALESCE(?2, plan_judge_verdict_json),
                          plan_judge_lease_expires_at = CASE
                              WHEN ?3 = 'in_progress' THEN ?4
                              ELSE NULL
@@ -1220,6 +1217,21 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                         id,
                         from.as_str(),
                     ],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
+
+    async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_judge_verdict_json = NULL, updated_at = ?1
+                     WHERE id = ?2",
+                    params![Utc::now().to_rfc3339(), id],
                 )?;
                 Ok(affected == 1)
             })

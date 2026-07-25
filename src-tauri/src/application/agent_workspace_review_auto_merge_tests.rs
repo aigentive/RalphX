@@ -1061,6 +1061,11 @@ async fn passing_selected_source_review_restores_auto_merge_immediately() {
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("selected-source-review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "selected-source-requested-changes-artifact",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
@@ -1441,6 +1446,11 @@ async fn deferred_restore_marker_failure_rolls_guard_back_to_paused() {
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("deferred-review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "deferred-requested-changes-artifact",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());

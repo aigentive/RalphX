@@ -1400,6 +1400,9 @@ async fn workspace_review_approval_cas_and_audit_event_commit_exactly_once() {
     monitor.reviewed_diff_fingerprint = Some("diff-current".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(3);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("requested-changes-bypass"));
+    monitor.review_requested_changes_artifact_version = Some(1);
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
 
     let stale_snapshot = AgentWorkspaceReviewApprovalSnapshot {

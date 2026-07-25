@@ -5720,6 +5720,9 @@ async fn automation_scheduler_delivers_matching_plan_approval_once_and_clears_st
 ) {
     let scenario =
         ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Approved plan.", 3)
+        .await;
     scenario.approve("plan-artifact-1", 3);
     let mut workspace = scenario
         .workspace_repo

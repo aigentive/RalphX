@@ -219,7 +219,7 @@ async fn acceptance_queues_required_automatic_verification_and_remains_blocked()
         .expect("verification action should receive its review contract");
     for required_lens in [
         "industry best practices",
-        "reuses existing components",
+        "reuse existing components",
         "UI/UX",
         "product sense",
         "remote base branch drift",

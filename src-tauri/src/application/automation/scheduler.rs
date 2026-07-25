@@ -800,6 +800,9 @@ impl AutomationPlanJudgeTask {
                     None,
                 )
                 .await?;
+            self.transition_service
+                .clear_plan_judge_verdict(&run.id)
+                .await?;
             return Ok(AutomationPlanJudgeTaskOutcome {
                 judge_succeeded: true,
                 ..AutomationPlanJudgeTaskOutcome::default()
@@ -865,6 +868,9 @@ impl AutomationPlanJudgeTask {
                                 None,
                                 None,
                             )
+                            .await?;
+                        self.transition_service
+                            .clear_plan_judge_verdict(&run.id)
                             .await?;
                     }
                     Err(error) => return Err(error),
@@ -3751,6 +3757,9 @@ impl AutomationScheduler {
                     None,
                     None,
                 )
+                .await?;
+            self.transition_service
+                .clear_plan_judge_verdict(&run.id)
                 .await?;
             return Ok(());
         }
