@@ -14,10 +14,10 @@ use crate::application::interactive_process_registry::{
 use crate::domain::entities::ChatContextType;
 use crate::domain::repositories::QueuedMessageRepository;
 use crate::domain::services::{
-    MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry, TryRegisterError,
 };
 
-use super::SendResult;
+use super::{launch_reservation::LaunchReservationGuard, SendResult};
 
 /// Exact runtime identity captured before the accepted answer is committed.
 #[derive(Debug, Clone)]
@@ -28,6 +28,24 @@ pub struct RuntimeHandoffOwner {
     pub interactive_process_token: InteractiveProcessToken,
 }
 
+/// Exact short-lived registry ownership held while a no-owner handoff crosses
+/// mode/session staging, durable enqueue, and answer commit.
+pub struct RuntimeHandoffReservation {
+    key: RunningAgentKey,
+    agent_run_id: String,
+    guard: LaunchReservationGuard,
+}
+
+/// Truthful result of releasing a request-owned no-owner reservation.
+///
+/// A failed or unreadable verification must not be treated as release success:
+/// the request's PID-0 row may still exclude the canonical queue launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeHandoffReleaseOutcome {
+    Released,
+    FailedOrUncertain,
+}
+
 /// The only safe interpretations of the two runtime registries during handoff
 /// capture. `NoOwner` requires stable absence from both registries; every
 /// disagreement or unreadable running-agent snapshot remains fail-closed.
@@ -36,6 +54,82 @@ pub enum RuntimeHandoffCapture {
     Captured(RuntimeHandoffOwner),
     NoOwner,
     FailedOrUncertain,
+}
+
+/// Atomically claim a stable no-owner handoff slot before the caller crosses an
+/// await boundary. The request-owned PID-0 row excludes a competing launch but
+/// is never used as launch authority itself.
+pub(super) async fn reserve_no_owner_runtime_handoff(
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    context_type: ChatContextType,
+    runtime_context_id: &str,
+    request_id: &str,
+) -> Result<RuntimeHandoffReservation, TryRegisterError> {
+    let key = RunningAgentKey::new(context_type.to_string(), runtime_context_id);
+    let agent_run_id = format!("plan-mode-handoff-reservation:{request_id}");
+    running_agent_registry
+        .try_register(
+            key.clone(),
+            runtime_context_id.to_string(),
+            agent_run_id.clone(),
+        )
+        .await?;
+
+    Ok(RuntimeHandoffReservation {
+        guard: LaunchReservationGuard::new(
+            Arc::clone(running_agent_registry),
+            key.clone(),
+            agent_run_id.clone(),
+            std::time::Duration::from_secs(
+                crate::infrastructure::agents::claude::stream_timeouts()
+                    .launch_reservation_lease_secs,
+            ),
+        ),
+        key,
+        agent_run_id,
+    })
+}
+
+/// Stop renewal and remove only this request's PID-0 reservation. It is safe to
+/// call repeatedly: an exact-owner unregister cannot remove a competing launch.
+pub(super) async fn release_no_owner_runtime_handoff(
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    reservation: &RuntimeHandoffReservation,
+) -> RuntimeHandoffReleaseOutcome {
+    reservation.guard.stop();
+    running_agent_registry
+        .unregister(&reservation.key, &reservation.agent_run_id)
+        .await;
+
+    match running_agent_registry
+        .list_by_context_type(&reservation.key.context_type)
+        .await
+    {
+        Ok(entries)
+            if entries.iter().any(|(key, info)| {
+                key == &reservation.key && info.agent_run_id == reservation.agent_run_id
+            }) =>
+        {
+            tracing::warn!(
+                context_type = %reservation.key.context_type,
+                context_id = %reservation.key.context_id,
+                agent_run_id = %reservation.agent_run_id,
+                "No-owner runtime-handoff reservation still owns its slot after release"
+            );
+            RuntimeHandoffReleaseOutcome::FailedOrUncertain
+        }
+        Ok(_) => RuntimeHandoffReleaseOutcome::Released,
+        Err(error) => {
+            tracing::warn!(
+                context_type = %reservation.key.context_type,
+                context_id = %reservation.key.context_id,
+                agent_run_id = %reservation.agent_run_id,
+                error = %error,
+                "Could not verify no-owner runtime-handoff reservation release"
+            );
+            RuntimeHandoffReleaseOutcome::FailedOrUncertain
+        }
+    }
 }
 
 impl RuntimeHandoffOwner {

@@ -172,6 +172,11 @@ pub use chat_service_queue::{
     process_queued_messages_for_test, process_queued_messages_for_test_with_persona_feature,
 };
 pub use chat_service_replay::{build_rehydration_prompt, ConversationReplay, ReplayBuilder, Turn};
+pub use chat_service_runtime_handoff::{
+    RuntimeHandoffCapture, RuntimeHandoffCompensationOutcome, RuntimeHandoffKickOutcome,
+    RuntimeHandoffOutcome, RuntimeHandoffOwner, RuntimeHandoffReleaseOutcome,
+    RuntimeHandoffReservation,
+};
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_assistant_message_for_test;
 #[doc(hidden)]
@@ -187,10 +192,6 @@ pub use chat_service_streaming::process_stream_background;
 pub use chat_service_streaming::{
     is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker, CompletionSignalTracker,
     StreamOutcome, StreamTimeoutConfig,
-};
-pub use chat_service_runtime_handoff::{
-    RuntimeHandoffCapture, RuntimeHandoffCompensationOutcome, RuntimeHandoffKickOutcome,
-    RuntimeHandoffOutcome, RuntimeHandoffOwner,
 };
 pub use chat_service_types::events::AGENT_MESSAGE_QUEUED;
 pub(crate) use chat_service_types::{decode_pending_initial_prompt, encode_pending_initial_prompt};
@@ -1486,10 +1487,12 @@ pub trait ChatService: Send + Sync {
                     .get_queued_messages(ChatContextType::Project, &conversation_id)
                     .await
                 {
-                    Ok(messages) => chat_service_runtime_handoff::map_runtime_handoff_kick_send_result(
-                        None,
-                        messages.iter().any(|message| message.id == message_id),
-                    ),
+                    Ok(messages) => {
+                        chat_service_runtime_handoff::map_runtime_handoff_kick_send_result(
+                            None,
+                            messages.iter().any(|message| message.id == message_id),
+                        )
+                    }
                     Err(read_error) => {
                         tracing::warn!(
                             conversation_id = %conversation_id,
@@ -1574,6 +1577,27 @@ pub trait ChatService: Send + Sync {
         _runtime_context_id: &str,
     ) -> RuntimeHandoffCapture {
         RuntimeHandoffCapture::FailedOrUncertain
+    }
+
+    /// Atomically reserve a stable no-owner slot for a request while it stages
+    /// its durable handoff. Only callers that already captured `NoOwner` may use
+    /// this; the reservation is exclusion-only and must release before a kick.
+    async fn reserve_no_owner_runtime_handoff(
+        &self,
+        _context_type: ChatContextType,
+        _runtime_context_id: &str,
+        _request_id: &str,
+    ) -> Result<RuntimeHandoffReservation, String> {
+        Err("runtime-handoff reservation is unavailable".to_string())
+    }
+
+    /// Release only the request-owned no-owner handoff reservation and verify
+    /// that it no longer owns the running-agent slot.
+    async fn release_no_owner_runtime_handoff(
+        &self,
+        _reservation: &RuntimeHandoffReservation,
+    ) -> RuntimeHandoffReleaseOutcome {
+        RuntimeHandoffReleaseOutcome::FailedOrUncertain
     }
 
     /// Stage one durable continuation and exact runtime retirement before an
@@ -4895,6 +4919,41 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             &self.ipr(),
             context_type,
             runtime_context_id,
+        )
+        .await
+    }
+
+    async fn reserve_no_owner_runtime_handoff(
+        &self,
+        context_type: ChatContextType,
+        runtime_context_id: &str,
+        request_id: &str,
+    ) -> Result<RuntimeHandoffReservation, String> {
+        chat_service_runtime_handoff::reserve_no_owner_runtime_handoff(
+            &self.running_agent_registry,
+            context_type,
+            runtime_context_id,
+            request_id,
+        )
+        .await
+        .map_err(|error| match error {
+            TryRegisterError::Occupied(existing) => format!(
+                "runtime-handoff slot is owned by agent run {}",
+                existing.agent_run_id
+            ),
+            TryRegisterError::Storage(error) => {
+                format!("failed to reserve runtime-handoff slot: {error}")
+            }
+        })
+    }
+
+    async fn release_no_owner_runtime_handoff(
+        &self,
+        reservation: &RuntimeHandoffReservation,
+    ) -> RuntimeHandoffReleaseOutcome {
+        chat_service_runtime_handoff::release_no_owner_runtime_handoff(
+            &self.running_agent_registry,
+            reservation,
         )
         .await
     }

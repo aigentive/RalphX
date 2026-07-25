@@ -2,6 +2,9 @@ use ralphx_lib::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
 };
 use ralphx_lib::application::interactive_notification_producer::question_notification_key;
+use ralphx_lib::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
+};
 use ralphx_lib::application::{
     AppState, PendingQuestionInfo, QuestionAnswer, QuestionOption, QuestionState,
 };
@@ -25,7 +28,7 @@ use serde_json::json;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -456,6 +459,176 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
 }
 
 #[tokio::test]
+async fn accepted_plan_mode_proposal_reservation_blocks_competing_launch_during_staging_and_releases_before_kick(
+) {
+    struct CompetitorDuringStagingQueueRepo {
+        inner: Arc<MemoryQueuedMessageRepository>,
+        running_agent_registry: Arc<MemoryRunningAgentRegistry>,
+        interactive_process_registry: Arc<InteractiveProcessRegistry>,
+        competitor_claimed: AtomicBool,
+        competitor_ipr_registered: AtomicBool,
+        competitor_child: tokio::sync::Mutex<Option<tokio::process::Child>>,
+    }
+
+    #[async_trait::async_trait]
+    impl QueuedMessageRepository for CompetitorDuringStagingQueueRepo {
+        async fn enqueue_back(&self, key: &QueueKey, message: &QueuedMessage) -> AppResult<()> {
+            if message.id.starts_with("plan-mode-handoff:") {
+                let running_key =
+                    RunningAgentKey::new(key.context_type.to_string(), key.context_id.clone());
+                if self
+                    .running_agent_registry
+                    .try_register(
+                        running_key.clone(),
+                        key.context_id.clone(),
+                        "competing-during-staging".to_string(),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    self.competitor_claimed.store(true, Ordering::SeqCst);
+                    let mut child = tokio::process::Command::new("cat")
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .expect("competing runtime stdin fixture should start");
+                    let stdin = child
+                        .stdin
+                        .take()
+                        .expect("competing runtime should expose stdin");
+                    self.interactive_process_registry
+                        .register_with_metadata(
+                            InteractiveProcessKey::new(
+                                key.context_type.to_string(),
+                                &key.context_id,
+                            ),
+                            stdin,
+                            InteractiveProcessMetadata {
+                                agent_run_id: Some("competing-during-staging".to_string()),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+                    self.competitor_ipr_registered.store(true, Ordering::SeqCst);
+                    *self.competitor_child.lock().await = Some(child);
+                }
+            }
+            self.inner.enqueue_back(key, message).await
+        }
+
+        async fn enqueue_front(&self, key: &QueueKey, message: &QueuedMessage) -> AppResult<()> {
+            self.inner.enqueue_front(key, message).await
+        }
+
+        async fn list(&self, key: &QueueKey) -> AppResult<Vec<QueuedMessage>> {
+            self.inner.list(key).await
+        }
+
+        async fn list_keys(&self) -> AppResult<Vec<QueueKey>> {
+            self.inner.list_keys().await
+        }
+
+        async fn delete(&self, key: &QueueKey, message_id: &str) -> AppResult<bool> {
+            self.inner.delete(key, message_id).await
+        }
+
+        async fn delete_by_id(&self, message_id: &str) -> AppResult<bool> {
+            self.inner.delete_by_id(message_id).await
+        }
+
+        async fn clear(&self, key: &QueueKey) -> AppResult<()> {
+            self.inner.clear(key).await
+        }
+
+        async fn pop_front(&self, key: &QueueKey) -> AppResult<Option<QueuedMessage>> {
+            self.inner.pop_front(key).await
+        }
+
+        async fn remove_stale(
+            &self,
+            key: &QueueKey,
+            threshold_secs: u64,
+        ) -> AppResult<Vec<QueuedMessage>> {
+            self.inner.remove_stale(key, threshold_secs).await
+        }
+    }
+
+    let mut state = AppState::new_test();
+    let running_agent_registry = Arc::new(MemoryRunningAgentRegistry::new());
+    let durable_queue = Arc::new(MemoryQueuedMessageRepository::new());
+    let competing_queue_repo = Arc::new(CompetitorDuringStagingQueueRepo {
+        inner: Arc::clone(&durable_queue),
+        running_agent_registry: Arc::clone(&running_agent_registry),
+        interactive_process_registry: Arc::clone(&state.interactive_process_registry),
+        competitor_claimed: AtomicBool::new(false),
+        competitor_ipr_registered: AtomicBool::new(false),
+        competitor_child: tokio::sync::Mutex::new(None),
+    });
+    state.running_agent_registry = running_agent_registry.clone();
+    state.queued_message_repo = competing_queue_repo.clone();
+    let (_temp, conversation_id, receiver) =
+        setup_accepted_plan_mode_proposal_question(&state, "req-plan-reservation-wins").await;
+    let app = build_question_command_app(state);
+
+    let response = resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-reservation-wins".to_string(),
+            selected_options: vec!["switch_to_plan".to_string()],
+            custom_response: None,
+            skipped: false,
+        },
+    )
+    .await
+    .expect("the request-owned reservation should permit the answer commit");
+
+    assert!(response.success);
+    assert!(receiver.borrow().is_some(), "the answer must commit");
+    assert!(
+        !competing_queue_repo
+            .competitor_claimed
+            .load(Ordering::SeqCst),
+        "a competing launch must not claim the running-agent slot during durable staging"
+    );
+    assert!(
+        !competing_queue_repo
+            .competitor_ipr_registered
+            .load(Ordering::SeqCst),
+        "a launch that cannot claim the slot must not register an interactive process"
+    );
+
+    let running_key = RunningAgentKey::new("project", conversation_id.as_str());
+    assert!(
+        running_agent_registry.get(&running_key).await.is_none(),
+        "the request-owned PID-0 reservation must release before the post-commit kick"
+    );
+    assert!(
+        durable_queue
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str(),
+            ))
+            .await
+            .expect("durable queue should remain readable")
+            .iter()
+            .any(|message| message.id == "plan-mode-handoff:req-plan-reservation-wins"),
+        "the kick must rely on the durable continuation rather than the released reservation"
+    );
+
+    let child = { competing_queue_repo.competitor_child.lock().await.take() };
+    if let Some(mut child) = child {
+        child
+            .kill()
+            .await
+            .expect("competing runtime fixture should stop cleanly");
+        let _ = child.wait().await;
+    }
+}
+
+#[tokio::test]
 async fn accepted_plan_mode_proposal_is_unhandled_when_post_commit_handoff_kick_cannot_verify_row()
 {
     struct PostCommitKickVerificationFailureRepo {
@@ -593,6 +766,283 @@ async fn accepted_plan_mode_proposal_is_unhandled_when_post_commit_handoff_kick_
 }
 
 #[tokio::test]
+async fn accepted_plan_mode_proposal_is_unhandled_when_no_owner_reservation_release_is_unverified()
+{
+    struct ReservationRetainingRegistry {
+        inner: Arc<MemoryRunningAgentRegistry>,
+        release_attempted: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl RunningAgentRegistry for ReservationRetainingRegistry {
+        async fn register(
+            &self,
+            key: RunningAgentKey,
+            pid: u32,
+            conversation_id: String,
+            agent_run_id: String,
+            worktree_path: Option<String>,
+            cancellation_token: Option<CancellationToken>,
+        ) {
+            self.inner
+                .register(
+                    key,
+                    pid,
+                    conversation_id,
+                    agent_run_id,
+                    worktree_path,
+                    cancellation_token,
+                )
+                .await;
+        }
+
+        async fn unregister(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+        ) -> Option<RunningAgentInfo> {
+            if agent_run_id.starts_with("plan-mode-handoff-reservation:") {
+                self.release_attempted.store(true, Ordering::SeqCst);
+                return None;
+            }
+            self.inner.unregister(key, agent_run_id).await
+        }
+
+        async fn get(&self, key: &RunningAgentKey) -> Option<RunningAgentInfo> {
+            self.inner.get(key).await
+        }
+
+        async fn is_running(&self, key: &RunningAgentKey) -> bool {
+            self.inner.is_running(key).await
+        }
+
+        async fn stop(&self, key: &RunningAgentKey) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner.stop(key).await
+        }
+
+        async fn stop_if_owned(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+        ) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner.stop_if_owned(key, agent_run_id).await
+        }
+
+        async fn quiesce_if_owned(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+        ) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner.quiesce_if_owned(key, agent_run_id).await
+        }
+
+        async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)> {
+            self.inner.list_all().await
+        }
+
+        async fn list_by_context_type(
+            &self,
+            context_type: &str,
+        ) -> Result<Vec<(RunningAgentKey, RunningAgentInfo)>, String> {
+            self.inner.list_by_context_type(context_type).await
+        }
+
+        async fn stop_all(&self) -> Vec<RunningAgentKey> {
+            self.inner.stop_all().await
+        }
+
+        async fn stop_all_started_before(
+            &self,
+            cutoff: chrono::DateTime<chrono::Utc>,
+        ) -> Vec<RunningAgentKey> {
+            self.inner.stop_all_started_before(cutoff).await
+        }
+
+        async fn update_heartbeat(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+            at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<bool, String> {
+            self.inner.update_heartbeat(key, agent_run_id, at).await
+        }
+
+        async fn try_register(
+            &self,
+            key: RunningAgentKey,
+            conversation_id: String,
+            agent_run_id: String,
+        ) -> Result<(), TryRegisterError> {
+            self.inner
+                .try_register(key, conversation_id, agent_run_id)
+                .await
+        }
+
+        async fn renew_reservation(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+            at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<bool, String> {
+            self.inner.renew_reservation(key, agent_run_id, at).await
+        }
+
+        async fn attach_process(
+            &self,
+            key: &RunningAgentKey,
+            expected_agent_run_id: &str,
+            pid: u32,
+            worktree_path: Option<String>,
+            cancellation_token: Option<CancellationToken>,
+            model: Option<String>,
+        ) -> Result<AttachProcessResult, String> {
+            self.inner
+                .attach_process(
+                    key,
+                    expected_agent_run_id,
+                    pid,
+                    worktree_path,
+                    cancellation_token,
+                    model,
+                )
+                .await
+        }
+
+        async fn cleanup_stale_entry(
+            &self,
+            key: &RunningAgentKey,
+            expected_agent_run_id: &str,
+        ) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner
+                .cleanup_stale_entry(key, expected_agent_run_id)
+                .await
+        }
+    }
+
+    struct DeleteCountingQueueRepo {
+        inner: Arc<MemoryQueuedMessageRepository>,
+        delete_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl QueuedMessageRepository for DeleteCountingQueueRepo {
+        async fn enqueue_back(&self, key: &QueueKey, message: &QueuedMessage) -> AppResult<()> {
+            self.inner.enqueue_back(key, message).await
+        }
+
+        async fn enqueue_front(&self, key: &QueueKey, message: &QueuedMessage) -> AppResult<()> {
+            self.inner.enqueue_front(key, message).await
+        }
+
+        async fn list(&self, key: &QueueKey) -> AppResult<Vec<QueuedMessage>> {
+            self.inner.list(key).await
+        }
+
+        async fn list_keys(&self) -> AppResult<Vec<QueueKey>> {
+            self.inner.list_keys().await
+        }
+
+        async fn delete(&self, key: &QueueKey, message_id: &str) -> AppResult<bool> {
+            self.delete_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.delete(key, message_id).await
+        }
+
+        async fn delete_by_id(&self, message_id: &str) -> AppResult<bool> {
+            self.inner.delete_by_id(message_id).await
+        }
+
+        async fn clear(&self, key: &QueueKey) -> AppResult<()> {
+            self.inner.clear(key).await
+        }
+
+        async fn pop_front(&self, key: &QueueKey) -> AppResult<Option<QueuedMessage>> {
+            self.inner.pop_front(key).await
+        }
+
+        async fn remove_stale(
+            &self,
+            key: &QueueKey,
+            threshold_secs: u64,
+        ) -> AppResult<Vec<QueuedMessage>> {
+            self.inner.remove_stale(key, threshold_secs).await
+        }
+    }
+
+    let mut state = AppState::new_test();
+    let inner_registry = Arc::new(MemoryRunningAgentRegistry::new());
+    let retaining_registry = Arc::new(ReservationRetainingRegistry {
+        inner: Arc::clone(&inner_registry),
+        release_attempted: AtomicBool::new(false),
+    });
+    let durable_queue = Arc::new(MemoryQueuedMessageRepository::new());
+    let counting_queue = Arc::new(DeleteCountingQueueRepo {
+        inner: Arc::clone(&durable_queue),
+        delete_calls: AtomicUsize::new(0),
+    });
+    state.running_agent_registry = retaining_registry.clone();
+    state.queued_message_repo = counting_queue.clone();
+    let (_temp, conversation_id, receiver) =
+        setup_accepted_plan_mode_proposal_question(&state, "req-plan-release-unverified").await;
+    let app = build_question_command_app(state);
+
+    let response = resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-release-unverified".to_string(),
+            selected_options: vec!["switch_to_plan".to_string()],
+            custom_response: None,
+            skipped: false,
+        },
+    )
+    .await
+    .expect("the durable answer commit should succeed");
+
+    assert!(response.success);
+    assert!(response.delivered_to_waiting_agent);
+    assert!(
+        !response.plan_mode_proposal_handled,
+        "an unverified release must not report the durable handoff as handled"
+    );
+    assert!(
+        receiver.borrow().is_some(),
+        "the answer commit must complete even when launch recovery is deferred"
+    );
+    assert!(
+        retaining_registry.release_attempted.load(Ordering::SeqCst),
+        "the command must attempt exact-owner reservation release"
+    );
+    assert_eq!(
+        counting_queue.delete_calls.load(Ordering::SeqCst),
+        0,
+        "an unverified release must not kick and consume the durable continuation"
+    );
+
+    let running_key = RunningAgentKey::new("project", conversation_id.as_str());
+    let reservation = inner_registry
+        .get(&running_key)
+        .await
+        .expect("the injected failed release must retain the exact reservation");
+    assert_eq!(
+        reservation.agent_run_id,
+        "plan-mode-handoff-reservation:req-plan-release-unverified"
+    );
+    assert!(
+        durable_queue
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str(),
+            ))
+            .await
+            .expect("the durable continuation should remain readable")
+            .iter()
+            .any(|message| message.id == "plan-mode-handoff:req-plan-release-unverified"),
+        "the unreleased reservation leaves one recoverable continuation"
+    );
+}
+
+#[tokio::test]
 async fn accepted_plan_mode_proposal_commit_failure_compensates_staged_handoff() {
     struct FailingResolveRepo(MemoryQuestionRepository);
 
@@ -684,6 +1134,17 @@ async fn accepted_plan_mode_proposal_commit_failure_compensates_staged_handoff()
             .expect("durable handoff should load")
             .is_empty(),
         "compensation must remove the durable handoff row"
+    );
+    assert!(
+        state
+            .running_agent_registry
+            .get(&RunningAgentKey::new(
+                "project",
+                conversation_id_string.as_str()
+            ))
+            .await
+            .is_none(),
+        "a failed answer commit must release the no-owner reservation"
     );
 
     let retry_claim = state
@@ -896,5 +1357,236 @@ async fn accepted_plan_mode_proposal_fails_closed_when_running_registry_read_fai
         .await
         .expect("failed capture should keep the question reclaimable")
         .expect("question should remain pending after failed capture");
+    assert!(state.question_state.release_claim(retry_claim).await);
+}
+
+#[tokio::test]
+async fn accepted_plan_mode_proposal_rejects_when_competing_launch_claims_before_no_owner_reservation(
+) {
+    struct OwnerInjectingRunningRegistry {
+        inner: Arc<MemoryRunningAgentRegistry>,
+        injected: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl RunningAgentRegistry for OwnerInjectingRunningRegistry {
+        async fn register(
+            &self,
+            key: RunningAgentKey,
+            pid: u32,
+            conversation_id: String,
+            agent_run_id: String,
+            worktree_path: Option<String>,
+            cancellation_token: Option<CancellationToken>,
+        ) {
+            self.inner
+                .register(
+                    key,
+                    pid,
+                    conversation_id,
+                    agent_run_id,
+                    worktree_path,
+                    cancellation_token,
+                )
+                .await;
+        }
+
+        async fn unregister(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+        ) -> Option<RunningAgentInfo> {
+            self.inner.unregister(key, agent_run_id).await
+        }
+
+        async fn get(&self, key: &RunningAgentKey) -> Option<RunningAgentInfo> {
+            self.inner.get(key).await
+        }
+
+        async fn is_running(&self, key: &RunningAgentKey) -> bool {
+            self.inner.is_running(key).await
+        }
+
+        async fn stop(&self, key: &RunningAgentKey) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner.stop(key).await
+        }
+
+        async fn stop_if_owned(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+        ) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner.stop_if_owned(key, agent_run_id).await
+        }
+
+        async fn quiesce_if_owned(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+        ) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner.quiesce_if_owned(key, agent_run_id).await
+        }
+
+        async fn list_all(&self) -> Vec<(RunningAgentKey, RunningAgentInfo)> {
+            self.inner.list_all().await
+        }
+
+        async fn list_by_context_type(
+            &self,
+            context_type: &str,
+        ) -> Result<Vec<(RunningAgentKey, RunningAgentInfo)>, String> {
+            self.inner.list_by_context_type(context_type).await
+        }
+
+        async fn stop_all(&self) -> Vec<RunningAgentKey> {
+            self.inner.stop_all().await
+        }
+
+        async fn stop_all_started_before(
+            &self,
+            cutoff: chrono::DateTime<chrono::Utc>,
+        ) -> Vec<RunningAgentKey> {
+            self.inner.stop_all_started_before(cutoff).await
+        }
+
+        async fn update_heartbeat(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+            at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<bool, String> {
+            self.inner.update_heartbeat(key, agent_run_id, at).await
+        }
+
+        async fn try_register(
+            &self,
+            key: RunningAgentKey,
+            conversation_id: String,
+            agent_run_id: String,
+        ) -> Result<(), TryRegisterError> {
+            if agent_run_id.starts_with("plan-mode-handoff-reservation:")
+                && self
+                    .injected
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                self.inner
+                    .try_register(
+                        key.clone(),
+                        key.context_id.clone(),
+                        "competing-launch".to_string(),
+                    )
+                    .await
+                    .expect("the competing launch should win the empty slot");
+            }
+            self.inner
+                .try_register(key, conversation_id, agent_run_id)
+                .await
+        }
+
+        async fn renew_reservation(
+            &self,
+            key: &RunningAgentKey,
+            agent_run_id: &str,
+            at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<bool, String> {
+            self.inner.renew_reservation(key, agent_run_id, at).await
+        }
+
+        async fn attach_process(
+            &self,
+            key: &RunningAgentKey,
+            expected_agent_run_id: &str,
+            pid: u32,
+            worktree_path: Option<String>,
+            cancellation_token: Option<CancellationToken>,
+            model: Option<String>,
+        ) -> Result<AttachProcessResult, String> {
+            self.inner
+                .attach_process(
+                    key,
+                    expected_agent_run_id,
+                    pid,
+                    worktree_path,
+                    cancellation_token,
+                    model,
+                )
+                .await
+        }
+
+        async fn cleanup_stale_entry(
+            &self,
+            key: &RunningAgentKey,
+            expected_agent_run_id: &str,
+        ) -> Result<Option<RunningAgentInfo>, String> {
+            self.inner
+                .cleanup_stale_entry(key, expected_agent_run_id)
+                .await
+        }
+    }
+
+    let mut state = AppState::new_test();
+    let (_temp, conversation_id, receiver) =
+        setup_accepted_plan_mode_proposal_question(&state, "req-plan-stale-no-owner").await;
+    let inner = Arc::new(MemoryRunningAgentRegistry::new());
+    let injecting_registry = Arc::new(OwnerInjectingRunningRegistry {
+        inner: Arc::clone(&inner),
+        injected: AtomicBool::new(false),
+    });
+    state.running_agent_registry = injecting_registry.clone();
+    let app = build_question_command_app(state);
+
+    let result = resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-stale-no-owner".to_string(),
+            selected_options: vec!["switch_to_plan".to_string()],
+            custom_response: None,
+            skipped: false,
+        },
+    )
+    .await;
+
+    let error = result.expect_err("a competing launch must reject the answer before commit");
+    assert!(error.contains("stable runtime-handoff ownership"));
+    assert!(
+        receiver.borrow().is_none(),
+        "an uncommitted answer must not reach the waiting agent"
+    );
+
+    let state = app.state::<AppState>();
+    let running_key = RunningAgentKey::new("project", conversation_id.as_str());
+    let running_owner = inner
+        .get(&running_key)
+        .await
+        .expect("competing launch must remain registered");
+    assert_eq!(running_owner.agent_run_id, "competing-launch");
+    assert!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, &conversation_id.as_str())
+            .is_empty(),
+        "failure must not stage an in-memory continuation"
+    );
+    assert!(
+        state
+            .queued_message_repo
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str(),
+            ))
+            .await
+            .expect("durable queue should be readable")
+            .is_empty(),
+        "failure must not stage a durable continuation"
+    );
+    let retry_claim = state
+        .question_state
+        .claim_pending("req-plan-stale-no-owner")
+        .await
+        .expect("competing launch should leave the question reclaimable")
+        .expect("question should remain pending after failed revalidation");
     assert!(state.question_state.release_claim(retry_claim).await);
 }

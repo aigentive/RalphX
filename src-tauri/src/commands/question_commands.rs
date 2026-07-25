@@ -7,7 +7,7 @@ use tauri::{Emitter, Runtime, State};
 
 use crate::application::chat_service::{
     ChatService, RuntimeHandoffCapture, RuntimeHandoffKickOutcome, RuntimeHandoffOutcome,
-    RuntimeHandoffOwner,
+    RuntimeHandoffOwner, RuntimeHandoffReleaseOutcome, RuntimeHandoffReservation,
 };
 use crate::application::interactive_notification_producer::question_notification_key;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
@@ -117,8 +117,20 @@ pub(crate) fn plan_mode_proposal_continuation_metadata(request_id: &str) -> Stri
 struct PreparedPlanModeHandoff {
     conversation_id: ChatConversationId,
     runtime_owner: Option<RuntimeHandoffOwner>,
+    no_owner_reservation: Option<RuntimeHandoffReservation>,
     continuation_id: String,
     outcome: RuntimeHandoffOutcome,
+}
+
+async fn release_no_owner_plan_mode_handoff_reservation(
+    service: &dyn ChatService,
+    reservation: Option<&RuntimeHandoffReservation>,
+) -> RuntimeHandoffReleaseOutcome {
+    if let Some(reservation) = reservation {
+        service.release_no_owner_runtime_handoff(reservation).await
+    } else {
+        RuntimeHandoffReleaseOutcome::Released
+    }
 }
 
 async fn compensate_precommit_plan_mode_handoff<R: Runtime + 'static>(
@@ -127,31 +139,42 @@ async fn compensate_precommit_plan_mode_handoff<R: Runtime + 'static>(
     app: tauri::AppHandle<R>,
     prepared: &PreparedPlanModeHandoff,
 ) {
+    let service = create_chat_service(state, app, execution_state);
     if let Some(owner) = prepared.runtime_owner.clone() {
-        let service = create_chat_service(state, app, execution_state);
         let _ = service
             .compensate_runtime_handoff(owner, &prepared.continuation_id)
             .await;
-        return;
-    }
-
-    let queue_key = QueueKey::new(ChatContextType::Project, prepared.conversation_id.as_str());
-    match state
-        .queued_message_repo
-        .delete(&queue_key, &prepared.continuation_id)
-        .await
-    {
-        Ok(_) => {
-            let _ = state
-                .message_queue
-                .delete_with_key(&queue_key, &prepared.continuation_id);
+    } else {
+        let queue_key = QueueKey::new(ChatContextType::Project, prepared.conversation_id.as_str());
+        match state
+            .queued_message_repo
+            .delete(&queue_key, &prepared.continuation_id)
+            .await
+        {
+            Ok(_) => {
+                let _ = state
+                    .message_queue
+                    .delete_with_key(&queue_key, &prepared.continuation_id);
+            }
+            Err(error) => tracing::warn!(
+                conversation_id = %prepared.conversation_id,
+                queued_message_id = %prepared.continuation_id,
+                error = %error,
+                "Could not compensate pre-commit Plan-mode handoff row"
+            ),
         }
-        Err(error) => tracing::warn!(
+    }
+    let release_outcome = release_no_owner_plan_mode_handoff_reservation(
+        &service,
+        prepared.no_owner_reservation.as_ref(),
+    )
+    .await;
+    if release_outcome == RuntimeHandoffReleaseOutcome::FailedOrUncertain {
+        tracing::warn!(
             conversation_id = %prepared.conversation_id,
             queued_message_id = %prepared.continuation_id,
-            error = %error,
-            "Could not compensate pre-commit Plan-mode handoff row"
-        ),
+            "Could not verify no-owner Plan-mode handoff reservation release during compensation"
+        );
     }
 }
 
@@ -184,8 +207,21 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             return Err("Could not establish stable runtime-handoff ownership".to_string());
         }
     };
+    let mut no_owner_reservation = match runtime_owner.is_none() {
+        true => Some(
+            service
+                .reserve_no_owner_runtime_handoff(
+                    ChatContextType::Project,
+                    &conversation_id.as_str(),
+                    request_id,
+                )
+                .await
+                .map_err(|_| "Could not establish stable runtime-handoff ownership".to_string())?,
+        ),
+        false => None,
+    };
 
-    switch_agent_conversation_mode_for_state_allowing_running(
+    if let Err(error) = switch_agent_conversation_mode_for_state_allowing_running(
         SwitchAgentConversationModeInput {
             conversation_id: conversation_id.as_str(),
             mode: "plan".to_string(),
@@ -199,8 +235,21 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
         state,
         ModeSwitchInitiator::User,
     )
-    .await?;
-    ensure_plan_workspace_planning_session_link_for_send(state, &conversation_id).await?;
+    .await
+    {
+        let _ =
+            release_no_owner_plan_mode_handoff_reservation(&service, no_owner_reservation.as_ref())
+                .await;
+        return Err(error);
+    }
+    if let Err(error) =
+        ensure_plan_workspace_planning_session_link_for_send(state, &conversation_id).await
+    {
+        let _ =
+            release_no_owner_plan_mode_handoff_reservation(&service, no_owner_reservation.as_ref())
+                .await;
+        return Err(error);
+    }
 
     let continuation = build_plan_mode_proposal_continuation(proposal.reason.as_deref());
     let continuation_id = format!("plan-mode-handoff:{request_id}");
@@ -211,11 +260,18 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
         service.stage_runtime_handoff(owner.clone(), queued).await
     } else {
         let queue_key = QueueKey::new(ChatContextType::Project, conversation_id.as_str());
-        state
+        if let Err(error) = state
             .queued_message_repo
             .enqueue_back(&queue_key, &queued)
             .await
-            .map_err(|error| error.to_string())?;
+        {
+            let _ = release_no_owner_plan_mode_handoff_reservation(
+                &service,
+                no_owner_reservation.as_ref(),
+            )
+            .await;
+            return Err(error.to_string());
+        }
         state.message_queue.queue_back_existing(
             ChatContextType::Project,
             conversation_id.as_str(),
@@ -230,6 +286,9 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
                 .compensate_runtime_handoff(owner, &continuation_id)
                 .await;
         }
+        let _ =
+            release_no_owner_plan_mode_handoff_reservation(&service, no_owner_reservation.as_ref())
+                .await;
         return Err("Could not establish durable Plan-mode handoff authority".to_string());
     }
 
@@ -244,6 +303,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
     Ok(PreparedPlanModeHandoff {
         conversation_id,
         runtime_owner,
+        no_owner_reservation: no_owner_reservation.take(),
         continuation_id,
         outcome,
     })
@@ -323,6 +383,18 @@ pub async fn resolve_user_question<R: Runtime + 'static>(
             .await;
         let plan_mode_proposal_handled = if let Some(prepared) = prepared {
             let service = create_chat_service(state.inner(), app.clone(), execution_state.inner());
+            let release_outcome = release_no_owner_plan_mode_handoff_reservation(
+                &service,
+                prepared.no_owner_reservation.as_ref(),
+            )
+            .await;
+            if release_outcome == RuntimeHandoffReleaseOutcome::FailedOrUncertain {
+                tracing::warn!(
+                    conversation_id = %prepared.conversation_id,
+                    queued_message_id = %prepared.continuation_id,
+                    "No-owner Plan-mode handoff reservation release was not verified; leaving recovery to the durable row"
+                );
+            }
             match prepared.outcome {
                 RuntimeHandoffOutcome::AwaitingRetirement => {
                     if let Some(owner) = prepared.runtime_owner {
@@ -345,13 +417,21 @@ pub async fn resolve_user_question<R: Runtime + 'static>(
                         false
                     }
                 }
-                RuntimeHandoffOutcome::DurablyRecoverable => matches!(
-                    service
-                        .kick_runtime_handoff(&prepared.conversation_id, &prepared.continuation_id)
-                        .await,
-                    RuntimeHandoffKickOutcome::Started { .. }
-                        | RuntimeHandoffKickOutcome::DurablyRecoverable
-                ),
+                RuntimeHandoffOutcome::DurablyRecoverable
+                    if release_outcome == RuntimeHandoffReleaseOutcome::Released =>
+                {
+                    matches!(
+                        service
+                            .kick_runtime_handoff(
+                                &prepared.conversation_id,
+                                &prepared.continuation_id,
+                            )
+                            .await,
+                        RuntimeHandoffKickOutcome::Started { .. }
+                            | RuntimeHandoffKickOutcome::DurablyRecoverable
+                    )
+                }
+                RuntimeHandoffOutcome::DurablyRecoverable => false,
                 RuntimeHandoffOutcome::Failed => false,
             }
         } else {
