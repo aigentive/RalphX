@@ -15,6 +15,20 @@ describe("agent task runtime context", () => {
             actor_agent: "ralphx-chat-project",
         });
     });
+    it("keeps delegated task tools on the delegate-local ledger when lineage is present", () => {
+        expect(resolveAgentTaskContext({
+            contextType: "delegation",
+            contextId: "delegated-session-1",
+            projectId: "project-1",
+            actorAgent: "ralphx-general-worker",
+            parentConversationId: "root-conversation-1",
+        })).toEqual({
+            context_type: "delegation",
+            context_id: "delegated-session-1",
+            project_id: "project-1",
+            actor_agent: "ralphx-general-worker",
+        });
+    });
     it("falls back to the runtime context when no parent conversation is present", () => {
         expect(resolveAgentTaskContext({
             contextType: "ideation",
