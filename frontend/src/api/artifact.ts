@@ -243,9 +243,13 @@ export const artifactApi = {
   approvePlanArtifact: async ({
     sessionId,
     artifactId,
+    blueprintArtifactId,
+    blueprintArtifactVersion,
   }: {
     sessionId: string;
     artifactId?: string | undefined;
+    blueprintArtifactId?: string | undefined;
+    blueprintArtifactVersion?: number | undefined;
   }): Promise<Artifact> => {
     const response = await fetch(backendApiUrl("approve_plan_artifact"), {
       method: "POST",
@@ -253,6 +257,12 @@ export const artifactApi = {
       body: JSON.stringify({
         session_id: sessionId,
         ...(artifactId !== undefined && { artifact_id: artifactId }),
+        ...(blueprintArtifactId !== undefined && {
+          blueprint_artifact_id: blueprintArtifactId,
+        }),
+        ...(blueprintArtifactVersion !== undefined && {
+          blueprint_artifact_version: blueprintArtifactVersion,
+        }),
       }),
     });
     const artifact = await parseHttpArtifactResponse(response);

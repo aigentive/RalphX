@@ -1079,6 +1079,20 @@ function planArtifact(status: "draft" | "approved" = "draft") {
     },
     derivedFrom: [],
     bucketId: "prd-library",
+    planContractVersion: 2,
+    blueprint: {
+      id: "blueprint-1",
+      type: "specification",
+      name: "Implementation Blueprint",
+      content: { type: "inline", text: "# Blueprint" },
+      metadata: {
+        createdAt: "2026-05-23T05:00:00Z",
+        createdBy: "ralphx-ideation",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    },
     planApproval:
       status === "draft"
         ? { status: "draft" }
@@ -3254,6 +3268,8 @@ describe("AgentsActiveConversationPanel", () => {
       expect(approvePlanArtifactMock).toHaveBeenCalledWith({
         sessionId: "planning-session-1",
         artifactId: "artifact-1",
+        blueprintArtifactId: "blueprint-1",
+        blueprintArtifactVersion: 1,
       }),
     );
   });

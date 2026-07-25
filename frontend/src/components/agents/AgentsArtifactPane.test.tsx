@@ -9166,20 +9166,7 @@ describe("AgentsArtifactPane", () => {
       messages: [],
     });
     const draftPlan = {
-      id: "artifact-1",
-      type: "specification",
-      name: "Implementation Plan",
-      content: {
-        type: "inline",
-        text: "# Implementation Plan\n\nDo the work.",
-      },
-      metadata: {
-        createdAt: "2026-04-23T09:00:00Z",
-        createdBy: "orchestrator",
-        version: 1,
-      },
-      derivedFrom: [],
-      bucketId: "prd-library",
+      ...approvedPlanBundleArtifact(),
       planApproval: {
         status: "draft",
       },
@@ -9214,6 +9201,8 @@ describe("AgentsArtifactPane", () => {
       expect(approvePlanArtifactMock).toHaveBeenCalledWith({
         sessionId: "session-1",
         artifactId: "artifact-1",
+        blueprintArtifactId: "blueprint-1",
+        blueprintArtifactVersion: 2,
       }),
     );
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();

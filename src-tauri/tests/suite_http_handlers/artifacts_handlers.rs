@@ -3974,6 +3974,14 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
         }),
     )
     .await
@@ -4041,6 +4049,14 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
         }),
     )
     .await
@@ -4192,6 +4208,8 @@ async fn test_approve_plan_artifact_rejects_non_planning_session() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: None,
+            blueprint_artifact_version: None,
         }),
     )
     .await;
@@ -4258,6 +4276,8 @@ async fn test_approve_plan_artifact_rejects_stale_artifact_id() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(v1.id),
+            blueprint_artifact_id: None,
+            blueprint_artifact_version: None,
         }),
     )
     .await;
@@ -4307,6 +4327,14 @@ async fn test_plan_update_after_approval_returns_current_plan_to_draft() {
         Json(ApprovePlanArtifactRequest {
             session_id: session_id.as_str().to_string(),
             artifact_id: Some(created.id.clone()),
+            blueprint_artifact_id: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.id.clone()),
+            blueprint_artifact_version: created
+                .blueprint_artifact
+                .as_ref()
+                .map(|artifact| artifact.version),
         }),
     )
     .await

@@ -10,6 +10,7 @@ use ralphx_domain::entities::EventType;
 use tauri::{Emitter, State};
 
 use crate::application::AppState;
+use crate::domain::entities::ideation::{PlanArtifactBundle, PLAN_CONTRACT_V2};
 use crate::domain::entities::{
     IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId, TaskProposalId,
     VerificationStatus,
@@ -123,13 +124,9 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
         ));
     }
 
-    // 4. Resolve the exact overview/blueprint bundle.
-    let bundle = source_session.plan_artifact_bundle().ok_or_else(|| {
-        format!(
-            "Source session has no complete plan bundle to inherit (session: {})",
-            input.source_session_id
-        )
-    })?;
+    // 4. Import only a current, verified v2 pair. Grandfathered v1 applies to
+    // pre-existing sessions only; importing it must not mint a new ready v1 session.
+    let bundle = require_importable_plan_bundle(&source_session)?;
 
     // Build the new session entity
     let new_session_id = IdeationSessionId::new();
@@ -137,17 +134,19 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
         .id(new_session_id)
         .project_id(ProjectId::from_string(target_project_id.clone()))
         .inherited_plan_artifact_id(bundle.overview_id)
-        .plan_contract_version(bundle.contract_version)
+        .inherited_plan_blueprint_artifact_id(
+            bundle
+                .blueprint_id
+                .clone()
+                .expect("complete v2 bundle has blueprint"),
+        )
+        .plan_contract_version(PLAN_CONTRACT_V2)
         .status(IdeationSessionStatus::Active)
         .verification_status(VerificationStatus::ImportedVerified)
         .source_project_id(source_session.project_id.as_str().to_string())
         .source_session_id(input.source_session_id.clone())
         .cross_project_checked(true)
         .origin(source_session.origin);
-    if let Some(blueprint_id) = bundle.blueprint_id {
-        builder = builder.inherited_plan_blueprint_artifact_id(blueprint_id);
-    }
-
     if let Some(title) = input.title {
         builder = builder.title(title);
     }
@@ -225,6 +224,30 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
     }
 
     Ok(IdeationSessionResponse::from(created))
+}
+
+pub(super) fn require_importable_plan_bundle(
+    source_session: &IdeationSession,
+) -> Result<PlanArtifactBundle, String> {
+    let bundle = source_session.plan_artifact_bundle().ok_or_else(|| {
+        format!(
+            "Source session has no complete plan bundle to inherit (session: {})",
+            source_session.id.as_str()
+        )
+    })?;
+    if bundle.contract_version < PLAN_CONTRACT_V2 || bundle.blueprint_id.is_none() {
+        return Err(
+            "Source session must have a complete v2 Overview and Blueprint bundle before cross-project import. Generate the blueprint in Plan mode first."
+                .to_string(),
+        );
+    }
+    if !source_session.has_exact_plan_verification() {
+        return Err(
+            "Source session plan is not verified for its current Overview and Blueprint pair. Verify the current bundle before exporting."
+                .to_string(),
+        );
+    }
+    Ok(bundle)
 }
 
 // ============================================================================

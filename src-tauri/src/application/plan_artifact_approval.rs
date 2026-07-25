@@ -82,6 +82,45 @@ pub(crate) fn approve_current_plan_artifact_sync(
     requested_artifact_id: Option<&str>,
     approved_by: PlanApprovalActor,
 ) -> AppResult<ApprovedPlanArtifact> {
+    approve_current_plan_artifact_for_bundle_sync(
+        conn,
+        session_id,
+        requested_artifact_id,
+        None,
+        None,
+        false,
+        approved_by,
+    )
+}
+
+pub(crate) fn approve_current_plan_artifact_for_displayed_bundle_sync(
+    conn: &Connection,
+    session_id: IdeationSessionId,
+    requested_artifact_id: Option<&str>,
+    requested_blueprint_artifact_id: Option<&str>,
+    requested_blueprint_artifact_version: Option<u32>,
+    approved_by: PlanApprovalActor,
+) -> AppResult<ApprovedPlanArtifact> {
+    approve_current_plan_artifact_for_bundle_sync(
+        conn,
+        session_id,
+        requested_artifact_id,
+        requested_blueprint_artifact_id,
+        requested_blueprint_artifact_version,
+        true,
+        approved_by,
+    )
+}
+
+fn approve_current_plan_artifact_for_bundle_sync(
+    conn: &Connection,
+    session_id: IdeationSessionId,
+    requested_artifact_id: Option<&str>,
+    requested_blueprint_artifact_id: Option<&str>,
+    requested_blueprint_artifact_version: Option<u32>,
+    require_displayed_blueprint: bool,
+    approved_by: PlanApprovalActor,
+) -> AppResult<ApprovedPlanArtifact> {
     let session = get_session_for_approval_sync(conn, session_id.as_str())?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
 
@@ -117,22 +156,57 @@ pub(crate) fn approve_current_plan_artifact_sync(
             ))
         })?;
     let blueprint_artifact = match session.plan_blueprint_artifact_id {
-        Some(blueprint_id) => Some(
-            SqliteArtifactRepository::get_by_id_sync(conn, blueprint_id.as_str())?.ok_or_else(
-                || {
+        Some(blueprint_id) => {
+            if require_displayed_blueprint
+                && (requested_blueprint_artifact_id.is_none()
+                    || requested_blueprint_artifact_version.is_none())
+            {
+                return Err(AppError::Conflict(
+                    "Plan changed before approval. Refresh the current plan and approve again."
+                        .to_string(),
+                ));
+            }
+            if requested_blueprint_artifact_id
+                .is_some_and(|requested| requested != blueprint_id.as_str())
+            {
+                return Err(AppError::Conflict(
+                    "Plan changed before approval. Refresh the current plan and approve again."
+                        .to_string(),
+                ));
+            }
+            let blueprint = SqliteArtifactRepository::get_by_id_sync(conn, blueprint_id.as_str())?
+                .ok_or_else(|| {
                     AppError::NotFound(format!(
                         "Plan blueprint artifact {} not found",
                         blueprint_id.as_str()
                     ))
-                },
-            )?,
-        ),
+                })?;
+            if requested_blueprint_artifact_version
+                .is_some_and(|version| version != blueprint.metadata.version)
+            {
+                return Err(AppError::Conflict(
+                    "Plan changed before approval. Refresh the current plan and approve again."
+                        .to_string(),
+                ));
+            }
+            Some(blueprint)
+        }
         None if session.plan_contract_version >= 2 => {
             return Err(AppError::Validation(
                 "Cannot approve plan: implementation blueprint has not been created".to_string(),
             ));
         }
-        None => None,
+        None => {
+            if requested_blueprint_artifact_id.is_some()
+                || requested_blueprint_artifact_version.is_some()
+            {
+                return Err(AppError::Conflict(
+                    "Plan changed before approval. Refresh the current plan and approve again."
+                        .to_string(),
+                ));
+            }
+            None
+        }
     };
     let approved_at = Utc::now().to_rfc3339();
     upsert_plan_approval_sync(

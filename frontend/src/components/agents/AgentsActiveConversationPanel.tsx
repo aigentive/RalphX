@@ -1912,6 +1912,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       const approved = await artifactApi.approvePlanArtifact({
         sessionId: planApprovalSessionId,
         artifactId: planApprovalArtifact.id,
+        ...(planApprovalArtifact.blueprint && {
+          blueprintArtifactId: planApprovalArtifact.blueprint.id,
+          blueprintArtifactVersion: planApprovalArtifact.blueprint.metadata.version,
+        }),
       });
       queryClient.setQueryData(
         ["agents", "plan-approval", planApprovalSessionId],

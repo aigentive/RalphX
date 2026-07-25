@@ -3195,6 +3195,10 @@ function AgentPlanPanel({
       const approvedPlan = await artifactApi.approvePlanArtifact({
         sessionId: session.id,
         artifactId: planArtifact.id,
+        ...(planArtifact.blueprint && {
+          blueprintArtifactId: planArtifact.blueprint.id,
+          blueprintArtifactVersion: planArtifact.blueprint.metadata.version,
+        }),
       });
       onPlanUpdated(approvedPlan);
       queryClient.setQueryData(

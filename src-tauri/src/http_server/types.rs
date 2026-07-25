@@ -1132,6 +1132,12 @@ pub struct ApprovePlanArtifactRequest {
     pub session_id: String,
     #[serde(default)]
     pub artifact_id: Option<String>,
+    /// The Blueprint identity displayed alongside the Overview being approved.
+    /// Required for v2 bundles so a stale UI cannot approve a revised Blueprint.
+    #[serde(default)]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(default)]
+    pub blueprint_artifact_version: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -6,15 +6,19 @@ pub async fn approve_plan_artifact(
 ) -> Result<Json<ArtifactResponse>, HttpError> {
     let session_id_str = req.session_id.clone();
     let requested_artifact_id = req.artifact_id.clone();
+    let requested_blueprint_artifact_id = req.blueprint_artifact_id.clone();
+    let requested_blueprint_artifact_version = req.blueprint_artifact_version;
 
     let approved = state
         .app_state
         .db
         .run_transaction(move |conn| {
-            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_for_displayed_bundle_sync(
                 conn,
                 IdeationSessionId::from_string(session_id_str),
                 requested_artifact_id.as_deref(),
+                requested_blueprint_artifact_id.as_deref(),
+                requested_blueprint_artifact_version,
                 crate::domain::repositories::PlanApprovalActor::User,
             )
         })
