@@ -110,14 +110,23 @@ async fn test_create_proposal_with_plan_artifact_succeeds_and_auto_links() {
     );
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
+    let blueprint = Artifact::new_inline(
+        "Test Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
 
     // Create a session WITH a plan artifact
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
@@ -160,14 +169,23 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
     );
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
+    let blueprint = Artifact::new_inline(
+        "Test Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
 
     // Create session with plan artifact
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
@@ -220,20 +238,31 @@ async fn setup_session_with_gate(
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Gate Test Session")
         .plan_artifact_id(artifact_id.clone())
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     state
         .ideation_session_repo
         .create(session.clone())
         .await
         .unwrap();
 
-    // Apply verification_status and gate setting via raw SQL (both share the same SQLite conn)
+    // Model the read receipt written by get_session_plan before proposal creation.
     let sid = session.id.as_str().to_string();
+    let session_id_for_read = session.id.as_str().to_string();
     let status = verification_status.to_string();
     let gate: i64 = if gate_enabled { 1 } else { 0 };
     state
@@ -242,6 +271,13 @@ async fn setup_session_with_gate(
             conn.execute(
                 "UPDATE ideation_sessions SET verification_status = ?1 WHERE id = ?2",
                 rusqlite::params![status, sid],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_version_last_read = 1, blueprint_version_last_read = 1
+                 WHERE id = ?1",
+                rusqlite::params![session_id_for_read],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
             conn.execute(

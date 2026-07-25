@@ -3127,23 +3127,43 @@ async fn test_apply_proposals_core_ignores_retired_active_verification_when_acce
 
 #[tokio::test]
 async fn test_apply_proposals_core_accepts_only_current_exact_verification_proof() {
+    use ralphx_lib::domain::entities::{Artifact, ArtifactType};
+
     let state = setup_apply_test_state();
     let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
-
-    state
-        .ideation_session_repo
-        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+    let overview = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Overview",
+            ArtifactType::Specification,
+            "# Overview",
+            "test",
+        ))
         .await
-        .expect("plan should be linked");
+        .expect("overview should be created");
+    let blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Blueprint",
+            ArtifactType::Specification,
+            "# Blueprint",
+            "test",
+        ))
+        .await
+        .expect("blueprint should be created");
+
     let session_id = session.id.as_str().to_string();
     state
         .db
         .run(move |conn| {
             conn.execute(
                 "UPDATE ideation_sessions
-                 SET verified_plan_artifact_id = 'plan-current'
-                 WHERE id = ?1",
-                [&session_id],
+                 SET plan_artifact_id = ?1,
+                     plan_blueprint_artifact_id = ?2,
+                     verified_plan_artifact_id = ?1,
+                     verified_plan_blueprint_artifact_id = ?2
+                 WHERE id = ?3",
+                rusqlite::params![overview.id.as_str(), blueprint.id.as_str(), session_id],
             )?;
             Ok(())
         })

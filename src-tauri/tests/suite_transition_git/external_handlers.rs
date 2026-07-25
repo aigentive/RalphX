@@ -28,8 +28,8 @@ use ralphx_lib::domain::entities::{
     task::Task,
     types::ProjectId,
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
-    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Priority,
-    ProposalCategory, TaskProposal, VerificationRunSnapshot,
+    Artifact, ArtifactType, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    InternalStatus, Priority, ProposalCategory, TaskProposal, VerificationRunSnapshot,
 };
 use ralphx_lib::domain::ideation::TasksFeatureState;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
@@ -3854,11 +3854,36 @@ async fn test_trigger_verification_already_running() {
     let project = make_project("proj-verify-running", "Already Running Project");
     state.app_state.project_repo.create(project).await.unwrap();
 
-    // Create session with a plan artifact
-    let session = IdeationSession::builder()
+    let overview = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Overview",
+            ArtifactType::Specification,
+            "# Overview",
+            "test",
+        ))
+        .await
+        .unwrap();
+    let blueprint = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Blueprint",
+            ArtifactType::Specification,
+            "# Blueprint",
+            "test",
+        ))
+        .await
+        .unwrap();
+
+    // Create session with the complete v2 plan bundle.
+    let mut session = IdeationSession::builder()
         .project_id(pid.clone())
         .status(IdeationSessionStatus::Active)
+        .plan_artifact_id(overview.id.clone())
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint.id.clone());
     let created = state
         .app_state
         .ideation_session_repo
@@ -3866,15 +3891,12 @@ async fn test_trigger_verification_already_running() {
         .await
         .unwrap();
 
-    // Set a plan_artifact_id so the no_plan check passes
-    state
-        .app_state
-        .ideation_session_repo
-        .update_plan_artifact_id(&created.id, Some("artifact-x".to_string()))
-        .await
-        .unwrap();
-
-    seed_running_verification_action(&state, &created.id, "artifact-x").await;
+    seed_running_verification_action(
+        &state,
+        &created.id,
+        &format!("plan_bundle:v2:{}:{}", overview.id, blueprint.id),
+    )
+    .await;
 
     let result = trigger_verification_http(
         State(state),
