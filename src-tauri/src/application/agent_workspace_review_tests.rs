@@ -17,7 +17,112 @@ use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::infrastructure::MockAgenticClient;
+use std::collections::BTreeSet;
 use std::process::Command;
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
+
+#[derive(Clone, Debug)]
+struct WorkspaceReviewTimingEvent {
+    operation: String,
+    phase: String,
+    fields: BTreeSet<String>,
+}
+
+struct WorkspaceReviewTimingLayer {
+    captured: StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewTimingLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct TimingVisitor {
+            operation: Option<String>,
+            phase: Option<String>,
+            fields: BTreeSet<String>,
+        }
+
+        impl tracing::field::Visit for TimingVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.fields.insert(field.name().to_string());
+                match field.name() {
+                    "operation" => self.operation = Some(value.to_string()),
+                    "phase" => self.phase = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.fields.insert(field.name().to_string());
+                match field.name() {
+                    "operation" => self.operation = Some(format!("{value:?}").replace('"', "")),
+                    "phase" => self.phase = Some(format!("{value:?}").replace('"', "")),
+                    _ => {}
+                }
+            }
+        }
+
+        let mut visitor = TimingVisitor::default();
+        event.record(&mut visitor);
+        let (Some(operation), Some(phase)) = (visitor.operation, visitor.phase) else {
+            return;
+        };
+        if !operation.starts_with("workspace_review_") || !operation.ends_with("_phase") {
+            return;
+        }
+        self.captured
+            .lock()
+            .expect("timing capture lock should remain available")
+            .push(WorkspaceReviewTimingEvent {
+                operation,
+                phase,
+                fields: visitor.fields,
+            });
+    }
+}
+
+fn capture_workspace_review_timings() -> (
+    tracing::dispatcher::DefaultGuard,
+    StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
+) {
+    let captured = StdArc::new(StdMutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(WorkspaceReviewTimingLayer {
+        captured: StdArc::clone(&captured),
+    });
+    (subscriber.set_default(), captured)
+}
+
+fn assert_workspace_review_timing_phases(
+    captured: &StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
+    operation: &str,
+    expected_phases: &[&str],
+) {
+    let captured = captured
+        .lock()
+        .expect("timing capture lock should remain available");
+    for expected_phase in expected_phases {
+        let event = captured
+            .iter()
+            .find(|event| event.operation == operation && event.phase == *expected_phase)
+            .unwrap_or_else(|| {
+                panic!("missing {operation} phase {expected_phase}; captured events: {captured:?}")
+            });
+        assert!(
+            event.fields.contains("elapsed_ms"),
+            "{operation}/{expected_phase} should record elapsed_ms"
+        );
+        assert!(
+            event.fields.contains("total_elapsed_ms"),
+            "{operation}/{expected_phase} should record total_elapsed_ms"
+        );
+    }
+}
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -1512,6 +1617,7 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .await
         .expect("hidden parent message should persist");
 
+    let (_timing_guard, captured_timings) = capture_workspace_review_timings();
     let start = start_agent_workspace_review_with_chat_service(
         Arc::clone(&state),
         &workspace,
@@ -1521,6 +1627,25 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
     )
     .await
     .expect("review child chat should start");
+    assert_workspace_review_timing_phases(
+        &captured_timings,
+        "workspace_review_start_phase",
+        &[
+            "load_workspace",
+            "load_project",
+            "resolve_target",
+            "load_monitor",
+            "load_inherited_references",
+            "validate_parent_conversation",
+            "load_latest_run",
+            "resolve_runtime",
+            "create_child_conversation",
+            "reserve_monitor",
+            "start_child_chat",
+            "append_publication_event",
+            "total",
+        ],
+    );
 
     assert!(start.started);
     assert_eq!(start.skipped_reason, None);
@@ -3480,15 +3605,46 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
         .clone()
         .expect("blocking fingerprint should be recorded");
 
+    let confirmation = WorkspaceReviewFixerConfirmation {
+        target_scope: target.scope,
+        diff_fingerprint: target.diff_fingerprint.clone(),
+        artifact_id: completed
+            .review_artifact_id
+            .as_ref()
+            .expect("review artifact should remain current")
+            .as_str()
+            .to_string(),
+        artifact_version: completed
+            .review_artifact_version
+            .expect("review artifact version should remain current"),
+        blocking_fingerprint: blocking_fingerprint.clone(),
+    };
+    let (_timing_guard, captured_timings) = capture_workspace_review_timings();
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
-        None,
+        Some(&confirmation),
         None,
         &chat_service,
     )
     .await
     .expect("manual fixer should route");
+    assert_workspace_review_timing_phases(
+        &captured_timings,
+        "workspace_review_fixer_start_phase",
+        &[
+            "load_workspace",
+            "load_context",
+            "validate_confirmation",
+            "prepare_launch",
+            "resolve_runtime",
+            "claim_attempt",
+            "start_child_chat",
+            "settle_attempt",
+            "reload_context",
+            "total",
+        ],
+    );
 
     assert!(start.started);
     assert_eq!(start.skipped_reason, None);
