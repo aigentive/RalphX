@@ -303,6 +303,22 @@ async fn updating_only_the_base_branch_validates_the_current_repository() {
         .expect("git init should run")
         .status
         .success());
+    assert!(Command::new(resolve_git_cli_path())
+        .args([
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test User",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("initial commit should run")
+        .status
+        .success());
     let state = AppState::new_test();
     let mut project = Project::new(
         "Validated project".to_string(),

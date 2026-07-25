@@ -905,12 +905,12 @@ async fn reviewable_diff_read_failure_stays_merge_incomplete_without_github_or_l
         repo.path().to_string_lossy().into_owned(),
     );
     project.id = ProjectId::from_string("proj-1".to_string());
-    project.base_branch = Some("main".to_string());
+    project.base_branch = Some("missing-review-base".to_string());
     project_repo.create(project).await.unwrap();
 
     let task_id = create_pending_merge_task(&task_repo, "task-reviewable-diff-read-failure").await;
     let mut plan_branch = make_pr_eligible_plan_branch(&task_id, None, false);
-    plan_branch.branch_name = "plan/missing-reviewable-diff".to_string();
+    plan_branch.branch_name = "plan/reviewable-diff-fixture".to_string();
     let plan_branch_id = plan_branch.id.clone();
     plan_branch_repo.create(plan_branch).await.unwrap();
 
@@ -1050,16 +1050,18 @@ async fn pre_pr_origin_inspection_failure_blocks_without_local_merge_or_github_c
 
     let branch_name = "plan/pre-pr-inspection-failure";
     let repo = setup_plan_git_repo(branch_name, true);
-    let main_before = run_git(repo.path(), &["rev-parse", "main"]);
-    let invalid_working_directory = repo.path().join("not-a-git-worktree");
-    std::fs::create_dir_all(&invalid_working_directory).expect("create invalid working directory");
+    let main_ref_path = repo.path().join(".git/refs/heads/main");
+    let main_before = std::fs::read_to_string(&main_ref_path).expect("read main ref");
+    std::fs::remove_file(repo.path().join(".git/config")).expect("remove Git config file");
+    std::fs::create_dir(repo.path().join(".git/config")).expect("corrupt Git config path");
 
     let mut project = Project::new(
         "pre-PR origin inspection failure".to_string(),
-        invalid_working_directory.to_string_lossy().into_owned(),
+        repo.path().to_string_lossy().into_owned(),
     );
     project.id = ProjectId::from_string("proj-1".to_string());
     project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
     project_repo.create(project).await.unwrap();
 
     let task_id = create_pending_merge_task(&task_repo, "task-pre-pr-inspection-failure").await;
@@ -1109,7 +1111,7 @@ async fn pre_pr_origin_inspection_failure_blocks_without_local_merge_or_github_c
         Value::String("repository_capability_inspection_failed".to_string())
     );
     assert_eq!(
-        run_git(repo.path(), &["rev-parse", "main"]),
+        std::fs::read_to_string(&main_ref_path).expect("read main ref after failure"),
         main_before,
         "origin inspection failure must never locally merge the plan branch"
     );
@@ -1810,7 +1812,7 @@ async fn test_pr_eligible_false_skips_pr_path() {
     let task_id = create_pending_merge_task(&task_repo, "task-push-to-main").await;
 
     // pr_eligible = false → should NOT trigger PR path
-    let mut pb = make_pr_eligible_plan_branch(&task_id, Some(42), false);
+    let mut pb = make_pr_eligible_plan_branch(&task_id, None, false);
     pb.pr_eligible = false;
     plan_branch_repo.create(pb).await.unwrap();
 

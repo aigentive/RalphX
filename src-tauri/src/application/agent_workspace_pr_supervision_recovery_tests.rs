@@ -1542,7 +1542,7 @@ async fn skips_recovery_when_workspace_or_project_state_blocks_it() {
     .expect("disabled PR skip");
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("github_pr_disabled")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("missing_pr_number")
     );
     assert_eq!(github.state().check_pr_sync_state_calls, 1);
 }
