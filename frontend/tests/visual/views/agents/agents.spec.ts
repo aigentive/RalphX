@@ -424,6 +424,25 @@ async function seedConversationWithWorkspace(
             },
             derivedFrom: [],
             bucketId: undefined,
+            artifactRole: "overview",
+            planContractVersion: 2,
+            blueprint: {
+              id: `${seededConversation.id}-plan-blueprint-artifact`,
+              type: "design_doc",
+              name: "Agent Plan Blueprint",
+              content: {
+                type: "inline",
+                text: "# Blueprint\n\nImplement the Agents workspace plan.",
+              },
+              metadata: {
+                createdAt: now,
+                createdBy: "visual-fixture",
+                version: 1,
+              },
+              derivedFrom: [],
+              bucketId: undefined,
+              artifactRole: "blueprint",
+            },
           },
         );
       }
@@ -672,11 +691,21 @@ async function hydrateIdeationArtifactCache(page: Page, conversationId: string) 
     const { mockIdeationApi } = await import("/src/api-mock/ideation");
     const sessionId = `${targetConversationId}-ideation-session`;
     const sessionData = await mockIdeationApi.sessions.getWithData(sessionId);
+    const planArtifactId = sessionData?.session.planArtifactId;
+    const planArtifact = planArtifactId
+      ? queryClient.getQueryData(["agents", "artifact", planArtifactId])
+      : null;
 
     queryClient.setQueryData(
       ["ideation", "sessions", "detail", sessionId, "with-data"],
       sessionData,
     );
+    if (planArtifactId && planArtifact) {
+      queryClient.setQueryData(
+        ["agents", "session-plan", sessionId, planArtifactId],
+        planArtifact,
+      );
+    }
   }, conversationId);
 }
 

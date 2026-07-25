@@ -29,11 +29,7 @@ fn cross_project_import_rejects_grandfathered_v1_source() {
 #[tokio::test]
 async fn cross_project_import_clones_the_verified_bundle_into_owned_pointers() {
     let state = AppState::new_sqlite_test();
-    let temp_root = std::env::current_dir()
-        .expect("workspace root should resolve")
-        .join(".artifacts");
-    std::fs::create_dir_all(&temp_root).expect("test artifact root should exist");
-    let temp = tempfile::tempdir_in(temp_root).expect("temporary project root should be created");
+    let temp = tempfile::tempdir().expect("temporary project root should be created");
     let target_path = temp.path().join("target-project");
     std::fs::create_dir_all(&target_path).expect("target project directory should exist");
     let overview = state
@@ -73,7 +69,7 @@ async fn cross_project_import_clones_the_verified_bundle_into_owned_pointers() {
     let app = tauri::test::mock_app();
 
     let response = create_cross_project_session_impl(
-        &app.handle(),
+        app.handle(),
         &state,
         CreateCrossProjectSessionInput {
             target_project_path: target_path.to_string_lossy().to_string(),

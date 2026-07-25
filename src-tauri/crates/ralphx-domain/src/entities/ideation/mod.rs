@@ -538,7 +538,7 @@ impl IdeationSessionBuilder {
             verified_plan_agent_run_id: self.verified_plan_agent_run_id,
             inherited_plan_artifact_id: self.inherited_plan_artifact_id,
             inherited_plan_blueprint_artifact_id: self.inherited_plan_blueprint_artifact_id,
-            plan_contract_version: self.plan_contract_version.unwrap_or(PLAN_CONTRACT_V2),
+            plan_contract_version: self.plan_contract_version.unwrap_or(PLAN_CONTRACT_V1),
             seed_task_id: self.seed_task_id,
             parent_session_id: self.parent_session_id,
             created_at: self.created_at.unwrap_or(now),
