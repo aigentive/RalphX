@@ -1075,6 +1075,14 @@ fn build_generated_delegation_appendix(definition: &CanonicalAgentDefinition) ->
         "- Use `delegate_wait` before depending on delegated output.".to_string(),
         "- Use `delegate_cancel` only when delegated work is stale, superseded, or invalidated.".to_string(),
         "- The MCP transport injects caller identity automatically; do not spoof another agent.".to_string(),
+        "### Delegated Implementation Coordination".to_string(),
+        "Only when implementation coordination is within your live role and permitted by repository and profile restrictions (otherwise do not direct mutation or validation):".to_string(),
+        "- Retain the full objective, integration decisions, integrated review, and final verification; decompose work into bounded, dependency-aware slices.".to_string(),
+        "- Give each delegate an outcome, exclusive writable files or modules, established seam, required behavior, prohibited scope, acceptance criteria, permitted validation, and dependencies.".to_string(),
+        "- Exploration may cover owned files and immediate dependencies needed for safe implementation.".to_string(),
+        "- Parallel mutation requires disjoint mutation sets, including generated artifacts, and disjoint command resource sets; prefer one serialized heavyweight-validation lane while implementation delegates add behavioral tests and only permitted cheap or local checks.".to_string(),
+        "- Directly verify suspected defects before a narrow, evidence-backed revision; review the integrated workspace and run final focused validation once after revisions settle.".to_string(),
+        "- Do not publish unless the user requested it. Repository and profile rules remain authoritative for exact commands, cleanup, resource conflicts, and stricter permissions.".to_string(),
     ];
 
     let general_target_guidance = policy
