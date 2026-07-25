@@ -68,6 +68,9 @@ async fn planning_session_with_workspace(state: &AppState) -> (IdeationSession, 
         .unwrap();
     let mut session = IdeationSession::new(project.id.clone());
     session.session_flow = IdeationSessionFlow::Planning;
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "plan-current-blueprint".to_string(),
+    ));
     let session = state.ideation_session_repo.create(session).await.unwrap();
     state
         .ideation_session_repo

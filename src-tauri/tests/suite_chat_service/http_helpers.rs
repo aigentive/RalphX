@@ -124,6 +124,7 @@ async fn test_create_proposal_with_plan_artifact_succeeds_and_auto_links() {
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
     session.plan_blueprint_artifact_id = Some(blueprint_id);
@@ -183,6 +184,7 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
     session.plan_blueprint_artifact_id = Some(blueprint_id);
@@ -698,12 +700,22 @@ async fn test_update_proposal_on_archived_session_blocked() {
     state.artifact_repo.create(artifact).await.unwrap();
 
     // Create as Active, create proposal, then Archive the session
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Archived Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
     let proposal_id = create_test_proposal(&state, &session_id).await;
@@ -747,12 +759,22 @@ async fn test_archive_proposal_on_accepted_session_blocked() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Accepted Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
     let proposal_id = create_test_proposal(&state, &session_id).await;
@@ -1419,13 +1441,24 @@ async fn test_stale_plan_guard_null_passthrough() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
     // Builder default: plan_version_last_read = None (no .plan_version_last_read() call)
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Legacy Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
@@ -1461,12 +1494,23 @@ async fn test_stale_plan_guard_fresh_version_ok() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Fresh Read Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
@@ -1517,12 +1561,23 @@ async fn test_stale_plan_guard_stale_version_blocked_with_actionable_error() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Stale Read Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
@@ -2051,13 +2106,24 @@ async fn test_finalize_ignores_foreign_feature_without_affected_paths() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Cross-project blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Cross-project source session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .expected_proposal_count(1)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 

@@ -3920,23 +3920,40 @@ async fn test_trigger_verification_uses_typed_action_truth_when_legacy_summary_i
     let project = make_project("proj-verify-stale-snapshot", "Stale Snapshot Project");
     state.app_state.project_repo.create(project).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let overview = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Plan Overview",
+            ArtifactType::Specification,
+            "# Overview",
+            "test",
+        ))
+        .await
+        .unwrap();
+    let blueprint = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Plan Blueprint",
+            ArtifactType::Specification,
+            "# Blueprint",
+            "test",
+        ))
+        .await
+        .unwrap();
+    let mut session = IdeationSession::builder()
         .project_id(pid)
         .status(IdeationSessionStatus::Active)
         .verification_generation(2)
+        .plan_artifact_id(overview.id.clone())
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint.id.clone());
     let session_id = session.id.clone();
     let created = state
         .app_state
         .ideation_session_repo
         .create(session)
-        .await
-        .unwrap();
-
-    state
-        .app_state
-        .ideation_session_repo
-        .update_plan_artifact_id(&created.id, Some("artifact-x".to_string()))
         .await
         .unwrap();
 
@@ -3965,7 +3982,12 @@ async fn test_trigger_verification_uses_typed_action_truth_when_legacy_summary_i
         .update_verification_state(&session_id, VerificationStatus::Unverified, false)
         .await
         .unwrap();
-    let running = seed_running_verification_action(&state, &session_id, "artifact-x").await;
+    let running = seed_running_verification_action(
+        &state,
+        &session_id,
+        &format!("plan_bundle:v2:{}:{}", overview.id, blueprint.id),
+    )
+    .await;
 
     let result = trigger_verification_http(
         State(state.clone()),

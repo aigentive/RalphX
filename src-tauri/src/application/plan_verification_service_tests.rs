@@ -113,6 +113,11 @@ async fn session_with_plan(state: &AppState) -> IdeationSession {
         .expect("plan should be linked");
     state
         .ideation_session_repo
+        .update_plan_blueprint_artifact_id(&session.id, Some("plan-current-blueprint".to_string()))
+        .await
+        .expect("plan blueprint should be linked");
+    state
+        .ideation_session_repo
         .get_by_id(&session.id)
         .await
         .expect("session read should succeed")
@@ -269,6 +274,8 @@ async fn exact_current_proof_allows_acceptance_without_another_turn() {
     let state = AppState::new_test();
     let mut session = session_with_plan(&state).await;
     session.verified_plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.verified_plan_blueprint_artifact_id =
+        Some(ArtifactId::from_string("plan-current-blueprint"));
     let chat = mock_chat(&state);
 
     ensure_plan_verification_for_acceptance(&state, &chat, &session, &policy(true, true))

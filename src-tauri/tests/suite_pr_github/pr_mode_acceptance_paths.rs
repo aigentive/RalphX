@@ -133,6 +133,23 @@ async fn accept_finalize_keeps_confirmation_pending_when_auto_verification_is_qu
         .update_plan_artifact_id(&session_id, Some(artifact.id.as_str().to_string()))
         .await
         .expect("plan artifact should be linked");
+    let blueprint = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Plan Blueprint",
+            ArtifactType::Specification,
+            "# Implementation blueprint",
+            "test",
+        ))
+        .await
+        .expect("plan blueprint should be created");
+    state
+        .app_state
+        .ideation_session_repo
+        .update_plan_blueprint_artifact_id(&session_id, Some(blueprint.id.as_str().to_string()))
+        .await
+        .expect("plan blueprint should be linked");
     create_single_feature_proposal(&state, &session_id).await;
 
     let mut settings = state
