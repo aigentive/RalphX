@@ -960,7 +960,7 @@ async fn release_skips_non_planning_and_already_approved_sessions() {
 }
 
 #[tokio::test]
-async fn startup_reconciliation_keeps_marker_when_attention_has_no_target() {
+async fn startup_reconciliation_clears_orphaned_marker_without_attention() {
     let state = AppState::new_test();
     let (_seed_session, _) = planning_session_with_workspace(&state).await;
     let mut session = IdeationSession::new(crate::domain::entities::ProjectId::new());
@@ -974,19 +974,21 @@ async fn startup_reconciliation_keeps_marker_when_attention_has_no_target() {
     let session = state.ideation_session_repo.create(session).await.unwrap();
     seed_deferred_marker(&state, &session, "plan-orphaned").await;
 
-    let error = release_deferred_plan_approval(&state, &session.id)
-        .await
-        .expect_err("a plan without a navigable target must not lose attention");
-    assert!(error.to_string().contains("no navigable target"));
-
     reconcile_deferred_plan_approvals_on_startup(&state)
         .await
         .unwrap();
     assert!(
-        has_deferred_plan_approval(&state, &session.id, &plan_target_id(&session))
+        !has_deferred_plan_approval(&state, &session.id, &plan_target_id(&session))
             .await
             .unwrap()
     );
+    assert!(state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications
+        .is_empty());
 }
 
 #[tokio::test]
