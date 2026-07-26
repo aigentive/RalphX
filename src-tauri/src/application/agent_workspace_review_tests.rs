@@ -519,6 +519,9 @@ async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artif
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
         .inherited_plan_artifact_id(missing_artifact_id.clone())
+        .inherited_plan_blueprint_artifact_id(ArtifactId::from_string(
+            "missing-plan-blueprint-artifact",
+        ))
         .build();
     let missing_artifact_session = state
         .ideation_session_repo

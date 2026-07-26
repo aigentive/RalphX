@@ -142,6 +142,13 @@ async fn seed_deferred_marker(state: &AppState, session: &IdeationSession, artif
         .unwrap();
 }
 
+fn plan_target_id(session: &IdeationSession) -> String {
+    session
+        .plan_artifact_bundle()
+        .expect("plan approval tests require a complete plan bundle")
+        .action_target_id()
+}
+
 #[tokio::test]
 async fn auto_verification_defers_all_plan_attention_until_terminal_release() {
     let state = AppState::new_test();
@@ -195,7 +202,7 @@ async fn auto_verification_defers_all_plan_attention_until_terminal_release() {
         .notifications;
     assert_eq!(notifications.len(), 1);
     assert_eq!(notifications[0].title, "Plan approval needed");
-    let expected_dedupe = format!("plan:{}:plan-current", session.id);
+    let expected_dedupe = format!("plan:{}:{}", session.id, plan_target_id(&session));
     assert_eq!(
         notifications[0].dedupe_key.as_deref(),
         Some(expected_dedupe.as_str())
@@ -518,7 +525,7 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
-    verifier.action_target_id = Some("plan-current".to_string());
+    verifier.action_target_id = Some(plan_target_id(&session));
     let verifier = state.agent_run_repo.create(verifier).await.unwrap();
 
     assert_eq!(
@@ -579,7 +586,7 @@ async fn conversation_release_skips_edit_workspace_before_verification_settlemen
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
-    verifier.action_target_id = Some("plan-current".to_string());
+    verifier.action_target_id = Some(plan_target_id(&session));
     state.agent_run_repo.create(verifier).await.unwrap();
 
     assert_eq!(
@@ -635,7 +642,7 @@ async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
     let mut missing_session = AgentRun::new(conversation.id);
     missing_session.action_kind = Some(AgentRunActionKind::VerifyPlan);
     missing_session.action_context_id = Some("missing-session".to_string());
-    missing_session.action_target_id = Some("plan-current".to_string());
+    missing_session.action_target_id = Some(plan_target_id(&session));
     let missing_session = state.agent_run_repo.create(missing_session).await.unwrap();
     state
         .agent_run_repo
@@ -683,7 +690,7 @@ async fn startup_reconciliation_releases_terminal_markers_and_preserves_active_o
     let mut active_verifier = AgentRun::new(active_conversation.id);
     active_verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     active_verifier.action_context_id = Some(active_session.id.as_str().to_string());
-    active_verifier.action_target_id = Some("plan-current".to_string());
+    active_verifier.action_target_id = Some(plan_target_id(&active_session));
     state.agent_run_repo.create(active_verifier).await.unwrap();
 
     state
@@ -821,7 +828,7 @@ async fn exact_typed_verifier_authority_can_defer_its_own_artifact() {
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
-    verifier.action_target_id = Some("plan-current".to_string());
+    verifier.action_target_id = Some(plan_target_id(&session));
     let verifier = state.agent_run_repo.create(verifier).await.unwrap();
     let authority = PlanApprovalPublishAuthority::new(verifier.id, conversation.id);
 

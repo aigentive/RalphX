@@ -1151,9 +1151,10 @@ async fn attention_items_exclude_current_plan_approvals_but_include_stale_approv
         .create(current_approved.clone())
         .await
         .unwrap();
-    approval_repo.approve(
+    approval_repo.approve_bundle(
         current_approved.id.clone(),
         current_artifact_id,
+        crate::domain::entities::ArtifactId::from_string("current-plan-blueprint"),
         1,
         PlanApprovalActor::User,
     );

@@ -5917,7 +5917,9 @@ async fn automation_scheduler_redelivers_plan_approval_after_resume_crash_ignore
     let prompts = resumer.prompts();
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0].0, conversation_id);
-    assert!(prompts[0].1.contains("Run plan v3 approved"));
+    assert!(prompts[0]
+        .1
+        .contains("Run plan bundle v3 is verified and approved"));
     assert!(prompts[0].1.contains("publish the run pull request"));
 }
 
@@ -7795,7 +7797,9 @@ async fn automation_scheduler_delivers_verified_ideation_bridge_approval_to_idea
     let ideation_prompts = scenario.resumer.ideation_prompts();
     assert_eq!(ideation_prompts.len(), 1);
     assert_eq!(ideation_prompts[0].0, scenario.session_id);
-    assert!(ideation_prompts[0].1.contains("Automation plan v1"));
+    assert!(ideation_prompts[0]
+        .1
+        .contains("Automation plan bundle v1 is verified and approved"));
     assert!(ideation_prompts[0].1.contains("<auto-propose>"));
 }
 
