@@ -1,5 +1,5 @@
 use crate::entities::{
-    IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
+    ArtifactId, IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
     IdeationSessionBuilder, ProjectId, SessionOrigin, SessionPurpose, TaskId,
 };
 
@@ -9,17 +9,15 @@ use super::{
 };
 
 fn sample_parent() -> crate::entities::IdeationSession {
-    let mut parent = IdeationSessionBuilder::new()
+    IdeationSessionBuilder::new()
         .project_id(ProjectId::from_string("project-1".to_string()))
         .title("Parent")
         .source_project_id("source-project")
         .source_session_id("source-session")
         .origin(SessionOrigin::Internal)
-        .build();
-    parent.plan_artifact_id = Some(crate::entities::ArtifactId::from_string(
-        "artifact-1".to_string(),
-    ));
-    parent
+        .plan_artifact_id(ArtifactId::from_string("artifact-1".to_string()))
+        .plan_blueprint_artifact_id(ArtifactId::from_string("blueprint-1".to_string()))
+        .build()
 }
 
 #[test]
@@ -66,6 +64,10 @@ fn build_child_session_inherits_expected_parent_context() {
 
     assert_eq!(child.parent_session_id, Some(parent_id));
     assert_eq!(child.inherited_plan_artifact_id, parent.plan_artifact_id);
+    assert_eq!(
+        child.inherited_plan_blueprint_artifact_id,
+        parent.plan_blueprint_artifact_id
+    );
     assert_eq!(child.source_project_id.as_deref(), Some("source-project"));
     assert_eq!(child.source_session_id.as_deref(), Some("source-session"));
     assert_eq!(
