@@ -3950,7 +3950,7 @@ async fn test_trigger_verification_uses_typed_action_truth_when_legacy_summary_i
         .build();
     session.plan_blueprint_artifact_id = Some(blueprint.id.clone());
     let session_id = session.id.clone();
-    let created = state
+    state
         .app_state
         .ideation_session_repo
         .create(session)
