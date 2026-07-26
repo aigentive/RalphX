@@ -1142,6 +1142,9 @@ async fn attention_items_exclude_current_plan_approvals_but_include_stale_approv
         .project_id(project.id.clone())
         .title("Current approved plan")
         .plan_artifact_id(current_artifact_id.clone())
+        .plan_blueprint_artifact_id(crate::domain::entities::ArtifactId::from_string(
+            "current-plan-blueprint",
+        ))
         .build();
     state
         .ideation_session_repo
@@ -1161,6 +1164,9 @@ async fn attention_items_exclude_current_plan_approvals_but_include_stale_approv
         .project_id(project.id.clone())
         .title("Redrafted plan")
         .plan_artifact_id(current_redrafted_artifact_id)
+        .plan_blueprint_artifact_id(crate::domain::entities::ArtifactId::from_string(
+            "redrafted-current-plan-blueprint",
+        ))
         .build();
     state
         .ideation_session_repo

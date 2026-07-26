@@ -123,14 +123,18 @@ async fn live_publish_authority(
 async fn seed_deferred_marker(state: &AppState, session: &IdeationSession, artifact_id: &str) {
     let session_id = session.id.as_str().to_string();
     let artifact_id = artifact_id.to_string();
+    let plan_target_id = session
+        .plan_artifact_bundle()
+        .expect("deferred approval tests require a complete plan bundle")
+        .action_target_id();
     state
         .db
         .run(move |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO deferred_plan_approval_notifications
-                    (session_id, artifact_id, created_at)
-                 VALUES (?1, ?2, datetime('now'))",
-                rusqlite::params![session_id, artifact_id],
+                    (session_id, artifact_id, plan_target_id, created_at)
+                 VALUES (?1, ?2, ?3, datetime('now'))",
+                rusqlite::params![session_id, artifact_id, plan_target_id],
             )?;
             Ok(())
         })

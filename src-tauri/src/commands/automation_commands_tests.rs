@@ -200,6 +200,8 @@ async fn link_run_to_plan_session(
     let mut session = IdeationSession::new(automation.project_id.clone());
     session.id = session_id.clone();
     session.plan_artifact_id = artifact_id.map(ArtifactId::from_string);
+    session.plan_blueprint_artifact_id =
+        artifact_id.map(|artifact_id| ArtifactId::from_string(format!("{artifact_id}-blueprint")));
     state.ideation_session_repo.create(session).await.unwrap();
 
     let mut workspace = AgentConversationWorkspace::new(
