@@ -130,6 +130,7 @@ async fn test_create_proposal_with_plan_artifact_succeeds_and_auto_links() {
     session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Test Proposal".to_string(),
@@ -190,6 +191,7 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
     session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Versioned Proposal".to_string(),
@@ -315,6 +317,25 @@ async fn create_test_proposal(state: &AppState, session_id: &IdeationSessionId) 
         .expect("test proposal creation should succeed")
         .0
         .id
+}
+
+/// Model the paired read receipts written by `get_session_plan` for a v2 plan bundle.
+async fn mark_plan_bundle_read(state: &AppState, session_id: &IdeationSessionId) {
+    let session_id = session_id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_version_last_read = 1, blueprint_version_last_read = 1
+                 WHERE id = ?1",
+                rusqlite::params![session_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 // Scenario 10: The retired proposal gate cannot block draft proposal creation.
@@ -718,6 +739,7 @@ async fn test_update_proposal_on_archived_session_blocked() {
     session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
     let proposal_id = create_test_proposal(&state, &session_id).await;
 
     // Archive the session via SQL
@@ -777,6 +799,7 @@ async fn test_archive_proposal_on_accepted_session_blocked() {
     session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
     let proposal_id = create_test_proposal(&state, &session_id).await;
 
     // Accept the session via SQL
@@ -1430,8 +1453,8 @@ async fn test_update_add_depends_on_partial_failure() {
 // Stale Plan Guard Tests — Version Gate for Proposal Creation
 // ============================================================================
 
-// Proof obligation 1: NULL plan_version_last_read → passthrough (backward compat).
-// Legacy sessions (field = NULL) must create proposals without any error.
+// Proof obligation 1: a NULL overview receipt remains a backwards-compatible passthrough.
+// A v2 bundle still requires the paired blueprint receipt.
 #[tokio::test]
 async fn test_stale_plan_guard_null_passthrough() {
     let state = AppState::new_sqlite_test();
@@ -1461,6 +1484,19 @@ async fn test_stale_plan_guard_null_passthrough() {
     session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    let blueprint_read_session_id = session_id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions SET blueprint_version_last_read = 1 WHERE id = ?1",
+                rusqlite::params![blueprint_read_session_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     let options = CreateProposalOptions {
         title: "Legacy Proposal".to_string(),
@@ -1514,20 +1550,8 @@ async fn test_stale_plan_guard_fresh_version_ok() {
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
-    // Simulate get_session_plan acknowledgment: set plan_version_last_read = 1 (matches artifact v1)
-    let sid = session_id.as_str().to_string();
-    state
-        .db
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE ideation_sessions SET plan_version_last_read = 1 WHERE id = ?1",
-                rusqlite::params![sid],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    // Simulate get_session_plan acknowledgment for both v2 plan-bundle artifacts.
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Fresh Proposal".to_string(),
@@ -1581,20 +1605,8 @@ async fn test_stale_plan_guard_stale_version_blocked_with_actionable_error() {
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
-    // Agent reads plan at v1: set plan_version_last_read = 1
-    let sid = session_id.as_str().to_string();
-    state
-        .db
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE ideation_sessions SET plan_version_last_read = 1 WHERE id = ?1",
-                rusqlite::params![sid],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    // Agent reads the full v2 bundle at v1.
+    mark_plan_bundle_read(&state, &session_id).await;
 
     // Simulate child bumping plan to v2 (plan_version_last_read is now stale)
     let aid = artifact_id.as_str().to_string();
@@ -2126,6 +2138,7 @@ async fn test_finalize_ignores_foreign_feature_without_affected_paths() {
     session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Foreign feature without local scope".to_string(),
