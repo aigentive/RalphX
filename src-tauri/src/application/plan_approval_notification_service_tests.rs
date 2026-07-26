@@ -922,6 +922,9 @@ async fn release_skips_non_planning_and_already_approved_sessions() {
     non_planning.plan_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
         "plan-non-planning",
     ));
+    non_planning.plan_blueprint_artifact_id = Some(
+        crate::domain::entities::ArtifactId::from_string("plan-non-planning-blueprint"),
+    );
     let non_planning = state
         .ideation_session_repo
         .create(non_planning)
@@ -935,9 +938,10 @@ async fn release_skips_non_planning_and_already_approved_sessions() {
         PlanApprovalNotificationDisposition::Skipped
     );
 
-    approval_repo.approve(
+    approval_repo.approve_bundle(
         session.id.clone(),
         crate::domain::entities::ArtifactId::from_string("plan-current"),
+        crate::domain::entities::ArtifactId::from_string("plan-current-blueprint"),
         1,
         PlanApprovalActor::User,
     );
@@ -949,7 +953,7 @@ async fn release_skips_non_planning_and_already_approved_sessions() {
         PlanApprovalNotificationDisposition::Skipped
     );
     assert!(
-        !has_deferred_plan_approval(&state, &session.id, "plan-current")
+        !has_deferred_plan_approval(&state, &session.id, &plan_target_id(&session))
             .await
             .unwrap()
     );
@@ -964,6 +968,9 @@ async fn startup_reconciliation_keeps_marker_when_attention_has_no_target() {
     session.plan_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
         "plan-orphaned",
     ));
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "plan-orphaned-blueprint",
+    ));
     let session = state.ideation_session_repo.create(session).await.unwrap();
     seed_deferred_marker(&state, &session, "plan-orphaned").await;
 
@@ -976,7 +983,7 @@ async fn startup_reconciliation_keeps_marker_when_attention_has_no_target() {
         .await
         .unwrap();
     assert!(
-        has_deferred_plan_approval(&state, &session.id, "plan-orphaned")
+        has_deferred_plan_approval(&state, &session.id, &plan_target_id(&session))
             .await
             .unwrap()
     );

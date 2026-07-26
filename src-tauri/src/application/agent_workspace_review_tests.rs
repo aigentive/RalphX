@@ -4249,10 +4249,21 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
         .create(plan_artifact)
         .await
         .expect("plan artifact should persist");
+    let blueprint_artifact = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Parent implementation blueprint",
+            ArtifactType::Specification,
+            "# Blueprint\n\nKeep parent references available to child repair.",
+            "ralphx-ideation",
+        ))
+        .await
+        .expect("blueprint artifact should persist");
     let planning_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
         .plan_artifact_id(plan_artifact.id.clone())
+        .plan_blueprint_artifact_id(blueprint_artifact.id.clone())
         .build();
     let planning_session = state
         .ideation_session_repo
@@ -4356,6 +4367,14 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
                 && reference.session_id.as_deref() == Some(planning_session.id.as_str())
                 && reference.version == Some(3)
         ));
+    assert!(options
+        .composer_artifact_references
+        .iter()
+        .any(|reference| {
+            reference.artifact_id == blueprint_artifact.id.as_str()
+                && reference.kind == "plan_blueprint"
+                && reference.session_id.as_deref() == Some(planning_session.id.as_str())
+        }));
     let metadata: serde_json::Value = serde_json::from_str(
         options
             .metadata

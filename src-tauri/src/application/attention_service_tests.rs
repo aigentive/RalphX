@@ -1048,6 +1048,9 @@ async fn attention_items_include_only_workspace_plans_awaiting_approval() {
         .plan_artifact_id(crate::domain::entities::ArtifactId::from_string(
             "eligible-plan",
         ))
+        .plan_blueprint_artifact_id(crate::domain::entities::ArtifactId::from_string(
+            "eligible-plan-blueprint",
+        ))
         .build();
     state
         .ideation_session_repo

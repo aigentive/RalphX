@@ -234,6 +234,7 @@ async fn insert_plan_approval(
 ) {
     let session_id = session_id.as_str().to_string();
     let artifact_id = artifact_id.to_string();
+    let blueprint_artifact_id = format!("{artifact_id}-blueprint");
     let approved_at = approved_at.to_string();
     let approved_by = approved_by.to_string();
     state
@@ -241,9 +242,18 @@ async fn insert_plan_approval(
         .run(move |conn| {
             conn.execute(
                 "INSERT INTO plan_artifact_approvals (
-                    session_id, artifact_id, artifact_version, status, approved_at, approved_by
-                 ) VALUES (?1, ?2, ?3, 'approved', ?4, ?5)",
-                rusqlite::params![session_id, artifact_id, version, approved_at, approved_by],
+                    session_id, artifact_id, artifact_version,
+                    blueprint_artifact_id, blueprint_artifact_version,
+                    status, approved_at, approved_by
+                 ) VALUES (?1, ?2, ?3, ?4, ?3, 'approved', ?5, ?6)",
+                rusqlite::params![
+                    session_id,
+                    artifact_id,
+                    version,
+                    blueprint_artifact_id,
+                    approved_at,
+                    approved_by
+                ],
             )
             .map(|_| ())
             .map_err(AppError::from)
