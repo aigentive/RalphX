@@ -11,6 +11,7 @@ import type {
   SendAgentMessageResult,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { defaultIdeationSettings } from "@/types/ideation-config";
 import {
   DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
   useAgentSessionStore,
@@ -21,6 +22,7 @@ import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import { useAgentTerminalStore } from "./agentTerminalStore";
+import { useProjectStore } from "@/stores/projectStore";
 import type { AgentConversation } from "./agentConversations";
 import { AgentsView } from "./AgentsView";
 import {
@@ -56,6 +58,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listConversationsMock: vi.fn(),
   listAgentConversationWorkspacePublicationEventsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  commitAgentConversationWorkspaceLocallyMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
   setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
@@ -203,6 +206,7 @@ const {
   listConversationsMock,
   listAgentConversationWorkspacePublicationEventsMock,
   publishAgentConversationWorkspaceMock,
+  commitAgentConversationWorkspaceLocallyMock,
   updateWorkspaceFromBaseMock,
   setAgentConversationWorkspaceAutoPublishMock,
   setAgentConversationWorkspacePrSupervisionMock,
@@ -808,6 +812,8 @@ vi.mock("@/api/chat", () => ({
       listAgentConversationWorkspacePublicationEventsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    commitAgentConversationWorkspaceLocally: (...args: unknown[]) =>
+      commitAgentConversationWorkspaceLocallyMock(...args),
     updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
       updateWorkspaceFromBaseMock(...args),
     setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
@@ -1303,6 +1309,7 @@ export function mockSidebarBreakpoint({ isLarge, isMedium }: { isLarge: boolean;
 }
 
 export function mockAgentViewData(agentConversation: AgentConversation = conversation()) {
+  useProjectStore.getState().setProjects([project]);
   useProjectsMock.mockReturnValue({
     data: [project],
     isLoading: false,
@@ -1675,6 +1682,7 @@ export function setupAgentsViewTest() {
   listConversationsMock.mockReset();
   listAgentConversationWorkspacePublicationEventsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
+  commitAgentConversationWorkspaceLocallyMock.mockReset();
   updateWorkspaceFromBaseMock.mockReset();
   setAgentConversationWorkspaceAutoPublishMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
@@ -1740,6 +1748,8 @@ export function setupAgentsViewTest() {
   webviewDragDropHandlers.splice(0);
   webviewOnDragDropEventMock.mockReset();
   webviewDragDropUnlistenMock.mockReset();
+
+  vi.mocked(ideationApi.settings.get).mockResolvedValue(defaultIdeationSettings);
 
   sendAgentMessageMock.mockResolvedValue({
     conversationId: "conversation-2",

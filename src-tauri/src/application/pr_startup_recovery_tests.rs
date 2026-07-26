@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -13,23 +14,27 @@ use crate::application::git_service::GitService;
 use crate::application::pr_startup_recovery::{
     cleanup_terminal_agent_workspace_local_artifacts_on_startup,
     cleanup_terminal_plan_branch_local_artifacts_on_startup, recover_agent_workspace_pr_pollers,
+    recover_missing_draft_prs,
 };
 use crate::application::services::PrPollerRegistry;
+use crate::application::AppState;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatConversationId, ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
+    ArtifactType, ChatConversationId, ExecutionPlan, ExecutionPlanId, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionId, InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus,
+    Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, PlanBranchRepository, ProjectRepository,
 };
 use crate::domain::services::{
-    github_service::GithubServiceTrait, MemoryRunningAgentRegistry, RunningAgentRegistry,
+    github_service::GithubServiceTrait, MemoryRunningAgentRegistry, PlanPrDescriptionDrafter,
+    PrReviewState, RunningAgentRegistry,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
@@ -47,6 +52,24 @@ fn init_tracing() {
         .with_max_level(tracing::Level::TRACE)
         .with_test_writer()
         .try_init();
+}
+
+struct StartupRecoveryDescriptionDrafter;
+
+#[async_trait]
+impl PlanPrDescriptionDrafter for StartupRecoveryDescriptionDrafter {
+    async fn draft_plan_description(
+        &self,
+        _project: &Project,
+        _plan_branch: &PlanBranch,
+        _review_base: &str,
+        _review_state: PrReviewState,
+    ) -> AppResult<crate::domain::entities::AgentWorkspacePrDescription> {
+        Ok(crate::domain::entities::AgentWorkspacePrDescription::new(
+            None,
+            "Persisted PR startup recovery".to_string(),
+        ))
+    }
 }
 
 fn empty_running_agent_registry() -> Arc<dyn RunningAgentRegistry> {
@@ -260,6 +283,151 @@ fn terminal_workspace(project: &Project, pr_status: Option<&str>) -> AgentConver
     workspace.publication_push_status = Some("pushed".to_string());
     workspace.status = AgentConversationWorkspaceStatus::Active;
     workspace
+}
+
+#[tokio::test]
+async fn persisted_pr_authority_startup_recovery_resumes_existing_pr_when_pr_mode_is_disabled() {
+    init_tracing();
+
+    let app_state = AppState::new_test();
+    let mut project = Project::new(
+        "Persisted PR authority startup recovery".to_string(),
+        "/tmp/persisted-pr-authority-startup".to_string(),
+    );
+    project.github_pr_enabled = false;
+    let project = app_state
+        .project_repo
+        .create(project)
+        .await
+        .expect("create project");
+
+    let mut session = IdeationSession::new_with_title(project.id.clone(), "Persisted PR plan");
+    session.mark_accepted();
+    let session = app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .expect("create ideation session");
+    let execution_plan = app_state
+        .execution_plan_repo
+        .create(ExecutionPlan::new(session.id.clone()))
+        .await
+        .expect("create execution plan");
+    let artifact = app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Persisted PR plan".to_string(),
+            ArtifactType::Specification,
+            "Recover the existing pull request.",
+            "test",
+        ))
+        .await
+        .expect("create plan artifact");
+
+    let mut merge_task = Task::new(project.id.clone(), "Merge plan".to_string());
+    merge_task.category = TaskCategory::PlanMerge;
+    merge_task.internal_status = InternalStatus::WaitingOnPr;
+    merge_task.ideation_session_id = Some(session.id.clone());
+    merge_task.execution_plan_id = Some(execution_plan.id.clone());
+    let merge_task = app_state
+        .task_repo
+        .create(merge_task)
+        .await
+        .expect("create merge task");
+
+    let mut merged_regular_task = Task::new(project.id.clone(), "Implement plan".to_string());
+    merged_regular_task.category = TaskCategory::Regular;
+    merged_regular_task.internal_status = InternalStatus::Merged;
+    merged_regular_task.ideation_session_id = Some(session.id.clone());
+    merged_regular_task.execution_plan_id = Some(execution_plan.id.clone());
+    app_state
+        .task_repo
+        .create(merged_regular_task)
+        .await
+        .expect("create merged regular task");
+
+    let mut plan_branch = PlanBranch::new(
+        artifact.id,
+        session.id,
+        project.id.clone(),
+        "ralphx/persisted-pr-authority/startup".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.status = PlanBranchStatus::Active;
+    plan_branch.execution_plan_id = Some(execution_plan.id);
+    plan_branch.merge_task_id = Some(merge_task.id.clone());
+    plan_branch.pr_eligible = false;
+    plan_branch.pr_number = Some(811);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/811".to_string());
+    plan_branch.pr_status = Some(PlanPrStatus::Open);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let plan_branch = app_state
+        .plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("create persisted PR plan branch");
+
+    let github = Arc::new(MockGithubService::new());
+    recover_missing_draft_prs(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.plan_branch_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.execution_plan_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        Arc::new(StartupRecoveryDescriptionDrafter),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if github.state().update_pr_details_calls == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("existing persisted PR should resume metadata refresh");
+
+    let recovered_plan_branch = app_state
+        .plan_branch_repo
+        .get_by_id(&plan_branch.id)
+        .await
+        .expect("load recovered plan branch")
+        .expect("persisted PR plan branch should remain");
+    assert_eq!(recovered_plan_branch.status, PlanBranchStatus::Active);
+    assert_eq!(recovered_plan_branch.pr_number, Some(811));
+    assert_eq!(
+        recovered_plan_branch.pr_url.as_deref(),
+        Some("https://github.com/owner/repo/pull/811")
+    );
+    assert_eq!(recovered_plan_branch.pr_status, Some(PlanPrStatus::Open));
+
+    let recovered_merge_task = app_state
+        .task_repo
+        .get_by_id(&merge_task.id)
+        .await
+        .expect("load merge task")
+        .expect("merge task should remain");
+    assert_eq!(
+        recovered_merge_task.internal_status,
+        InternalStatus::WaitingOnPr,
+        "startup recovery must not locally finalize a persisted GitHub PR"
+    );
+
+    let state = github.state();
+    assert_eq!(
+        state.create_draft_pr_calls, 0,
+        "persisted PR authority must prevent replacement PR creation"
+    );
+    assert_eq!(
+        state.push_branch_calls, 0,
+        "already-pushed persisted PR should resume its existing path without replacement publication"
+    );
+    assert_eq!(state.mark_pr_ready_calls, 1);
 }
 
 #[tokio::test]

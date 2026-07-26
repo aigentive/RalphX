@@ -940,6 +940,10 @@ pub struct TaskResponse {
 pub struct RegisterProjectExternalRequest {
     pub working_directory: String,
     pub name: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub worktree_parent_directory: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

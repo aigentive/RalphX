@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { formatElapsedTime } from "@/lib/formatters";
 
 export type AgentWorkspaceOperationToastKind =
+  | "local-commit"
   | "publish"
   | "rebase"
   | "update-from-base";

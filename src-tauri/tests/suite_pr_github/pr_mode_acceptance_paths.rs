@@ -54,6 +54,7 @@ async fn create_project_and_session(
     repo: &RealGitRepo,
     acceptance_status: Option<AcceptanceStatus>,
 ) -> IdeationSessionId {
+    repo.configure_github_origin();
     let mut project = Project::new("PR Mode Acceptance".to_string(), repo.path_string());
     project.id = ProjectId::from_string(project_id.to_string());
     project.github_pr_enabled = true;

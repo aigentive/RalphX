@@ -1847,6 +1847,7 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
@@ -2161,6 +2162,25 @@ export interface PublishAgentConversationWorkspaceResult {
   createdPr: boolean;
   prNumber: number | null;
   prUrl: string | null;
+}
+
+export interface CommitAgentConversationWorkspaceLocallyInput {
+  expectedHeadSha: string;
+  reviewArtifactId: string | null;
+  reviewArtifactVersion: number | null;
+  reviewedHeadSha: string | null;
+  reviewedDiffFingerprint: string | null;
+  attemptToken: string;
+}
+
+export interface CommitAgentConversationWorkspaceLocallyResult {
+  workspace: AgentConversationWorkspace;
+  outcome: "committed_local" | "already_committed" | "no_changes";
+  branchName: string;
+  previousHeadSha: string;
+  commitSha: string;
+  hadChanges: boolean;
+  attemptToken: string;
 }
 
 export interface PrecomputeAgentConversationWorkspacePrDescriptionResult {
@@ -2967,6 +2987,15 @@ const PublishAgentConversationWorkspaceResponseSchema = z.object({
   pr_number: z.number().nullable(),
   pr_url: z.string().nullable(),
 });
+const CommitAgentConversationWorkspaceLocallyResponseSchema = z.object({
+  workspace: AgentConversationWorkspaceResponseSchema,
+  outcome: z.enum(["committed_local", "already_committed", "no_changes"]),
+  branch_name: z.string(),
+  previous_head_sha: z.string(),
+  commit_sha: z.string(),
+  had_changes: z.boolean(),
+  attempt_token: z.string(),
+});
 const PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema =
   z.object({
     conversation_id: z.string(),
@@ -3006,6 +3035,9 @@ type RawAgentConversationPlanSeedResponse = z.infer<
 >;
 type RawPublishAgentConversationWorkspaceResponse = z.infer<
   typeof PublishAgentConversationWorkspaceResponseSchema
+>;
+type RawCommitAgentConversationWorkspaceLocallyResponse = z.infer<
+  typeof CommitAgentConversationWorkspaceLocallyResponseSchema
 >;
 type RawPrecomputeAgentConversationWorkspacePrDescriptionResponse = z.infer<
   typeof PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema
@@ -3116,6 +3148,20 @@ function transformAgentConversationWorkspace(
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformCommitAgentConversationWorkspaceLocallyResponse(
+  raw: RawCommitAgentConversationWorkspaceLocallyResponse,
+): CommitAgentConversationWorkspaceLocallyResult {
+  return {
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    outcome: raw.outcome,
+    branchName: raw.branch_name,
+    previousHeadSha: raw.previous_head_sha,
+    commitSha: raw.commit_sha,
+    hadChanges: raw.had_changes,
+    attemptToken: raw.attempt_token,
   };
 }
 
@@ -4232,6 +4278,18 @@ export async function publishAgentConversationWorkspace(
     PublishAgentConversationWorkspaceResponseSchema,
   );
   return transformPublishAgentConversationWorkspaceResponse(raw);
+}
+
+export async function commitAgentConversationWorkspaceLocally(
+  conversationId: string,
+  input: CommitAgentConversationWorkspaceLocallyInput,
+): Promise<CommitAgentConversationWorkspaceLocallyResult> {
+  const raw = await typedInvoke(
+    "commit_agent_conversation_workspace_locally",
+    { input: { conversationId, ...input } },
+    CommitAgentConversationWorkspaceLocallyResponseSchema,
+  );
+  return transformCommitAgentConversationWorkspaceLocallyResponse(raw);
 }
 
 export async function setAgentConversationWorkspacePrSupervision(

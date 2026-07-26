@@ -85,6 +85,7 @@ impl ClickUpApiClient for StaticClickUpClient {
 fn test_project() -> Project {
     let mut project = Project::new("Demo".to_string(), "/tmp/ralphx-demo".to_string());
     project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
     project
 }
 
@@ -311,6 +312,42 @@ async fn reconciliation_restarts_polling_for_linked_open_pr() {
         "a linked open PR must regain CI supervision after a poller is lost"
     );
     registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn reconciliation_preserves_linked_pr_when_future_pr_preference_is_disabled() {
+    let mut project = test_project();
+    project.github_pr_enabled = false;
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(42);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/42".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(PrStatus::Open);
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("linked PR reconciliation should remain available");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("linked_pr_not_terminal")
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, Some(42));
+    assert_eq!(github.state().check_pr_status_calls, 1);
+    assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 0);
 }
 
 #[tokio::test]

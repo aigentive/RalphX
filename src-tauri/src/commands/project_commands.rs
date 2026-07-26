@@ -19,10 +19,10 @@ use crate::domain::entities::{
     ProjectId,
 };
 use crate::domain::services::github_service::GithubConnectionState;
-use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 use crate::infrastructure::git_auth::{
     apply_git_subprocess_env, check_gh_auth_token_available, git_remote_url_kind_label,
-    inspect_origin_auth_config, probe_github_connection_status, suggested_github_ssh_origin,
+    inspect_origin_auth_config, inspect_repository_capability, is_supported_github_remote,
+    probe_github_connection_status, suggested_github_ssh_origin, RepositoryCapability,
 };
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -54,6 +54,7 @@ pub struct CreateProjectInput {
     pub working_directory: String,
     pub git_mode: Option<String>,
     pub base_branch: Option<String>,
+    pub worktree_parent_directory: Option<String>,
 }
 
 /// Input for updating a project
@@ -86,6 +87,7 @@ pub struct ProjectResponse {
     pub custom_analysis: Option<String>,
     pub analyzed_at: Option<String>,
     pub github_pr_enabled: bool,
+    pub repository_capability: RepositoryCapability,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -138,8 +140,11 @@ impl From<crate::domain::services::PrSearchResult> for GithubPullRequestSearchRe
     }
 }
 
-impl From<Project> for ProjectResponse {
-    fn from(project: Project) -> Self {
+impl ProjectResponse {
+    fn from_project_and_capability(
+        project: Project,
+        repository_capability: RepositoryCapability,
+    ) -> Self {
         Self {
             id: project.id.as_str().to_string(),
             name: project.name,
@@ -154,10 +159,36 @@ impl From<Project> for ProjectResponse {
             custom_analysis: project.custom_analysis,
             analyzed_at: project.analyzed_at,
             github_pr_enabled: project.github_pr_enabled,
+            repository_capability,
             created_at: project.created_at.to_rfc3339(),
             updated_at: project.updated_at.to_rfc3339(),
         }
     }
+}
+
+async fn project_response(project: Project) -> ProjectResponse {
+    let repository_capability =
+        inspect_repository_capability(Path::new(&project.working_directory)).await;
+    ProjectResponse::from_project_and_capability(project, repository_capability)
+}
+
+/// Legacy test seam for the previous command-local initializer. Production
+/// project registration calls `GitService::bootstrap_project_repository`
+/// directly; this wrapper keeps focused IPC contract tests on the same seam.
+#[doc(hidden)]
+pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
+    GitService::bootstrap_project_repository(
+        Path::new(path),
+        crate::application::git_service::GitBootstrapRequest::new(None),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[doc(hidden)]
+pub fn ensure_git_initialized_for_test(path: &str) -> Result<(), String> {
+    tauri::async_runtime::block_on(ensure_git_initialized_async(path))
 }
 
 #[doc(hidden)]
@@ -165,15 +196,29 @@ pub fn parse_merge_validation_mode_or_default(value: &str) -> MergeValidationMod
     value.parse().unwrap_or_default()
 }
 
+fn is_git_repository(path: &str) -> bool {
+    let mut command = Command::new(resolve_git_cli_path());
+    command.args(["rev-parse", "--git-dir"]).current_dir(path);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
+    command
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 /// List all projects
 #[tauri::command]
 pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectResponse>, String> {
-    state
+    let projects = state
         .project_repo
         .get_all()
         .await
-        .map(|projects| projects.into_iter().map(ProjectResponse::from).collect())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let mut responses = Vec::with_capacity(projects.len());
+    for project in projects {
+        responses.push(project_response(project).await);
+    }
+    Ok(responses)
 }
 
 /// Get a single project by ID
@@ -183,143 +228,15 @@ pub async fn get_project(
     state: State<'_, AppState>,
 ) -> Result<Option<ProjectResponse>, String> {
     let project_id = ProjectId::from_string(id);
-    state
+    let project = state
         .project_repo
         .get_by_id(&project_id)
         .await
-        .map(|opt| opt.map(ProjectResponse::from))
-        .map_err(|e| e.to_string())
-}
-
-/// Check if git is initialized in the given directory
-fn is_git_initialized(path: &str) -> bool {
-    let mut cmd = Command::new(resolve_git_cli_path());
-    cmd.args(["rev-parse", "--git-dir"]).current_dir(path);
-    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut cmd);
-    cmd.output().map(|o| o.status.success()).unwrap_or(false)
-}
-
-/// Initialize git in the given directory if not already initialized
-fn ensure_git_initialized(path: &str) -> Result<(), String> {
-    if is_git_initialized(path) {
-        return Ok(());
-    }
-
-    // Check if directory exists
-    if !std::path::Path::new(path).exists() {
-        return Err(format!("Directory does not exist: {}", path));
-    }
-
-    // Initialize git
-    let mut init_cmd = Command::new(resolve_git_cli_path());
-    init_cmd.args(["init"]).current_dir(path);
-    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut init_cmd);
-    let output = init_cmd
-        .output()
-        .map_err(|e| format!("Failed to run git init: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git init failed: {}", stderr));
-    }
-
-    // Create initial commit so HEAD exists (needed for diff operations)
-    let mut commit_cmd = Command::new(resolve_git_cli_path());
-    commit_cmd
-        .args([
-            "commit",
-            "--allow-empty",
-            "-m",
-            "Initial commit (auto-created by RalphX)",
-        ])
-        .current_dir(path);
-    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut commit_cmd);
-    let _ = commit_cmd.output();
-
-    Ok(())
-}
-
-#[doc(hidden)]
-pub fn ensure_git_initialized_for_test(path: &str) -> Result<(), String> {
-    ensure_git_initialized(path)
-}
-
-/// Async, idempotent version of ensure_git_initialized for use in HTTP handlers.
-/// Uses TokioCommand to avoid blocking the async runtime.
-///
-/// Handles all 4 directory/git states:
-/// - No .git → git init + empty commit
-/// - .git exists, no commits → empty commit only
-/// - .git exists, has commits → no-op
-///
-/// Note: directory must already exist before calling this function.
-/// Known limitation: if no global git user.name/email is configured, the
-/// empty commit will fail. Same limitation as the sync version.
-#[doc(hidden)]
-pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
-    use tokio::process::Command as TokioCommand;
-
-    // Check if .git directory exists
-    let git_dir = std::path::Path::new(path).join(".git");
-    if !git_dir.exists() {
-        // Run git init
-        let mut init_cmd = TokioCommand::new(resolve_git_cli_path());
-        init_cmd.args(["init"]).current_dir(path);
-        crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(init_cmd.as_std_mut());
-        let output = init_cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run git init: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git init failed: {}", stderr));
-        }
-    }
-
-    // Check if HEAD has any commits (git log returns success only if commits exist)
-    let mut log_cmd = TokioCommand::new(resolve_git_cli_path());
-    log_cmd.args(["log", "--oneline", "-1"]).current_dir(path);
-    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(log_cmd.as_std_mut());
-    let has_commits = log_cmd
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !has_commits {
-        // Create empty initial commit so HEAD is valid for worktree operations
-        let mut commit_cmd = TokioCommand::new(resolve_git_cli_path());
-        commit_cmd
-            .args([
-                "commit",
-                "--allow-empty",
-                "-m",
-                "Initial commit (auto-created by RalphX)",
-            ])
-            .current_dir(path);
-        crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(
-            commit_cmd.as_std_mut(),
-        );
-        let commit_result = commit_cmd.output().await;
-        if let Ok(output) = &commit_result {
-            if !output.status.success() {
-                tracing::warn!(
-                    path = %path,
-                    stderr = %String::from_utf8_lossy(&output.stderr),
-                    "ensure_git_initialized_async: empty commit failed (git user.name/email may be unconfigured) — HEAD may be unborn"
-                );
-            }
-        } else if let Err(e) = &commit_result {
-            tracing::warn!(
-                path = %path,
-                error = %e,
-                "ensure_git_initialized_async: failed to spawn git commit"
-            );
-        }
-    }
-
-    Ok(())
+        .map_err(|e| e.to_string())?;
+    Ok(match project {
+        Some(project) => Some(project_response(project).await),
+        None => None,
+    })
 }
 
 /// Create a new project
@@ -328,16 +245,28 @@ pub async fn create_project(
     input: CreateProjectInput,
     state: State<'_, AppState>,
 ) -> Result<ProjectResponse, String> {
-    // Ensure git is initialized in the working directory
-    ensure_git_initialized(&input.working_directory)?;
-
-    let mut project = Project::new(input.name, input.working_directory);
-    if let Some(git_mode_str) = input.git_mode {
+    let CreateProjectInput {
+        name,
+        working_directory,
+        git_mode,
+        base_branch,
+        worktree_parent_directory,
+    } = input;
+    let bootstrap = GitService::bootstrap_project_repository(
+        Path::new(&working_directory),
+        crate::application::git_service::GitBootstrapRequest::new(base_branch),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let repository_capability = inspect_repository_capability(Path::new(&working_directory)).await;
+    let mut project = Project::new(name, working_directory);
+    if let Some(git_mode_str) = git_mode {
         project.git_mode = git_mode_str.parse().unwrap_or(GitMode::Worktree);
     }
-    if let Some(base_branch) = input.base_branch {
-        project.base_branch = Some(base_branch);
-    }
+    project.base_branch = Some(bootstrap.base_branch);
+    project.worktree_parent_directory = worktree_parent_directory;
+    project.github_pr_enabled =
+        matches!(repository_capability, RepositoryCapability::Github { .. });
 
     let created = state
         .project_repo
@@ -354,7 +283,7 @@ pub async fn create_project(
     )
     .await;
 
-    Ok(ProjectResponse::from(created))
+    Ok(project_response(created).await)
 }
 
 /// Update an existing project
@@ -378,16 +307,29 @@ pub async fn update_project(
     if let Some(name) = input.name {
         project.name = name;
     }
-    if let Some(working_directory) = input.working_directory {
-        // Ensure git is initialized in the new working directory
-        ensure_git_initialized(&working_directory)?;
-        project.working_directory = working_directory;
+    if input.working_directory.is_some() || input.base_branch.is_some() {
+        let selected_base = input
+            .base_branch
+            .clone()
+            .or_else(|| project.base_branch.clone());
+        let bootstrap_working_directory = input
+            .working_directory
+            .as_deref()
+            .unwrap_or(&project.working_directory)
+            .to_string();
+        let bootstrap = GitService::bootstrap_project_repository(
+            Path::new(&bootstrap_working_directory),
+            crate::application::git_service::GitBootstrapRequest::new(selected_base),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        if let Some(working_directory) = input.working_directory {
+            project.working_directory = working_directory;
+        }
+        project.base_branch = Some(bootstrap.base_branch);
     }
     if let Some(git_mode_str) = input.git_mode {
         project.git_mode = git_mode_str.parse().unwrap_or(GitMode::Worktree);
-    }
-    if let Some(base_branch) = input.base_branch {
-        project.base_branch = Some(base_branch);
     }
     if let Some(mode_str) = input.merge_validation_mode {
         project.merge_validation_mode = parse_merge_validation_mode_or_default(&mode_str);
@@ -407,7 +349,7 @@ pub async fn update_project(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(ProjectResponse::from(project))
+    Ok(project_response(project).await)
 }
 
 /// Archive a project (soft delete).
@@ -444,7 +386,7 @@ pub async fn archive_project(
 
     app.emit("project:archived", archived.id.as_str()).ok();
 
-    Ok(ProjectResponse::from(archived))
+    Ok(project_response(archived).await)
 }
 
 /// Delete a project
@@ -585,7 +527,7 @@ pub async fn update_custom_analysis(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(ProjectResponse::from(project))
+    Ok(project_response(project).await)
 }
 
 /// Get the default branch for a git repository
@@ -598,7 +540,7 @@ pub async fn get_git_default_branch(working_directory: String) -> Result<String,
     }
 
     // Check if it's a git repo
-    if !is_git_initialized(&working_directory) {
+    if !is_git_repository(&working_directory) {
         return Err("Not a git repository".to_string());
     }
 
@@ -820,7 +762,7 @@ pub async fn reanalyze_project(id: String, state: State<'_, AppState>) -> Result
 /// Returns true if the URL is a GitHub remote (https or ssh).
 #[doc(hidden)]
 pub fn is_github_url(url: &str) -> bool {
-    url.starts_with("https://github.com/") || url.starts_with("git@github.com:")
+    is_supported_github_remote(url)
 }
 
 #[derive(Debug, Serialize)]
@@ -1095,34 +1037,10 @@ pub async fn get_git_remote_url(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let working_dir = get_project_working_directory(&project_id, &state).await?;
-    let working_dir = validate_absolute_non_root_path(&working_dir, "project working directory")
-        .map_err(|e| e.to_string())?;
-
-    let mut command = tokio::process::Command::new(resolve_git_cli_path());
-    apply_git_subprocess_env(&mut command);
-    let child = command
-        .args(["remote", "get-url", "origin"])
-        .current_dir(&working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn git: {}", e))?;
-
-    let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
-        .await
-        .map_err(|_| "git remote get-url timed out".to_string())?
-        .map_err(|e| format!("Failed to wait for git: {}", e))?;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if is_github_url(&url) {
-        Ok(Some(url))
-    } else {
-        Ok(None)
+    match inspect_repository_capability(&working_dir).await {
+        RepositoryCapability::Github { push_url, .. } => Ok(Some(push_url)),
+        RepositoryCapability::LocalOnly | RepositoryCapability::OtherRemote { .. } => Ok(None),
+        RepositoryCapability::InspectionFailed { message } => Err(message),
     }
 }
 
@@ -1289,6 +1207,17 @@ pub async fn update_github_pr_enabled(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    update_github_pr_enabled_with_app(project_id, enabled, state, execution_state, app).await
+}
+
+#[doc(hidden)]
+pub(super) async fn update_github_pr_enabled_with_app<R: tauri::Runtime + 'static>(
+    project_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
     let pid = ProjectId::from_string(project_id);
 
     let mut project = state
@@ -1297,6 +1226,18 @@ pub async fn update_github_pr_enabled(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", pid.as_str()))?;
+
+    if enabled {
+        match inspect_repository_capability(Path::new(&project.working_directory)).await {
+            RepositoryCapability::Github { .. } => {}
+            RepositoryCapability::LocalOnly | RepositoryCapability::OtherRemote { .. } => {
+                return Err(
+                    "GitHub PR mode requires a supported GitHub origin push URL".to_string()
+                );
+            }
+            RepositoryCapability::InspectionFailed { message } => return Err(message),
+        }
+    }
 
     project.github_pr_enabled = enabled;
     project.touch();
@@ -1312,19 +1253,9 @@ pub async fn update_github_pr_enabled(
     Ok(())
 }
 
-/// Reconcile in-progress plans after a PR mode toggle.
-///
-/// PR → Push-to-Main (new_enabled = false, branch has pr_number):
-///   - Stop the PR poller
-///   - Close the draft PR via github_service
-///   - Clear PR fields from the plan branch (pr_number, pr_url, etc.)
-///   - If merge task is in Merging state: clear merge failure metadata,
-///     set mode_switch=true, transition to MergeIncomplete
-///     → reconciler auto-retries via push-to-main path (AD12)
-///
-/// Push-to-Main → PR (new_enabled = true):
-///   - No immediate action (lazy per AD16: pr_eligible stays false for existing plans)
-///   - Only new plans accepted after the toggle get PR mode
+/// Reconcile only active, pre-PR plan branches after a future-PR preference
+/// change. A persisted PR number is remote authority, not a preference that
+/// can be cleared or rerouted into a local merge.
 #[doc(hidden)]
 pub async fn reconcile_pr_mode_switch<R: tauri::Runtime + 'static>(
     project_id: &ProjectId,
@@ -1345,29 +1276,15 @@ pub async fn reconcile_pr_mode_switch<R: tauri::Runtime + 'static>(
         }
     };
 
-    // Get project working directory once (needed for github_service calls)
-    let working_dir = match state.project_repo.get_by_id(project_id).await {
-        Ok(Some(p)) => std::path::PathBuf::from(&p.working_directory),
-        _ => {
-            tracing::warn!(
-                project_id = project_id.as_str(),
-                "handle_pr_mode_switch: failed to get project working directory"
-            );
-            return;
-        }
-    };
-
     for branch in branches {
         // Skip branches without a merge task
         let Some(merge_task_id) = branch.merge_task_id.clone() else {
             continue;
         };
 
-        // Skip already-merged or abandoned branches
-        if matches!(
-            branch.status,
-            PlanBranchStatus::Merged | PlanBranchStatus::Abandoned
-        ) {
+        // Only pre-PR active branches may follow the current preference.
+        // Numbered PRs remain under the persisted-PR recovery authority.
+        if branch.status != PlanBranchStatus::Active || branch.pr_number.is_some() {
             continue;
         }
 
@@ -1409,103 +1326,12 @@ pub async fn reconcile_pr_mode_switch<R: tauri::Runtime + 'static>(
             continue;
         }
 
-        match (new_enabled, branch.pr_number) {
-            // PR → Push-to-main: close PR, stop poller, clear PR fields
-            (false, Some(pr_number)) => {
-                tracing::info!(
-                    task_id = merge_task_id.as_str(),
-                    pr_number = pr_number,
-                    merge_status = merge_task.internal_status.as_str(),
-                    "handle_pr_mode_switch: PR disabled — cleaning up PR artifacts"
-                );
-
-                // 1. Stop the poller (non-blocking, idempotent)
-                state.pr_poller_registry.stop_polling(&merge_task_id);
-
-                // 2. Close the PR via github_service (non-fatal if it fails)
-                if let Some(github_svc) = &state.github_service {
-                    if let Err(e) = github_svc.close_pr(&working_dir, pr_number).await {
-                        tracing::warn!(
-                            pr_number = pr_number,
-                            error = %e,
-                            "handle_pr_mode_switch: failed to close PR (non-fatal, continuing)"
-                        );
-                    }
-                }
-
-                // 3. Clear PR fields from the plan branch
-                if let Err(e) = state.plan_branch_repo.clear_pr_info(&branch.id).await {
-                    tracing::warn!(
-                        branch_id = branch.id.as_str(),
-                        error = %e,
-                        "handle_pr_mode_switch: failed to clear PR info (non-fatal)"
-                    );
-                }
-
-                // 4. If task is Merging: clear failure metadata + set mode_switch, transition to MergeIncomplete
-                //    Reconciler will auto-retry via push-to-main path (AD12)
-                if merge_task.internal_status == InternalStatus::Merging {
-                    let metadata = MetadataUpdate::new()
-                        .with_null("merge_failure_source")
-                        .with_null("circuit_breaker_count")
-                        .with_null("consecutive_validation_failures")
-                        .with_null("validation_revert_count")
-                        .with_bool("mode_switch", true);
-
-                    let transition_service = build_mode_switch_transition_service(
-                        state,
-                        execution_state,
-                        app_handle.clone(),
-                    );
-
-                    if let Err(e) = transition_service
-                        .transition_task_with_metadata(
-                            &merge_task_id,
-                            InternalStatus::MergeIncomplete,
-                            Some(metadata),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            task_id = merge_task_id.as_str(),
-                            error = %e,
-                            "handle_pr_mode_switch: failed to transition Merging → MergeIncomplete (non-fatal)"
-                        );
-                    } else {
-                        tracing::info!(
-                            task_id = merge_task_id.as_str(),
-                            "handle_pr_mode_switch: Merging → MergeIncomplete with mode_switch=true (AD12)"
-                        );
-                    }
-                }
-            }
-
-            // Push-to-main → PR: retrofit active plan branches and re-run any
-            // merge task already waiting at PendingMerge.
-            (true, _) => {
-                tracing::info!(
-                    task_id = merge_task_id.as_str(),
-                    "handle_pr_mode_switch: PR enabled — plan branch marked pr_eligible"
-                );
-
-                if merge_task.internal_status == InternalStatus::PendingMerge {
-                    let transition_service = build_mode_switch_transition_service(
-                        state,
-                        execution_state,
-                        app_handle.clone(),
-                    );
-                    transition_service
-                        .execute_entry_actions(
-                            &merge_task_id,
-                            &merge_task,
-                            InternalStatus::PendingMerge,
-                        )
-                        .await;
-                }
-            }
-
-            // PR disabled but no pr_number — nothing to close
-            (false, None) => {}
+        if merge_task.internal_status == InternalStatus::PendingMerge {
+            let transition_service =
+                build_mode_switch_transition_service(state, execution_state, app_handle.clone());
+            transition_service
+                .execute_entry_actions(&merge_task_id, &merge_task, InternalStatus::PendingMerge)
+                .await;
         }
     }
 }
