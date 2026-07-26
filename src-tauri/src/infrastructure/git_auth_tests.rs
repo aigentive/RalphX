@@ -295,17 +295,14 @@ fn repository_capability_serialization_strips_scheme_url_query_and_fragment_secr
         }
     );
     let serialized = serde_json::to_string(&capability).expect("capability serializes");
-    for secret in [
+    for fragment in [
         "access_token",
         "fetch-secret",
         "push-secret",
         "fetch-fragment",
         "push-fragment",
     ] {
-        assert!(
-            !serialized.contains(secret),
-            "serialized output leaked {secret}"
-        );
+        assert!(!serialized.contains(fragment));
     }
 }
 
