@@ -19,6 +19,22 @@ fn app_state_chat_factory_dependencies_include_persona_manual_role_defaults_and_
         deps.external_events_repo.is_some(),
         "background finalizers must retain durable completion-event delivery"
     );
+    assert!(
+        deps.atlassian_integration_service.is_some(),
+        "handler-built chat services must retain Atlassian reference expansion"
+    );
+    assert!(
+        deps.linear_integration_service.is_some(),
+        "handler-built chat services must retain Linear reference expansion"
+    );
+    assert!(
+        deps.granola_integration_service.is_some(),
+        "handler-built chat services must retain Granola reference expansion"
+    );
+    assert!(
+        deps.clickup_integration_service.is_some(),
+        "handler-built chat services must retain ClickUp reference expansion"
+    );
 }
 
 #[test]

@@ -488,7 +488,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .with_ideation_runtime_support(
         Some(Arc::clone(&ideation_effort_settings_repo)),
         Some(Arc::clone(&ideation_model_settings_repo)),
-    );
+    )
+    .with_integration_reference_services_from_app_state(&app_state);
     startup_phase_completed("recovery_chat_service_deps_build", phase_started_at);
 
     let phase_started_at = startup_phase_started("recovery_chat_service_build");
