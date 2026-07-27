@@ -33,6 +33,7 @@ interface AppTopBarProps {
 
 const VIEW_LABELS: Partial<Record<AppView, string>> = {
   agents: "Agents",
+  skills: "Skills",
   ticketing: "Ticketing",
   github: "GitHub",
   granola: "Granola",
@@ -50,6 +51,7 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
 let lastDockBadgeCount: number | undefined;
 
 const PROJECT_SELECTOR_VIEWS = new Set<AppView>([
+  "skills",
   "ticketing",
   "github",
   "granola",

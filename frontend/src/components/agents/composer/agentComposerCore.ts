@@ -99,6 +99,19 @@ export function detectAgentComposerTrigger(
     };
   }
 
+  if (token.startsWith("$")) {
+    const query = token.slice(1);
+    if (query.includes("/") || query.includes("@") || query.includes("$")) {
+      return null;
+    }
+    return {
+      kind: "skill",
+      query,
+      rangeStart: tokenStart,
+      rangeEnd: safeCursor,
+    };
+  }
+
   const pathIndex = token.lastIndexOf("@");
   if (pathIndex < 0) {
     return null;
@@ -297,6 +310,22 @@ export function appendInternalSkillDirectives(
   }
   const directives = safeNames
     .map((name) => `<!-- ralphx_internal_skill=${name} -->`)
+    .join("\n");
+  return `${text.trimEnd()}\n\n${directives}`;
+}
+
+export function appendProjectSkillDirectives(
+  text: string,
+  projectSkillIds: readonly string[],
+): string {
+  const safeIds = [...new Set(projectSkillIds)]
+    .map((id) => id.trim())
+    .filter((id) => /^[a-zA-Z0-9_-]+$/.test(id));
+  if (safeIds.length === 0) {
+    return text;
+  }
+  const directives = safeIds
+    .map((id) => `<!-- ralphx_project_skill=${id} -->`)
     .join("\n");
   return `${text.trimEnd()}\n\n${directives}`;
 }

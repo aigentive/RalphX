@@ -85,7 +85,12 @@ use crate::infrastructure::agents::harness_agent_catalog::{
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata_for_profile,
     AgentPromptHarness,
 };
-use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt_for_profile;
+use crate::infrastructure::agents::internal_skills::{
+    inject_internal_skills_into_system_prompt_for_profile,
+    inject_pre_execution_learned_skills_into_existing_injection,
+    pre_execution_learned_skill_context_from_runtime, InternalSkillInjection,
+    PreExecutionLearnedSkillContext,
+};
 use crate::infrastructure::agents::mcp_runtime_context::{
     append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
 };
@@ -803,6 +808,7 @@ fn load_agent_system_prompt_with_internal_skills(
     agent_profile: Option<&str>,
     prompt: &str,
     persona_block: Option<&str>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
 ) -> Option<(String, Vec<String>)> {
     let short = mcp_agent_type(agent_name);
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
@@ -822,19 +828,32 @@ fn load_agent_system_prompt_with_internal_skills(
         &system_prompt,
         prompt,
     ) {
-        Ok(injection) => Some((
-            append_runtime_profile_context(injection.system_prompt, runtime_profile_context),
-            injection.injected_skill_names,
-        )),
+        Ok(injection) => {
+            let injection = inject_pre_execution_learned_skills_into_existing_injection(
+                injection,
+                pre_execution_learned_skills,
+            );
+            Some((
+                append_runtime_profile_context(injection.system_prompt, runtime_profile_context),
+                injection.injected_skill_names,
+            ))
+        }
         Err(error) => {
             warn!(
                 agent = agent_name,
                 error = %error,
                 "Failed to inject internal skills into Claude prompt"
             );
+            let injection = inject_pre_execution_learned_skills_into_existing_injection(
+                InternalSkillInjection {
+                    system_prompt,
+                    injected_skill_names: Vec::new(),
+                },
+                pre_execution_learned_skills,
+            );
             Some((
-                append_runtime_profile_context(system_prompt, runtime_profile_context),
-                Vec::new(),
+                append_runtime_profile_context(injection.system_prompt, runtime_profile_context),
+                injection.injected_skill_names,
             ))
         }
     }
@@ -1529,6 +1548,7 @@ fn add_prompt_args(
     agent_profile: Option<&str>,
     resume_session: Option<&str>,
     interactive: bool,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
     permission_policy: ClaudePermissionPolicy,
 ) -> PromptArgsOutcome {
     // Add resume if continuing an existing session
@@ -1560,12 +1580,15 @@ fn add_prompt_args(
                 persona_injection_skipped_reason(use_native_agent_flag, persona_block.is_some());
         } else if let Some(prompt_path) = resolve_agent_system_prompt_path(plugin_dir, agent_name) {
             let runtime = claude_runtime_config();
+            let runtime_pre_execution_learned_skills =
+                pre_execution_learned_skill_context_from_runtime(agent_name, mcp_runtime_context);
             let prompt_with_internal_skills = load_agent_system_prompt_with_internal_skills(
                 plugin_dir,
                 agent_name,
                 agent_profile,
                 prompt,
                 persona_block,
+                runtime_pre_execution_learned_skills.as_ref(),
             );
             if let Some((system_prompt, injected_skill_names)) =
                 prompt_with_internal_skills.as_ref()
@@ -1767,6 +1790,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         None,
         resume_session,
         false,
+        mcp_runtime_context,
         ClaudePermissionPolicy::InheritConfigured,
     );
     configure_spawn(
@@ -1931,6 +1955,7 @@ fn build_spawnable_profile_command_with_permission_policy_inner(
         agent_profile,
         resume_session,
         prompt_delivery.is_interactive(),
+        mcp_runtime_context,
         permission_policy,
     );
     configure_spawn(
@@ -2005,6 +2030,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         None,
         resume_session,
         false,
+        mcp_runtime_context,
         ClaudePermissionPolicy::InheritConfigured,
     );
     configure_spawn(

@@ -131,6 +131,10 @@ vi.mock("@/components/activity", () => ({
   ),
 }));
 
+vi.mock("@/components/views/SkillsView", () => ({
+  SkillsView: () => <div data-testid="skills-view-mock">Skills View</div>,
+}));
+
 // Capture the props the App passes to the TicketingDashboardView so we can
 // drive its onNavigateToAssociation callback from tests without a real backend.
 const ticketingViewProps = vi.hoisted(() => ({
@@ -1410,6 +1414,7 @@ describe("App", () => {
 
       // The project-scoped Agents tab is gone.
       expect(screen.queryByTestId("nav-agents")).toBeNull();
+      expect(screen.queryByTestId("nav-skills")).toBeNull();
 
       // v27 topbar controls stay mounted even when the project-scoped rail collapses.
       expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();

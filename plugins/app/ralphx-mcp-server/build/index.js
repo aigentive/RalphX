@@ -31,6 +31,7 @@ import { callTicketAttachmentTool, isTicketAttachmentToolName, } from "./ticket-
 import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
+import { learnedSkillEndpoint, learnedSkillTransportOptions, LEARNED_SKILL_TOOL_NAMES, } from "./learned-skill-tools.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -209,6 +210,11 @@ function validateProjectScope(toolName, args) {
         "get_project_analysis",
         "save_project_analysis",
         "append_task_to_ideation_plan",
+        "list_project_skills",
+        "get_project_skill",
+        "upsert_project_skill",
+        "patch_project_skill",
+        "retire_project_skill",
         // Memory write tools (memory agents only)
         // Note: mark_memory_obsolete excluded - uses memory_id lookup for implicit project validation
         "upsert_memories",
@@ -845,6 +851,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // POST /api/projects/:project_id/analysis
             const { project_id, entries } = args;
             result = await callTauri(`projects/${project_id}/analysis`, { entries });
+        }
+        else if (LEARNED_SKILL_TOOL_NAMES.includes(name)) {
+            result = await callTauri(learnedSkillEndpoint(name), args, learnedSkillTransportOptions(name, runtimeContext));
         }
         else if (name === "create_team_artifact") {
             // POST /api/team/artifact

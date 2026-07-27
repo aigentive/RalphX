@@ -10,17 +10,18 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::chat_service::MockChatService;
 use crate::domain::entities::agent_run::PersonaRunAttribution;
+use crate::domain::entities::learned_skill::TaskOutcomeRecurrenceCorpus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewMonitor, ArtifactId, ChatContextType, ChatConversationId,
     IdeationAnalysisBaseRefKind, IdeationSessionId, InterruptedConversation, PlanBranch,
-    PlanBranchId, Project, ProjectId,
+    PlanBranchId, Project, ProjectId, TaskOutcome, TaskOutcomeId, TaskOutcomeSource,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceLocalCleanupClaim,
-    PlanBranchRepository,
+    PlanBranchRepository, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
@@ -32,9 +33,49 @@ use chrono::{DateTime, Utc};
 
 use super::agent_workspace_terminal_cleanup::{
     cleanup_terminal_agent_workspace_after_pr, terminal_cleanup_target_path,
-    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause, TerminalCleanupClaimState,
-    TerminalLocalCleanupResult,
+    terminalize_agent_workspace_after_pr, terminalize_agent_workspace_after_pr_with_observation,
+    TerminalAgentWorkspaceCause, TerminalCleanupClaimState, TerminalLocalCleanupResult,
+    TerminalPrObservation,
 };
+
+struct FailingTaskOutcomeRepository;
+
+#[async_trait]
+impl TaskOutcomeRepository for FailingTaskOutcomeRepository {
+    async fn upsert(&self, _input: UpsertTaskOutcomeInput) -> AppResult<TaskOutcome> {
+        Err(AppError::Database("outcome ledger unavailable".to_string()))
+    }
+
+    async fn get_by_dedupe(
+        &self,
+        _project_id: &ProjectId,
+        _source: TaskOutcomeSource,
+        _source_ref_kind: &str,
+        _source_ref_id: &str,
+    ) -> AppResult<Option<TaskOutcome>> {
+        Err(AppError::Database("outcome ledger unavailable".to_string()))
+    }
+
+    async fn get_by_id(&self, _id: &TaskOutcomeId) -> AppResult<Option<TaskOutcome>> {
+        Err(AppError::Database("outcome ledger unavailable".to_string()))
+    }
+
+    async fn list_by_project(
+        &self,
+        _project_id: &ProjectId,
+        _options: TaskOutcomeListOptions,
+    ) -> AppResult<Vec<TaskOutcome>> {
+        Err(AppError::Database("outcome ledger unavailable".to_string()))
+    }
+
+    async fn recurrence_corpus(
+        &self,
+        _project_id: &ProjectId,
+        _recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus> {
+        Err(AppError::Database("outcome ledger unavailable".to_string()))
+    }
+}
 
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -103,6 +144,63 @@ fn workspace_for(
     workspace.status = AgentConversationWorkspaceStatus::Archived;
     workspace.publication_pr_status = Some("closed".to_string());
     workspace
+}
+
+#[tokio::test]
+async fn terminal_outcome_failure_does_not_block_runtime_shutdown_or_local_cleanup() {
+    let repository_dir = tempfile::tempdir().expect("repository tempdir");
+    let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");
+    setup_repo(repository_dir.path());
+    let project = project_for(repository_dir.path(), worktree_parent.path());
+    let conversation_id =
+        ChatConversationId::from_string("abababab-abab-abab-abab-abababababab".to_string());
+    let mut workspace = workspace_for(&project, conversation_id.clone());
+    workspace.publication_pr_number = Some(42);
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+        .expect("create workspace parent");
+    run_git(
+        repository_dir.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &workspace.branch_name,
+            worktree_path.to_str().expect("utf-8 workspace path"),
+            "main",
+        ],
+    );
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist workspace");
+    let outcome = terminalize_agent_workspace_after_pr_with_observation(
+        workspace_repo,
+        Arc::new(MemoryAgentRunRepository::new()),
+        None,
+        None,
+        Some(Arc::new(FailingTaskOutcomeRepository)),
+        Some(TerminalPrObservation::new(
+            42,
+            "closed",
+            "Pull request closed without merging",
+        )),
+        &conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::ClosedPr,
+    )
+    .await;
+
+    assert!(outcome.runtime_shutdown_succeeded);
+    assert_eq!(outcome.cleanup_claim, TerminalCleanupClaimState::Claimed);
+    assert_eq!(outcome.local_cleanup, TerminalLocalCleanupResult::Cleaned);
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(
+        repository_dir.path(),
+        &agent_conversation_branch_name(&project, &conversation_id)
+    ));
 }
 
 #[tokio::test]

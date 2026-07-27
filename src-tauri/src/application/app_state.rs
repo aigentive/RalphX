@@ -73,11 +73,14 @@ use crate::domain::repositories::{
     MemoryEntryRepository, MemoryEventRepository, MethodologyRepository, NotificationRepository,
     NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
     PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
-    TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
-    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    ProcessRepository, ProjectMemorySettingsRepository, ProjectRepository,
+    ProjectSkillEvidenceBatchRepository, ProjectSkillRepository, ProjectSkillSettingsRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, SkillUsageEventRepository,
+    TaskDependencyRepository, TaskOutcomeRepository, TaskProposalRepository, TaskQARepository,
+    TaskRepository, TaskStepRepository, TicketCanonicalBranchRepository,
+    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
+    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -106,12 +109,15 @@ use crate::infrastructure::memory::{
     MemoryNotificationRepository, MemoryNotificationSettingsRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
-    MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
-    MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
-    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
-    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
-    MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
+    MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
+    MemoryProjectMemorySettingsRepository, MemoryProjectRepository,
+    MemoryProjectSkillEvidenceBatchRepository, MemoryProjectSkillRepository,
+    MemoryProjectSkillSettingsRepository, MemoryProposalDependencyRepository,
+    MemoryQuestionRepository, MemoryQueuedMessageRepository, MemoryReviewIssueRepository,
+    MemoryReviewRepository, MemoryReviewSettingsRepository, MemorySecretStore,
+    MemorySessionLinkRepository, MemorySkillUsageEventRepository, MemoryTaskDependencyRepository,
+    MemoryTaskOutcomeRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
+    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
     MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
     MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
@@ -143,12 +149,15 @@ use crate::infrastructure::sqlite::{
     SqliteNotificationRepository, SqliteNotificationSettingsRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
     SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
-    SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
-    SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
-    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
-    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
-    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
+    SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
+    SqliteProjectMemorySettingsRepository, SqliteProjectRepository,
+    SqliteProjectSkillEvidenceBatchRepository, SqliteProjectSkillRepository,
+    SqliteProjectSkillSettingsRepository, SqliteProposalDependencyRepository,
+    SqliteQuestionRepository, SqliteQueuedMessageRepository, SqliteReviewIssueRepository,
+    SqliteReviewRepository, SqliteReviewSettingsRepository, SqliteRunningAgentRegistry,
+    SqliteSessionLinkRepository, SqliteSkillUsageEventRepository, SqliteTaskDependencyRepository,
+    SqliteTaskOutcomeRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
     SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
     SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
@@ -159,6 +168,7 @@ use crate::infrastructure::HyperLinearApiClient;
 use crate::infrastructure::{GhCliGithubService, HyperGranolaApiClient};
 use ralphx_events::{EventSink, InternalEventBus, NullEventSink};
 
+#[derive(Clone)]
 pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
     pub harness: Option<AgentHarnessKind>,
@@ -346,8 +356,20 @@ pub struct AppState {
     pub memory_entry_repo: Arc<dyn MemoryEntryRepository>,
     /// Memory event repository for audit trail
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    /// Project memory settings repository
+    pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
+    /// Project learned skill settings repository
+    pub project_skill_settings_repo: Arc<dyn ProjectSkillSettingsRepository>,
     /// Memory archive repository for snapshot generation job queue
     pub memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
+    /// Learned task outcome ledger repository
+    pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    /// Immutable outcome evidence batches and leased distiller claims
+    pub project_skill_evidence_batch_repo: Arc<dyn ProjectSkillEvidenceBatchRepository>,
+    /// Project-scoped learned skill repository
+    pub project_skill_repo: Arc<dyn ProjectSkillRepository>,
+    /// Learned skill usage event repository
+    pub skill_usage_event_repo: Arc<dyn SkillUsageEventRepository>,
     /// Execution plan repository for tracking plan implementation attempts
     pub execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
     /// Chat attachment repository for file uploads in chat
@@ -1491,9 +1513,27 @@ impl AppState {
             memory_event_repo: Arc::new(SqliteMemoryEventRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            project_memory_settings_repo: Arc::new(
+                SqliteProjectMemorySettingsRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            project_skill_settings_repo: Arc::new(
+                SqliteProjectSkillSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            task_outcome_repo: Arc::new(SqliteTaskOutcomeRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            project_skill_evidence_batch_repo: Arc::new(
+                SqliteProjectSkillEvidenceBatchRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            project_skill_repo: Arc::new(SqliteProjectSkillRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            skill_usage_event_repo: Arc::new(SqliteSkillUsageEventRepository::from_shared(
+                Arc::clone(&shared_conn),
+            )),
             execution_plan_repo: Arc::new(SqliteExecutionPlanRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1729,10 +1769,18 @@ impl AppState {
             active_plan_repo: Arc::new(MemoryActivePlanRepository::new()),
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
+            project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
+            project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
+            skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(
@@ -1922,10 +1970,18 @@ impl AppState {
             active_plan_repo: Arc::new(MemoryActivePlanRepository::new()),
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
+            project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
+            project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
+            skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(
@@ -2137,10 +2193,18 @@ impl AppState {
             ))),
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
+            project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&std::path::PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
+            project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
+            skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             execution_plan_repo: Arc::new(SqliteExecutionPlanRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2304,10 +2368,18 @@ impl AppState {
             active_plan_repo: Arc::new(MemoryActivePlanRepository::new()),
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
+            project_memory_settings_repo: Arc::new(MemoryProjectMemorySettingsRepository::new()),
+            project_skill_settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
                 open_connection(&PathBuf::from(":memory:"))
                     .expect("Failed to create in-memory connection"),
             )),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
+            project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
+            skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(

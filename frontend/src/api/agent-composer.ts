@@ -47,7 +47,7 @@ export const AgentComposerSkillSchema = z.object({
   name: z.string(),
   displayName: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
-  source: z.enum(["ralphx-internal", "harness-native"]),
+  source: z.enum(["ralphx-internal", "harness-native", "learned"]),
   providerHarness: z.string().nullable().optional(),
   scope: z.string().nullable().optional(),
   invocationKind: z.string(),

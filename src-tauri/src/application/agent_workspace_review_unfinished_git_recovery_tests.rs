@@ -22,7 +22,7 @@ use crate::domain::repositories::{
 use crate::domain::services::GithubServiceTrait;
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository, MemoryProjectRepository,
+    MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskOutcomeRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -196,6 +196,7 @@ async fn workspace_review_unfinished_git_recovery_stops_pr_supervision_before_si
             transition_service: None,
             chat_service: None,
             agent_run_repo: run_repo as Arc<dyn AgentRunRepository>,
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
         },
@@ -248,6 +249,7 @@ async fn pending_review_handoff_without_current_attempt_evidence_aborts_before_t
     let (after, recovered) = recover_stale_publish_repair_for_workspace_with_project_repo(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::new(MemoryAgentRunRepository::new()) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MemoryProjectRepository::with_projects(vec![project])),
         workspace,
     )

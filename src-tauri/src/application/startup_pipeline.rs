@@ -30,8 +30,8 @@ use crate::domain::repositories::{
     ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, MemoryArchiveRepository,
     MemoryEntryRepository, MemoryEventRepository, OrphanWorktreeCleanupMarkerRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskRepository, TaskStepRepository,
+    PlanBranchRepository, ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskOutcomeRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
@@ -70,11 +70,13 @@ pub(crate) struct StartupPipelineDeps {
     pub automation_repo: Arc<dyn AutomationRepository>,
     pub automation_run_repo: Arc<dyn AutomationRunRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     pub app_state_repo: Arc<dyn AppStateRepository>,
     pub memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
     pub memory_entry_repo: Arc<dyn MemoryEntryRepository>,
@@ -243,11 +245,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         automation_repo: _automation_repo,
         automation_run_repo,
         agent_run_repo,
+        task_outcome_repo,
         ideation_session_repo,
         activity_event_repo,
         message_queue,
         running_agent_registry,
         memory_event_repo,
+        project_memory_settings_repo,
         app_state_repo,
         memory_archive_repo,
         memory_entry_repo,
@@ -466,6 +470,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&message_queue),
         Arc::clone(&running_agent_registry),
         Arc::clone(&memory_event_repo),
+        Arc::clone(&project_memory_settings_repo),
     )
     .with_agent_conversation_workspace_repo(Some(Arc::clone(&agent_conversation_workspace_repo)))
     .with_agent_conversation_jira_issue_repo(Some(Arc::clone(&agent_conversation_jira_issue_repo)))
@@ -518,6 +523,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&execution_settings_repo),
             Some(Arc::clone(&plan_branch_repo)),
         )
+        .with_task_outcome_repo(Arc::clone(&task_outcome_repo))
         .with_task_scheduler(Arc::clone(&task_scheduler))
         .with_app_handle(app_handle.clone())
         .with_review_repo(Arc::clone(&review_repo))
@@ -610,14 +616,16 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
         let cleanup_plan_branch_repo = Arc::clone(&plan_branch_repo);
         let project_repo = Arc::clone(&project_repo);
+        let task_outcome_repo = Arc::clone(&task_outcome_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
-            crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+            crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup_with_outcomes(
                 agent_conversation_workspace_repo,
                 cleanup_plan_branch_repo,
                 project_repo,
+                Some(task_outcome_repo),
                 github_service,
                 blocked_git_project_ids,
                 running_agent_registry,
@@ -632,13 +640,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let plan_branch_repo = Arc::clone(&plan_branch_repo);
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
         let project_repo = Arc::clone(&project_repo);
+        let task_outcome_repo = Arc::clone(&task_outcome_repo);
         let github_service = github_service.as_ref().map(Arc::clone);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            crate::application::pr_startup_recovery::run_periodic_terminal_pr_local_cleanup(
+            crate::application::pr_startup_recovery::run_periodic_terminal_pr_local_cleanup_with_outcomes(
                 plan_branch_repo,
                 agent_conversation_workspace_repo,
                 project_repo,
+                Some(task_outcome_repo),
                 github_service,
                 running_agent_registry,
             )
@@ -672,6 +682,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&plan_branch_repo),
         Arc::clone(&pr_poller_registry),
         Arc::clone(&agent_run_repo),
+        Arc::clone(&task_outcome_repo),
         Arc::clone(&recovery_chat_service),
         Some(app_state.notification_service()),
         Arc::clone(&blocked_git_project_ids),
@@ -698,6 +709,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
                 plan_branch_repo: Arc::clone(&plan_branch_repo),
+                task_outcome_repo: Arc::clone(&task_outcome_repo),
                 app_handle: Some(app_handle.clone()),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
@@ -967,6 +979,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     let reconcile_runner = Arc::new(build_startup_reconciliation_runner(
         StartupReconciliationDeps {
             task_repo: Arc::clone(&task_repo),
+            task_outcome_repo: Arc::clone(&task_outcome_repo),
             task_dependency_repo: Arc::clone(&task_dependency_repo),
             project_repo: Arc::clone(&project_repo),
             artifact_repo: Arc::clone(&artifact_repo),

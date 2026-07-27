@@ -6,6 +6,10 @@ import { chatApi, type ConversationStatsResponse } from "@/api/chat";
 import { useConversationStats } from "@/hooks/useConversationStats";
 import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
+import {
+  resetSkillsEnabledForTests,
+  setSkillsEnabled,
+} from "@/stores/skillsSettingsStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -94,6 +98,7 @@ function conversationStats(
 
 describe("AgentsChatHeader", () => {
   beforeEach(() => {
+    resetSkillsEnabledForTests(true);
     vi.mocked(useConversationTicket).mockReturnValue({
       data: null,
       isLoading: false,
@@ -111,7 +116,10 @@ describe("AgentsChatHeader", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
-    window.localStorage.clear();
+    if (typeof window.localStorage.clear === "function") {
+      window.localStorage.clear();
+    }
+    resetSkillsEnabledForTests(true);
     act(() => {
       useChatStore.setState({ agentStatus: {}, isSending: {} });
       useTicketingStore.getState().reset();
@@ -1393,7 +1401,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("agents-workspace-status")).toBeInTheDocument();
   });
 
-  it("shows the Plan shortcut for edit-mode project conversations", () => {
+  it("shows the Plan and skills shortcuts for edit-mode project conversations", () => {
     const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
@@ -1415,6 +1423,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Skills")).toBeInTheDocument();
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
@@ -1442,6 +1451,27 @@ describe("AgentsChatHeader", () => {
     expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Skills")).not.toBeInTheDocument();
+  });
+
+  it("hides the skills artifact shortcut when the Skills surface is disabled", () => {
+    setSkillsEnabled(false);
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ agentMode: "edit" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByLabelText("Skills")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
   });
 
   it("shows ideation artifact shortcuts without a standalone Proposals shortcut", () => {
@@ -1508,10 +1538,11 @@ describe("AgentsChatHeader", () => {
 
     expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Skills")).toBeInTheDocument();
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
-  it("hides ideation artifact shortcuts when no artifact tabs are available yet", () => {
+  it("hides ideation artifact shortcuts when no ideation tabs are available yet", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "ideation" })}
@@ -1530,6 +1561,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Skills")).toBeInTheDocument();
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 

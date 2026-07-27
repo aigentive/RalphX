@@ -24,8 +24,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
 };
 use crate::application::agent_workspace_terminal_cleanup::{
-    settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
-    TerminalAgentWorkspaceCause,
+    settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr_with_observation,
+    TerminalAgentWorkspaceCause, TerminalPrObservation,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
@@ -45,6 +45,7 @@ use crate::domain::entities::{
 use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+    TaskOutcomeRepository,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -181,6 +182,7 @@ pub async fn start_review_pr_lifecycle_polling(
         worktree_path,
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         chat_service,
     ))
 }
@@ -223,6 +225,7 @@ impl PrPollerRegistry {
         working_dir: PathBuf,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
+        task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
         chat_service: Arc<dyn ChatService>,
     ) -> AgentWorkspacePrPollerStart {
         use dashmap::mapref::entry::Entry;
@@ -273,6 +276,7 @@ impl PrPollerRegistry {
                 semaphore,
                 workspace_repo,
                 agent_run_repo,
+                task_outcome_repo,
                 plan_branch_repo,
                 chat_service,
                 notification_service,
@@ -476,6 +480,7 @@ impl PrPollerRegistry {
         working_dir: &Path,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
+        task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
         chat_service: Arc<dyn ChatService>,
     ) -> crate::AppResult<bool> {
         let Some(github) = self.github_service.as_ref() else {
@@ -489,6 +494,7 @@ impl PrPollerRegistry {
             conversation_id,
             workspace_repo,
             Some(agent_run_repo),
+            task_outcome_repo,
             chat_service,
         )
         .await
@@ -947,6 +953,7 @@ async fn agent_workspace_poll_loop(
     semaphore: Arc<tokio::sync::Semaphore>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
@@ -1000,6 +1007,7 @@ async fn agent_workspace_poll_loop(
                 terminalize_polled_agent_workspace_with_notifications(
                     &workspace_repo,
                     &agent_run_repo,
+                    &task_outcome_repo,
                     &plan_branch_repo,
                     &chat_service,
                     &stopping,
@@ -1021,6 +1029,7 @@ async fn agent_workspace_poll_loop(
                 terminalize_polled_agent_workspace_with_notifications(
                     &workspace_repo,
                     &agent_run_repo,
+                    &task_outcome_repo,
                     &plan_branch_repo,
                     &chat_service,
                     &stopping,
@@ -1197,6 +1206,7 @@ async fn agent_workspace_poll_loop(
                     &conversation_id,
                     Arc::clone(&workspace_repo),
                     Some(Arc::clone(&agent_run_repo)),
+                    Arc::clone(&task_outcome_repo),
                     Arc::clone(&chat_service),
                 )
                 .await
@@ -1240,6 +1250,7 @@ async fn agent_workspace_poll_loop(
 async fn terminalize_polled_agent_workspace(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
+    task_outcome_repo: &Arc<dyn TaskOutcomeRepository>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
     chat_service: &Arc<dyn ChatService>,
     stopping: &Arc<DashMap<ChatConversationId, ()>>,
@@ -1253,6 +1264,7 @@ async fn terminalize_polled_agent_workspace(
     terminalize_polled_agent_workspace_with_notifications(
         workspace_repo,
         agent_run_repo,
+        task_outcome_repo,
         plan_branch_repo,
         chat_service,
         stopping,
@@ -1271,6 +1283,7 @@ async fn terminalize_polled_agent_workspace(
 async fn terminalize_polled_agent_workspace_with_notifications(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
+    task_outcome_repo: &Arc<dyn TaskOutcomeRepository>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
     chat_service: &Arc<dyn ChatService>,
     stopping: &Arc<DashMap<ChatConversationId, ()>>,
@@ -1312,6 +1325,7 @@ async fn terminalize_polled_agent_workspace_with_notifications(
                 Some(Arc::clone(plan_branch_repo)),
                 Some(Arc::clone(chat_service)),
                 notification_service.cloned(),
+                Arc::clone(task_outcome_repo),
                 conversation_id,
                 project,
                 pr_number,
@@ -1372,11 +1386,19 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     }
 
     loop {
-        let terminalized = terminalize_agent_workspace_after_pr(
+        let observation = workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|workspace| TerminalPrObservation::from_persisted_workspace(&workspace));
+        let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(workspace_repo),
             Arc::clone(agent_run_repo),
             Some(Arc::clone(plan_branch_repo)),
             Some(Arc::clone(chat_service)),
+            Some(Arc::clone(task_outcome_repo)),
+            observation,
             conversation_id,
             project,
             cause,
@@ -1577,15 +1599,14 @@ async fn mark_agent_workspace_pr_terminal(
             workspace.publication_push_status.as_deref(),
         )
         .await?;
-    workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            format!("pr_{status}"),
-            "succeeded",
-            summary,
-            None,
-        ))
-        .await?;
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id.clone(),
+        format!("pr_{status}"),
+        "succeeded",
+        summary,
+        None,
+    );
+    workspace_repo.append_publication_event(event).await?;
     Ok(Vec::new())
 }
 
@@ -3586,6 +3607,7 @@ async fn route_agent_workspace_review_feedback_if_present(
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo

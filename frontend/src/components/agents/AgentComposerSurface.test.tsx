@@ -2633,6 +2633,50 @@ describe("AgentComposerSurface", () => {
     );
   });
 
+  it("appends project skill directives for selected learned skills", async () => {
+    const onSend = vi.fn();
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({
+          skills: [
+            {
+              id: "learned:skill-123",
+              name: "review-error-paths",
+              displayName: "Review error paths",
+              description: "Prefer fail-closed validation paths.",
+              source: "learned",
+              providerHarness: null,
+              scope: "project",
+              invocationKind: "project-skill-directive",
+              invocationValue: "skill-123",
+              enabled: true,
+              sourcePath: null,
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Use $review" } });
+    textarea.setSelectionRange("Use $review".length, "Use $review".length);
+    fireEvent.keyUp(textarea);
+
+    const item = await screen.findByTestId(
+      "agent-composer-menu-item-skill:learned:skill-123",
+    );
+    fireEvent.mouseDown(item);
+    fireEvent.click(item);
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith(
+      "Use $review-error-paths\n\n<!-- ralphx_project_skill=skill-123 -->",
+    );
+  });
+
   it("appends internal skill directives for typed slash skill tokens", async () => {
     const onSend = vi.fn();
     vi.mocked(invoke).mockImplementation((cmd) => {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::application::task_diff_base::task_allows_empty_captured_diff;
+use crate::domain::entities::{TaskOutcomeClass, TaskOutcomeSource};
 
 pub async fn ensure_task_still_reviewing_before_transition(
     state: &HttpServerState,
@@ -33,12 +34,110 @@ pub async fn ensure_task_still_reviewing_before_transition(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn record_review_decision_outcome(
+    state: &HttpServerState,
+    task: &crate::domain::entities::Task,
+    review_note_id: &crate::domain::entities::ReviewNoteId,
+    outcome: ReviewToolOutcome,
+    new_status: &InternalStatus,
+    req: &CompleteReviewRequest,
+    followup_session_id: Option<&str>,
+) {
+    let mut task_outcome = new_empty_task_outcome(
+        task.project_id.clone(),
+        TaskOutcomeSource::Review,
+        "review_note",
+        review_note_id.as_str().to_string(),
+    );
+    task_outcome.task_id = Some(task.id.as_str().to_string());
+    task_outcome.review_id = Some(review_note_id.as_str().to_string());
+    task_outcome.outcome_class = Some(match outcome {
+        ReviewToolOutcome::Approved => TaskOutcomeClass::ReviewApproved,
+        ReviewToolOutcome::ApprovedNoChanges => TaskOutcomeClass::ReviewApprovedNoChanges,
+        ReviewToolOutcome::NeedsChanges => TaskOutcomeClass::ReviewChangesRequested,
+        ReviewToolOutcome::Escalate => TaskOutcomeClass::ReviewEscalated,
+    });
+    task_outcome.status = match outcome {
+        ReviewToolOutcome::Approved | ReviewToolOutcome::ApprovedNoChanges => {
+            crate::domain::entities::TaskOutcomeStatus::Succeeded
+        }
+        ReviewToolOutcome::NeedsChanges => crate::domain::entities::TaskOutcomeStatus::Failed,
+        ReviewToolOutcome::Escalate => crate::domain::entities::TaskOutcomeStatus::Unknown,
+    };
+    task_outcome.evidence_json = serde_json::json!({
+        "task_id": task.id.as_str(),
+        "decision": req.decision,
+        "new_status": new_status.as_str(),
+        "summary": req.summary,
+        "feedback": req.feedback,
+        "issue_count": req.issues.as_ref().map_or(0, Vec::len),
+        "issues": req.issues.as_ref().map(|issues| {
+            issues
+                .iter()
+                .map(|issue| serde_json::json!({
+                    "severity": issue.severity,
+                    "title": issue.title,
+                    "category": issue.category,
+                    "file_path": issue.file_path,
+                }))
+                .collect::<Vec<_>>()
+        }),
+        "scope_drift_classification": req.scope_drift_classification,
+        "followup_session_id": followup_session_id,
+    });
+    if matches!(
+        outcome,
+        ReviewToolOutcome::NeedsChanges | ReviewToolOutcome::Escalate
+    ) {
+        let mut recurrence_parts = [
+            req.summary.as_deref(),
+            req.feedback.as_deref(),
+            req.escalation_reason.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        if let Some(issues) = req.issues.as_ref() {
+            for issue in issues {
+                recurrence_parts.extend(
+                    [
+                        issue.title.as_deref(),
+                        issue.description.as_deref(),
+                        issue.category.as_deref(),
+                        issue.file_path.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(str::to_string),
+                );
+            }
+        }
+        crate::domain::services::failure_fingerprint::attach_recurrence_evidence(
+            &mut task_outcome.evidence_json,
+            &recurrence_parts.join("\n"),
+            task.ideation_session_id.as_ref().map(|id| id.as_str()),
+        );
+    }
+
+    let service = OutcomeLedgerService::new(Arc::clone(&state.app_state.task_outcome_repo));
+    if let Err(error) = service.record_outcome(task_outcome).await {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            review_note_id = %review_note_id.as_str(),
+            error = %error,
+            "Failed to record review decision outcome"
+        );
+    }
+}
+
 pub async fn complete_review(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Json(req): Json<CompleteReviewRequest>,
 ) -> Result<Json<CompleteReviewResponse>, (StatusCode, String)> {
-    let task_id = TaskId::from_string(req.task_id);
+    let task_id = TaskId::from_string(req.task_id.clone());
 
     // 1. Get task and validate state is Reviewing
     let mut task = state
@@ -560,6 +659,17 @@ pub async fn complete_review(
         new_status.clone(),
         followup_session_id.as_deref(),
         review_note_id.as_str(),
+    )
+    .await;
+
+    record_review_decision_outcome(
+        &state,
+        &task,
+        &review_note_id,
+        outcome,
+        &new_status,
+        &req,
+        followup_session_id.as_deref(),
     )
     .await;
 

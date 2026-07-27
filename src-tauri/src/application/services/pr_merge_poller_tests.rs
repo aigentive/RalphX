@@ -45,6 +45,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, NotificationRepository,
+    TaskOutcomeListOptions, TaskOutcomeRepository,
 };
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
@@ -54,7 +55,7 @@ use crate::domain::services::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryNotificationRepository, MemoryPlanBranchRepository,
+    MemoryNotificationRepository, MemoryPlanBranchRepository, MemoryTaskOutcomeRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -1960,6 +1961,7 @@ async fn agent_workspace_review_feedback_starts_one_failed_exact_attempt_retry()
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -2119,6 +2121,7 @@ async fn agent_workspace_review_feedback_retry_exhaustion_blocks_same_manual_gat
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3180,6 +3183,43 @@ async fn review_pr_monitor_merged_terminal_outcome_has_no_error() {
         .await
         .expect("events should list");
     assert!(events.iter().any(|event| event.step == "pr_merged"));
+}
+
+#[tokio::test]
+async fn direct_terminal_marker_does_not_claim_an_unappended_event() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = supervised_workspace(
+        "direct-terminal-event-failure",
+        "project-direct-terminal-event-failure",
+        worktree.path(),
+    );
+    let project_id = workspace.project_id.clone();
+    let conversation_id = workspace.conversation_id.clone();
+    let concrete_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    concrete_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    concrete_workspace_repo.fail_next_publication_event("publication event unavailable");
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        concrete_workspace_repo.clone();
+    let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+
+    let error = super::mark_agent_workspace_pr_terminal(
+        workspace_repo,
+        &conversation_id,
+        "merged",
+        "Pull request merged",
+    )
+    .await
+    .expect_err("event persistence failure must keep terminal marking retryable");
+
+    assert!(error.to_string().contains("publication event unavailable"));
+    assert!(outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("outcomes should be readable")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -4450,6 +4490,7 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4562,6 +4603,7 @@ async fn agent_workspace_review_feedback_with_autofix_disabled_has_no_repair_sid
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4624,6 +4666,7 @@ async fn agent_workspace_review_feedback_final_authorization_rejects_disabled_wo
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4697,6 +4740,7 @@ async fn agent_workspace_review_feedback_routes_once_after_autofix_is_reenabled(
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4721,6 +4765,7 @@ async fn agent_workspace_review_feedback_routes_once_after_autofix_is_reenabled(
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -4735,6 +4780,7 @@ async fn agent_workspace_review_feedback_routes_once_after_autofix_is_reenabled(
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -5155,6 +5201,7 @@ async fn agent_workspace_review_feedback_disables_auto_merge_before_pr_fixer() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(agent_run_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -5219,6 +5266,7 @@ async fn agent_workspace_review_feedback_waits_when_auto_merge_disable_fails() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(agent_run_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -5280,6 +5328,7 @@ async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -5364,6 +5413,7 @@ async fn agent_workspace_poller_start_reports_unavailable_without_github() {
         std::path::PathBuf::from("/tmp/review-pr"),
         workspace_repo,
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
     );
 
@@ -5579,6 +5629,8 @@ async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_retu
     chat.fail_next_stop_agent_calls(1).await;
     let stopping = Arc::new(dashmap::DashMap::new());
     let agent_run_repo_dyn: Arc<dyn AgentRunRepository> = agent_run_repo.clone();
+    let task_outcome_repo_dyn: Arc<dyn TaskOutcomeRepository> =
+        Arc::new(MemoryTaskOutcomeRepository::new());
     let plan_branch_repo_dyn: Arc<dyn crate::domain::repositories::PlanBranchRepository> =
         plan_branch_repo;
     let chat_dyn: Arc<dyn crate::application::chat_service::ChatService> = chat.clone();
@@ -5586,6 +5638,7 @@ async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_retu
     super::terminalize_polled_agent_workspace(
         &workspace_repo,
         &agent_run_repo_dyn,
+        &task_outcome_repo_dyn,
         &plan_branch_repo_dyn,
         &chat_dyn,
         &stopping,
@@ -5624,6 +5677,8 @@ async fn terminal_agent_workspace_pr_poller_retries_authority_persistence_before
     concrete_workspace_repo.fail_next_publication_update("authority unavailable");
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> = concrete_workspace_repo;
     let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let task_outcome_repo: Arc<dyn TaskOutcomeRepository> =
+        Arc::new(MemoryTaskOutcomeRepository::new());
     let plan_branch_repo: Arc<dyn crate::domain::repositories::PlanBranchRepository> =
         Arc::new(MemoryPlanBranchRepository::new());
     let chat = Arc::new(MockChatService::new());
@@ -5633,6 +5688,7 @@ async fn terminal_agent_workspace_pr_poller_retries_authority_persistence_before
     super::terminalize_polled_agent_workspace(
         &workspace_repo,
         &agent_run_repo,
+        &task_outcome_repo,
         &plan_branch_repo,
         &chat_dyn,
         &stopping,
@@ -5878,6 +5934,7 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_and_branch() {
         repo.path().to_path_buf(),
         Arc::clone(&workspace_repo),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
     );
     tokio::time::timeout(Duration::from_secs(20), async {

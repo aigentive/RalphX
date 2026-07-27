@@ -41,6 +41,10 @@ import { usePlanStore } from "@/stores/planStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
+import {
+  resetSkillsEnabledForTests,
+  setSkillsEnabled,
+} from "@/stores/skillsSettingsStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { chatKeys } from "@/hooks/useChat";
 import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
@@ -1626,6 +1630,7 @@ function renderControlledPane(
 
 describe("AgentsArtifactPane", () => {
   beforeEach(() => {
+    resetSkillsEnabledForTests(true);
     workspaceReviewRuntimeOverride.current = null;
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockResolvedValue(defaultReviewSettings);
@@ -2301,6 +2306,7 @@ describe("AgentsArtifactPane", () => {
           "jira",
           "linear",
           "granola",
+          "skills",
           "review",
           "publish",
         ],
@@ -2313,7 +2319,7 @@ describe("AgentsArtifactPane", () => {
     ).not.toHaveLength(0);
   });
 
-  it("defaults to Plan and Commit & Publish when no contextual artifact is attached", async () => {
+  it("defaults to Plan, Skills, and Commit & Publish when no contextual artifact is attached", async () => {
     renderPane(
       "plan",
       workspace({ mode: "edit" }),
@@ -2327,7 +2333,11 @@ describe("AgentsArtifactPane", () => {
     await screen.findByTestId("agents-artifact-tab-plan");
     expect(
       artifactTabIds(screen.getByTestId("agents-artifact-tab-row")),
-    ).toEqual(["agents-artifact-tab-plan", "agents-artifact-tab-publish"]);
+    ).toEqual([
+      "agents-artifact-tab-plan",
+      "agents-artifact-tab-skills",
+      "agents-artifact-tab-publish",
+    ]);
   });
 
   it.each(integrationTabCases)(
@@ -2669,11 +2679,23 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("shows graph filters without the global plan selector in the Tasks artifact", async () => {
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [task({ executionPlanId: "exec-current" })],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+
     renderPane(
       "tasks",
       workspace({
         mode: "ideation",
         linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
       }),
       vi.fn(),
       false,
@@ -3053,6 +3075,14 @@ describe("AgentsArtifactPane", () => {
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-42");
   });
 
+  it("renders skills and publish tabs for edit workspaces", () => {
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    expect(screen.getByTestId("agents-artifact-tab-skills")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
+  });
+
   it("renders the Plan start panel for edit workspaces before an ideation run is attached", () => {
     renderPane(
       "plan",
@@ -3181,6 +3211,7 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
+
   it("fails closed when a focused automation run has no workspace", async () => {
     getConversationWorkspaceMock.mockResolvedValue(null);
 
@@ -3218,6 +3249,69 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByText("Loading workspace status…"),
     ).not.toBeInTheDocument();
+  });
+
+  it("never renders one focused run's publish workspace under another run's focus", async () => {
+    getConversationWorkspaceMock.mockImplementation(async (conversationId: string) =>
+      conversationId === "conversation-run-a"
+        ? workspace({
+            conversationId,
+            mode: "edit",
+            branchName: "run-a-branch",
+          })
+        : conversationId === "conversation-run-b"
+          ? workspace({
+              conversationId,
+              mode: "edit",
+              branchName: "run-b-branch",
+            })
+          : null,
+    );
+    const queryClient = createTestQueryClient();
+    const paneForRun = (runId: string, runConversationId: string) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={{
+                ...conversation(),
+                id: "conversation-setup",
+                agentMode: "automation",
+                automationId: "automation-1",
+                automationRunId: null,
+              }}
+              workspace={workspace({
+                conversationId: "conversation-setup",
+                mode: "automation",
+                branchName: "setup-branch",
+              })}
+              activeTab="publish"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={vi.fn()}
+              isPublishingWorkspace={false}
+              onClose={() => {}}
+              automationRunFocusTarget={{
+                type: "automation_run",
+                automationId: "automation-1",
+                runId,
+                conversationId: runConversationId,
+              }}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+
+    const view = render(paneForRun("run-a", "conversation-run-a"));
+    expect(await screen.findByText(/run-a-branch/)).toBeInTheDocument();
+    expect(screen.queryByText(/setup-branch/)).not.toBeInTheDocument();
+
+    view.rerender(paneForRun("run-b", "conversation-run-b"));
+    expect(await screen.findByText(/run-b-branch/)).toBeInTheDocument();
+    expect(screen.queryByText(/run-a-branch/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/setup-branch/)).not.toBeInTheDocument();
   });
 
   it("does not render cached focused workspace metadata after its refresh fails", async () => {
@@ -3431,6 +3525,15 @@ describe("AgentsArtifactPane", () => {
       screen.getByTestId("agents-artifact-tab-publish"),
     ).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
+  });
+
+  it("hides the skills tab when the Skills surface is disabled", () => {
+    setSkillsEnabled(false);
+
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    expect(screen.queryByTestId("agents-artifact-tab-skills")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
   });
 
   it("hides local Review and falls back from a persisted Review tab in PLAN mode", async () => {
@@ -5155,6 +5258,11 @@ describe("AgentsArtifactPane", () => {
     expect(useChatStore.getState().agentActivityLabels[storeKey]).toBe(
       "running",
     );
+
+    // Reset the shared store so the generating status does not leak into
+    // later tests that render publish surfaces for the same conversation.
+    useChatStore.getState().setAgentStatus(storeKey, "idle");
+    useChatStore.getState().setAgentActivityLabel(storeKey, null);
   });
 
   it("keeps the Review update action enabled while a related runtime is waiting for input", async () => {
@@ -7118,6 +7226,7 @@ describe("AgentsArtifactPane", () => {
       },
     );
 
+    await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"));
     const planContent = await screen.findByTestId(
       "agents-artifact-content-plan",
     );

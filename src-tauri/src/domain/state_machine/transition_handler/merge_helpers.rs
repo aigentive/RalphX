@@ -94,16 +94,6 @@ const GITHUB_AUTO_MERGE_TERMINAL_CLEAR_SOURCE: &str = "pr_terminal_state";
 lazy_static! {
     static ref ANSI_ESCAPE_RE: Regex =
         Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").expect("valid ansi escape regex");
-    static ref ABSOLUTE_PATH_RE: Regex =
-        Regex::new(r#"(?m)(^|[\s=])(?:/[^\s:'"`]+)+"#).expect("valid path regex");
-    static ref WINDOWS_PATH_RE: Regex =
-        Regex::new(r#"(?i)[a-z]:\\[^\s:'"`]+(?:\\[^\s:'"`]+)*"#).expect("valid windows path regex");
-    static ref UUID_RE: Regex =
-        Regex::new(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
-            .expect("valid uuid regex");
-    static ref SHA_RE: Regex = Regex::new(r"\b[0-9a-f]{12,40}\b").expect("valid sha regex");
-    static ref TIMESTAMP_RE: Regex =
-        Regex::new(r"\b\d{4}-\d{2}-\d{2}[t ][0-9:.+-z]+\b").expect("valid timestamp regex");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,24 +465,7 @@ pub(crate) fn classify_commit_hook_failure_text(text: &str) -> CommitHookFailure
 }
 
 pub(crate) fn commit_hook_failure_fingerprint(text: &str) -> String {
-    let mut normalized = sanitize_commit_hook_feedback_text(text).to_lowercase();
-    normalized = TIMESTAMP_RE
-        .replace_all(&normalized, "<timestamp>")
-        .into_owned();
-    normalized = UUID_RE.replace_all(&normalized, "<uuid>").into_owned();
-    normalized = SHA_RE.replace_all(&normalized, "<sha>").into_owned();
-    normalized = WINDOWS_PATH_RE
-        .replace_all(&normalized, "<path>")
-        .into_owned();
-    normalized = ABSOLUTE_PATH_RE
-        .replace_all(&normalized, |captures: &regex::Captures<'_>| {
-            format!(
-                "{}<path>",
-                captures.get(1).map(|m| m.as_str()).unwrap_or("")
-            )
-        })
-        .into_owned();
-    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::domain::services::failure_fingerprint::normalize_failure_evidence(text)
 }
 
 pub(crate) fn extract_commit_hook_merge_error(task: &Task) -> Option<String> {

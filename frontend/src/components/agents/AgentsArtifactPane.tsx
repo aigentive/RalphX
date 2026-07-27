@@ -1,4 +1,5 @@
 import {
+  BookOpenCheck,
   AlertCircle,
   FileText,
   GitPullRequestArrow,
@@ -59,6 +60,7 @@ import {
   type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import { ConversationSkillsPanel } from "@/components/project-skills/ConversationSkillsPanel";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -110,6 +112,7 @@ import {
 } from "@/hooks/useVerificationStatus";
 import { useAutomationDetail } from "@/hooks/useAutomations";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import type { Artifact } from "@/types/artifact";
 import type { IdeationSession, TaskProposal } from "@/types/ideation";
 import type { Task } from "@/types/task";
@@ -421,6 +424,12 @@ const PUBLISH_TAB = {
   icon: GitPullRequestArrow,
 };
 
+const SKILLS_TAB = {
+  id: "skills" as const,
+  label: "Skills",
+  icon: BookOpenCheck,
+};
+
 const JIRA_TAB = {
   id: "jira" as const,
   label: "Jira",
@@ -460,6 +469,7 @@ const ALL_ARTIFACT_TAB_DEFINITIONS = [
   LINEAR_TAB,
   CLICKUP_TAB,
   GRANOLA_TAB,
+  SKILLS_TAB,
   REVIEW_TAB,
   PUBLISH_TAB,
 ] as const;
@@ -476,6 +486,7 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   linear: "Appears when Linear is connected and a ticket is attached.",
   clickup: "Connect ClickUp in Settings to make it available.",
   granola: "Appears when Granola is connected and a note is attached.",
+  skills: "Enable Skills in App Preferences to make it available.",
   review: "Appears when a review is created.",
   publish: "Appears when this conversation has an editable workspace.",
 };
@@ -681,6 +692,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const [skillsEnabled] = useSkillsEnabled();
   const { registry: modelRegistry } = useAgentModels();
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
@@ -1440,20 +1452,21 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : isAutomationRunConversation
           ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
           : [
-            ...ARTIFACT_TABS.filter((tab) =>
-              availableArtifactTabIds.includes(tab.id),
-            ).map(visibleTab),
-            ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
-            ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
-            ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
-            ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
-            ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
-            ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
-            ...(availableArtifactTabIds.includes("review")
-              ? [visibleTab(REVIEW_TAB)]
-              : []),
-            ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
-          ],
+              ...ARTIFACT_TABS.filter((tab) =>
+                availableArtifactTabIds.includes(tab.id),
+              ).map(visibleTab),
+              ...(skillsEnabled ? [visibleTab(SKILLS_TAB)] : []),
+              ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
+              ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
+              ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
+              ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+              ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
+              ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+              ...(availableArtifactTabIds.includes("review")
+                ? [visibleTab(REVIEW_TAB)]
+                : []),
+              ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
+            ],
     [
       availableArtifactTabIds,
       automationId,
@@ -1466,6 +1479,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       showLinearTab,
       showPublishTab,
       showPullRequestTab,
+      skillsEnabled,
     ],
   );
   const shownTabs = useMemo(
@@ -2246,6 +2260,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               <ArtifactContent
                 activeTab={effectiveActiveTab}
                 tasksEnabled={tasksEnabled}
+                skillsEnabled={skillsEnabled}
                 tasksSurfaceCapabilities={tasksSurfaceCapabilities}
                 conversation={conversation}
                 workspace={scopedWorkspace}
@@ -2480,6 +2495,7 @@ type ArtifactContentProps = {
   onOpenTasks: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
+  skillsEnabled: boolean;
 };
 
 function ArtifactContent({
@@ -2554,6 +2570,7 @@ function ArtifactContent({
   onOpenTasks,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
+  skillsEnabled,
 }: ArtifactContentProps) {
   const reviewActionBlocker = getAgentWorkspaceReviewActionBlocker(workspace);
   const renderReviewPanel = (embedded: boolean) => (
@@ -2759,6 +2776,21 @@ function ArtifactContent({
           onFocusIdeationSessionForConversation
         }
         onOpenTasks={onOpenTasks}
+      />
+    );
+  }
+
+  if (activeTab === "skills") {
+    if (!skillsEnabled) {
+      return <EmptyArtifactState title="Skills are disabled" />;
+    }
+    if (!projectId || !conversationId) {
+      return <EmptyArtifactState title="No conversation selected" />;
+    }
+    return (
+      <ConversationSkillsPanel
+        projectId={projectId}
+        conversationId={conversationId}
       />
     );
   }

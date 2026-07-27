@@ -21,7 +21,9 @@ use super::{event_context, has_meaningful_output, EventContextPayload, Streaming
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
-use crate::application::memory_orchestration::trigger_memory_pipelines;
+use crate::application::memory_orchestration::{
+    trigger_memory_pipelines, ProjectSkillDistillationDependencies,
+};
 use crate::application::notification_service::NotificationService;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
@@ -42,9 +44,10 @@ use crate::domain::repositories::{
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
     ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository, ValidationRunRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
+    ProjectMemorySettingsRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ValidationRunRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -80,6 +83,7 @@ pub(super) struct BackgroundRunRepos {
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     pub notification_service: Option<Arc<NotificationService>>,
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
@@ -158,6 +162,77 @@ pub(super) fn should_process_stream_queue(
     initial_queue_count > 0
         && has_session_for_queue
         && !(silent_interactive_exit && cancellation_requested)
+}
+
+async fn resolve_memory_agent_runtime_for_background<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    conversation: Option<&ChatConversation>,
+    conversation_repo: Arc<dyn ChatConversationRepository>,
+    conversation_id: &ChatConversationId,
+    project_id: Option<&str>,
+) -> Option<crate::application::app_state::ResolvedBackgroundAgentRuntime> {
+    let app_state =
+        app_handle.and_then(|handle| handle.try_state::<crate::application::AppState>())?;
+    let owned_conversation;
+    let conversation = match conversation {
+        Some(conversation) => conversation,
+        None => {
+            owned_conversation = match conversation_repo.get_by_id(conversation_id).await {
+                Ok(Some(conversation)) => conversation,
+                Ok(None) => {
+                    tracing::debug!(
+                        conversation_id = conversation_id.as_str(),
+                        "memory pipeline runtime resolver skipped missing conversation"
+                    );
+                    return None;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        error = %error,
+                        "memory pipeline runtime resolver failed to load conversation"
+                    );
+                    return None;
+                }
+            };
+            &owned_conversation
+        }
+    };
+
+    match app_state
+        .resolve_manual_role_background_agent_runtime(
+            project_id,
+            None,
+            crate::domain::agents::RoutingRole::MemoryCapture,
+            None,
+            crate::infrastructure::agents::claude::agent_names::SHORT_MEMORY_CAPTURE,
+            "memory pipeline owning conversation",
+            conversation.provider_harness,
+        )
+        .await
+    {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "memory pipeline runtime resolver fell back to legacy memory agent launch"
+            );
+            None
+        }
+    }
+}
+
+fn project_skill_distillation_dependencies<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+) -> Option<ProjectSkillDistillationDependencies> {
+    let state = app_handle?.try_state::<crate::application::AppState>()?;
+    Some(ProjectSkillDistillationDependencies {
+        outcome_repo: Arc::clone(&state.task_outcome_repo),
+        batch_repo: Arc::clone(&state.project_skill_evidence_batch_repo),
+        settings_repo: Arc::clone(&state.project_skill_settings_repo),
+        skill_repo: Arc::clone(&state.project_skill_repo),
+    })
 }
 
 const AGENT_TASK_LEDGER_SUBSTANTIAL_TOOL_CALL_COUNT: usize = 3;
@@ -965,6 +1040,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             task_proposal_repo,
             activity_event_repo,
             memory_event_repo,
+            project_memory_settings_repo,
             notification_service,
             message_queue,
             running_agent_registry,
@@ -1014,6 +1090,14 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         )
         .await;
         let resolved_project_id_typed = resolved_project_id.as_ref().map(|s| crate::domain::entities::ProjectId::from_string(s.clone()));
+        let memory_agent_runtime = resolve_memory_agent_runtime_for_background(
+            app_handle.as_ref(),
+            conversation.as_ref(),
+            Arc::clone(&conversation_repo),
+            &conversation_id,
+            resolved_project_id.as_deref(),
+        )
+        .await;
 
         // Create key for unregistering
         let registry_key = RunningAgentKey::new(context_type.to_string(), &runtime_context_id);
@@ -1447,6 +1531,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &agent_run_id,
                     context_type,
                     &context_id,
+                    &conversation_id,
                     effective_has_output,
                     outcome.completion_tool_called,
                     execution_slot_held,
@@ -1464,6 +1549,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &message_queue,
                     &running_agent_registry,
                     &memory_event_repo,
+                    &agent_conversation_workspace_repo,
                     &plan_branch_repo,
                     &task_step_repo,
                     &validation_run_repo,
@@ -1538,6 +1624,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             Arc::clone(&message_queue),
                             Arc::clone(&running_agent_registry),
                             Arc::clone(&memory_event_repo),
+                            Arc::clone(&project_memory_settings_repo),
                         )
                         .with_runtime_support(
                             Some(exec_settings.clone()),
@@ -1853,6 +1940,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &working_directory,
                         None,
                         Some(Arc::clone(&memory_event_repo)),
+                        Some(Arc::clone(&project_memory_settings_repo)),
+                        memory_agent_runtime.clone(),
+                        project_skill_distillation_dependencies(app_handle.as_ref()),
                     )
                     .await;
                 } else {
@@ -1966,6 +2056,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &working_directory,
                         None,
                         Some(Arc::clone(&memory_event_repo)),
+                        Some(Arc::clone(&project_memory_settings_repo)),
+                        memory_agent_runtime.clone(),
+                        project_skill_distillation_dependencies(app_handle.as_ref()),
                     )
                     .await;
                 } else {

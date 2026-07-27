@@ -279,6 +279,32 @@ impl SqliteTaskProposalRepository {
         Ok(proposal)
     }
 
+    /// Reject a proposal without removing dependency history.
+    pub(crate) fn reject_sync(
+        conn: &Connection,
+        id: &TaskProposalId,
+    ) -> AppResult<TaskProposal> {
+        let now = Utc::now();
+        conn.execute(
+            "UPDATE task_proposals
+             SET status = 'rejected', selected = 0, updated_at = ?2
+             WHERE id = ?1 AND archived_at IS NULL",
+            rusqlite::params![id.as_str(), now.to_rfc3339()],
+        )?;
+        let proposal = conn.query_row(
+            "SELECT id, session_id, title, description, category, steps, acceptance_criteria,
+                    affected_paths,
+                    suggested_priority, priority_score, priority_reason, priority_factors,
+                    estimated_complexity, user_priority, user_modified, status, selected,
+                    created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, created_at, updated_at, archived_at,
+                    target_project, migrated_from_session_id, migrated_from_proposal_id
+             FROM task_proposals WHERE id = ?1",
+            [id.as_str()],
+            |row| TaskProposal::from_row(row),
+        )?;
+        Ok(proposal)
+    }
+
 }
 
 #[async_trait]

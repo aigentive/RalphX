@@ -22,6 +22,7 @@ use crate::domain::agents::{
     AgentConfig, AgentError, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
     ClientCapabilities, ClientType, ResponseChunk,
 };
+use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 
 use super::{
     append_claude_permission_args, apply_common_spawn_env,
@@ -221,6 +222,13 @@ impl ClaudeCodeClient {
             .unwrap_or_else(|| Path::new("./plugins/app"));
         let effort_override = config.logical_effort.map(|effort| effort.to_string());
         let cli_path = self.cli_path_for_config(config);
+        let mcp_runtime_context = agent_mcp_runtime_context(config);
+        let agent_profile = config
+            .env
+            .get("RALPHX_AGENT_PROFILE")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
 
         let mut spawnable = if enforce_spawn_guard {
             build_spawnable_command_with_mcp_runtime_context_and_profile(
@@ -228,14 +236,14 @@ impl ClaudeCodeClient {
                 plugin_dir,
                 &config.prompt,
                 config.agent.as_deref(),
-                None,
+                agent_profile,
                 None,
                 resume_session_id,
                 &config.working_directory,
                 false,
                 effort_override.as_deref(),
                 config.model.as_deref(),
-                None,
+                mcp_runtime_context.as_ref(),
             )?
         } else {
             #[cfg(test)]
@@ -245,14 +253,14 @@ impl ClaudeCodeClient {
                     plugin_dir,
                     &config.prompt,
                     config.agent.as_deref(),
-                    None,
+                    agent_profile,
                     None,
                     resume_session_id,
                     &config.working_directory,
                     false,
                     effort_override.as_deref(),
                     config.model.as_deref(),
-                    None,
+                    mcp_runtime_context.as_ref(),
                 )?
             }
             #[cfg(not(test))]
@@ -263,14 +271,14 @@ impl ClaudeCodeClient {
                     plugin_dir,
                     &config.prompt,
                     config.agent.as_deref(),
-                    None,
+                    agent_profile,
                     None,
                     resume_session_id,
                     &config.working_directory,
                     false,
                     effort_override.as_deref(),
                     config.model.as_deref(),
-                    None,
+                    mcp_runtime_context.as_ref(),
                 )?
             }
         };
@@ -287,6 +295,10 @@ impl ClaudeCodeClient {
 
         Ok(spawnable)
     }
+}
+
+fn agent_mcp_runtime_context(config: &AgentConfig) -> Option<McpRuntimeContext> {
+    McpRuntimeContext::from_agent_env(&config.env, &config.working_directory)
 }
 
 fn resolved_config_model(config: &AgentConfig) -> Option<String> {

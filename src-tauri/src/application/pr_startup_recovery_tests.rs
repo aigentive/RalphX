@@ -39,7 +39,7 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository, MemoryProjectRepository,
+    MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskOutcomeRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -259,6 +259,7 @@ async fn recover_review_pr_poller_fixture(fixture: &ReviewPrPollerRecoveryFixtur
         Arc::clone(&fixture.plan_branch_repo),
         Arc::clone(&fixture.registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
     )
@@ -559,6 +560,7 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
         plan_branch_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
     )
@@ -639,6 +641,7 @@ async fn startup_agent_workspace_pr_recovery_with_autofix_disabled_skips_review_
         plan_branch_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone(),
         Arc::new(HashSet::new()),
     )
@@ -958,6 +961,7 @@ async fn startup_agent_workspace_pr_recovery_skips_orphaned_review_pr_monitor() 
         plan_branch_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
     )
@@ -989,6 +993,7 @@ async fn startup_agent_workspace_pr_recovery_tolerates_workspace_and_monitor_lis
         plan_branch_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
     )
@@ -1084,6 +1089,7 @@ async fn startup_agent_workspace_pr_recovery_restarts_supervised_ideation_poller
         plan_branch_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
     )

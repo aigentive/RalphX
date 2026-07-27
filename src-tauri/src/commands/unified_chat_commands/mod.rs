@@ -149,9 +149,9 @@ use crate::domain::services::github_service::GithubServiceTrait;
 use crate::domain::services::pr_publish_service::AgentWorkspacePrPublishOutcome;
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
-    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
-    ComposerIntegrationReference, ComposerProjectReference, ComposerSelectionSnapshot,
-    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    AgentWorkspaceOutcomeAdapter, AgentWorkspacePrPublisher, ComposerArtifactReference,
+    ComposerExcerptReference, ComposerIntegrationReference, ComposerProjectReference,
+    ComposerSelectionSnapshot, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::error::AppError;
@@ -1072,6 +1072,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
             plan_branch_repo: Arc::clone(&state.plan_branch_repo),
+            task_outcome_repo: Arc::clone(&state.task_outcome_repo),
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
@@ -4973,6 +4974,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                     target.working_dir.clone(),
                     Arc::clone(&state.agent_conversation_workspace_repo),
                     Arc::clone(&state.agent_run_repo),
+                    Arc::clone(&state.task_outcome_repo),
                     chat_service,
                 );
             }
@@ -5281,7 +5283,8 @@ pub async fn reconcile_agent_conversation_workspace_publication(
         AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
         true,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 /// List workspace metadata for project-backed agent conversations.
@@ -7236,6 +7239,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         publish_target.worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         review_chat_service,
     );
 
@@ -8035,7 +8039,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         )
         .await
         .map_err(|e| e.to_string())?;
-    append_agent_workspace_publication_event(
+    let publish_event = append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
         "published",
@@ -8052,6 +8056,22 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+    let outcome_adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&state.task_outcome_repo));
+    if let Err(error) = outcome_adapter
+        .record_publish_succeeded(
+            &refreshed,
+            Some(&publish_event),
+            "Draft pull request is ready",
+        )
+        .await
+    {
+        tracing::warn!(
+            conversation_id = %refreshed.conversation_id,
+            pr_number = outcome.pr_number,
+            error = %error,
+            "Failed to record direct agent workspace publish outcome"
+        );
+    }
 
     if let Err(error) = crate::application::agent_workspace_review_auto_merge::
         restore_guarded_auto_merge_after_publish(state, &refreshed)
@@ -8129,6 +8149,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         review_chat_service,
     );
 
@@ -8206,7 +8227,8 @@ async fn mark_agent_workspace_publish_status(
         publication_event_summary_for_push_status(push_status),
         None,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn mark_agent_workspace_publish_description_failure(
@@ -8922,17 +8944,19 @@ async fn append_agent_workspace_publication_event(
     status: &str,
     summary: &str,
     classification: Option<String>,
-) -> crate::error::AppResult<()> {
+) -> crate::error::AppResult<AgentConversationWorkspacePublicationEvent> {
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        *conversation_id,
+        step,
+        status,
+        summary,
+        classification,
+    );
     state
         .agent_conversation_workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            *conversation_id,
-            step,
-            status,
-            summary,
-            classification,
-        ))
-        .await
+        .append_publication_event(event.clone())
+        .await?;
+    Ok(event)
 }
 
 async fn settle_agent_workspace_repair_dispatch_failure(

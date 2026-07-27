@@ -60,4 +60,22 @@ describe("workspace-open-targets", () => {
     writePreferredWorkspaceOpenTargetId("finder");
     expect(listener).toHaveBeenCalledTimes(2);
   });
+
+  it("treats localStorage failures as best-effort preference persistence", () => {
+    const getItemSpy = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage unavailable");
+      });
+    expect(readPreferredWorkspaceOpenTargetId()).toBeNull();
+    getItemSpy.mockRestore();
+
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("storage unavailable");
+      });
+    expect(() => writePreferredWorkspaceOpenTargetId("cursor")).not.toThrow();
+    setItemSpy.mockRestore();
+  });
 });

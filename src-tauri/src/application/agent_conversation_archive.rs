@@ -2,8 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::application::agent_workspace_terminal_cleanup::{
-    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+    record_no_pr_terminal_observation_best_effort, record_terminal_pr_observation_best_effort,
+    terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
     TerminalAgentWorkspaceOutcome, TerminalCleanupClaimState, TerminalLocalCleanupResult,
+    TerminalPrObservation,
 };
 use crate::application::chat_service::ChatService;
 use crate::application::task_cleanup_service::{StopMode, TaskCleanupService};
@@ -15,6 +17,11 @@ use crate::domain::entities::{
     PlanBranchStatus,
 };
 use crate::domain::services::github_service::PrStatus as RemotePrStatus;
+use crate::domain::services::{
+    WORKSPACE_TERMINAL_REASON_ARCHIVE_ABANDONED, WORKSPACE_TERMINAL_REASON_ARCHIVE_CLOSED,
+    WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED, WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED,
+    WORKSPACE_TERMINAL_REASON_USER_CLOSED,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EffectivePrSource {
@@ -28,6 +35,7 @@ struct EffectivePrTarget {
     url: Option<String>,
     source: EffectivePrSource,
     is_open: bool,
+    status: Option<String>,
 }
 
 /// Archive an agent conversation and clean up linked ideation execution state.
@@ -63,12 +71,18 @@ pub async fn archive_agent_conversation_for_state(
         None => None,
     };
 
-    if let Some(workspace) = workspace.as_ref() {
+    let mut archive_closed_pr_number = None;
+    let had_effective_pr = if let Some(workspace) = workspace.as_ref() {
+        let had_effective_pr = workspace_has_effective_pr(workspace, state).await?;
         cleanup_ideation_execution_workspace(workspace, state).await?;
         if close_pull_request && workspace_allows_pr_closure(workspace) {
-            close_effective_pr_if_open(conversation_id, workspace, state).await?;
+            archive_closed_pr_number =
+                close_effective_pr_if_open(conversation_id, workspace, state).await?;
         }
-    }
+        had_effective_pr
+    } else {
+        false
+    };
 
     state
         .chat_conversation_repo
@@ -99,11 +113,49 @@ pub async fn archive_agent_conversation_for_state(
         )
     })?;
     let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
-    let outcome = terminalize_agent_workspace_after_pr(
+    let persisted_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let observation = persisted_workspace
+        .as_ref()
+        .and_then(TerminalPrObservation::from_persisted_workspace)
+        .map(|observation| {
+            if observation.status == "closed"
+                && archive_closed_pr_number == Some(observation.pr_number)
+            {
+                observation.with_reason(WORKSPACE_TERMINAL_REASON_ARCHIVE_CLOSED)
+            } else {
+                observation
+            }
+        });
+    if !had_effective_pr {
+        let reason = if matches!(
+            workspace.publication_push_status.as_deref(),
+            Some("failed" | "description_failed")
+        ) {
+            WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED
+        } else {
+            WORKSPACE_TERMINAL_REASON_ARCHIVE_ABANDONED
+        };
+        record_no_pr_terminal_observation_best_effort(
+            &state.agent_conversation_workspace_repo,
+            &state.task_outcome_repo,
+            conversation_id,
+            None,
+            reason,
+            "Workspace session ended without a pull request",
+        )
+        .await;
+    }
+    let outcome = terminalize_agent_workspace_after_pr_with_observation(
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),
+        Some(Arc::clone(&state.task_outcome_repo)),
+        observation,
         conversation_id,
         &project,
         TerminalAgentWorkspaceCause::ArchivedConversation,
@@ -144,28 +196,48 @@ pub async fn close_agent_workspace_pr_for_state(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
 
-    close_remote_pr(
-        state,
-        Path::new(&project.working_directory),
-        target.number,
-        "close_agent_workspace_pr",
-    )
-    .await?;
-    mark_effective_pr_closed(
-        conversation_id,
-        &workspace,
-        linked_plan_branch.as_ref(),
-        &target,
-        state,
-    )
-    .await?;
+    if target.is_open {
+        close_remote_pr(
+            state,
+            Path::new(&project.working_directory),
+            target.number,
+            "close_agent_workspace_pr",
+        )
+        .await?;
+        mark_effective_pr_closed(
+            conversation_id,
+            &workspace,
+            linked_plan_branch.as_ref(),
+            &target,
+            state,
+        )
+        .await?;
+    }
 
     let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
-    let outcome = terminalize_agent_workspace_after_pr(
+    let terminal_status = if target.is_open {
+        "closed"
+    } else {
+        target.status.as_deref().unwrap_or("closed")
+    };
+    let summary = if terminal_status == "merged" {
+        "Pull request already merged"
+    } else {
+        "Pull request closed without merging"
+    };
+    let observation = TerminalPrObservation::new(target.number, terminal_status, summary);
+    let observation = if terminal_status == "closed" {
+        observation.with_reason(WORKSPACE_TERMINAL_REASON_USER_CLOSED)
+    } else {
+        observation
+    };
+    let outcome = terminalize_agent_workspace_after_pr_with_observation(
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),
+        Some(Arc::clone(&state.task_outcome_repo)),
+        Some(observation),
         conversation_id,
         &project,
         TerminalAgentWorkspaceCause::ClosedPr,
@@ -222,18 +294,62 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
                         number, error
                     ))
                 })?;
-            if remote_status == RemotePrStatus::Open {
-                github_svc
-                    .close_pr(&project_path, number)
-                    .await
-                    .map_err(|error| {
-                        crate::error::AppError::Infrastructure(format!(
-                            "Restart could not close existing PR {}: {}",
-                            number, error
-                        ))
-                    })?;
-            }
+            let status = match remote_status {
+                RemotePrStatus::Open => {
+                    github_svc
+                        .close_pr(&project_path, number)
+                        .await
+                        .map_err(|error| {
+                            crate::error::AppError::Infrastructure(format!(
+                                "Restart could not close existing PR {}: {}",
+                                number, error
+                            ))
+                        })?;
+                    "closed"
+                }
+                RemotePrStatus::Merged { .. } => "merged",
+                RemotePrStatus::Closed => "closed",
+            };
+            let summary = if status == "merged" {
+                "Pull request already merged before restart"
+            } else {
+                "Pull request closed before restart"
+            };
+            let event = crate::domain::entities::AgentConversationWorkspacePublicationEvent::new(
+                workspace.conversation_id.clone(),
+                format!("pr_{status}"),
+                "succeeded",
+                summary,
+                None,
+            );
+            state
+                .agent_conversation_workspace_repo
+                .append_publication_event(event.clone())
+                .await?;
+            let observation = TerminalPrObservation::new(number, status, summary);
+            let observation = if status == "closed" {
+                observation.with_reason(WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED)
+            } else {
+                observation
+            };
+            record_terminal_pr_observation_best_effort(
+                &state.agent_conversation_workspace_repo,
+                Some(&state.task_outcome_repo),
+                &workspace.conversation_id,
+                Some(&observation.with_publication_event(event)),
+            )
+            .await;
         }
+    } else {
+        record_no_pr_terminal_observation_best_effort(
+            &state.agent_conversation_workspace_repo,
+            &state.task_outcome_repo,
+            &workspace.conversation_id,
+            None,
+            WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED,
+            "Workspace session was superseded before opening a pull request",
+        )
+        .await;
     }
     Ok(())
 }
@@ -373,14 +489,14 @@ async fn close_effective_pr_if_open(
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
     state: &AppState,
-) -> Result<(), String> {
+) -> Result<Option<i64>, String> {
     let linked_plan_branch = load_linked_plan_branch_for_pr(workspace, state).await?;
     let Some(target) = resolve_effective_pr(workspace, linked_plan_branch.as_ref()) else {
-        return Ok(());
+        return Ok(None);
     };
 
     if !target.is_open {
-        return Ok(());
+        return Ok(None);
     }
 
     let project = state
@@ -414,7 +530,19 @@ async fn close_effective_pr_if_open(
         &target,
         state,
     )
-    .await
+    .await?;
+    Ok(Some(target.number))
+}
+
+async fn workspace_has_effective_pr(
+    workspace: &AgentConversationWorkspace,
+    state: &AppState,
+) -> Result<bool, String> {
+    if workspace.source_pull_request.is_some() {
+        return Ok(true);
+    }
+    let linked_plan_branch = load_linked_plan_branch_for_pr(workspace, state).await?;
+    Ok(resolve_effective_pr(workspace, linked_plan_branch.as_ref()).is_some())
 }
 
 async fn close_remote_pr(
@@ -462,6 +590,12 @@ fn resolve_effective_pr(
                 url: plan_branch.pr_url.clone(),
                 source: EffectivePrSource::PlanBranch,
                 is_open: is_plan_branch_pr_open(plan_branch),
+                status: plan_branch.pr_status.map(|status| match status {
+                    PrStatus::Draft => "draft".to_string(),
+                    PrStatus::Open => "open".to_string(),
+                    PrStatus::Merged => "merged".to_string(),
+                    PrStatus::Closed => "closed".to_string(),
+                }),
             });
         }
     }
@@ -473,6 +607,7 @@ fn resolve_effective_pr(
             url: workspace.publication_pr_url.clone(),
             source: EffectivePrSource::Workspace,
             is_open: is_workspace_pr_open(workspace.publication_pr_status.as_deref()),
+            status: workspace.publication_pr_status.clone(),
         })
 }
 

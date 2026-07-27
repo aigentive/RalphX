@@ -15,8 +15,8 @@ import {
 } from "./chat";
 
 describe("ChatContextViewSchema", () => {
-  it("should have 12 view type values", () => {
-    expect(CHAT_CONTEXT_VIEW_VALUES.length).toBe(12);
+  it("should have 13 view type values", () => {
+    expect(CHAT_CONTEXT_VIEW_VALUES.length).toBe(13);
   });
 
   it("should parse all valid view types", () => {
@@ -33,6 +33,7 @@ describe("ChatContextViewSchema", () => {
     expect(CHAT_CONTEXT_VIEW_VALUES).toContain("automations");
     expect(CHAT_CONTEXT_VIEW_VALUES).toContain("extensibility");
     expect(CHAT_CONTEXT_VIEW_VALUES).toContain("activity");
+    expect(CHAT_CONTEXT_VIEW_VALUES).toContain("skills");
     expect(CHAT_CONTEXT_VIEW_VALUES).toContain("ticketing");
     expect(CHAT_CONTEXT_VIEW_VALUES).toContain("github");
     expect(CHAT_CONTEXT_VIEW_VALUES).toContain("granola");

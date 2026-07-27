@@ -22,9 +22,9 @@ use crate::domain::repositories::{
     ConversationFolderReferenceRepository, DelegatedSessionRepository, ExecutionPlanRepository,
     ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository, ValidationRunRepository,
+    PersonaRepository, PlanBranchRepository, ProjectMemorySettingsRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -298,6 +298,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     pub notification_service: Option<Arc<NotificationService>>,
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -344,6 +345,7 @@ impl ChatRuntimeFactoryDeps {
         message_queue: Arc<MessageQueue>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
+        project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     ) -> Self {
         Self {
             chat_message_repo,
@@ -366,6 +368,7 @@ impl ChatRuntimeFactoryDeps {
             queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
+            project_memory_settings_repo,
             notification_service: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
@@ -685,6 +688,7 @@ impl ChatRuntimeFactoryDeps {
             Arc::clone(&state.message_queue),
             Arc::clone(&state.running_agent_registry),
             Arc::clone(&state.memory_event_repo),
+            Arc::clone(&state.project_memory_settings_repo),
         )
         .with_chat_timeline_repo(Arc::clone(&state.chat_timeline_repo))
         .with_queued_message_repo(Arc::clone(&state.queued_message_repo))
@@ -761,6 +765,7 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
         Arc::clone(&deps.message_queue),
         Arc::clone(&deps.running_agent_registry),
         Arc::clone(&deps.memory_event_repo),
+        Arc::clone(&deps.project_memory_settings_repo),
     );
 
     if let Some(repo) = deps.persona_repo.as_ref() {

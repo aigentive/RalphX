@@ -44,11 +44,13 @@ fn build_startup_pipeline_deps(
     let startup_automation_repo = Arc::clone(&app_state.automation_repo);
     let startup_automation_run_repo = Arc::clone(&app_state.automation_run_repo);
     let startup_agent_run_repo = Arc::clone(&app_state.agent_run_repo);
+    let startup_task_outcome_repo = Arc::clone(&app_state.task_outcome_repo);
     let startup_ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
     let startup_activity_event_repo = Arc::clone(&app_state.activity_event_repo);
     let startup_message_queue = Arc::clone(&app_state.message_queue);
     let startup_running_agent_registry = Arc::clone(&app_state.running_agent_registry);
     let startup_memory_event_repo = Arc::clone(&app_state.memory_event_repo);
+    let startup_project_memory_settings_repo = Arc::clone(&app_state.project_memory_settings_repo);
     let startup_app_state_repo = Arc::clone(&app_state.app_state_repo);
     let startup_memory_archive_repo = Arc::clone(&app_state.memory_archive_repo);
     let startup_memory_entry_repo = Arc::clone(&app_state.memory_entry_repo);
@@ -94,11 +96,13 @@ fn build_startup_pipeline_deps(
         automation_repo: startup_automation_repo,
         automation_run_repo: startup_automation_run_repo,
         agent_run_repo: startup_agent_run_repo,
+        task_outcome_repo: startup_task_outcome_repo,
         ideation_session_repo: startup_ideation_session_repo,
         activity_event_repo: startup_activity_event_repo,
         message_queue: startup_message_queue,
         running_agent_registry: startup_running_agent_registry,
         memory_event_repo: startup_memory_event_repo,
+        project_memory_settings_repo: startup_project_memory_settings_repo,
         app_state_repo: startup_app_state_repo,
         memory_archive_repo: startup_memory_archive_repo,
         memory_entry_repo: startup_memory_entry_repo,

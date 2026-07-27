@@ -17,6 +17,7 @@ import { useTicketingProviders } from "@/hooks/useTicketing";
 import { useGranolaIntegration } from "@/hooks/useGranolaIntegration";
 import { hasValidTicketingProvider } from "@/lib/ticketing-provider-state";
 import { useProjectStore } from "@/stores/projectStore";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import { BrandMark } from "./BrandMark";
 import type { AppView } from "@/types/app-view";
@@ -108,6 +109,7 @@ export function LeftNavRail({
 }: LeftNavRailProps) {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const { data: featureFlags } = useFeatureFlags();
+  const [skillsEnabled] = useSkillsEnabled();
   const { data: ticketingProviders } = useTicketingProviders(
     activeProjectId ?? undefined,
     { enabled: !hideViews },
@@ -117,7 +119,11 @@ export function LeftNavRail({
 
   const visibleItems = hideViews
     ? []
-    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags));
+    : ALL_NAV_ITEMS.filter(
+        (item) =>
+          item.visible(featureFlags) &&
+          (item.view !== "skills" || skillsEnabled),
+      );
   const dashboardViews = new Set<AppView>(["ticketing", "github", "granola"]);
   const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
   const dashboardItems = visibleItems.filter((item) => {

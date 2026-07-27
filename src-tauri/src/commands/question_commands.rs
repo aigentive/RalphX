@@ -10,6 +10,10 @@ use crate::application::chat_service::{
     RuntimeHandoffOwner, RuntimeHandoffReleaseOutcome, RuntimeHandoffReservation,
 };
 use crate::application::interactive_notification_producer::question_notification_key;
+use crate::application::memory_orchestration::{
+    schedule_explicit_project_skill_distillation, ProjectSkillDistillationScheduleStatus,
+};
+use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
     create_chat_service, ensure_plan_workspace_planning_session_link_for_send,
@@ -17,7 +21,14 @@ use crate::commands::unified_chat_commands::{
     SwitchAgentConversationModeInput,
 };
 use crate::commands::ExecutionState;
-use crate::domain::entities::{ChatContextType, ChatConversationId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversationId, ProjectId, TaskOutcome, TaskOutcomeClass, TaskOutcomeId,
+    TaskOutcomeSource, TaskOutcomeStatus,
+};
+use crate::domain::services::learned_skill_adapters::{
+    capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
+};
+use crate::domain::services::OutcomeLedgerService;
 use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::AppState;
 
@@ -104,14 +115,140 @@ pub(crate) fn build_plan_mode_proposal_continuation(reason: Option<&str>) -> Str
 }
 
 pub(crate) fn plan_mode_proposal_continuation_metadata(request_id: &str) -> String {
-    serde_json::json!({
+    plan_mode_proposal_continuation_metadata_with_outcome(request_id, None)
+}
+
+pub(crate) fn plan_mode_proposal_continuation_metadata_with_outcome(
+    request_id: &str,
+    outcome: Option<&PlanModeVerdictOutcome>,
+) -> String {
+    let mut metadata = serde_json::json!({
         "source": "accepted_plan_mode_proposal",
         "source_request_id": request_id,
         "required_workspace_mode": "plan",
         "resume_in_place": true,
         "persist_hidden_marker": true,
+    });
+    if let Some(outcome) = outcome {
+        metadata["plan_mode_verdict_outcome"] = serde_json::json!(outcome);
+    }
+    metadata.to_string()
+}
+
+pub(crate) fn task_outcome_from_plan_mode_verdict(
+    outcome: &PlanModeVerdictOutcome,
+) -> Option<TaskOutcome> {
+    let planning_session_id = outcome.refs.get("planning_session_id")?.trim();
+    if planning_session_id.is_empty() {
+        return None;
+    }
+    let status = outcome
+        .status
+        .parse::<TaskOutcomeStatus>()
+        .unwrap_or(TaskOutcomeStatus::Unknown);
+    let source = outcome.source.parse::<TaskOutcomeSource>().ok()?;
+    if !source.is_live() {
+        return None;
+    }
+    let now = chrono::Utc::now();
+    Some(TaskOutcome {
+        id: TaskOutcomeId::new(),
+        project_id: ProjectId::from_string(outcome.project_id.clone()),
+        source,
+        source_ref_kind: "planning_session".to_string(),
+        source_ref_id: planning_session_id.to_string(),
+        task_id: None,
+        conversation_id: outcome.refs.get("conversation_id").cloned(),
+        agent_run_id: None,
+        pull_request_id: None,
+        proposal_id: None,
+        verification_id: None,
+        review_id: None,
+        outcome_class: Some(TaskOutcomeClass::from(outcome.outcome_class.as_str())),
+        status,
+        evidence_json: serde_json::to_value(outcome).unwrap_or_else(|_| serde_json::json!({})),
+        failure_fingerprint: None,
+        provider_harness: None,
+        provider_session_id: None,
+        created_at: now,
+        updated_at: now,
     })
-    .to_string()
+}
+
+async fn capture_accepted_plan_mode_proposal_outcome(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    project_id: &str,
+    reason: Option<&str>,
+) -> Option<PlanModeVerdictOutcome> {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .ok()
+        .flatten()?;
+    let planning_session_id = workspace.linked_ideation_session_id.as_ref()?;
+    let planning_session = state
+        .ideation_session_repo
+        .get_by_id(planning_session_id)
+        .await
+        .ok()
+        .flatten();
+    let plan_artifact_id = planning_session.and_then(|session| {
+        session
+            .plan_artifact_id
+            .or(session.inherited_plan_artifact_id)
+            .map(|artifact_id| artifact_id.as_str().to_string())
+    });
+
+    let outcome = capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
+        project_id: project_id.to_string(),
+        conversation_id: conversation_id.as_str(),
+        planning_session_id: Some(planning_session_id.0.clone()),
+        accepted_session_id: None,
+        plan_artifact_id,
+        verdict: PlanModeVerdict::Accepted,
+        reason: reason.map(str::to_string),
+    })?;
+
+    if let Some(task_outcome) = task_outcome_from_plan_mode_verdict(&outcome) {
+        let service = OutcomeLedgerService::new(Arc::clone(&state.task_outcome_repo));
+        match service.record_outcome(task_outcome).await {
+            Ok(recorded_outcome) => {
+                let outcome_id = recorded_outcome.id.clone();
+                let schedule = schedule_explicit_project_skill_distillation(
+                    state,
+                    &recorded_outcome.project_id,
+                    ProjectSkillDistillationSelection::ExactOutcomes(vec![outcome_id.clone()]),
+                    Some(conversation_id),
+                    ChatContextType::Project,
+                    project_id,
+                )
+                .await;
+                if matches!(
+                    schedule.status,
+                    ProjectSkillDistillationScheduleStatus::Failed
+                        | ProjectSkillDistillationScheduleStatus::Unavailable
+                ) {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        outcome_id = %outcome_id.as_str(),
+                        status = schedule.status.as_str(),
+                        "Accepted Plan-mode evidence was queued but the distiller did not start"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    error = %error,
+                    "Failed to persist accepted Plan-mode proposal outcome"
+                );
+            }
+        }
+    }
+
+    Some(outcome)
 }
 
 struct PreparedPlanModeHandoff {
@@ -251,10 +388,23 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
         return Err(error);
     }
 
+    let plan_mode_outcome = capture_accepted_plan_mode_proposal_outcome(
+        state,
+        &conversation_id,
+        &conversation.context_id,
+        proposal.reason.as_deref(),
+    )
+    .await;
+
     let continuation = build_plan_mode_proposal_continuation(proposal.reason.as_deref());
     let continuation_id = format!("plan-mode-handoff:{request_id}");
     let mut queued = QueuedMessage::with_id(continuation_id.clone(), continuation);
-    queued.metadata_override = Some(plan_mode_proposal_continuation_metadata(request_id));
+    queued.metadata_override = Some(match plan_mode_outcome.as_ref() {
+        Some(outcome) => {
+            plan_mode_proposal_continuation_metadata_with_outcome(request_id, Some(outcome))
+        }
+        None => plan_mode_proposal_continuation_metadata(request_id),
+    });
 
     let outcome = if let Some(owner) = runtime_owner.as_ref() {
         service.stage_runtime_handoff(owner.clone(), queued).await

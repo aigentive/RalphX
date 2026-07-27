@@ -314,6 +314,24 @@ mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
 mod v20260612124826_provider_cli_management_policy;
 #[cfg(test)]
 mod v20260612124826_provider_cli_management_policy_tests;
+mod v20260614120000_learned_skill_substrate;
+#[cfg(test)]
+mod v20260614120000_learned_skill_substrate_tests;
+mod v20260615092455_project_skill_settings;
+#[cfg(test)]
+mod v20260615092455_project_skill_settings_tests;
+mod v20260722090527_project_skill_schema_versioning;
+#[cfg(test)]
+mod v20260722090527_project_skill_schema_versioning_tests;
+mod v20260723111500_project_skill_evidence_batches;
+#[cfg(test)]
+mod v20260723111500_project_skill_evidence_batches_tests;
+mod v20260723130204_archive_legacy_project_skill_drafts;
+#[cfg(test)]
+mod v20260723130204_archive_legacy_project_skill_drafts_tests;
+mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints;
+#[cfg(test)]
+mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints_tests;
 mod v20260616182441_external_issue_links;
 #[cfg(test)]
 mod v20260616182441_external_issue_links_tests;
@@ -1366,6 +1384,16 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260612124826_provider_cli_management_policy::migrate,
     },
     Migration {
+        version: 20260614120000,
+        name: "learned_skill_substrate",
+        migrate: v20260614120000_learned_skill_substrate::migrate,
+    },
+    Migration {
+        version: 20260615092455,
+        name: "project_skill_settings",
+        migrate: v20260615092455_project_skill_settings::migrate,
+    },
+    Migration {
         version: 20260616182441,
         name: "external_issue_links",
         migrate: v20260616182441_external_issue_links::migrate,
@@ -1731,6 +1759,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260722022339_usage_capture_provenance_and_raw_snapshots::migrate,
     },
     Migration {
+        version: 20260722090527,
+        name: "project_skill_schema_versioning",
+        migrate: v20260722090527_project_skill_schema_versioning::migrate,
+    },
+    Migration {
         version: 20260722132100,
         name: "automation_run_goal_item",
         migrate: v20260722132100_automation_run_goal_item::migrate,
@@ -1749,6 +1782,21 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260723100604,
         name: "app_state_update_channel",
         migrate: v20260723100604_app_state_update_channel::migrate,
+    },
+    Migration {
+        version: 20260723111500,
+        name: "project_skill_evidence_batches",
+        migrate: v20260723111500_project_skill_evidence_batches::migrate,
+    },
+    Migration {
+        version: 20260723130204,
+        name: "archive_legacy_project_skill_drafts",
+        migrate: v20260723130204_archive_legacy_project_skill_drafts::migrate,
+    },
+    Migration {
+        version: 20260723143416,
+        name: "typed_ledger_sources_classes_failure_fingerprints",
+        migrate: v20260723143416_typed_ledger_sources_classes_failure_fingerprints::migrate,
     },
     Migration {
         version: 20260724113627,

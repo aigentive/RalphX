@@ -11,15 +11,18 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use ralphx_lib::domain::entities::ideation::{SessionPurpose, VerificationStatus};
 use ralphx_lib::domain::entities::{
-    ChatContextType, ChatMessage, IdeationSessionBuilder, IdeationSessionId, InternalStatus,
-    Project, ProjectId, Task, VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot,
+    ChatContextType, ChatMessage, IdeationSession, IdeationSessionBuilder, IdeationSessionId,
+    InternalStatus, Project, ProjectId, ProjectSkillSettings, Task, TaskOutcomeSource,
+    TaskOutcomeStatus, VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot,
 };
 use ralphx_lib::domain::execution::ExecutionSettings;
-use ralphx_lib::domain::services::RunningAgentKey;
+use ralphx_lib::domain::repositories::{TaskOutcomeListOptions, UpsertTaskOutcomeInput};
+use ralphx_lib::domain::services::{new_empty_task_outcome, RunningAgentKey};
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::{
     ChildSessionStatusParams, HttpServerState, SendSessionMessageRequest,
 };
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path as StdPath, PathBuf},
@@ -1229,4 +1232,220 @@ async fn test_send_ideation_session_message_send_error_returns_500_in_test_mode(
     assert!(result.is_err(), "test mode must block real Claude spawn");
     let (status, _body) = result.unwrap_err();
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+fn recurrence_key_for_gap(description: &str) -> String {
+    let tokens = description
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    let canonical = tokens.into_iter().collect::<Vec<_>>().join("\n");
+    format!("token-set-v1:{:x}", Sha256::digest(canonical.as_bytes()))
+}
+
+async fn seed_recurrence_corpus(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+    key: &str,
+    sessions: &[&str],
+) {
+    for (index, session) in sessions.iter().enumerate() {
+        let mut evidence = new_empty_task_outcome(
+            project_id.clone(),
+            if index % 2 == 0 {
+                TaskOutcomeSource::Review
+            } else {
+                TaskOutcomeSource::MergeValidation
+            },
+            "fixture",
+            format!("corpus-{index}"),
+        );
+        evidence.status = TaskOutcomeStatus::Failed;
+        evidence.evidence_json = serde_json::json!({
+            "recurrence_key": key,
+            "recurrence_session": session,
+        });
+        state
+            .app_state
+            .task_outcome_repo
+            .upsert(UpsertTaskOutcomeInput { outcome: evidence })
+            .await
+            .unwrap();
+    }
+}
+
+async fn post_missing_import_gap(state: &HttpServerState, session_id: &str, round: u32) {
+    let result = post_verification_status(
+        State(state.clone()),
+        Path(session_id.to_string()),
+        Json(UpdateVerificationRequest {
+            status: "reviewing".to_string(),
+            in_progress: true,
+            round: Some(round),
+            gaps: Some(vec![VerificationGapRequest {
+                severity: "high".to_string(),
+                category: "testing".to_string(),
+                description: "Missing regression tests for the import path".to_string(),
+                why_it_matters: Some("The same bug can reappear silently".to_string()),
+                source: Some("layer2".to_string()),
+            }]),
+            convergence_reason: None,
+            max_rounds: Some(5),
+            parse_failed: None,
+            generation: None,
+        }),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "round {round} verification update should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_post_verification_status_records_recurring_gap_outcome() {
+    let state = setup_test_state().await;
+    let project_id = ProjectId::new();
+    let session = IdeationSession::new(project_id.clone());
+    let session_id = session.id.clone();
+    let session_id_str = session_id.as_str().to_string();
+
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let mut settings = ProjectSkillSettings::default_for_project(project_id.clone());
+    settings.verification_corpus_gate = 2;
+    state
+        .app_state
+        .project_skill_settings_repo
+        .upsert(settings)
+        .await
+        .unwrap();
+    let key = recurrence_key_for_gap("Missing regression tests for the import path");
+    seed_recurrence_corpus(
+        &state,
+        &project_id,
+        &key,
+        &["trusted-session-1", "trusted-session-2"],
+    )
+    .await;
+
+    for round in [1, 2] {
+        post_missing_import_gap(&state, &session_id_str, round).await;
+    }
+
+    let outcomes = state
+        .app_state
+        .task_outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 3);
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.source == TaskOutcomeSource::Verification)
+        .expect("recurring verification outcome");
+    assert_eq!(outcome.source.as_str(), "verification");
+    assert_eq!(outcome.source_ref_kind, "gap_recurrence");
+    assert_eq!(
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("verification_gap_recurring")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Eligible);
+    assert_eq!(
+        outcome.verification_id.as_deref(),
+        Some(session_id_str.as_str())
+    );
+    assert_eq!(
+        outcome.evidence_json["eligible_observations"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(outcome.evidence_json["distinct_sessions"].as_u64(), Some(2));
+    assert_eq!(outcome.evidence_json["recurrence_key"], key);
+
+    let batch = state
+        .app_state
+        .project_skill_evidence_batch_repo
+        .get_by_outcome_id(&project_id, &outcome.id)
+        .await
+        .unwrap()
+        .expect("recurrence evidence batch");
+    assert_eq!(batch.items.len(), 1);
+    assert!(batch.items[0]
+        .digest
+        .starts_with(&format!("recurrence_key={key}\n")));
+}
+
+#[tokio::test]
+async fn test_post_verification_status_requires_enabled_gate_and_two_distinct_sessions() {
+    let state = setup_test_state().await;
+    let key = recurrence_key_for_gap("Missing regression tests for the import path");
+
+    let disabled_project = ProjectId::new();
+    let disabled_session = IdeationSession::new(disabled_project.clone());
+    let disabled_session_id = disabled_session.id.as_str().to_string();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(disabled_session)
+        .await
+        .unwrap();
+    seed_recurrence_corpus(
+        &state,
+        &disabled_project,
+        &key,
+        &["disabled-session-1", "disabled-session-2"],
+    )
+    .await;
+    post_missing_import_gap(&state, &disabled_session_id, 1).await;
+    let disabled_outcomes = state
+        .app_state
+        .task_outcome_repo
+        .list_by_project(&disabled_project, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert!(!disabled_outcomes
+        .iter()
+        .any(|outcome| outcome.source == TaskOutcomeSource::Verification));
+
+    let single_session_project = ProjectId::new();
+    let single_session = IdeationSession::new(single_session_project.clone());
+    let single_session_id = single_session.id.as_str().to_string();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(single_session)
+        .await
+        .unwrap();
+    let mut settings = ProjectSkillSettings::default_for_project(single_session_project.clone());
+    settings.verification_corpus_gate = 1;
+    state
+        .app_state
+        .project_skill_settings_repo
+        .upsert(settings)
+        .await
+        .unwrap();
+    seed_recurrence_corpus(
+        &state,
+        &single_session_project,
+        &key,
+        &["same-session", "same-session"],
+    )
+    .await;
+    post_missing_import_gap(&state, &single_session_id, 1).await;
+    let single_session_outcomes = state
+        .app_state
+        .task_outcome_repo
+        .list_by_project(&single_session_project, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert!(!single_session_outcomes
+        .iter()
+        .any(|outcome| outcome.source == TaskOutcomeSource::Verification));
 }

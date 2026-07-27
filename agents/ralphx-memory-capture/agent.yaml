@@ -9,6 +9,16 @@ capabilities:
     - get_conversation_transcript
     - upsert_memories
     - mark_memory_obsolete
+    - list_project_skills
+    - get_project_skill
+    - upsert_project_skill
+    - patch_project_skill
+    - retire_project_skill
+  internal_skills:
+    auto_match: true
+    max_auto_loaded: 1
+    allowed:
+      - project-skill-authoring
 harnesses:
   claude:
     model: sonnet
@@ -27,3 +37,23 @@ harnesses:
       - Bash
       - Write
       - Edit
+profiles:
+  skill_distiller:
+    role: skill_distiller
+    description: "Background evidence-batch distiller that authors reusable project skills through the bounded B3 write surface."
+    capabilities:
+      mcp_tools:
+        - upsert_project_skill
+        - patch_project_skill
+        - retire_project_skill
+      internal_skills:
+        allowed:
+          - project-skill-authoring
+    harnesses:
+      claude:
+        tools:
+          mcp_only: true
+        preapproved_cli_tools: []
+      codex:
+        runtime_features:
+          shell_tool: false

@@ -96,7 +96,7 @@ portable-pty = "0.8"
 [features]
 default = ["devtools"]
 devtools = ["tauri/devtools"]
-test-utils = ["tauri/test"]
+test-utils = ["tauri/test", "ralphx-domain/test-utils"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6.15"

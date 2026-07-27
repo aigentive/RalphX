@@ -9,6 +9,9 @@ use serde_json::json;
 use tracing::{error, info};
 
 use super::*;
+use crate::application::memory_capture_service::{
+    MemoryCaptureInput, MemoryCaptureService, MemoryCaptureUpsertCommand, MemoryCaptureUpsertPort,
+};
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     ArchiveJobPayload, ArchiveJobType, MemoryActorType, MemoryArchiveJob, MemoryBucket,
@@ -135,85 +138,40 @@ pub async fn upsert_memories(
     State(state): State<HttpServerState>,
     Json(req): Json<UpsertMemoriesRequest>,
 ) -> Result<Json<UpsertMemoriesResponse>, StatusCode> {
-    let project_id = ProjectId::from_string(req.project_id.clone());
-    let mut inserted = 0;
-    let mut skipped = 0;
-    let mut failed = 0;
-
-    for input in &req.memories {
-        // Parse bucket
-        let bucket = match input.bucket.parse::<MemoryBucket>() {
-            Ok(b) => b,
-            Err(_) => {
-                error!("Invalid bucket: {}", input.bucket);
-                failed += 1;
-                continue;
-            }
-        };
-
-        // Compute content hash for deduplication
-        let content_hash = MemoryEntry::compute_content_hash(
-            &input.title,
-            &input.summary,
-            &input.details_markdown,
-        );
-
-        // Check for duplicate
-        let existing = state
-            .app_state
-            .memory_entry_repo
-            .find_by_content_hash(&project_id, &bucket, &content_hash)
-            .await
-            .map_err(|e| {
-                error!("Failed to check content hash: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        if existing.is_some() {
-            skipped += 1;
-            continue;
-        }
-
-        // Create new memory entry
-        let mut entry = MemoryEntry::new(
-            project_id.clone(),
-            bucket,
-            input.title.clone(),
-            input.summary.clone(),
-            input.details_markdown.clone(),
-            input.scope_paths.clone(),
-            content_hash,
-        );
-        entry.source_context_type = input.source_context_type.clone();
-        entry.source_context_id = input.source_context_id.clone();
-        entry.source_conversation_id = input.source_conversation_id.clone();
-        entry.quality_score = input.quality_score;
-
-        match state.app_state.memory_entry_repo.create(entry).await {
-            Ok(_) => inserted += 1,
-            Err(e) => {
-                error!("Failed to create memory entry: {}", e);
-                failed += 1;
-            }
-        }
-    }
-
-    info!(
-        "upsert_memories: inserted={}, skipped={}, failed={}",
-        inserted, skipped, failed
+    let service = MemoryCaptureService::new(
+        Arc::clone(&state.app_state.memory_entry_repo),
+        Arc::clone(&state.app_state.memory_event_repo),
     );
+    let result = service
+        .upsert_memories(MemoryCaptureUpsertCommand {
+            project_id: ProjectId::from_string(req.project_id),
+            memories: req
+                .memories
+                .into_iter()
+                .map(|input| MemoryCaptureInput {
+                    bucket: input.bucket,
+                    title: input.title,
+                    summary: input.summary,
+                    details_markdown: input.details_markdown,
+                    scope_paths: input.scope_paths,
+                    source_context_type: input.source_context_type,
+                    source_context_id: input.source_context_id,
+                    source_conversation_id: input.source_conversation_id,
+                    quality_score: input.quality_score,
+                })
+                .collect(),
+        })
+        .await
+        .map_err(|service_error| {
+            error!(error = %service_error, "Failed to upsert memories");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(UpsertMemoriesResponse {
-        inserted,
-        skipped,
-        failed,
-        message: format!(
-            "Processed {} memories: {} inserted, {} skipped (duplicates), {} failed",
-            req.memories.len(),
-            inserted,
-            skipped,
-            failed
-        ),
+        inserted: result.inserted,
+        skipped: result.skipped,
+        failed: result.failed,
+        message: result.message(),
     }))
 }
 

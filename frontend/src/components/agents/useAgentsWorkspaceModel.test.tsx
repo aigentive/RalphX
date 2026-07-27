@@ -245,6 +245,9 @@ describe("useAgentsWorkspaceModel", () => {
     expect(result.current.focusedWorkspaceReviewServiceTier).toBe("fast");
   });
 
+
+
+
   it("normalizes remembered Codex Ultra effort before alias-aware send checks", () => {
     const { result } = renderHook(
       () =>

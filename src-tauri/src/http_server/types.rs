@@ -12,8 +12,11 @@ use crate::commands::unified_chat_commands::{
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, StepProgressSummary,
-    TaskProposal, TaskStep,
+    AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, ProjectSkill,
+    StepProgressSummary, TaskProposal, TaskStep,
+};
+use crate::domain::services::{
+    ProjectSkillImportDecision, ProjectSkillImportPreviewRow, ProjectSkillReportCard,
 };
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::artifacts::EditError;
@@ -1588,6 +1591,435 @@ pub struct MarkMemoryObsoleteRequest {
 pub struct MarkMemoryObsoleteResponse {
     pub success: bool,
     pub message: String,
+}
+
+// ============================================================================
+// Request/Response Types - Learned Project Skills (read-only)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillResponse {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub status: String,
+    pub pinned: bool,
+    pub archived: bool,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: Option<String>,
+    pub provenance_json: Value,
+    pub companion_of_skill_id: Option<String>,
+    pub content_hash: String,
+    pub evidence_hash: String,
+    pub created_by: String,
+    pub pipeline_role: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<ProjectSkill> for ProjectSkillResponse {
+    fn from(skill: ProjectSkill) -> Self {
+        Self {
+            id: skill.id.as_str().to_string(),
+            project_id: skill.project_id.as_str().to_string(),
+            title: skill.title,
+            bucket: skill.bucket,
+            stage: skill.stage,
+            status: skill.status.to_string(),
+            pinned: skill.pinned,
+            archived: skill.archived,
+            scope_paths: skill.scope_paths,
+            compact_guidance: skill.compact_guidance,
+            body_markdown: skill.body_markdown,
+            predicted_effect: skill.predicted_effect,
+            provenance_json: skill.provenance_json,
+            companion_of_skill_id: skill
+                .companion_of_skill_id
+                .map(|id| id.as_str().to_string()),
+            content_hash: skill.content_hash,
+            evidence_hash: skill.evidence_hash,
+            created_by: skill.created_by.to_string(),
+            pipeline_role: skill.pipeline_role,
+            created_at: skill.created_at.to_rfc3339(),
+            updated_at: skill.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListProjectSkillsRequest {
+    pub project_id: String,
+    pub status: Option<String>,
+    #[serde(default)]
+    pub include_archived: bool,
+    pub stage: Option<String>,
+    pub bucket: Option<String>,
+    pub scope_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListProjectSkillsResponse {
+    pub skills: Vec<ProjectSkillResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListConversationProjectSkillsRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationProjectSkillResponse {
+    pub skill: ProjectSkillResponse,
+    pub generated_by_conversation: bool,
+    pub used_by_conversation: bool,
+    pub usage_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListConversationProjectSkillsResponse {
+    pub skills: Vec<ConversationProjectSkillResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProcessConversationProjectSkillsRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessConversationProjectSkillsResponse {
+    pub message_count: usize,
+    pub status: String,
+    pub selected_outcomes: usize,
+    pub batch_count: usize,
+    pub started_batches: usize,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetProjectSkillRequest {
+    pub project_id: String,
+    pub project_skill_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GetProjectSkillResponse {
+    pub skill: Option<ProjectSkillResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpsertProjectSkillRequest {
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PatchProjectSkillRequest {
+    pub project_skill_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetireProjectSkillRequest {
+    pub project_id: String,
+    pub project_skill_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillPipelineResponse {
+    pub skill: ProjectSkillResponse,
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectSkillLifecycleRequest {
+    pub project_skill_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateProjectSkillRequest {
+    pub project_skill_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+    pub source_sync_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillLifecycleResponse {
+    pub skill: Option<ProjectSkillResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DistillProjectSkillsRequest {
+    pub project_id: String,
+    pub source: Option<String>,
+    pub limit: Option<usize>,
+    pub include_git_history: Option<bool>,
+    pub include_github_pr_history: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DistillProjectSkillsResponse {
+    pub status: String,
+    pub selected_outcomes: usize,
+    pub batch_count: usize,
+    pub started_batches: usize,
+    pub message: Option<String>,
+    pub ingested_outcomes: usize,
+    pub scanned_git_commits: usize,
+    pub scanned_github_prs: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListProjectSkillReportCardsRequest {
+    pub project_id: String,
+    pub min_linked_outcomes: Option<usize>,
+    pub stale_after_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillReportCardResponse {
+    pub project_skill_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub pinned: bool,
+    pub usage_count: usize,
+    pub linked_outcome_count: usize,
+    pub succeeded_outcome_count: usize,
+    pub failed_outcome_count: usize,
+    pub unknown_outcome_count: usize,
+    pub last_used_at: Option<String>,
+    pub age_days: i64,
+    pub aging_status: String,
+    pub evidence_level: String,
+}
+
+impl From<ProjectSkillReportCard> for ProjectSkillReportCardResponse {
+    fn from(card: ProjectSkillReportCard) -> Self {
+        Self {
+            project_skill_id: card.project_skill_id.as_str().to_string(),
+            title: card.title,
+            bucket: card.bucket,
+            stage: card.stage,
+            pinned: card.pinned,
+            usage_count: card.usage_count,
+            linked_outcome_count: card.linked_outcome_count,
+            succeeded_outcome_count: card.succeeded_outcome_count,
+            failed_outcome_count: card.failed_outcome_count,
+            unknown_outcome_count: card.unknown_outcome_count,
+            last_used_at: card.last_used_at.map(|value| value.to_rfc3339()),
+            age_days: card.age_days,
+            aging_status: format!("{:?}", card.aging_status).to_ascii_lowercase(),
+            evidence_level: match card.evidence_level {
+                crate::domain::services::ProjectSkillEvidenceLevel::InsufficientData => {
+                    "insufficient_data".to_string()
+                }
+                crate::domain::services::ProjectSkillEvidenceLevel::Descriptive => {
+                    "descriptive".to_string()
+                }
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListProjectSkillReportCardsResponse {
+    pub cards: Vec<ProjectSkillReportCardResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewProjectSkillImportCandidateRequest {
+    pub external_id: Option<String>,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    #[serde(default)]
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+    #[serde(default)]
+    pub provenance_json: Value,
+    #[serde(default)]
+    pub source_snapshot_json: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewProjectSkillImportRequest {
+    pub project_id: String,
+    #[serde(default)]
+    pub candidates: Vec<PreviewProjectSkillImportCandidateRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplyProjectSkillImportRequest {
+    pub project_id: String,
+    #[serde(default)]
+    pub candidates: Vec<PreviewProjectSkillImportCandidateRequest>,
+    #[serde(default)]
+    pub confirm_import: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillImportPreviewRowResponse {
+    pub index: usize,
+    pub external_id: Option<String>,
+    pub title: String,
+    pub decision: String,
+    pub reasons: Vec<String>,
+    pub duplicate_project_skill_id: Option<String>,
+}
+
+impl From<ProjectSkillImportPreviewRow> for ProjectSkillImportPreviewRowResponse {
+    fn from(row: ProjectSkillImportPreviewRow) -> Self {
+        Self {
+            index: row.index,
+            external_id: row.external_id,
+            title: row.title,
+            decision: match row.decision {
+                ProjectSkillImportDecision::Eligible => "eligible",
+                ProjectSkillImportDecision::Invalid => "invalid",
+                ProjectSkillImportDecision::Duplicate => "duplicate",
+            }
+            .to_string(),
+            reasons: row.reasons,
+            duplicate_project_skill_id: row
+                .duplicate_project_skill_id
+                .map(|id| id.as_str().to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewProjectSkillImportResponse {
+    pub rows: Vec<ProjectSkillImportPreviewRowResponse>,
+    pub eligible_count: usize,
+    pub invalid_count: usize,
+    pub duplicate_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplyProjectSkillImportResponse {
+    pub preview: PreviewProjectSkillImportResponse,
+    pub imported_skills: Vec<ProjectSkillResponse>,
+    pub imported_count: usize,
+    pub synced_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectSkillDirectoryImportRequest {
+    pub project_id: String,
+    pub confirm_import: bool,
+    #[serde(default)]
+    pub source_roots: Vec<String>,
+    pub source_sync_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PromoteMemoryToProjectSkillRequest {
+    pub project_id: String,
+    pub memory_id: String,
+    pub title: Option<String>,
+    pub bucket: String,
+    pub stage: String,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PromoteMemoryToProjectSkillResponse {
+    pub skill: ProjectSkillResponse,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewProjectSkillExportRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApplyProjectSkillExportRequest {
+    pub project_id: String,
+    #[serde(default)]
+    pub confirm_export: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetProjectSkillSettingsRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateProjectSkillSettingsRequest {
+    pub project_id: String,
+    pub enabled: Option<bool>,
+    pub auto_inject: Option<bool>,
+    pub auto_distill: Option<bool>,
+    pub injection_max_skills: Option<i64>,
+    pub injection_max_chars: Option<i64>,
+    pub injection_guidance_max_chars: Option<i64>,
+    pub report_min_outcomes: Option<i64>,
+    pub verification_corpus_gate: Option<i64>,
+    pub export_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillSettingsResponse {
+    pub project_id: String,
+    pub enabled: bool,
+    pub auto_inject: bool,
+    pub auto_distill: bool,
+    pub injection_max_skills: i64,
+    pub injection_max_chars: i64,
+    pub injection_guidance_max_chars: i64,
+    pub report_min_outcomes: i64,
+    pub verification_corpus_gate: i64,
+    pub export_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillExportFileResponse {
+    pub project_skill_id: String,
+    pub title: String,
+    pub relative_path: String,
+    pub pinned: bool,
+    pub status: String,
+    pub will_write: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillExportResponse {
+    pub project_id: String,
+    pub target_root: String,
+    pub files: Vec<ProjectSkillExportFileResponse>,
+    pub count: usize,
 }
 
 #[derive(Debug, Deserialize)]

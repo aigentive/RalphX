@@ -37,7 +37,7 @@ use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::{Notifier, TaskScheduler};
 use crate::domain::state_machine::transition_handler::{
-    complete_merge_internal_with_pr_sync_and_notifier,
+    complete_merge_internal_with_pr_sync_notifier_and_outcome,
     is_pr_branch_publication_conflict_routed_error, task_has_pr_branch_publication_conflict,
     PlanBranchPrSyncServices,
 };
@@ -1124,13 +1124,14 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         )) as Arc<dyn Notifier>
     });
 
-    if let Err(e) = complete_merge_internal_with_pr_sync_and_notifier(
+    if let Err(e) = complete_merge_internal_with_pr_sync_notifier_and_outcome(
         task,
         project,
         commit_sha,
         source_branch,
         target_branch,
         ctx.task_repo,
+        app_state.as_deref().map(|state| &state.task_outcome_repo),
         None,
         None,
         event_sink.as_deref(),

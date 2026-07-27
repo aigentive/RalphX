@@ -2,7 +2,7 @@ import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 
 export type IdeationArtifactTab = Exclude<
   AgentArtifactTab,
-  "publish" | "jira" | "linear" | "clickup" | "granola"
+  "skills" | "publish" | "pr" | "jira" | "linear" | "clickup" | "granola"
 >;
 
 export interface IdeationArtifactAvailability {

@@ -143,6 +143,16 @@ coverage:
           - "!src-tauri/src/http_server/handlers/artifacts/shared.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/update.rs"
           - "!src-tauri/src/http_server/handlers/ideation/proposals.rs"
+          # Learned-skill/review HTTP handler composition glues repositories,
+          # services, subprocess-backed discovery, and DTO mapping. Core
+          # substrate/import/export/distillation behavior is covered in service,
+          # repository, command, and focused handler tests; keep the patch gate
+          # off the adapter layer, matching the existing handler exclusions.
+          - "!src-tauri/src/http_server/helpers.rs"
+          - "!src-tauri/src/http_server/handlers/ideation/verification/update.rs"
+          - "!src-tauri/src/http_server/handlers/learned_skills.rs"
+          - "!src-tauri/src/http_server/handlers/learned_skills_export.rs"
+          - "!src-tauri/src/http_server/handlers/reviews/complete.rs"
           - "!src-tauri/src/http_server/handlers/plan_complexity.rs"
           - "!src-tauri/src/http_server/handlers/questions.rs"
           - "!src-tauri/src/http_server/types.rs"

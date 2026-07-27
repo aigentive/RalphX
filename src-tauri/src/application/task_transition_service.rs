@@ -35,7 +35,7 @@ use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
     ExecutionRecoveryState, InternalStatus, PlanBranchId, ReviewNote, ReviewOutcome, ReviewerType,
-    Task, TaskCategory, TaskId,
+    Task, TaskCategory, TaskId, TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -44,14 +44,15 @@ use crate::domain::repositories::{
     ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationSessionRepository, IdeationSettingsRepository, MemoryEventRepository,
     PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskRepository, TaskStepRepository, ValidationRunRepository,
+    TaskOutcomeRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     github_service::{
         PrMergeStateStatus, PrMergeableState, PrReviewFeedback, PrStatus, PrSyncState,
     },
+    new_empty_task_outcome,
     payload_enrichment::{PresentationKind, WebhookPresentationContext},
-    MessageQueue, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
+    MessageQueue, OutcomeLedgerService, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::{
     AgentSpawner, DependencyManager, EventEmitter, NotificationContext, Notifier,
@@ -63,6 +64,7 @@ use crate::domain::state_machine::transition_handler::metadata_builder::{
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::spawner::AgenticClientSpawner;
+use crate::infrastructure::memory::MemoryProjectMemorySettingsRepository;
 use ralphx_domain::entities::EventType;
 use ralphx_events::EventSink;
 
@@ -83,6 +85,11 @@ fn build_transition_chat_service_fallback(
     execution_state: Arc<ExecutionState>,
     app_handle: Option<AppHandle>,
 ) -> AppChatService {
+    let project_memory_settings_repo = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.project_memory_settings_repo))
+        .unwrap_or_else(|| Arc::new(MemoryProjectMemorySettingsRepository::new()));
     let deps = ChatRuntimeFactoryDeps::from_core(
         chat_message_repo,
         chat_attachment_repo,
@@ -102,6 +109,7 @@ fn build_transition_chat_service_fallback(
         message_queue,
         running_agent_registry,
         memory_event_repo,
+        project_memory_settings_repo,
     );
 
     build_chat_service_with_fallback(&app_handle, Some(execution_state), &deps)
@@ -933,6 +941,9 @@ pub struct TaskTransitionService {
     /// so external consumers (poll/SSE) can observe transitions.
     external_events_repo: Option<Arc<dyn ExternalEventsRepository>>,
 
+    /// Outcome ledger repository for learned-skill/eval evidence emitted by transition actions.
+    task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
+
     /// PR poller registry for GitHub PR polling (AD18).
     /// Passed to TaskServices so state machine actions can start/stop polling.
     /// None disables PR integration.
@@ -1243,6 +1254,9 @@ impl TaskTransitionService {
         let app_state = app_handle
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>());
+        let task_outcome_repo = app_state
+            .as_ref()
+            .map(|state| Arc::clone(&state.task_outcome_repo));
         let event_sink = app_state.as_ref().map(|state| Arc::clone(&state.events));
         let throttled_emitter = app_handle.as_ref().and_then(|handle| {
             handle
@@ -1311,6 +1325,7 @@ impl TaskTransitionService {
             merge_lock: Arc::new(tokio::sync::Mutex::new(())),
             merges_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
             external_events_repo: None,
+            task_outcome_repo,
             validation_tokens: Arc::new(dashmap::DashMap::new()),
             running_agent_registry,
             pr_poller_registry: None,
@@ -1415,6 +1430,12 @@ impl TaskTransitionService {
     /// Set the review repository for system review-note persistence (builder pattern).
     pub fn with_review_repo(mut self, repo: Arc<dyn ReviewRepository>) -> Self {
         self.review_repo = Some(repo);
+        self
+    }
+
+    /// Set the task outcome repository for learned-skill/eval evidence (builder pattern).
+    pub fn with_task_outcome_repo(mut self, repo: Arc<dyn TaskOutcomeRepository>) -> Self {
+        self.task_outcome_repo = Some(repo);
         self
     }
 
@@ -2433,6 +2454,55 @@ impl TaskTransitionService {
         }
     }
 
+    async fn record_github_pr_review_outcome(
+        &self,
+        merge_task: &Task,
+        correction_task: &Task,
+        pr_number: i64,
+        feedback: &PrReviewFeedback,
+    ) {
+        let Some(repo) = self.task_outcome_repo.as_ref() else {
+            return;
+        };
+
+        let mut outcome = new_empty_task_outcome(
+            merge_task.project_id.clone(),
+            TaskOutcomeSource::GithubPrReview,
+            "github_review",
+            feedback.review_id.clone(),
+        );
+        outcome.task_id = Some(merge_task.id.as_str().to_string());
+        outcome.review_id = Some(feedback.review_id.clone());
+        outcome.outcome_class = Some(TaskOutcomeClass::GithubPrChangesRequested);
+        outcome.status = TaskOutcomeStatus::Failed;
+        outcome.evidence_json = serde_json::json!({
+            "task_id": merge_task.id.as_str(),
+            "correction_task_id": correction_task.id.as_str(),
+            "pr_number": pr_number,
+            "review_id": feedback.review_id,
+            "author": feedback.author,
+            "submitted_at": feedback.submitted_at,
+            "body": feedback.body,
+            "comment_count": feedback.comments.len(),
+            "comments": feedback.comments.iter().map(|comment| serde_json::json!({
+                "id": comment.id,
+                "author": comment.author,
+                "path": comment.path,
+                "line": comment.line,
+            })).collect::<Vec<_>>(),
+        });
+
+        let service = OutcomeLedgerService::new(Arc::clone(repo));
+        if let Err(error) = service.record_outcome(outcome).await {
+            tracing::warn!(
+                task_id = merge_task.id.as_str(),
+                review_id = feedback.review_id,
+                error = %error,
+                "Failed to record GitHub PR review outcome"
+            );
+        }
+    }
+
     /// Convert an actionable GitHub requested-changes review into normal plan work.
     ///
     /// The final plan merge task is system-managed, so it should not be re-executed as
@@ -2533,6 +2603,13 @@ impl TaskTransitionService {
 
             self.persist_github_pr_review_note_once(&correction_task, pr_number, &feedback)
                 .await;
+            self.record_github_pr_review_outcome(
+                &merge_task,
+                &correction_task,
+                pr_number,
+                &feedback,
+            )
+            .await;
 
             let routed_at = chrono::Utc::now().to_rfc3339();
             let mut merge_metadata = serde_json::json!({
@@ -3498,6 +3575,9 @@ impl TaskTransitionService {
         }
         if let Some(ref repo) = self.external_events_repo {
             services = services.with_external_events_repo(Arc::clone(repo));
+        }
+        if let Some(ref repo) = self.task_outcome_repo {
+            services = services.with_task_outcome_repo(Arc::clone(repo));
         }
         services = services.with_session_merge_locks(Arc::clone(&self.session_merge_locks));
         services

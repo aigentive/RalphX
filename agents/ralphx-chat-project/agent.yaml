@@ -8,6 +8,8 @@ capabilities:
     - search_memories
     - get_memory
     - get_memories_for_paths
+    - list_project_skills
+    - get_project_skill
     - get_conversation_transcript
     - get_artifact
     - propose_plan_mode
@@ -51,6 +53,8 @@ harnesses:
       - search_memories
       - get_memory
       - get_memories_for_paths
+      - list_project_skills
+      - get_project_skill
       - get_conversation_transcript
       - get_artifact
       - propose_plan_mode
@@ -97,6 +101,8 @@ harnesses:
       - search_memories
       - get_memory
       - get_memories_for_paths
+      - list_project_skills
+      - get_project_skill
       - get_conversation_transcript
       - get_artifact
       - propose_plan_mode

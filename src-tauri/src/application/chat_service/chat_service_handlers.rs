@@ -33,22 +33,28 @@ use crate::domain::entities::{
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
     MergeRecoverySource, MergeRecoveryState, PersonaDirective, ReviewNote, ReviewOutcome,
-    ReviewerType, SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata,
-    VerificationGap, VerificationStatus,
+    ReviewerType, SessionPurpose, Task, TaskId, TaskOutcome, TaskOutcomeClass, TaskOutcomeId,
+    TaskOutcomeSource, TaskOutcomeStatus, TaskStepStatus, ValidationCacheMetadata, VerificationGap,
+    VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
+    ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
-use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
+use crate::domain::services::{
+    is_direct_edit_workspace, AgentWorkspaceOutcomeAdapter, MessageQueue, OutcomeLedgerService,
+    QueueKey, QueuedMessage, RunningAgentRegistry,
+};
 use crate::domain::state_machine::services::{TaskScheduler, WebhookPublisher};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::{stream_timeouts, ContentBlockItem, ToolCall};
+use crate::infrastructure::memory::MemoryProjectMemorySettingsRepository;
 
 use super::chat_service_context;
 use super::chat_service_errors::{
@@ -177,6 +183,132 @@ async fn mark_cancelled_stream_as_cancelled(
                 "Failed to load agent run before cancelled stream labeling; preserving existing run state"
             );
         }
+    }
+}
+
+async fn record_task_execution_outcome<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    task: &Task,
+    conversation_id: &ChatConversationId,
+    agent_run_id: &str,
+    status: TaskOutcomeStatus,
+    outcome_class: TaskOutcomeClass,
+    evidence_json: serde_json::Value,
+) {
+    let Some(app_state) = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+    else {
+        return;
+    };
+
+    let agent_run = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id))
+        .await
+        .ok()
+        .flatten();
+    let now = chrono::Utc::now();
+    let outcome = TaskOutcome {
+        id: TaskOutcomeId::new(),
+        project_id: task.project_id.clone(),
+        source: TaskOutcomeSource::AgentSession,
+        source_ref_kind: "agent_run".to_string(),
+        source_ref_id: agent_run_id.to_string(),
+        task_id: Some(task.id.as_str().to_string()),
+        conversation_id: Some(conversation_id.as_str().to_string()),
+        agent_run_id: Some(agent_run_id.to_string()),
+        pull_request_id: None,
+        proposal_id: None,
+        verification_id: None,
+        review_id: None,
+        outcome_class: Some(outcome_class.clone()),
+        status,
+        evidence_json,
+        failure_fingerprint: None,
+        provider_harness: agent_run
+            .as_ref()
+            .and_then(|run| run.harness)
+            .map(|harness| harness.to_string()),
+        provider_session_id: agent_run.and_then(|run| run.provider_session_id),
+        created_at: now,
+        updated_at: now,
+    };
+
+    let service = OutcomeLedgerService::new(Arc::clone(&app_state.task_outcome_repo));
+    if let Err(error) = service.record_outcome(outcome).await {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            agent_run_id,
+            outcome_class = outcome_class.as_str(),
+            error = %error,
+            "Failed to record task execution outcome"
+        );
+    }
+}
+
+async fn record_direct_workspace_turn_outcome<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_conversation_workspace_repo: &Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    context_type: ChatContextType,
+    conversation_id: &ChatConversationId,
+    agent_run_id: &str,
+    has_output: bool,
+) {
+    if context_type != ChatContextType::Project || !has_output {
+        return;
+    }
+    let Some(workspace_repo) = agent_conversation_workspace_repo.as_ref() else {
+        return;
+    };
+    let Some(app_state) = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+    else {
+        return;
+    };
+    let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+        Ok(Some(workspace)) if is_direct_edit_workspace(&workspace) => workspace,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Failed to load direct agent workspace for learned-skill outcome capture"
+            );
+            return;
+        }
+    };
+    match GitService::has_uncommitted_changes(Path::new(&workspace.worktree_path)).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                worktree_path = workspace.worktree_path.as_str(),
+                error = %error,
+                "Failed to inspect direct agent workspace changes for learned-skill outcome capture"
+            );
+            return;
+        }
+    }
+    let agent_run = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id.to_string()))
+        .await
+        .ok()
+        .flatten();
+    let adapter = AgentWorkspaceOutcomeAdapter::new(Arc::clone(&app_state.task_outcome_repo));
+    if let Err(error) = adapter
+        .record_turn_with_code_changes(&workspace, agent_run.as_ref())
+        .await
+    {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            agent_run_id,
+            error = %error,
+            "Failed to record direct agent workspace learned-skill outcome"
+        );
     }
 }
 
@@ -1006,6 +1138,12 @@ fn build_recovery_retry_background_context<R: Runtime>(
 ) -> super::chat_service_send_background::BackgroundRunContext<R> {
     use super::chat_service_send_background::{BackgroundRunContext, BackgroundRunRepos};
 
+    let project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository> = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.project_memory_settings_repo))
+        .unwrap_or_else(|| Arc::new(MemoryProjectMemorySettingsRepository::new()));
+
     BackgroundRunContext {
         child: retry_child,
         harness: recovery_harness,
@@ -1051,6 +1189,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
             task_proposal_repo: task_proposal_repo.clone(),
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),
+            project_memory_settings_repo,
             notification_service: None,
             message_queue: Arc::clone(message_queue),
             running_agent_registry: Arc::clone(running_agent_registry),
@@ -1505,6 +1644,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     agent_run_id: &str,
     context_type: ChatContextType,
     context_id: &str,
+    conversation_id: &ChatConversationId,
     has_output: bool,
     completion_tool_called: bool,
     execution_slot_held: bool,
@@ -1522,6 +1662,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     message_queue: &Arc<MessageQueue>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    agent_conversation_workspace_repo: &Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
@@ -1537,6 +1678,16 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
 ) {
+    record_direct_workspace_turn_outcome(
+        app_handle,
+        agent_conversation_workspace_repo,
+        agent_run_repo,
+        context_type,
+        conversation_id,
+        agent_run_id,
+        has_output,
+    )
+    .await;
     let runtime_support = RuntimeSupportRepos::new(
         execution_settings_repo,
         agent_lane_settings_repo,
@@ -1652,6 +1803,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     } else {
                         false
                     };
+                    let all_steps_done = step_state == StepCompletionState::AllComplete;
                     let mut completion_action = execution_completion_action(
                         has_output,
                         step_state,
@@ -1697,7 +1849,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     }
 
                     if completion_action == ExecutionCompletionAction::PendingReview
-                        && step_state == StepCompletionState::AllComplete
+                        && all_steps_done
                     {
                         tracing::info!(
                                 task_id = task_id.as_str(),
@@ -1712,6 +1864,22 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 task_id.as_str(),
                                 e
                             );
+                        } else {
+                            record_task_execution_outcome(
+                                app_handle,
+                                agent_run_repo,
+                                &task,
+                                conversation_id,
+                                agent_run_id,
+                                TaskOutcomeStatus::Succeeded,
+                                TaskOutcomeClass::TaskExecutionCompleted,
+                                serde_json::json!({
+                                    "completion_action": "pending_review",
+                                    "has_output": has_output,
+                                    "all_steps_done": all_steps_done,
+                                }),
+                            )
+                            .await;
                         }
                     } else if completion_action == ExecutionCompletionAction::PendingReview {
                         if validation_complete {
@@ -1739,6 +1907,22 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 task_id.as_str(),
                                 e
                             );
+                        } else {
+                            record_task_execution_outcome(
+                                app_handle,
+                                agent_run_repo,
+                                &task,
+                                conversation_id,
+                                agent_run_id,
+                                TaskOutcomeStatus::Succeeded,
+                                TaskOutcomeClass::TaskExecutionCompleted,
+                                serde_json::json!({
+                                    "completion_action": "pending_review",
+                                    "has_output": has_output,
+                                    "all_steps_done": all_steps_done,
+                                }),
+                            )
+                            .await;
                         }
                     } else {
                         let current_task = match resolve_current_execution_attempt(
@@ -1830,6 +2014,21 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 task_id = task_id.as_str(),
                                 "Task execution produced no output; transitioned to Failed"
                             );
+                            record_task_execution_outcome(
+                                app_handle,
+                                agent_run_repo,
+                                &current_task,
+                                conversation_id,
+                                agent_run_id,
+                                TaskOutcomeStatus::Failed,
+                                TaskOutcomeClass::TaskExecutionNoOutput,
+                                serde_json::json!({
+                                    "reason": "Agent ended without completing all task steps",
+                                    "has_output": has_output,
+                                    "all_steps_done": all_steps_done,
+                                }),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -2339,6 +2538,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 agent_run_id,
                 context_type,
                 context_id,
+                &conversation_id,
                 true, // effective_has_output: turns were finalized → agent produced output
                 *completion_tool_called,
                 false, // execution_slot_held=false: re-increment happened above at line ~570
@@ -2356,6 +2556,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 message_queue,
                 running_agent_registry,
                 memory_event_repo,
+                &None,
                 plan_branch_repo,
                 task_step_repo,
                 validation_run_repo,
@@ -2425,6 +2626,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 agent_run_id,
                 context_type,
                 context_id,
+                &conversation_id,
                 true, // effective_has_output: completion tool was called → agent produced output
                 true,
                 false, // execution_slot_held=false: no TurnComplete decrement to compensate
@@ -2442,6 +2644,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 message_queue,
                 running_agent_registry,
                 memory_event_repo,
+                &None,
                 plan_branch_repo,
                 task_step_repo,
                 validation_run_repo,
@@ -3536,6 +3739,37 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     )
                                     .await;
                             }
+                        } else if target_status == InternalStatus::PendingReview {
+                            record_task_execution_outcome(
+                                app_handle,
+                                agent_run_repo,
+                                &current_task,
+                                &conversation_id,
+                                agent_run_id,
+                                TaskOutcomeStatus::Succeeded,
+                                TaskOutcomeClass::TaskExecutionCompleted,
+                                serde_json::json!({
+                                    "completion_action": "pending_review",
+                                    "target_status": target_status.to_string(),
+                                    "reason": "agent_exit_after_completed_steps",
+                                }),
+                            )
+                            .await;
+                        } else if target_status == InternalStatus::Failed {
+                            record_task_execution_outcome(
+                                app_handle,
+                                agent_run_repo,
+                                &current_task,
+                                &conversation_id,
+                                agent_run_id,
+                                TaskOutcomeStatus::Failed,
+                                TaskOutcomeClass::TaskExecutionFailed,
+                                serde_json::json!({
+                                    "target_status": target_status.to_string(),
+                                    "error": redacted_error,
+                                }),
+                            )
+                            .await;
                         }
                     } else {
                         tracing::warn!(
@@ -3544,6 +3778,38 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             target_status = %target_status,
                             "Worker failed; transitioned task"
                         );
+                        if target_status == InternalStatus::PendingReview {
+                            record_task_execution_outcome(
+                                app_handle,
+                                agent_run_repo,
+                                &current_task,
+                                &conversation_id,
+                                agent_run_id,
+                                TaskOutcomeStatus::Succeeded,
+                                TaskOutcomeClass::TaskExecutionCompleted,
+                                serde_json::json!({
+                                    "completion_action": "pending_review",
+                                    "target_status": target_status.to_string(),
+                                    "reason": "agent_exit_after_completed_steps",
+                                }),
+                            )
+                            .await;
+                        } else if target_status == InternalStatus::Failed {
+                            record_task_execution_outcome(
+                                app_handle,
+                                agent_run_repo,
+                                &current_task,
+                                &conversation_id,
+                                agent_run_id,
+                                TaskOutcomeStatus::Failed,
+                                TaskOutcomeClass::TaskExecutionFailed,
+                                serde_json::json!({
+                                    "target_status": target_status.to_string(),
+                                    "error": redacted_error,
+                                }),
+                            )
+                            .await;
+                        }
                     }
                 }
                 Ok(Some(_)) => {}

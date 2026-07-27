@@ -81,6 +81,13 @@ pub mod sqlite_ideation_effort_settings_repo;
 pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
+pub mod sqlite_learned_skill_repos;
+mod project_skill_version_rows;
+#[cfg(test)]
+mod sqlite_learned_skill_repos_tests;
+pub mod sqlite_task_outcome_repository;
+#[cfg(test)]
+mod sqlite_task_outcome_repository_tests;
 pub mod sqlite_linear_integration_settings_repo;
 pub mod sqlite_linear_webhook_store;
 pub mod sqlite_memory_archive_job_repository;
@@ -107,6 +114,15 @@ pub mod sqlite_plan_branch_repo;
 pub mod sqlite_plan_selection_stats_repo;
 pub mod sqlite_process_repo;
 pub mod sqlite_project_repo;
+pub mod sqlite_project_memory_settings_repo;
+#[cfg(test)]
+mod sqlite_project_memory_settings_repo_tests;
+pub mod sqlite_project_skill_settings_repo;
+#[cfg(test)]
+mod sqlite_project_skill_settings_repo_tests;
+pub mod sqlite_project_skill_evidence_batch_repo;
+#[cfg(test)]
+mod sqlite_project_skill_evidence_batch_repo_tests;
 pub mod sqlite_proposal_dependency_repo;
 pub mod sqlite_question_repo;
 pub mod sqlite_queued_message_repo;
@@ -185,6 +201,10 @@ pub use sqlite_ideation_effort_settings_repo::SqliteIdeationEffortSettingsReposi
 pub use sqlite_ideation_model_settings_repo::SqliteIdeationModelSettingsRepository;
 pub use sqlite_ideation_session_repo::SqliteIdeationSessionRepository;
 pub use sqlite_ideation_settings_repo::SqliteIdeationSettingsRepository;
+pub use sqlite_learned_skill_repos::{
+    SqliteProjectSkillRepository, SqliteSkillUsageEventRepository,
+};
+pub use sqlite_task_outcome_repository::SqliteTaskOutcomeRepository;
 pub use sqlite_linear_integration_settings_repo::SqliteLinearIntegrationSettingsRepository;
 pub use sqlite_linear_webhook_store::SqliteLinearWebhookStore;
 pub use sqlite_memory_archive_job_repository::SqliteMemoryArchiveJobRepository;
@@ -201,6 +221,9 @@ pub use sqlite_plan_branch_repo::SqlitePlanBranchRepository;
 pub use sqlite_plan_selection_stats_repo::SqlitePlanSelectionStatsRepository;
 pub use sqlite_process_repo::SqliteProcessRepository;
 pub use sqlite_project_repo::SqliteProjectRepository;
+pub use sqlite_project_memory_settings_repo::SqliteProjectMemorySettingsRepository;
+pub use sqlite_project_skill_settings_repo::SqliteProjectSkillSettingsRepository;
+pub use sqlite_project_skill_evidence_batch_repo::SqliteProjectSkillEvidenceBatchRepository;
 pub use sqlite_proposal_dependency_repo::SqliteProposalDependencyRepository;
 pub use sqlite_question_repo::SqliteQuestionRepository;
 pub use sqlite_queued_message_repo::SqliteQueuedMessageRepository;

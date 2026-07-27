@@ -30,6 +30,7 @@ import {
 import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
+import { SkillsView } from "@/components/views/SkillsView";
 import { AgentIssueReportDialog } from "@/components/agents/AgentIssueReportDialog";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { StartupMaintenance } from "@/components/StartupMaintenance";
@@ -39,6 +40,7 @@ import { useTaskStore, selectTasksByStatus } from "@/stores/taskStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
 import { DEFAULT_APP_VIEW, type AppView } from "@/types/app-view";
 import { useTicketingStore } from "@/stores/ticketingStore";
@@ -233,6 +235,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
   const { data: featureFlags } = useFeatureFlags();
+  const [skillsEnabled] = useSkillsEnabled();
 
   // Redirect to the default project view in production when the current view is disabled.
   // Ticketing remains directly reachable when a provider enables the dashboard
@@ -246,6 +249,12 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
       setCurrentView(DEFAULT_APP_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
+
+  useEffect(() => {
+    if (!skillsEnabled && currentView === "skills") {
+      setCurrentView(DEFAULT_APP_VIEW);
+    }
+  }, [currentView, setCurrentView, skillsEnabled]);
 
   // Welcome screen overlay state
   const showWelcomeOverlay = useUiStore((s) => s.showWelcomeOverlay);
@@ -1148,6 +1157,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
                 />
               )}
               {currentView === "insights" && <InsightsView />}
+              {currentView === "skills" && <SkillsView />}
             </div>
         </div>
 

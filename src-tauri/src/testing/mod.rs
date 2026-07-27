@@ -17,6 +17,12 @@ pub use crate::infrastructure::sqlite::{
 };
 
 #[cfg(any(test, feature = "test-utils"))]
+pub use crate::infrastructure::memory::{
+    InMemoryMemoryEntryRepository, MemoryProjectSkillEvidenceBatchRepository,
+    MemoryProjectSkillRepository, MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
+};
+
+#[cfg(any(test, feature = "test-utils"))]
 pub fn memory_branch_update_repository(
 ) -> std::sync::Arc<dyn crate::domain::repositories::BranchUpdateRepository> {
     std::sync::Arc::new(crate::infrastructure::memory::MemoryBranchUpdateRepository::new())

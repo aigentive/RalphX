@@ -358,7 +358,18 @@
         "text": "use crate::http_server::helpers::{"
       }
     ],
-    "root_domain_no_tauri_usage": [],
+    "root_domain_no_tauri_usage": [
+      {
+        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/phase2_phase3_merge_tests.rs",
+        "target": "tauri::",
+        "text": "use tauri::Manager;"
+      },
+      {
+        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/phase2_phase3_merge_tests.rs",
+        "target": "tauri::",
+        "text": "use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};"
+      }
+    ],
     "root_domain_no_upward_imports": [
       {
         "path": "src-tauri/src/domain/repositories/permission_repository.rs",
@@ -888,7 +899,12 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/orchestration_chain_tests.rs",
         "target": "crate::infrastructure",
-        "text": "use crate::infrastructure::memory::MemoryPlanBranchRepository;"
+        "text": "use crate::infrastructure::memory::{MemoryPlanBranchRepository, MemoryTaskOutcomeRepository};"
+      },
+      {
+        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/phase2_phase3_merge_tests.rs",
+        "target": "crate::application",
+        "text": "use crate::application::AppState;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/phase2_phase3_merge_tests.rs",
@@ -1201,6 +1217,11 @@
         "path": "src-tauri/src/http_server/handlers/issues.rs",
         "target": "crate::commands",
         "text": "use crate::commands::review_commands_types::{IssueProgressResponse, ReviewIssueResponse};"
+      },
+      {
+        "path": "src-tauri/src/http_server/handlers/memory_tests.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/handlers/permissions_tests.rs",

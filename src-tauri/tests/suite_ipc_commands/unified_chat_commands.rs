@@ -2165,6 +2165,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -2250,6 +2251,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_artifacts() {
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -3020,6 +3022,7 @@ mod ipc_contract {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
             std::sync::Arc::clone(&state.agent_run_repo),
+            std::sync::Arc::clone(&state.task_outcome_repo),
         )
         .await;
 
@@ -3050,6 +3053,7 @@ mod ipc_contract {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
             std::sync::Arc::clone(&state.agent_run_repo),
+            std::sync::Arc::clone(&state.task_outcome_repo),
         )
         .await;
         let refreshed = state

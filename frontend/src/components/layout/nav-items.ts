@@ -5,6 +5,7 @@
 
 import {
   Activity,
+  BookOpenCheck,
   Briefcase,
   Puzzle,
   Ticket,
@@ -38,6 +39,12 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     icon: Workflow,
     shortcut: "⌘2",
     visible: (flags) => flags.automationsPage,
+  },
+  {
+    view: "skills",
+    label: "Skills",
+    icon: BookOpenCheck,
+    visible: () => true,
   },
   {
     view: "ticketing",

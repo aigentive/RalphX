@@ -42,6 +42,8 @@ pub(crate) mod agent_workspace_pr_autofix_attempt;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_terminal_cleanup;
+mod agent_workspace_terminal_observation;
+mod agent_workspace_terminalization;
 #[cfg(test)]
 mod agent_workspace_terminal_cleanup_tests;
 #[cfg(test)]
@@ -140,7 +142,12 @@ pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod managed_team;
 pub mod memory_archive_service;
+pub mod memory_capture_service;
+#[cfg(test)]
+mod memory_capture_service_tests;
 pub mod memory_orchestration;
+#[cfg(test)]
+mod memory_orchestration_tests;
 pub(crate) mod merge_pipeline_visibility;
 pub(crate) mod native_menu;
 pub mod notification_context_resolver;
@@ -172,6 +179,11 @@ pub(crate) mod plan_reference_import;
 pub mod pr_startup_recovery;
 pub mod priority_service;
 pub mod project_pr_template;
+pub mod project_skill_export_service;
+pub mod project_skill_distillation_service;
+mod project_skill_distillation_batching;
+#[cfg(test)]
+mod project_skill_distillation_service_tests;
 pub(crate) mod provider_env_file;
 pub(crate) mod provider_onboarding_gate;
 pub(crate) mod provider_management_eligibility;

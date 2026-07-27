@@ -71,6 +71,7 @@ import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
+  appendProjectSkillDirectives,
   detectAgentComposerTrigger,
   extractComposerArtifactTokens,
   extractPastedAtlassianResourceUrls,
@@ -145,12 +146,19 @@ function atlassianResourceToIntegrationReference(
 }
 
 function getSkillSourceLabel(skill: AgentComposerSkill): string {
-  return skill.source === "ralphx-internal"
-    ? "RalphX"
-    : (skill.providerHarness ?? "native");
+  if (skill.source === "ralphx-internal") {
+    return "RalphX";
+  }
+  if (skill.source === "learned") {
+    return "learned";
+  }
+  return skill.providerHarness ?? "native";
 }
 
 function getSlashSkillLabel(skill: AgentComposerSkill): string {
+  if (skill.source === "learned") {
+    return `$${skill.name}`;
+  }
   return `/${skill.name}`;
 }
 
@@ -163,6 +171,9 @@ function getSkillInsertionText(
   }
   if (skill.source === "ralphx-internal") {
     return skill.invocationValue || skill.name || fallbackName;
+  }
+  if (skill.source === "learned") {
+    return `$${skill.name}`;
   }
   return skill.invocationValue || fallbackName;
 }
@@ -423,6 +434,9 @@ export function AgentComposerSurface({
   const [selectedInternalSkillNames, setSelectedInternalSkillNames] = useState<
     Set<string>
   >(() => new Set());
+  const [selectedProjectSkillIds, setSelectedProjectSkillIds] = useState<
+    Set<string>
+  >(() => new Set());
   const textareaAppliedHeightRef = useRef<number | null>(null);
   const [selectedProjectReferences, setSelectedProjectReferences] = useState<
     Map<string, AgentComposerProjectReference>
@@ -613,6 +627,7 @@ export function AgentComposerSurface({
     }
     setCursorPosition(0);
     setSelectedInternalSkillNames(new Set());
+    setSelectedProjectSkillIds(new Set());
     setSelectedProjectReferences(new Map());
     setSelectedIntegrationReferences(new Map());
     setSelectedArtifactReferences(new Map());
@@ -1022,8 +1037,14 @@ export function AgentComposerSurface({
       }));
     }
     if (activeTrigger.kind === "skill") {
+      const triggerMarker = value[activeTrigger.rangeStart];
       return skills
         .filter((skill) => skill.enabled)
+        .filter((skill) =>
+          triggerMarker === "$"
+            ? skill.source === "learned"
+            : skill.source !== "learned",
+        )
         .filter((skill) => skillMatchesComposerQuery(skill, query))
         .slice(0, 12)
         .map((skill) => {
@@ -1130,6 +1151,7 @@ export function AgentComposerSurface({
     skills,
     skillByMenuId,
     slashCommandItems,
+    value,
   ]);
   const integrationSearchErrorLabel = useMemo(() => {
     if (!integrationResourcesQuery.isError) {
@@ -1156,7 +1178,12 @@ export function AgentComposerSurface({
     integrationResourcesQuery.isError,
   ]);
   const shouldShowCommandMenu =
-    composerAssistEnabled && isFocused && Boolean(activeTrigger);
+    composerAssistEnabled &&
+    isFocused &&
+    Boolean(activeTrigger) &&
+    (activeTrigger?.kind !== "skill" ||
+      menuItems.length > 0 ||
+      skillsQuery.isFetching);
   const integrationEmptyLabel =
     integrationSearchErrorLabel ??
     (integrationQuery.trim()
@@ -1234,6 +1261,12 @@ export function AgentComposerSurface({
           setSelectedInternalSkillNames((current) => {
             const nextSet = new Set(current);
             nextSet.add(skill.invocationValue || skill.name);
+            return nextSet;
+          });
+        } else if (skill?.source === "learned" && skill.invocationValue) {
+          setSelectedProjectSkillIds((current) => {
+            const nextSet = new Set(current);
+            nextSet.add(skill.invocationValue);
             return nextSet;
           });
         }
@@ -1385,6 +1418,10 @@ export function AgentComposerSurface({
         message,
         [...internalNames],
       );
+      const withSkillDirectives = appendProjectSkillDirectives(
+        withInternalSkillDirectives,
+        [...selectedProjectSkillIds],
+      );
       const references = new Map<string, AgentComposerProjectReference>();
       for (const reference of selectedProjectReferenceList) {
         references.set(reference.path, reference);
@@ -1432,14 +1469,14 @@ export function AgentComposerSurface({
         ? ({ coordinationMode: "rx_native_team" } satisfies TeamIntent)
         : null;
       return {
-        message: withInternalSkillDirectives,
+        message: withSkillDirectives,
         ...(folderReferenceSnapshots.length > 0 ||
           projectReferences.length > 0 ||
           normalizedIntegrationReferences.length > 0 ||
           normalizedArtifactReferences.length > 0 ||
           excerptReferences.length > 0 ||
-          capabilityIntent ||
-          teamIntent
+           capabilityIntent ||
+           teamIntent
           ? {
               options: {
                 ...(folderReferenceSnapshots.length > 0
@@ -1469,6 +1506,7 @@ export function AgentComposerSurface({
       selectedIntegrationReferenceList,
       selectedExcerptReferenceList,
       selectedInternalSkillNames,
+      selectedProjectSkillIds,
       selectedProjectReferenceList,
       skills,
       capability,
@@ -1630,6 +1668,7 @@ export function AgentComposerSurface({
         return;
       }
       setSelectedInternalSkillNames(new Set());
+      setSelectedProjectSkillIds(new Set());
       setSelectedProjectReferences(new Map());
       setSelectedIntegrationReferences(new Map());
       setSelectedArtifactReferences(new Map());

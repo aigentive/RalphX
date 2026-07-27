@@ -666,6 +666,43 @@ fn persona_extractor_prompts_mention_only_live_tools() {
 }
 
 #[test]
+fn memory_agents_grant_and_document_the_complete_project_skill_surface() {
+    let root = project_root();
+    let project_skill_tools = [
+        "list_project_skills",
+        "get_project_skill",
+        "upsert_project_skill",
+        "patch_project_skill",
+        "retire_project_skill",
+    ];
+
+    for agent_name in ["ralphx-memory-capture", "ralphx-memory-maintainer"] {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("missing canonical definition for {agent_name}"));
+        for tool in project_skill_tools {
+            assert!(
+                definition
+                    .capabilities
+                    .mcp_tools
+                    .iter()
+                    .any(|grant| grant == tool),
+                "{agent_name} should grant {tool}"
+            );
+        }
+        for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+            let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+                .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+            for tool in project_skill_tools {
+                assert!(
+                    prompt.contains(tool),
+                    "{agent_name} {harness:?} prompt should document {tool}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn persona_extractor_prompt_requires_distilled_persona_output() {
     let root = project_root();
 

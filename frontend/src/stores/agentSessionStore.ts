@@ -38,6 +38,7 @@ export type AgentArtifactTab =
   | "plan"
   | "verification"
   | "tasks"
+  | "skills"
   | "pr"
   | "jira"
   | "linear"

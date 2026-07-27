@@ -8,13 +8,18 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::domain::entities::{InternalStatus, MergeStrategy, Project, ProjectId, Task};
-use crate::domain::repositories::TaskRepository;
+use crate::application::AppState;
+use crate::domain::entities::{
+    InternalStatus, MergeStrategy, Project, ProjectId, Task, TaskOutcomeStatus,
+};
+use crate::domain::repositories::{TaskOutcomeListOptions, TaskRepository};
 use crate::domain::state_machine::transition_handler::merge_completion::{
     clear_pending_cleanup_metadata, deferred_merge_cleanup, has_pending_cleanup_metadata,
     set_pending_cleanup_metadata,
 };
 use crate::infrastructure::memory::MemoryTaskRepository;
+use tauri::test::{mock_builder, mock_context, noop_assets};
+use tauri::Manager;
 
 // ==================
 // Metadata helpers
@@ -156,7 +161,7 @@ fn make_merge_commit(repo_path: &Path) -> String {
 /// Phase 2: complete_merge_internal sets pending_cleanup metadata.
 #[tokio::test]
 async fn complete_merge_sets_pending_cleanup_metadata() {
-    use crate::domain::state_machine::transition_handler::complete_merge_internal;
+    use crate::domain::state_machine::transition_handler::merge_completion::complete_merge_internal_with_outcome;
 
     let (_dir, repo_path_str) = make_test_repo();
     let repo_path = Path::new(&repo_path_str);
@@ -164,6 +169,13 @@ async fn complete_merge_sets_pending_cleanup_metadata() {
 
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
     let project_id = ProjectId::from_string("proj-phase2".to_string());
+    let app_state = AppState::new_test();
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
 
     let mut task = Task::new(project_id.clone(), "Phase 2 test".into());
     task.internal_status = InternalStatus::PendingMerge;
@@ -176,16 +188,17 @@ async fn complete_merge_sets_pending_cleanup_metadata() {
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
 
-    let result = complete_merge_internal(
+    let result = complete_merge_internal_with_outcome(
         &mut task,
         &project,
         &commit_sha,
         "",
         "main",
         &task_repo,
+        Some(&state.task_outcome_repo),
         None,
         None,
-        None,
+        Some(state.events.as_ref()),
         None,
     )
     .await;
@@ -209,6 +222,27 @@ async fn complete_merge_sets_pending_cleanup_metadata() {
     assert!(
         task.worktree_path.is_some(),
         "worktree_path must still be set (cleanup deferred)"
+    );
+
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(&project.id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source.as_str(), "merge");
+    assert_eq!(outcome.source_ref_kind, "task");
+    assert_eq!(outcome.source_ref_id, task.id.as_str());
+    assert_eq!(outcome.task_id.as_deref(), Some(task.id.as_str()));
+    assert_eq!(
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("merge_completed")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Succeeded);
+    assert_eq!(
+        outcome.evidence_json["commit_sha"].as_str(),
+        Some(commit_sha.as_str())
     );
 }
 

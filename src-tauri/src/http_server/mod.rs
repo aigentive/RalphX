@@ -305,6 +305,63 @@ pub async fn start_http_server_with_listener_ready(
         .route("/api/agent_tasks/update", post(update_agent_task))
         .route("/api/agent_tasks/claim", post(claim_agent_task))
         .route("/api/agent_tasks/complete", post(complete_agent_task))
+        // Learned project skill read tools
+        .route("/api/project_skills/list", post(list_project_skills))
+        .route(
+            "/api/project_skills/conversation",
+            post(list_conversation_project_skills),
+        )
+        .route(
+            "/api/project_skills/conversation/process",
+            post(process_conversation_project_skills),
+        )
+        .route("/api/project_skills/get", post(get_project_skill))
+        .route("/api/project_skills/upsert", post(upsert_project_skill))
+        .route("/api/project_skills/patch", post(patch_project_skill))
+        .route("/api/project_skills/retire", post(retire_project_skill))
+        .route("/api/project_skills/approve", post(approve_project_skill))
+        .route("/api/project_skills/reject", post(reject_project_skill))
+        .route("/api/project_skills/archive", post(archive_project_skill))
+        .route("/api/project_skills/pin", post(pin_project_skill))
+        .route("/api/project_skills/unpin", post(unpin_project_skill))
+        .route("/api/project_skills/update", post(update_project_skill))
+        .route("/api/project_skills/distill", post(distill_project_skills))
+        .route(
+            "/api/project_skills/report_cards",
+            post(list_project_skill_report_cards),
+        )
+        .route(
+            "/api/project_skills/import/preview",
+            post(preview_project_skill_import),
+        )
+        .route(
+            "/api/project_skills/import/apply",
+            post(apply_project_skill_import),
+        )
+        .route(
+            "/api/project_skills/import/project_directory/apply",
+            post(apply_project_skill_directory_import),
+        )
+        .route(
+            "/api/project_skills/promote_memory",
+            post(promote_memory_to_project_skill),
+        )
+        .route(
+            "/api/project_skills/settings/get",
+            post(get_project_skill_settings),
+        )
+        .route(
+            "/api/project_skills/settings/update",
+            post(update_project_skill_settings),
+        )
+        .route(
+            "/api/project_skills/export/preview",
+            post(preview_project_skill_export),
+        )
+        .route(
+            "/api/project_skills/export/apply",
+            post(apply_project_skill_export),
+        )
         .route(
             "/api/agent_tasks/delegate_assignment/get",
             post(get_delegate_assignment),

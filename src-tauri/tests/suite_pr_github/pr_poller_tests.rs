@@ -16,9 +16,10 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversationId,
     ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, PlanBranch,
     PlanBranchId, Project, ProjectId, ReviewOutcome, ReviewerType, Task, TaskCategory,
+    TaskOutcomeStatus,
 };
 use ralphx_lib::domain::repositories::{
-    AgentConversationWorkspaceRepository, PlanBranchRepository,
+    AgentConversationWorkspaceRepository, PlanBranchRepository, TaskOutcomeListOptions,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -27,7 +28,7 @@ use ralphx_lib::domain::services::github_service::{
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER;
 use ralphx_lib::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository,
+    MemoryPlanBranchRepository, MemoryTaskOutcomeRepository,
 };
 
 use crate::common::MockGithubService;
@@ -85,7 +86,8 @@ fn build_transition_service_with_pr_deps(
             Arc::clone(&app_state.memory_event_repo),
         )
         .with_plan_branch_repo(plan_branch_repo)
-        .with_review_repo(Arc::clone(&app_state.review_repo)),
+        .with_review_repo(Arc::clone(&app_state.review_repo))
+        .with_task_outcome_repo(Arc::clone(&app_state.task_outcome_repo)),
     )
 }
 
@@ -237,6 +239,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
             std::path::Path::new("/tmp/agent-workspace"),
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::new(MemoryAgentRunRepository::new()),
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
@@ -299,6 +302,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
             std::path::Path::new("/tmp/agent-workspace"),
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::new(MemoryAgentRunRepository::new()),
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         )
         .await
@@ -343,6 +347,7 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.task_outcome_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
     )
@@ -385,6 +390,7 @@ async fn recover_agent_workspace_pr_pollers_skips_workspaces_waiting_on_agent() 
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.task_outcome_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
     )
@@ -425,6 +431,7 @@ async fn agent_workspace_poller_stops_when_workspace_is_ideation_owned() {
         std::path::PathBuf::from("/tmp/agent-workspace"),
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     );
 
@@ -1232,4 +1239,26 @@ async fn test_poller_changes_requested_creates_plan_correction_task() {
         !refreshed_branch.pr_polling_active,
         "polling should stop while correction task is active"
     );
+
+    let outcomes = app_state
+        .task_outcome_repo
+        .list_by_project(&project.id, TaskOutcomeListOptions::default())
+        .await
+        .expect("task outcomes query should succeed");
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source.as_str(), "github_pr_review");
+    assert_eq!(outcome.source_ref_kind, "github_review");
+    assert_eq!(outcome.source_ref_id, "4136652897");
+    assert_eq!(outcome.task_id.as_deref(), Some(merge_task.id.as_str()));
+    assert_eq!(
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("github_pr_changes_requested")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Failed);
+    assert_eq!(
+        outcome.evidence_json["correction_task_id"].as_str(),
+        Some(correction.id.as_str())
+    );
+    assert_eq!(outcome.evidence_json["comment_count"].as_u64(), Some(1));
 }

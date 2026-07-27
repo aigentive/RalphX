@@ -4,6 +4,7 @@ import { z } from "zod";
 export const APP_VIEW_VALUES = [
   "agents",
   "automations",
+  "skills",
   "ticketing",
   "github",
   "granola",

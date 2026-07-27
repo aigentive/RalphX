@@ -91,7 +91,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewOutcome, Artifact, ChatAttachment, ChatAttachmentId, ChatContextType,
     ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
     CoordinationMode, IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective,
-    PersonaId, PersonaStatus, ProjectId, TaskId, TeamIntent, TeamMessageTarget,
+    PersonaId, PersonaStatus, ProjectId, ProjectSkill, SkillUsageInjectionKind, TaskId, TeamIntent,
+    TeamMessageTarget,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -102,17 +103,20 @@ use crate::domain::repositories::{
     ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
     DelegatedSessionRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
+    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectMemorySettingsRepository,
+    ProjectRepository, QueuedMessageRepository, ReviewRepository, StateHistoryMetadata,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ValidationRunRepository,
 };
 use crate::domain::services::{
-    is_process_alive, kill_process, AttachProcessResult, ComposerArtifactReference,
-    ComposerExcerptReference, ComposerIntegrationReference, ComposerProjectReference,
-    ComposerSelectionSnapshot, MessageQueue, QueueKey, QueuedMessage, RunningAgentInfo,
-    RunningAgentKey, RunningAgentRegistry, TryRegisterError,
+    is_process_alive, kill_process, new_skill_usage_event, AttachProcessResult,
+    ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
+    ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue, ProjectSkillService,
+    QueueKey, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    SkillUsageService, TryRegisterError,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
+use crate::infrastructure::agents::internal_skills::inject_learned_skill_citations_into_system_prompt;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
     AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER, AGENT_TASK_MANAGER,
@@ -1674,6 +1678,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
+    project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     notification_service: Option<Arc<NotificationService>>,
     app_handle: Option<AppHandle<R>>,
     execution_state: Option<Arc<crate::commands::ExecutionState>>,
@@ -1747,6 +1752,7 @@ impl<R: Runtime> AppChatService<R> {
         message_queue: Arc<MessageQueue>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
+        project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
     ) -> Self {
         let bootstrap = resolve_default_chat_service_bootstrap();
 
@@ -1784,6 +1790,7 @@ impl<R: Runtime> AppChatService<R> {
             queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
+            project_memory_settings_repo,
             notification_service: None,
             app_handle: None,
             execution_state: None,
@@ -4667,6 +4674,164 @@ impl<R: Runtime> AppChatService<R> {
         ))
     }
 
+    async fn learned_skill_runtime_message(
+        &self,
+        project_id: Option<&str>,
+        runtime_message: String,
+    ) -> (String, Vec<ProjectSkill>) {
+        let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return (runtime_message, Vec::new());
+        };
+        let Some(app_state) = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+        else {
+            return (runtime_message, Vec::new());
+        };
+
+        let project_id = ProjectId::from_string(project_id.to_string());
+        let service = ProjectSkillService::new(Arc::clone(&app_state.project_skill_repo));
+        let selected_skills = match service
+            .prompt_selected_skills(&project_id, &runtime_message)
+            .await
+        {
+            Ok(skills) => skills,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project_id.as_str(),
+                    error = %error,
+                    "Failed to resolve learned project skill directives"
+                );
+                return (runtime_message, Vec::new());
+            }
+        };
+        if selected_skills.is_empty() {
+            return (runtime_message, Vec::new());
+        }
+
+        let citations = match service
+            .prompt_selected_citations(&project_id, &runtime_message)
+            .await
+        {
+            Ok(citations) => citations,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project_id.as_str(),
+                    error = %error,
+                    "Failed to build learned project skill citations"
+                );
+                return (runtime_message, Vec::new());
+            }
+        };
+        let injection = inject_learned_skill_citations_into_system_prompt("", &citations);
+        if injection.injected_skill_names.is_empty() {
+            return (runtime_message, Vec::new());
+        }
+
+        let mut enriched = runtime_message.trim_end().to_string();
+        enriched.push_str("\n\n");
+        enriched.push_str(injection.system_prompt.trim());
+        (enriched, selected_skills)
+    }
+
+    async fn record_learned_skill_usage_for_launch(
+        &self,
+        project_id: Option<&str>,
+        conversation_id: &ChatConversationId,
+        agent_run_id: &str,
+        harness: AgentHarnessKind,
+        selected_skills: &[ProjectSkill],
+    ) {
+        if selected_skills.is_empty() {
+            return;
+        }
+        let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let Some(app_state) = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+        else {
+            return;
+        };
+
+        let project_id = ProjectId::from_string(project_id.to_string());
+        let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
+        for skill in selected_skills {
+            let mut event = new_skill_usage_event(
+                project_id.clone(),
+                skill.id.clone(),
+                SkillUsageInjectionKind::ComposerDirective,
+            );
+            event.conversation_id = Some(conversation_id.as_str().to_string());
+            event.agent_run_id = Some(agent_run_id.to_string());
+            event.provider_harness = Some(harness.to_string());
+            event.stage = Some(skill.stage.clone());
+            event.bucket = Some(skill.bucket.clone());
+            event.metadata_json = serde_json::json!({
+                "source": "ralphx_project_skill_directive",
+            });
+            if let Err(error) = service.record_usage(event).await {
+                tracing::warn!(
+                    project_skill_id = skill.id.as_str(),
+                    agent_run_id,
+                    error = %error,
+                    "Failed to record learned project skill usage"
+                );
+            }
+        }
+    }
+
+    async fn record_learned_skill_usage_for_interactive_stdin(
+        &self,
+        project_id: Option<&str>,
+        conversation_id: &ChatConversationId,
+        selected_skills: &[ProjectSkill],
+    ) {
+        if selected_skills.is_empty() {
+            return;
+        }
+        let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let Some(app_state) = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+        else {
+            return;
+        };
+
+        let project_id = ProjectId::from_string(project_id.to_string());
+        let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
+        for skill in selected_skills {
+            let mut event = new_skill_usage_event(
+                project_id.clone(),
+                skill.id.clone(),
+                SkillUsageInjectionKind::InteractiveStdinUnattributed,
+            );
+            event.conversation_id = Some(conversation_id.as_str().to_string());
+            event.stage = Some(skill.stage.clone());
+            event.bucket = Some(skill.bucket.clone());
+            event.metadata_json = serde_json::json!({
+                "source": "ralphx_project_skill_directive",
+                "attribution_scope": "interactive_stdin_turn",
+                "scoring_eligible": false,
+                "scoring_disabled_reason": "interactive_stdin_turn_has_no_new_agent_run_id",
+            });
+            if let Err(error) = service.record_usage(event).await {
+                tracing::warn!(
+                    project_skill_id = skill.id.as_str(),
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Failed to record unattributed interactive learned project skill usage"
+                );
+            }
+        }
+    }
+
     async fn load_edit_mode_plan_handoff_artifact(
         &self,
         workspace: Option<&AgentConversationWorkspace>,
@@ -5604,6 +5769,23 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         .map(|message| message.id.as_str()),
                 )
                 .await?;
+            let interactive_project_id = chat_service_context::resolve_project_id(
+                context_type,
+                context_id,
+                Arc::clone(&self.task_repo),
+                Arc::clone(&self.ideation_session_repo),
+                Arc::clone(&self.delegated_session_repo),
+            )
+            .await;
+            let (runtime_message, selected_learned_skills) = self
+                .learned_skill_runtime_message(interactive_project_id.as_deref(), runtime_message)
+                .await;
+            self.record_learned_skill_usage_for_interactive_stdin(
+                interactive_project_id.as_deref(),
+                &conversation.id,
+                &selected_learned_skills,
+            )
+            .await;
             let stdin_prompt = chat_service_context::build_initial_prompt(
                 context_type,
                 context_id,
@@ -7159,18 +7341,21 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 source_message_id.as_deref(),
             )
             .await?;
+        let (runtime_message, selected_learned_skills) = self
+            .learned_skill_runtime_message(project_id.as_deref(), runtime_message)
+            .await;
         let (selected_cli_path, mut child, interactive_process_registry, interactive_process_token) =
             match self
                 .spawn_process_for_harness(
-                    &conversation,
-                    &runtime_message,
-                    resolved_persona,
+                     &conversation,
+                     &runtime_message,
+                     resolved_persona,
                     Some(resolved_agent_name.as_str()),
                     agent_profile,
                     context_type,
-                    context_id,
-                    &runtime_context_id,
-                    &agent_run_id,
+                     context_id,
+                     &runtime_context_id,
+                     &agent_run_id,
                     &working_directory,
                     entity_status.as_deref(),
                     project_id.as_deref(),
@@ -7184,8 +7369,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 .await
             {
                 Ok(result) => result,
-                Err(error) => cleanup_and_err!(error),
-            };
+                 Err(error) => cleanup_and_err!(error),
+             };
+        self.record_learned_skill_usage_for_launch(
+            project_id.as_deref(),
+            &conversation_id,
+            &agent_run_id,
+            resolved_spawn_settings.effective_harness,
+            &selected_learned_skills,
+        )
+        .await;
 
         // Register verification child PID for explicit cleanup after reconciliation (Fix A).
         // Only for Ideation sessions with SessionPurpose::Verification.
@@ -7369,6 +7562,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .clone(),
                 activity_event_repo: Arc::clone(&self.activity_event_repo),
                 memory_event_repo: Arc::clone(&self.memory_event_repo),
+                project_memory_settings_repo: Arc::clone(&self.project_memory_settings_repo),
                 notification_service: self.notification_service.clone(),
                 message_queue: Arc::clone(&self.message_queue),
                 running_agent_registry: Arc::clone(&self.running_agent_registry),
@@ -8624,6 +8818,7 @@ mod provider_spawn_gate_tests {
             Arc::clone(&state.message_queue),
             Arc::clone(&state.running_agent_registry),
             Arc::clone(&state.memory_event_repo),
+            Arc::clone(&state.project_memory_settings_repo),
         )
         .with_execution_state(Arc::clone(&execution_state))
         .with_execution_settings_repo(Arc::clone(&state.execution_settings_repo))
@@ -8688,6 +8883,7 @@ mod provider_spawn_gate_tests {
             Arc::clone(&state.message_queue),
             Arc::clone(&state.running_agent_registry),
             Arc::clone(&state.memory_event_repo),
+            Arc::clone(&state.project_memory_settings_repo),
         )
         .with_execution_settings_repo(Arc::clone(&state.execution_settings_repo))
         .with_agent_lane_settings_repo(Arc::clone(&state.agent_lane_settings_repo))

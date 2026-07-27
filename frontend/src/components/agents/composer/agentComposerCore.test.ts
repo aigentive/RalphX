@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   appendInternalSkillDirectives,
+  appendProjectSkillDirectives,
   detectAgentComposerTrigger,
   extractComposerArtifactTokens,
   extractComposerIntegrationTokens,
@@ -39,12 +40,16 @@ describe("agentComposerCore", () => {
     });
   });
 
-  it("does not detect dollar skill triggers", () => {
+  it("detects dollar learned-skill triggers", () => {
     const text = "Use $workspace-swe here";
+    const cursor = "Use $workspace-swe".length;
 
-    expect(
-      detectAgentComposerTrigger(text, "Use $workspace-swe".length),
-    ).toBeNull();
+    expect(detectAgentComposerTrigger(text, cursor)).toEqual({
+      kind: "skill",
+      query: "workspace-swe",
+      rangeStart: "Use ".length,
+      rangeEnd: cursor,
+    });
   });
 
   it("ignores slash skill triggers with nested markers", () => {
@@ -271,6 +276,16 @@ describe("agentComposerCore", () => {
         "../bad",
       ]),
     ).toBe("Build this\n\n<!-- ralphx_internal_skill=workspace-swe -->");
+  });
+
+  it("appends project skill directives with safe ids only", () => {
+    expect(
+      appendProjectSkillDirectives("Use this convention", [
+        "skill-123",
+        "skill-123",
+        "../bad",
+      ]),
+    ).toBe("Use this convention\n\n<!-- ralphx_project_skill=skill-123 -->");
   });
 
   it("normalizes project references without encoding them into prompt text", () => {

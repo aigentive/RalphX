@@ -29,6 +29,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
+    MemoryTaskOutcomeRepository,
 };
 
 fn conversation_id(suffix: u8) -> ChatConversationId {
@@ -144,6 +145,7 @@ async fn startup_recovery_wrappers_finish_on_empty_repositories() {
     recover_stale_agent_workspace_publish_repairs_on_startup(
         workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
         agent_run_repo as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
     )
     .await;
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&AppState::new_test()).await;
@@ -166,6 +168,7 @@ async fn failed_exact_pr_autofix_is_classified_as_retry_eligible() {
         recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
             Arc::clone(&state.agent_conversation_workspace_repo),
             Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.task_outcome_repo),
             Arc::clone(&state.project_repo),
             workspace,
         )
@@ -246,6 +249,7 @@ async fn recovery_correlates_the_exact_pr_autofix_attempt_not_a_newer_unrelated_
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             None,
         )
@@ -293,6 +297,7 @@ async fn recovery_with_review_target_preserves_current_reviewing_handoff() {
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             Some(&target),
         )
@@ -346,6 +351,7 @@ async fn stale_review_handoff_without_matching_target_is_recovered_and_reloaded(
     let refreshed = recover_stale_publish_repair_for_workspace_and_reload(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         workspace,
     )
     .await
@@ -387,6 +393,7 @@ async fn batch_recovery_counts_only_recovered_workspaces() {
     let recovered = recover_stale_agent_workspace_publish_repairs(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
     )
     .await
     .expect("recover batch");
@@ -433,6 +440,7 @@ async fn recovery_heals_only_an_active_current_repair_to_fixing() {
     let refreshed = recover_stale_publish_repair_for_workspace_and_reload(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         workspace,
     )
     .await
@@ -480,6 +488,7 @@ async fn recovery_restores_blocked_state_only_for_the_current_pr_autofix_replace
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             None,
         )
@@ -533,6 +542,7 @@ async fn recovery_does_not_treat_an_unrelated_active_run_as_a_pr_autofix_replace
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             None,
         )
@@ -602,6 +612,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_agent_workspace_publish_repairs(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await
         .expect("recover stale repair");
@@ -673,6 +684,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_agent_workspace_publish_repairs(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await
         .expect("recover stale repair");
@@ -702,6 +714,7 @@ mod extracted_inline_tests {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await;
 
@@ -715,6 +728,7 @@ mod extracted_inline_tests {
         recover_stale_agent_workspace_publish_repairs_on_startup(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
         )
         .await;
 
@@ -745,6 +759,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -782,6 +797,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -801,6 +817,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -825,10 +842,14 @@ mod extracted_inline_tests {
         run.completed_at = None;
         agent_run_repo.create(run).await.expect("seed run");
 
-        let recovered =
-            recover_stale_publish_repair_for_workspace(workspace_repo, agent_run_repo, workspace)
-                .await
-                .expect("check repair state");
+        let recovered = recover_stale_publish_repair_for_workspace(
+            workspace_repo,
+            agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
+            workspace,
+        )
+        .await
+        .expect("check repair state");
 
         assert!(recovered);
     }
@@ -850,6 +871,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await
@@ -902,6 +924,7 @@ mod extracted_inline_tests {
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             agent_run_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
         )
         .await

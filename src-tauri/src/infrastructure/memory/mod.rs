@@ -47,6 +47,9 @@ pub mod memory_ideation_effort_settings_repo;
 pub mod memory_ideation_model_settings_repo;
 pub mod memory_ideation_session_repo;
 pub mod memory_ideation_settings_repo;
+pub mod memory_learned_skill_repos;
+#[cfg(test)]
+mod memory_learned_skill_repos_tests;
 pub mod memory_linear_integration_settings_repo;
 pub mod memory_memory_archive_job_repo;
 pub mod memory_memory_entry_repo;
@@ -63,6 +66,11 @@ mod memory_restart_repository_tests;
 pub mod memory_plan_selection_stats_repo;
 pub mod memory_process_repo;
 pub mod memory_project_repo;
+pub mod memory_project_memory_settings_repo;
+pub mod memory_project_skill_settings_repo;
+pub mod memory_project_skill_evidence_batch_repo;
+#[cfg(test)]
+mod memory_project_skill_evidence_batch_repo_tests;
 pub mod memory_proposal_dependency_repo;
 pub mod memory_question_repo;
 pub mod memory_queued_message_repo;
@@ -130,6 +138,9 @@ pub use memory_ideation_effort_settings_repo::MemoryIdeationEffortSettingsReposi
 pub use memory_ideation_model_settings_repo::MemoryIdeationModelSettingsRepository;
 pub use memory_ideation_session_repo::MemoryIdeationSessionRepository;
 pub use memory_ideation_settings_repo::MemoryIdeationSettingsRepository;
+pub use memory_learned_skill_repos::{
+    MemoryProjectSkillRepository, MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
+};
 pub use memory_linear_integration_settings_repo::MemoryLinearIntegrationSettingsRepository;
 pub use memory_memory_archive_job_repo::InMemoryMemoryArchiveJobRepository;
 pub use memory_memory_entry_repo::InMemoryMemoryEntryRepository;
@@ -144,6 +155,9 @@ pub use memory_plan_branch_repo::MemoryPlanBranchRepository;
 pub use memory_plan_selection_stats_repo::MemoryPlanSelectionStatsRepository;
 pub use memory_process_repo::MemoryProcessRepository;
 pub use memory_project_repo::MemoryProjectRepository;
+pub use memory_project_memory_settings_repo::MemoryProjectMemorySettingsRepository;
+pub use memory_project_skill_settings_repo::MemoryProjectSkillSettingsRepository;
+pub use memory_project_skill_evidence_batch_repo::MemoryProjectSkillEvidenceBatchRepository;
 pub use memory_proposal_dependency_repo::MemoryProposalDependencyRepository;
 pub use memory_question_repo::MemoryQuestionRepository;
 pub use memory_queued_message_repo::MemoryQueuedMessageRepository;

@@ -9,7 +9,7 @@ use tauri::Manager;
 
 use crate::application::{
     chat_service::verification_child_process_registry::VerificationChildProcessRegistry,
-    chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
+    chat_service::{ClaudeChatService, ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
 use crate::domain::agents::{
@@ -21,17 +21,19 @@ use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
     ExecutionRecoveryState, IdeationSessionId, InternalStatus, NotificationCategory,
     NotificationSeverity, NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project,
-    ProjectId, Task, ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
-    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
-    ValidationRun, ValidationRunMode, ValidationRunStatus, VerificationStatus,
+    ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageInjectionKind,
+    Task, TaskOutcomeStatus, ValidationCacheDecision, ValidationCommandCategory,
+    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
+    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
+    ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
     ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
     ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, StateHistoryMetadata,
-    StatusTransition, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository, ValidationRunRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, SkillUsageListOptions,
+    StateHistoryMetadata, StatusTransition, TaskDependencyRepository, TaskOutcomeListOptions,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
@@ -44,6 +46,7 @@ async fn handle_stream_success<R: Runtime>(
     agent_run_id: &str,
     context_type: ChatContextType,
     context_id: &str,
+    conversation_id: &ChatConversationId,
     has_output: bool,
     completion_tool_called: bool,
     execution_slot_held: bool,
@@ -61,6 +64,7 @@ async fn handle_stream_success<R: Runtime>(
     message_queue: &Arc<MessageQueue>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    agent_conversation_workspace_repo: &Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
@@ -78,6 +82,7 @@ async fn handle_stream_success<R: Runtime>(
         agent_run_id,
         context_type,
         context_id,
+        conversation_id,
         has_output,
         completion_tool_called,
         execution_slot_held,
@@ -95,6 +100,7 @@ async fn handle_stream_success<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
+        agent_conversation_workspace_repo,
         plan_branch_repo,
         task_step_repo,
         &validation_run_repo,
@@ -2109,6 +2115,93 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
     );
 }
 
+#[tokio::test]
+async fn test_interactive_stdin_learned_skill_usage_is_recorded_as_unscored() {
+    let app_state = AppState::new_test();
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+    let project_id = ProjectId::new();
+    let conversation_id = ChatConversationId::new();
+    let now = Utc::now();
+    let skill = ProjectSkill {
+        id: ProjectSkillId::new(),
+        project_id: project_id.clone(),
+        title: "Use planning constraints".to_string(),
+        bucket: "planning".to_string(),
+        stage: "planning".to_string(),
+        status: ProjectSkillLifecycleStatus::Approved,
+        pinned: false,
+        archived: false,
+        scope_paths: Vec::new(),
+        compact_guidance: "Carry approved planning constraints into the next turn.".to_string(),
+        body_markdown: "Detailed guidance".to_string(),
+        predicted_effect: Some("Avoids dropping accepted planning constraints.".to_string()),
+        provenance_json: serde_json::json!({ "test": true }),
+        companion_of_skill_id: None,
+        content_hash: String::new(),
+        evidence_hash: String::new(),
+        created_by: crate::domain::entities::ProjectSkillCreatedBy::User,
+        pipeline_role: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let service = ClaudeChatService::<MockRuntime>::new(
+        Arc::clone(&state.chat_message_repo),
+        Arc::clone(&state.chat_attachment_repo),
+        Arc::clone(&state.artifact_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.project_repo),
+        Arc::clone(&state.task_repo),
+        Arc::clone(&state.task_dependency_repo),
+        Arc::clone(&state.ideation_session_repo),
+        Arc::clone(&state.delegated_session_repo),
+        Arc::clone(&state.activity_event_repo),
+        Arc::clone(&state.message_queue),
+        Arc::clone(&state.running_agent_registry),
+        Arc::clone(&state.memory_event_repo),
+        Arc::clone(&state.project_memory_settings_repo),
+    )
+    .with_app_handle(handle.clone());
+
+    service
+        .record_learned_skill_usage_for_interactive_stdin(
+            Some(project_id.as_str()),
+            &conversation_id,
+            &[skill.clone()],
+        )
+        .await;
+
+    let usage = state
+        .skill_usage_event_repo
+        .list_by_project(&project_id, SkillUsageListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(usage.len(), 1);
+    let event = &usage[0];
+    assert_eq!(event.project_skill_id, skill.id);
+    let expected_conversation_id = conversation_id.as_str();
+    assert_eq!(
+        event.conversation_id.as_deref(),
+        Some(expected_conversation_id.as_str())
+    );
+    assert_eq!(event.agent_run_id, None);
+    assert_eq!(
+        event.injection_kind,
+        SkillUsageInjectionKind::InteractiveStdinUnattributed
+    );
+    assert_eq!(event.metadata_json["scoring_eligible"], false);
+    assert_eq!(
+        event.metadata_json["scoring_disabled_reason"],
+        "interactive_stdin_turn_has_no_new_agent_run_id"
+    );
+}
+
 // ========================================
 // AgentExit + Step Completion Override Tests
 // ========================================
@@ -2703,11 +2796,13 @@ async fn assert_late_execution_finalizer_preserves_status(target_status: Interna
             task_id: task_id.clone(),
             target_status,
         }));
+    let conversation_id = ChatConversationId::new();
 
     handle_stream_success::<MockRuntime>(
         "late-run-id",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         false,
@@ -2725,6 +2820,7 @@ async fn assert_late_execution_finalizer_preserves_status(target_status: Interna
         &state.message_queue,
         &state.running_agent_registry,
         &state.memory_event_repo,
+        &None,
         &None,
         &task_step_repo,
         &None,
@@ -2755,9 +2851,17 @@ async fn test_late_execution_finalizer_cannot_overwrite_pending_review_or_review
 
 #[tokio::test]
 async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_metadata() {
-    let state = AppState::new_test();
+    let app_state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
+
+    let app = mock_builder()
+        .manage(app_state)
+        .manage(Arc::clone(&exec))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
 
     let project = Project::new(
         "Incomplete Execution".into(),
@@ -2769,6 +2873,7 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
     task.internal_status = InternalStatus::Executing;
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
         Some(Arc::new(StubTaskStepRepo { steps: vec![] }));
 
@@ -2776,6 +2881,7 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
         "run-id-incomplete-success",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         false,
@@ -2794,9 +2900,10 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
         &state.running_agent_registry,
         &state.memory_event_repo,
         &None,
+        &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &Some(handle.clone()),
         &None,
         &None,
         &None,
@@ -2832,6 +2939,32 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
             .and_then(|value| value.as_str()),
         Some("Agent ended without completing all task steps")
     );
+
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(&project.id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source.as_str(), "agent_session");
+    assert_eq!(outcome.source_ref_kind, "agent_run");
+    assert_eq!(outcome.source_ref_id, "run-id-incomplete-success");
+    assert_eq!(outcome.task_id.as_deref(), Some(task_id.as_str()));
+    let conversation_id_string = conversation_id.as_str();
+    assert_eq!(
+        outcome.conversation_id.as_deref(),
+        Some(conversation_id_string.as_str())
+    );
+    assert_eq!(
+        outcome.agent_run_id.as_deref(),
+        Some("run-id-incomplete-success")
+    );
+    assert_eq!(
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("task_execution_no_output")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Failed);
     let recovery: ExecutionRecoveryMetadata =
         serde_json::from_value(metadata["execution_recovery"].clone())
             .expect("incomplete finalizer should store recovery metadata");
@@ -2876,6 +3009,7 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
     task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
         Some(Arc::new(StubTaskStepRepo { steps: vec![] }));
 
@@ -2883,6 +3017,7 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
         "run-id-zero-step-output",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         true, // has_output
         true, // completion_tool_called
         false,
@@ -2900,6 +3035,7 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
         &state.message_queue,
         &state.running_agent_registry,
         &state.memory_event_repo,
+        &None,
         &None,
         &task_step_repo,
         &None,
@@ -2950,6 +3086,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
     task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
     let cache = validation_cache_fixture(&head_sha, true, true);
     let metadata = cache
@@ -2977,6 +3114,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
         agent_run_id.as_str(),
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         false,
@@ -2994,6 +3132,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
         &state.message_queue,
         &state.running_agent_registry,
         &state.memory_event_repo,
+        &None,
         &None,
         &task_step_repo,
         &None,
@@ -3041,6 +3180,7 @@ async fn test_identity_unknown_does_not_consult_validation_cache_rescue() {
     );
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
 
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> = Some(Arc::new(StubTaskStepRepo {
         steps: vec![
@@ -3053,6 +3193,7 @@ async fn test_identity_unknown_does_not_consult_validation_cache_rescue() {
         "missing-agent-run",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         false,
@@ -3070,6 +3211,7 @@ async fn test_identity_unknown_does_not_consult_validation_cache_rescue() {
         &state.message_queue,
         &state.running_agent_registry,
         &state.memory_event_repo,
+        &None,
         &None,
         &task_step_repo,
         &None,
@@ -3108,6 +3250,7 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
     task.worktree_path = Some(_worktree.path().to_string_lossy().to_string());
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
     let cache = validation_cache_fixture(&head_sha, false, true);
     let metadata = cache
@@ -3130,6 +3273,7 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
         agent_run_id.as_str(),
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         false,
@@ -3147,6 +3291,7 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
         &state.message_queue,
         &state.running_agent_registry,
         &state.memory_event_repo,
+        &None,
         &None,
         &task_step_repo,
         &None,
@@ -4864,6 +5009,7 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
     task.internal_status = InternalStatus::Executing;
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
+    let conversation_id = ChatConversationId::new();
 
     let app = mock_builder()
         .manage(state)
@@ -4877,6 +5023,7 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
         "run-id-shutdown-success",
         ChatContextType::TaskExecution,
         task_id.as_str(),
+        &conversation_id,
         false,
         false,
         false,
@@ -4894,6 +5041,7 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
         &state.message_queue,
         &state.running_agent_registry,
         &state.memory_event_repo,
+        &None,
         &None,
         &None,
         &None,

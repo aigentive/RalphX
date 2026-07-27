@@ -14,7 +14,7 @@ use axum::{
 
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
-    ideation::IdeationSession, project::Project, review::Review, task::Task,
+    ideation::IdeationSession, project::Project, review::Review, task::Task, ProjectSkill,
 };
 use crate::http_server::types::HttpError;
 
@@ -130,6 +130,12 @@ impl ProjectScopeGuard for Project {
 }
 
 impl ProjectScopeGuard for Review {
+    fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+}
+
+impl ProjectScopeGuard for ProjectSkill {
     fn project_id(&self) -> &ProjectId {
         &self.project_id
     }

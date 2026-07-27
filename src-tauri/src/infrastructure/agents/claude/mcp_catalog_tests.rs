@@ -124,6 +124,47 @@ fn classifies_reserved_user_registration_with_generated_script_path() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn classifies_app_managed_symlinked_runtime_registration_as_reserved() {
+    use std::os::unix::fs::symlink;
+
+    let home = tempfile::tempdir().unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir().unwrap();
+    let runtime_server = runtime.path().join("plugins/app/ralphx-mcp-server");
+    let runtime_script = runtime_server.join("build/index.js");
+    fs::create_dir_all(runtime_script.parent().unwrap()).unwrap();
+    fs::write(&runtime_script, "fixture").unwrap();
+
+    let generated_plugin = app_data.path().join("generated/release/claude-plugin");
+    fs::create_dir_all(&generated_plugin).unwrap();
+    symlink(&runtime_server, generated_plugin.join("ralphx-mcp-server")).unwrap();
+    let generated_script = generated_plugin.join("ralphx-mcp-server/build/index.js");
+    fs::write(
+        home.path().join(".claude.json"),
+        serde_json::json!({
+            "mcpServers": {
+                "ralphx": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": [
+                        generated_script,
+                        "--trace-dir",
+                        app_data.path().join("logs/mcp-proxy")
+                    ]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        classify_reserved_user_registration(home.path()).unwrap(),
+        ReservedClaudeUserRegistration::ReservedUserEntry
+    );
+}
+
 #[test]
 fn classifies_missing_and_near_name_user_config_as_not_present() {
     let home = tempfile::tempdir().unwrap();

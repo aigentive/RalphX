@@ -29,7 +29,7 @@ use crate::infrastructure::agents::claude::{
     ToolCall,
 };
 use crate::infrastructure::agents::codex::{
-    compose_codex_prompt_for_profile_with_outcome, CodexPromptComposition,
+    compose_codex_prompt_for_profile_with_runtime_context_and_outcome, CodexPromptComposition,
 };
 use crate::infrastructure::agents::{
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command_with_security_policy,
@@ -2555,6 +2555,11 @@ pub(super) fn build_mcp_runtime_context(
         lead_session_id: lead_session_id.map(str::to_string),
         parent_conversation_id,
         task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
+        pipeline_role: None,
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     }
 }
 
@@ -3170,32 +3175,6 @@ pub async fn build_codex_command(
         "chat_service.build_codex_command phase completed"
     );
     let prompt_compose_started = Instant::now();
-    let CodexPromptComposition {
-        prompt,
-        persona_injected,
-        persona_injection_skipped_reason,
-    } = compose_codex_prompt_for_profile_with_outcome(
-        &capability_scoped_prompt(
-            format!("{}{}", initial_prompt, attachment_context),
-            conversation.coordination_mode,
-        ),
-        Some(plugin_dir),
-        Some(agent_name),
-        agent_profile,
-        persona_block,
-    );
-    tracing::info!(
-        context_type = %conversation.context_type,
-        context_id = %conversation.context_id,
-        conversation_id = %conversation.id,
-        agent_name,
-        phase = "compose_codex_prompt",
-        prompt_len = prompt.len(),
-        elapsed_ms = prompt_compose_started.elapsed().as_millis() as u64,
-        "chat_service.build_codex_command phase completed"
-    );
-
-    let mcp_config_started = Instant::now();
     let runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -3210,6 +3189,33 @@ pub async fn build_codex_command(
         mcp_lineage_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
+    let CodexPromptComposition {
+        prompt,
+        persona_injected,
+        persona_injection_skipped_reason,
+    } = compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
+        &capability_scoped_prompt(
+            format!("{}{}", initial_prompt, attachment_context),
+            conversation.coordination_mode,
+        ),
+        Some(plugin_dir),
+        Some(agent_name),
+        agent_profile,
+        persona_block,
+        Some(&runtime_context),
+    );
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "compose_codex_prompt",
+        prompt_len = prompt.len(),
+        elapsed_ms = prompt_compose_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
+
+    let mcp_config_started = Instant::now();
     let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
         agent_name,
@@ -4293,12 +4299,13 @@ pub async fn build_codex_resume_command(
                 prompt,
                 persona_injected,
                 persona_injection_skipped_reason,
-            } = compose_codex_prompt_for_profile_with_outcome(
+            } = compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
                 &resume_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
                 persona_block,
+                Some(&runtime_context),
             );
 
             let mut spawnable = build_spawnable_codex_resume_command_with_security_policy(
@@ -4365,12 +4372,13 @@ pub async fn build_codex_resume_command(
                 prompt,
                 persona_injected,
                 persona_injection_skipped_reason,
-            } = compose_codex_prompt_for_profile_with_outcome(
+            } = compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
                 &recovery_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
                 persona_block,
+                Some(&runtime_context),
             );
             let mut spawnable = build_spawnable_codex_exec_command_with_security_policy(
                 cli_path,

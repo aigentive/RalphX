@@ -1064,6 +1064,47 @@ fn test_delete_sync_with_wrong_session_is_noop() {
     assert_eq!(count, 1);
 }
 
+#[test]
+fn test_reject_sync_preserves_dependency_rows() {
+    let db = setup_test_db();
+    let project_id = ProjectId::new();
+    let session_id = IdeationSessionId::new();
+    create_test_project(&db, &project_id, "Test Project", "/test/path");
+    create_test_session(&db, &session_id, &project_id);
+
+    let dependent = create_test_proposal(&session_id, "Dependent");
+    let dependency = create_test_proposal(&session_id, "Dependency");
+    db.with_connection(|conn| {
+        SqliteTaskProposalRepository::create_sync(conn, dependent.clone()).unwrap();
+        SqliteTaskProposalRepository::create_sync(conn, dependency.clone()).unwrap();
+        conn.execute(
+            "INSERT INTO proposal_dependencies (id, proposal_id, depends_on_proposal_id, source)
+             VALUES ('dep-1', ?1, ?2, 'user')",
+            rusqlite::params![dependent.id.as_str(), dependency.id.as_str()],
+        )
+        .unwrap();
+    });
+
+    let rejected = db
+        .with_connection(|conn| SqliteTaskProposalRepository::reject_sync(conn, &dependent.id))
+        .unwrap();
+
+    assert_eq!(rejected.status, ProposalStatus::Rejected);
+    assert!(!rejected.selected);
+    assert!(rejected.archived_at.is_none());
+
+    let dependency_count: i64 = db.with_connection(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM proposal_dependencies
+             WHERE proposal_id = ?1 AND depends_on_proposal_id = ?2",
+            rusqlite::params![dependent.id.as_str(), dependency.id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(dependency_count, 1);
+}
+
 #[tokio::test]
 async fn test_clear_created_task_ids_by_session_only_affects_target_session() {
     let db = setup_test_db();

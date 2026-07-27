@@ -15,9 +15,11 @@ use crate::domain::entities::{
         CleanupPhase, MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind,
         MergeRecoveryMetadata, MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
     },
-    InternalStatus, Project, Task, TaskCategory, TaskId,
+    InternalStatus, Project, Task, TaskCategory, TaskId, TaskOutcomeClass, TaskOutcomeSource,
+    TaskOutcomeStatus,
 };
-use crate::domain::repositories::TaskRepository;
+use crate::domain::repositories::{TaskOutcomeRepository, TaskRepository};
+use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
 use crate::domain::state_machine::services::{
     NotificationContext, Notifier, TaskNotification, WebhookPublisher,
 };
@@ -36,6 +38,50 @@ use super::merge_helpers::{
     PlanBranchPrSyncServices, PrBranchPublicationConflict,
 };
 use super::merge_validation::emit_merge_progress;
+
+#[allow(clippy::too_many_arguments)]
+async fn record_merge_completion_outcome(
+    task: &Task,
+    project: &Project,
+    commit_sha: &str,
+    source_branch: &str,
+    target_branch: &str,
+    old_status: &InternalStatus,
+    task_outcome_repo: Option<&Arc<dyn TaskOutcomeRepository>>,
+) {
+    let Some(task_outcome_repo) = task_outcome_repo else {
+        return;
+    };
+
+    let mut outcome = new_empty_task_outcome(
+        project.id.clone(),
+        TaskOutcomeSource::Merge,
+        "task",
+        task.id.as_str().to_string(),
+    );
+    outcome.task_id = Some(task.id.as_str().to_string());
+    outcome.outcome_class = Some(TaskOutcomeClass::MergeCompleted);
+    outcome.status = TaskOutcomeStatus::Succeeded;
+    outcome.evidence_json = serde_json::json!({
+        "task_id": task.id.as_str(),
+        "commit_sha": commit_sha,
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "old_status": old_status.as_str(),
+        "new_status": InternalStatus::Merged.as_str(),
+        "task_category": task.category.to_string(),
+    });
+
+    let service = OutcomeLedgerService::new(Arc::clone(task_outcome_repo));
+    if let Err(error) = service.record_outcome(outcome).await {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            commit_sha,
+            error = %error,
+            "Failed to record merge completion outcome"
+        );
+    }
+}
 
 /// Complete a merge operation by transitioning task to Merged (Phase 2 MERGE).
 ///
@@ -87,6 +133,7 @@ pub async fn complete_merge_internal(
         source_branch,
         target_branch,
         task_repo,
+        None,
         external_events_repo,
         webhook_publisher,
         event_sink,
@@ -97,6 +144,39 @@ pub async fn complete_merge_internal(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn complete_merge_internal_with_outcome(
+    task: &mut Task,
+    project: &Project,
+    commit_sha: &str,
+    source_branch: &str,
+    target_branch: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_outcome_repo: Option<&Arc<dyn TaskOutcomeRepository>>,
+    external_events_repo: Option<&Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: Option<&Arc<dyn WebhookPublisher>>,
+    event_sink: Option<&dyn EventSink>,
+    session_title: Option<String>,
+) -> AppResult<()> {
+    complete_merge_internal_impl(
+        task,
+        project,
+        commit_sha,
+        source_branch,
+        target_branch,
+        task_repo,
+        task_outcome_repo,
+        external_events_repo,
+        webhook_publisher,
+        event_sink,
+        session_title,
+        None,
+        None,
+    )
+    .await
+}
+
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn complete_merge_internal_with_pr_sync_and_notifier(
     task: &mut Task,
@@ -119,6 +199,41 @@ pub(crate) async fn complete_merge_internal_with_pr_sync_and_notifier(
         source_branch,
         target_branch,
         task_repo,
+        None,
+        external_events_repo,
+        webhook_publisher,
+        event_sink,
+        session_title,
+        pr_sync_services,
+        notifier,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn complete_merge_internal_with_pr_sync_notifier_and_outcome(
+    task: &mut Task,
+    project: &Project,
+    commit_sha: &str,
+    source_branch: &str,
+    target_branch: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_outcome_repo: Option<&Arc<dyn TaskOutcomeRepository>>,
+    external_events_repo: Option<&Arc<dyn ExternalEventsRepository>>,
+    webhook_publisher: Option<&Arc<dyn WebhookPublisher>>,
+    event_sink: Option<&dyn EventSink>,
+    session_title: Option<String>,
+    pr_sync_services: Option<PlanBranchPrSyncServices>,
+    notifier: Option<&Arc<dyn Notifier>>,
+) -> AppResult<()> {
+    complete_merge_internal_impl(
+        task,
+        project,
+        commit_sha,
+        source_branch,
+        target_branch,
+        task_repo,
+        task_outcome_repo,
         external_events_repo,
         webhook_publisher,
         event_sink,
@@ -137,6 +252,7 @@ async fn complete_merge_internal_impl(
     source_branch: &str,
     target_branch: &str,
     task_repo: &Arc<dyn TaskRepository>,
+    task_outcome_repo: Option<&Arc<dyn TaskOutcomeRepository>>,
     external_events_repo: Option<&Arc<dyn ExternalEventsRepository>>,
     webhook_publisher: Option<&Arc<dyn WebhookPublisher>>,
     event_sink: Option<&dyn EventSink>,
@@ -310,13 +426,7 @@ async fn complete_merge_internal_impl(
         .unwrap_or(None)
         .unwrap_or_else(MergeRecoveryMetadata::new);
 
-    // Count total retry attempts
-    let attempt_count = recovery
-        .events
-        .iter()
-        .filter(|e| matches!(e.kind, MergeRecoveryEventKind::AutoRetryTriggered))
-        .count() as u32
-        + 1;
+    let attempt_count = recovery.active_attempt();
 
     let success_event = MergeRecoveryEvent::new(
         MergeRecoveryEventKind::AttemptSucceeded,
@@ -363,6 +473,17 @@ async fn complete_merge_internal_impl(
     {
         tracing::warn!(error = %e, task_id = task_id_str, "Failed to record merge transition (non-fatal)");
     }
+
+    record_merge_completion_outcome(
+        task,
+        project,
+        commit_sha,
+        source_branch,
+        target_branch,
+        &old_status,
+        task_outcome_repo,
+    )
+    .await;
 
     // 4. Emit frontend/runtime events (intentional: no frontend listeners is OK)
     if let Some(sink) = event_sink {

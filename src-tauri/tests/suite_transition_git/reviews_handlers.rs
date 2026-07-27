@@ -21,11 +21,13 @@ use axum::{extract::State, http::StatusCode, Json};
 use ralphx_lib::application::{interactive_process_registry::InteractiveProcessKey, AppState};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
-    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Priority,
-    Project, ProjectId, ProposalCategory, ReviewNote, ReviewOutcome, ReviewScopeMetadata,
-    ReviewerType, Task, TaskProposal,
+    ActivityEventRole, ActivityEventType, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance, ChatConversation,
+    IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Priority, Project, ProjectId,
+    ProposalCategory, ReviewNote, ReviewOutcome, ReviewScopeMetadata, ReviewerType, Task,
+    TaskOutcomeStatus, TaskProposal,
 };
+use ralphx_lib::domain::repositories::TaskOutcomeListOptions;
 use ralphx_lib::domain::review::ReviewSettings;
 use ralphx_lib::domain::state_machine::transition_handler::set_no_code_changes_metadata;
 use ralphx_lib::http_server::handlers::*;
@@ -881,6 +883,28 @@ async fn test_complete_review_needs_changes_creates_first_class_review_issues() 
         Some("Scope drift spans the task branch, not a single execution step")
     );
     assert_eq!(issue.file_path.as_deref(), Some("src/feature.rs"));
+
+    let outcomes = state
+        .app_state
+        .task_outcome_repo
+        .list_by_project(&task.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("task outcomes query should succeed");
+    assert_eq!(outcomes.len(), 1);
+    let outcome = &outcomes[0];
+    assert_eq!(outcome.source.as_str(), "review");
+    assert_eq!(outcome.source_ref_kind, "review_note");
+    assert_eq!(
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("review_changes_requested")
+    );
+    assert_eq!(outcome.status, TaskOutcomeStatus::Failed);
+    assert_eq!(outcome.task_id.as_deref(), Some(task.id.as_str()));
+    assert_eq!(outcome.evidence_json["issue_count"].as_u64(), Some(1));
+    assert_eq!(
+        outcome.evidence_json["scope_drift_classification"].as_str(),
+        Some("unrelated_drift")
+    );
 }
 
 #[tokio::test]

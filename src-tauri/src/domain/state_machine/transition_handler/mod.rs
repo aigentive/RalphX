@@ -52,6 +52,8 @@ mod tests;
 
 // -- Public re-exports --
 pub use merge_completion::complete_merge_internal;
+pub(crate) use merge_completion::complete_merge_internal_with_pr_sync_notifier_and_outcome;
+#[cfg(test)]
 pub(crate) use merge_completion::complete_merge_internal_with_pr_sync_and_notifier;
 pub use merge_completion::{
     clear_pending_cleanup_metadata, deferred_merge_cleanup, has_no_code_changes_metadata,

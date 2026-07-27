@@ -22,7 +22,8 @@ use crate::application::agent_workspace_review_publish_handoff::{
     resume_pr_fix_publish_after_passed_workspace_review, PrFixReviewPublishResumeOutcome,
 };
 use crate::application::agent_workspace_terminal_cleanup::{
-    terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
+    terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
+    TerminalPrObservation,
 };
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
@@ -38,7 +39,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
-    ProjectRepository,
+    ProjectRepository, TaskOutcomeRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus as GithubPrStatus, PrSyncState};
 use crate::error::{AppError, AppResult};
@@ -80,6 +81,7 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub transition_service: Option<Arc<TaskTransitionService>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     pub app_handle: Option<AppHandle>,
     pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
 }
@@ -101,6 +103,7 @@ pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
         transition_service,
         chat_service,
         agent_run_repo: Arc::clone(&state.agent_run_repo),
+        task_outcome_repo: Arc::clone(&state.task_outcome_repo),
         app_handle,
         pr_fix_review_publish_resumer,
     })
@@ -224,6 +227,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
                 Arc::clone(&deps.workspace_repo),
                 Arc::clone(&deps.agent_run_repo),
+                Arc::clone(&deps.task_outcome_repo),
                 Arc::clone(&deps.project_repo),
                 workspace,
             )
@@ -335,11 +339,17 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     ))
                     .await?;
                 emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-                let terminalized = terminalize_agent_workspace_after_pr(
+                let terminalized = terminalize_agent_workspace_after_pr_with_observation(
                     Arc::clone(&deps.workspace_repo),
                     Arc::clone(&deps.agent_run_repo),
                     Some(Arc::clone(&deps.plan_branch_repo)),
                     deps.chat_service.as_ref().map(Arc::clone),
+                    Some(Arc::clone(&deps.task_outcome_repo)),
+                    Some(TerminalPrObservation::new(
+                        target.pr_number,
+                        pr_status,
+                        terminal_pr_recovery_summary(pr_status),
+                    )),
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::from_pr_status(pr_status),
@@ -397,11 +407,17 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             ))
             .await?;
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
-        let terminalized = terminalize_agent_workspace_after_pr(
+        let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
             Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),
+            Some(Arc::clone(&deps.task_outcome_repo)),
+            Some(TerminalPrObservation::new(
+                target.pr_number,
+                pr_status,
+                terminal_pr_recovery_summary(pr_status),
+            )),
             &conversation_id,
             &project,
             TerminalAgentWorkspaceCause::from_pr_status(pr_status),
@@ -770,6 +786,7 @@ fn start_recovered_pr_polling(
         target.worktree_path.clone(),
         Arc::clone(&deps.workspace_repo),
         Arc::clone(&deps.agent_run_repo),
+        Arc::clone(&deps.task_outcome_repo),
         Arc::clone(chat_service),
     );
 }

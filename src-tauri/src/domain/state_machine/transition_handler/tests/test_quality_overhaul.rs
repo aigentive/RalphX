@@ -348,9 +348,12 @@ async fn test_merge_outcome_deferred_transitions_correctly() {
 async fn test_merge_outcome_needs_agent_transitions_correctly() {
     use super::super::merge_outcome_handler::{MergeContext, MergeHandlerOptions};
     use super::super::merge_strategies::MergeOutcome;
+    use crate::domain::repositories::{TaskOutcomeListOptions, TaskOutcomeRepository};
     use std::path::PathBuf;
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
+    let task_outcome_repo =
+        Arc::new(crate::infrastructure::memory::MemoryTaskOutcomeRepository::new());
     let emitter = Arc::new(MockEventEmitter::new());
     let chat_service = Arc::new(crate::application::MockChatService::new());
 
@@ -370,7 +373,8 @@ async fn test_merge_outcome_needs_agent_transitions_correctly() {
         Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
         Arc::new(crate::domain::state_machine::mocks::MockReviewStarter::new()),
         Arc::clone(&chat_service) as Arc<dyn crate::application::ChatService>,
-    );
+    )
+    .with_task_outcome_repo(task_outcome_repo.clone());
 
     let context = create_context_with_services(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -425,6 +429,28 @@ async fn test_merge_outcome_needs_agent_transitions_correctly() {
     assert!(
         chat_service.call_count() > 0,
         "ChatService should be called to spawn merger agent"
+    );
+
+    let outcomes = task_outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    let conflict = &outcomes[0];
+    assert_eq!(conflict.source.as_str(), "merge");
+    assert_eq!(conflict.source_ref_kind, "merge_attempt");
+    assert_eq!(
+        conflict.source_ref_id,
+        format!("{}:attempt:1", task_id.as_str())
+    );
+    assert_eq!(
+        conflict.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("merge_conflict")
+    );
+    assert_eq!(conflict.evidence_json["attempt"], 1);
+    assert_eq!(
+        conflict.failure_fingerprint.as_deref().map(str::len),
+        Some(64)
     );
 }
 

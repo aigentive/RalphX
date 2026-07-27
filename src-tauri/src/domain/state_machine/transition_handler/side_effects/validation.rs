@@ -1,8 +1,107 @@
 use super::*;
+use crate::domain::entities::{
+    MergeRecoveryMetadata, TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
+};
+use crate::domain::services::merge_failure_outcomes::record_merge_failure_outcome;
+use crate::domain::services::{new_empty_task_outcome, OutcomeLedgerService};
 use crate::domain::state_machine::transition_handler::{
     merge_helpers, BranchPair, ProjectCtx, TaskCore,
 };
 use crate::domain::state_machine::TransitionHandler;
+
+#[allow(clippy::too_many_arguments)]
+async fn record_merge_validation_failure_outcomes(
+    task: &Task,
+    project: &Project,
+    source_branch: &str,
+    target_branch: &str,
+    failures: &[ValidationFailure],
+    log: &[ValidationLogEntry],
+    mode_label: &str,
+    validation_mode: &MergeValidationMode,
+    task_outcome_repo: &Option<Arc<dyn crate::domain::repositories::TaskOutcomeRepository>>,
+) {
+    let Some(repo) = task_outcome_repo.as_ref() else {
+        return;
+    };
+
+    let mut outcome = new_empty_task_outcome(
+        project.id.clone(),
+        TaskOutcomeSource::MergeValidation,
+        "task",
+        task.id.as_str().to_string(),
+    );
+    outcome.task_id = Some(task.id.as_str().to_string());
+    outcome.outcome_class = Some(TaskOutcomeClass::MergeValidationFailed);
+    outcome.status = TaskOutcomeStatus::Failed;
+    outcome.evidence_json = serde_json::json!({
+        "task_id": task.id.as_str(),
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "mode_label": mode_label,
+        "validation_mode": validation_mode.to_string(),
+        "failure_count": failures.len(),
+        "failures": failures.iter().map(|failure| serde_json::json!({
+            "command": failure.command,
+            "path": failure.path,
+            "exit_code": failure.exit_code,
+            "stderr": truncate_str(&failure.stderr, 2000),
+        })).collect::<Vec<_>>(),
+        "validation_log": log,
+    });
+    let recurrence_text = outcome.evidence_json.to_string();
+    crate::domain::services::failure_fingerprint::attach_recurrence_evidence(
+        &mut outcome.evidence_json,
+        &recurrence_text,
+        task.ideation_session_id.as_ref().map(|id| id.as_str()),
+    );
+
+    let service = OutcomeLedgerService::new(Arc::clone(repo));
+    if let Err(error) = service.record_outcome(outcome).await {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            error = %error,
+            "Failed to record merge validation failure outcome"
+        );
+    }
+
+    let attempt = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .active_attempt();
+    let evidence = serde_json::json!({
+        "source_branch": source_branch,
+        "target_branch": target_branch,
+        "mode_label": mode_label,
+        "validation_mode": validation_mode.to_string(),
+        "failure_count": failures.len(),
+        "failures": failures.iter().map(|failure| serde_json::json!({
+            "command": failure.command,
+            "path": failure.path,
+            "exit_code": failure.exit_code,
+            "stderr": truncate_str(&failure.stderr, 2000),
+        })).collect::<Vec<_>>(),
+    });
+    let fingerprint_evidence = evidence.to_string();
+    if let Err(error) = record_merge_failure_outcome(
+        Arc::clone(repo),
+        task,
+        TaskOutcomeClass::MergeQaFailed,
+        attempt,
+        evidence,
+        &fingerprint_evidence,
+    )
+    .await
+    {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            attempt,
+            error = %error,
+            "Failed to record attempt-scoped merge QA failure outcome"
+        );
+    }
+}
 
 impl<'a> TransitionHandler<'a> {
     /// Handle post-merge validation failure: revert the merge commit, then transition
@@ -127,16 +226,33 @@ impl<'a> TransitionHandler<'a> {
             task.worktree_path = Some(fixer_worktree_path.to_string_lossy().to_string());
             task.internal_status = InternalStatus::Merging;
 
-            self.persist_merge_transition(
-                TaskCore {
-                    task: &mut *task,
-                    task_id,
-                    task_id_str,
-                    task_repo,
-                },
-                InternalStatus::PendingMerge,
-                InternalStatus::Merging,
-                "validation_auto_fix",
+            if !self
+                .persist_merge_transition(
+                    TaskCore {
+                        task: &mut *task,
+                        task_id,
+                        task_id_str,
+                        task_repo,
+                    },
+                    InternalStatus::PendingMerge,
+                    InternalStatus::Merging,
+                    "validation_auto_fix",
+                )
+                .await
+            {
+                return;
+            }
+
+            record_merge_validation_failure_outcomes(
+                task,
+                project,
+                source_branch,
+                target_branch,
+                failures,
+                log,
+                mode_label,
+                validation_mode,
+                &self.machine.context.services.task_outcome_repo,
             )
             .await;
 
@@ -215,16 +331,32 @@ impl<'a> TransitionHandler<'a> {
             merge_helpers::merge_metadata_into(task, &extra);
             task.internal_status = InternalStatus::MergeIncomplete;
 
-            self.persist_merge_transition(
-                TaskCore {
-                    task: &mut *task,
-                    task_id,
-                    task_id_str,
-                    task_repo,
-                },
-                InternalStatus::PendingMerge,
-                InternalStatus::MergeIncomplete,
-                "validation_failed",
+            if !self
+                .persist_merge_transition(
+                    TaskCore {
+                        task: &mut *task,
+                        task_id,
+                        task_id_str,
+                        task_repo,
+                    },
+                    InternalStatus::PendingMerge,
+                    InternalStatus::MergeIncomplete,
+                    "validation_failed",
+                )
+                .await
+            {
+                return;
+            }
+            record_merge_validation_failure_outcomes(
+                task,
+                project,
+                source_branch,
+                target_branch,
+                failures,
+                log,
+                mode_label,
+                validation_mode,
+                &self.machine.context.services.task_outcome_repo,
             )
             .await;
         }

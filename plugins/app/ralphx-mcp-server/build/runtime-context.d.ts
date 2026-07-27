@@ -1,4 +1,4 @@
-type RuntimeStringContextKey = "agentType" | "agentProfile" | "taskId" | "taskState" | "projectId" | "workingDirectory" | "filesystemReadRoots" | "contextType" | "contextId" | "conversationId" | "coordinationMode" | "parentConversationId" | "agentRunId" | "leadSessionId" | "tauriApiUrl" | "traceDir";
+type RuntimeStringContextKey = "agentType" | "agentProfile" | "taskId" | "taskState" | "projectId" | "pipelineRole" | "skillDistillationBatchId" | "skillDistillationClaimToken" | "skillDistillationFingerprint" | "skillDistillationOutcomeIds" | "workingDirectory" | "filesystemReadRoots" | "contextType" | "contextId" | "conversationId" | "coordinationMode" | "parentConversationId" | "agentRunId" | "leadSessionId" | "tauriApiUrl" | "traceDir";
 export type RuntimeContext = Partial<Record<RuntimeStringContextKey, string>> & {
     filesystemEnforced: boolean;
 };
@@ -11,5 +11,6 @@ export declare function buildRuntimeIdentityTransportHeaders(context: {
     conversationId?: string | undefined;
 }): Record<string, string> | undefined;
 export declare function buildRuntimeTransportHeaders(context: Pick<RuntimeContext, "conversationId">): Record<string, string> | undefined;
+export declare function buildProjectSkillPipelineTransportHeaders(context: RuntimeContext): Record<string, string> | undefined;
 export {};
 //# sourceMappingURL=runtime-context.d.ts.map

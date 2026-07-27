@@ -669,10 +669,16 @@ pub struct LimitsConfig {
     pub max_resume_attempts: u64,
     #[serde(default = "default_max_live_folder_references")]
     pub max_live_folder_references: usize,
+    #[serde(default = "default_skill_distiller_claim_stale_secs")]
+    pub skill_distiller_claim_stale_secs: u64,
 }
 
 fn default_max_live_folder_references() -> usize {
     5
+}
+
+fn default_skill_distiller_claim_stale_secs() -> u64 {
+    1_800
 }
 
 impl Default for LimitsConfig {
@@ -680,6 +686,7 @@ impl Default for LimitsConfig {
         Self {
             max_resume_attempts: 5,
             max_live_folder_references: default_max_live_folder_references(),
+            skill_distiller_claim_stale_secs: default_skill_distiller_claim_stale_secs(),
         }
     }
 }

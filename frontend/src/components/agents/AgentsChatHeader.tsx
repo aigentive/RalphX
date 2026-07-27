@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  BookOpenCheck,
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
@@ -48,6 +49,7 @@ import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
+import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
 
@@ -76,7 +78,7 @@ import {
   canInspectAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
 
-const HEADER_ARTIFACT_TABS: Array<{
+const HEADER_IDEATION_ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
   label: string;
   icon: ElementType;
@@ -87,6 +89,12 @@ const HEADER_ARTIFACT_TABS: Array<{
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
+
+const HEADER_SKILLS_TAB = {
+  id: "skills" as const,
+  label: "Skills",
+  icon: BookOpenCheck,
+};
 
 const FOCUS_TONE_STYLES: Record<
   AgentsChatFocusTone,
@@ -319,6 +327,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   showTitle = true,
   workspaceControl,
 }: AgentsChatHeaderProps) {
+  const [skillsEnabled] = useSkillsEnabled();
   const terminalTooltip =
     terminalUnavailableReason ??
     terminalArchivedReason ??
@@ -354,14 +363,14 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     Boolean(workspace?.linkedIdeationSessionId || workspace?.linkedPlanBranchId);
   const visibleHeaderArtifactTabs = useMemo(
     () => {
-      const tabs = HEADER_ARTIFACT_TABS.filter((tab) =>
+      const tabs = HEADER_IDEATION_ARTIFACT_TABS.filter((tab) =>
         availableArtifactTabs.includes(tab.id),
       );
       return isLinkedPlanEditWorkspace
         ? tabs.filter((tab) => tab.id === "plan" || tab.id === "issues")
-        : tabs;
+        : [...tabs, ...(skillsEnabled ? [HEADER_SKILLS_TAB] : [])];
     },
-    [availableArtifactTabs, isLinkedPlanEditWorkspace],
+    [availableArtifactTabs, isLinkedPlanEditWorkspace, skillsEnabled],
   );
   const showHeaderArtifactShortcuts =
     visibleHeaderArtifactTabs.length > 0 &&
@@ -369,6 +378,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       conversationMode === "plan" ||
       conversationMode === "review_pr" ||
       conversation?.contextType === "project" ||
+      Boolean(conversation && skillsEnabled) ||
       isLinkedPlanEditWorkspace);
   const showArtifactToggle =
     artifactOpen ||
@@ -376,7 +386,8 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     (conversation?.contextType === "project" &&
       visibleHeaderArtifactTabs.length > 0) ||
     (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
-    (conversationMode === "review_pr" && visibleHeaderArtifactTabs.length > 0);
+    (conversationMode === "review_pr" && visibleHeaderArtifactTabs.length > 0) ||
+    Boolean(conversation && skillsEnabled);
   const showPromotedPublishShortcut =
     promotePublishShortcut && artifactOpen && activeArtifactTab === "review";
   const effectivePublishWorkspace = publishShortcutWorkspace ?? workspace;
