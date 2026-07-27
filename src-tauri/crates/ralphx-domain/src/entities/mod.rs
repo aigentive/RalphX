@@ -98,7 +98,8 @@ pub use agent_conversation_linear_issue::{
     AgentConversationLinearIssueLink, AgentConversationLinearRefreshStatus,
 };
 pub use agent_conversation_workspace::{
-    is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+    is_open_pr, is_pr_status_pollable_push_status, is_publication_push_active,
+    is_terminal_publication_pr_status,
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,

@@ -2158,13 +2158,14 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::clone(&state.plan_branch_repo),
     );
-    registry.start_agent_workspace_polling(
+    registry.start_agent_workspace_polling_with_repair_repo(
         conversation_id,
         303,
         project.clone(),
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -2243,13 +2244,14 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_artifacts() {
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::clone(&state.plan_branch_repo),
     );
-    registry.start_agent_workspace_polling(
+    registry.start_agent_workspace_polling_with_repair_repo(
         conversation_id,
         405,
         project,
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -2949,7 +2951,10 @@ mod ipc_contract {
             .expect("workspace response should load")
             .expect("workspace response should exist");
 
-        assert_eq!(response.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(
+            response.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
     }
 
     #[tokio::test]
@@ -3004,7 +3009,10 @@ mod ipc_contract {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
 
-        assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(
+            refreshed.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
     }
 
     #[tokio::test]

@@ -20,6 +20,26 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 
+pub(crate) fn resolve_task_blueprint_artifact_id(
+    task: &Task,
+    source_proposal: Option<&TaskProposal>,
+) -> AppResult<Option<ArtifactId>> {
+    if let Some(blueprint_id) = task.plan_blueprint_artifact_id.as_ref() {
+        return Ok(Some(blueprint_id.clone()));
+    }
+
+    let Some(proposal) = source_proposal else {
+        return Ok(None);
+    };
+    if proposal.blueprint_version_at_creation.is_some() {
+        return Err(AppError::Validation(
+            "v2 task is missing immutable Blueprint lineage".to_string(),
+        ));
+    }
+
+    Ok(proposal.blueprint_artifact_id.clone())
+}
+
 /// Service for aggregating task context for worker execution
 pub struct TaskContextService {
     task_repo: Arc<dyn TaskRepository>,
@@ -64,35 +84,36 @@ impl TaskContextService {
             .ok_or_else(|| AppError::NotFound(format!("Task not found: {}", task_id)))?;
 
         // 2. If source_proposal_id present, fetch proposal and create TaskProposalSummary
-        let source_proposal = if let Some(proposal_id) = &task.source_proposal_id {
-            match self.proposal_repo.get_by_id(proposal_id).await? {
-                Some(proposal) => {
-                    // Parse acceptance_criteria from JSON string to Vec<String>
-                    let acceptance_criteria: Vec<String> = proposal
-                        .acceptance_criteria
-                        .as_ref()
-                        .and_then(|json_str| serde_json::from_str(json_str).ok())
-                        .unwrap_or_default();
-
-                    Some(TaskProposalSummary {
-                        id: proposal.id.clone(),
-                        title: proposal.title.clone(),
-                        description: proposal.description.clone().unwrap_or_default(),
-                        acceptance_criteria,
-                        implementation_notes: None, // TaskProposal doesn't have implementation_notes field
-                        plan_version_at_creation: proposal.plan_version_at_creation,
-                        priority_score: proposal.priority_score,
-                        affected_paths: proposal
-                            .affected_paths
-                            .as_ref()
-                            .and_then(|json_str| serde_json::from_str(json_str).ok())
-                            .unwrap_or_default(),
-                    })
-                }
-                None => None,
-            }
+        let source_proposal_entity = if let Some(proposal_id) = &task.source_proposal_id {
+            self.proposal_repo.get_by_id(proposal_id).await?
         } else {
             None
+        };
+        let source_proposal = match source_proposal_entity.as_ref() {
+            Some(proposal) => {
+                // Parse acceptance_criteria from JSON string to Vec<String>
+                let acceptance_criteria: Vec<String> = proposal
+                    .acceptance_criteria
+                    .as_ref()
+                    .and_then(|json_str| serde_json::from_str(json_str).ok())
+                    .unwrap_or_default();
+
+                Some(TaskProposalSummary {
+                    id: proposal.id.clone(),
+                    title: proposal.title.clone(),
+                    description: proposal.description.clone().unwrap_or_default(),
+                    acceptance_criteria,
+                    implementation_notes: None, // TaskProposal doesn't have implementation_notes field
+                    plan_version_at_creation: proposal.plan_version_at_creation,
+                    priority_score: proposal.priority_score,
+                    affected_paths: proposal
+                        .affected_paths
+                        .as_ref()
+                        .and_then(|json_str| serde_json::from_str(json_str).ok())
+                        .unwrap_or_default(),
+                })
+            }
+            None => None,
         };
 
         // 3. If plan_artifact_id present, fetch artifact and create ArtifactSummary (500-char preview)
@@ -110,6 +131,31 @@ impl TaskContextService {
                 }
                 None => None,
             }
+        } else {
+            None
+        };
+
+        let blueprint_artifact = if let Some(blueprint_id) =
+            resolve_task_blueprint_artifact_id(&task, source_proposal_entity.as_ref())?
+        {
+            Some(
+                self.artifact_repo
+                    .get_by_id(&blueprint_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "Task immutable Blueprint artifact was not found: {}",
+                            blueprint_id.as_str()
+                        ))
+                    })
+                    .map(|artifact| ArtifactSummary {
+                        content_preview: create_artifact_content_preview(&artifact),
+                        id: artifact.id,
+                        title: artifact.name,
+                        artifact_type: artifact.artifact_type,
+                        current_version: artifact.metadata.version,
+                    })?,
+            )
         } else {
             None
         };
@@ -199,6 +245,7 @@ impl TaskContextService {
             task,
             source_proposal,
             plan_artifact,
+            blueprint_artifact,
             related_artifacts,
             steps,
             step_progress,

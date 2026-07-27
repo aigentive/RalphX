@@ -7643,7 +7643,6 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
     route_fixable_failures_to_agent: bool,
     repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
-    let branch_already_pushed = repair_handoff.is_some();
     let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
     let _workspace_review_lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     publish_agent_conversation_workspace_for_app_state_unlocked(
@@ -7651,6 +7650,7 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
         execution_state,
         conversation_id,
         route_fixable_failures_to_agent,
+        repair_handoff,
     )
     .await
 }
@@ -7660,7 +7660,9 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     execution_state: &Arc<ExecutionState>,
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
+    repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let branch_already_pushed = repair_handoff.is_some();
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, false);

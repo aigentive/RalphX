@@ -76,9 +76,6 @@ mod agent_workspace_review_run_guard_tests;
 mod agent_workspace_review_unfinished_git_recovery_tests;
 #[cfg(test)]
 mod agent_workspace_review_unfinished_git_tests;
-pub(crate) mod agent_workspace_terminal_cleanup;
-#[cfg(test)]
-mod agent_workspace_terminal_cleanup_tests;
 pub mod app_paths;
 #[cfg(test)]
 mod app_paths_tests;
@@ -142,17 +139,6 @@ pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod managed_team;
-pub mod manual_role_default_service;
-pub mod manual_router_config;
-pub mod mcp_policy_agent_client;
-#[cfg(test)]
-mod mcp_policy_agent_client_tests;
-pub mod mcp_policy_config;
-#[cfg(test)]
-mod mcp_policy_config_tests;
-pub mod mcp_policy_service;
-#[cfg(test)]
-mod mcp_policy_service_tests;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod merge_pipeline_visibility;
