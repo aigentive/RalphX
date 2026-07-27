@@ -37,7 +37,7 @@
 
 - The debug-only fixture is isolated in `remote_server::transport_spike`; it binds an ephemeral loopback address only and returns that address to the caller.
 - It models only the two direct-browser preflight orderings: fixed 401-before-preflight and pre-auth `OPTIONS` with the fixed development origin `http://127.0.0.1:1420`. It accepts no bearer, pairing code, or remote-listener configuration.
-- It is absent from release module compilation and Tauri command registration via `#[cfg(debug_assertions)]`. This is cfg-gate evidence, not release-build execution evidence; the release-build verification remains the final PR 0.3 task.
+- It is absent from release module compilation and Tauri command registration via `#[cfg(debug_assertions)]`. On 2026-07-27, `cargo check --manifest-path src-tauri/Cargo.toml --release --lib` completed successfully from pre-task-7 HEAD `cd410d86e`; this compiles the library/command registry with `debug_assertions` off. No Rust tests ran in that command.
 - Apart from the actual-listener Rust socket tests recorded as E-2/E-3 below, no desktop, browser, Serve, direct-tailnet, or ATS experiment has been run or concluded by this harness implementation.
 
 ## Desktop proxy-stub code evidence (not a WKWebView capture)
@@ -63,6 +63,13 @@
 - The host was macOS 15.7.4 (build 24G517) with Xcode 26.3 (build 17C529). An iOS 26.3 `iPhone 17 Pro` simulator is available for a future named vehicle, but it was shutdown and was not started.
 - A future actual run must use a named macOS `URLSession`/WKWebView probe and, if selected, that iOS Simulator vehicle, after a logged-in Serve-capable tailnet supplies redacted Serve and direct-tailnet endpoints.
 - E-4 and E-5 are **not executed** and the ATS/direct-tailnet outcomes are **not inferred**. This task is blocked with insufficient evidence rather than a Serve-only verdict.
+
+## Release configuration and routing-scope evidence
+
+- Release cfg proof: `cargo check --manifest-path src-tauri/Cargo.toml --release --lib` completed successfully on 2026-07-27 from `cd410d86e`. It compiles the command registry/library with `debug_assertions` off; because the transport-spike module and each registration are `#[cfg(debug_assertions)]`, the release configuration contains no transport-spike code path. A separate source-text guard was not added because this release compilation is the stronger deterministic check.
+- Routing/binding diff proof: `git diff --name-only ab9b47961..cd410d86e -- src-tauri/src/http_server src-tauri/src/utils/backend_endpoint.rs` returned no paths. `ab9b47961` is the pre-0.3 base and `cd410d86e` the pre-task-7 Phase-0.3 HEAD.
+- Therefore this PR 0.3 diff does not change `src-tauri/src/http_server/**`, `backend_endpoint.rs`, or the production :3847/:3848 routing/binding configuration. The debug fixture remains separate on ephemeral loopback only.
+- The release check started no Rust tests. `cd src-tauri && cargo clean` ran afterward for disk hygiene and removed the generated check artifacts.
 
 ## (a) Does the Rust-proxied desktop transport produce zero WKWebView cross-origin traffic?
 
@@ -180,4 +187,4 @@ For each named Apple probe vehicle, does HTTPS/WSS through Tailscale Serve work 
 - [ ] Questions (a) through (d) each have a recorded finding.
 - [ ] The Serve-only verdict is explicit and evidence-linked.
 - [ ] PR 1.1 C-15 and the mobile transport specification implication slots are filled without contradicting the source contract.
-- [ ] The debug harness is confirmed absent from release registration and no :3847/:3848 routing or binding changed.
+- [x] The debug harness is confirmed absent from release registration and no :3847/:3848 routing or binding changed. *(Release library check and scoped pre-0.3 diff recorded above; this does not close E-1/E-4/E-5.)*
