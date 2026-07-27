@@ -485,6 +485,8 @@ export function useAgentsViewController({
     focusedWorkspaceReviewRuntimeConversationId,
     { enabled: Boolean(focusedWorkspaceReviewRuntimeConversationId) },
   );
+  const focusedAutomationRunConversationId =
+    chatFocus.type === "automation_run" ? chatFocus.conversationId : null;
   const focusedWorkspaceReviewConversation = useMemo(
     () => {
       const summary = focusedWorkspaceReviewSummaryQuery.data;
@@ -532,11 +534,14 @@ export function useAgentsViewController({
     focusedWorkspaceReviewServiceTier,
     normalizedActiveRuntime,
     publishShortcutLabel,
+    publishShortcutWorkspace,
+    suppressPublishShortcut,
     terminalArchivedReason,
     terminalUnavailableReason,
   } = useAgentsWorkspaceModel({
     activeConversation,
     activeProject,
+    focusedAutomationRunConversationId,
     focusedWorkspaceReviewConversation,
     focusedWorkspaceReviewConversationId:
       focusedWorkspaceReviewRuntimeConversationId,
@@ -1472,11 +1477,16 @@ export function useAgentsViewController({
       if (!selectedConversationId) {
         return;
       }
-      if (!isWorkspaceReviewRunning) {
+      // A focused automation run keeps its chat focus: the publish pane scopes
+      // to the run conversation's workspace, so resetting focus here would
+      // silently retarget both the visible chat and the publish surface to the
+      // automation setup conversation.
+      if (!isWorkspaceReviewRunning && !focusedAutomationRunConversationId) {
         handleReturnToWorkspaceChat();
       }
       setPublishFocusRequest((current) => ({
-        conversationId: selectedConversationId,
+        conversationId:
+          focusedAutomationRunConversationId ?? selectedConversationId,
         filePath,
         mode,
         requestId: (current?.requestId ?? 0) + 1,
@@ -1485,6 +1495,7 @@ export function useAgentsViewController({
       openArtifactTab(selectedConversationId, "publish");
     },
     [
+      focusedAutomationRunConversationId,
       handleReturnToWorkspaceChat,
       isWorkspaceReviewRunning,
       openArtifactTab,
@@ -1493,18 +1504,23 @@ export function useAgentsViewController({
     ],
   );
   const handleOpenPublishPaneWithChatFocus = useCallback(() => {
-    if (!isWorkspaceReviewRunning) {
+    if (!isWorkspaceReviewRunning && !focusedAutomationRunConversationId) {
       handleReturnToWorkspaceChat();
     }
     handleOpenPublishPane();
   }, [
+    focusedAutomationRunConversationId,
     handleOpenPublishPane,
     handleReturnToWorkspaceChat,
     isWorkspaceReviewRunning,
   ]);
   const handleSelectArtifactWithChatFocus = useCallback(
     (tab: AgentArtifactTab) => {
-      if (tab !== "review" && !isWorkspaceReviewRunning) {
+      if (
+        tab !== "review" &&
+        !isWorkspaceReviewRunning &&
+        !focusedAutomationRunConversationId
+      ) {
         handleReturnToWorkspaceChat();
       }
       if (tab === "publish") {
@@ -1514,6 +1530,7 @@ export function useAgentsViewController({
       handleSelectArtifact(tab);
     },
     [
+      focusedAutomationRunConversationId,
       handleOpenPublishPane,
       handleReturnToWorkspaceChat,
       handleSelectArtifact,
@@ -1680,6 +1697,8 @@ export function useAgentsViewController({
       onSelectChatFocus: handleSelectChatFocus,
       projects,
       publishShortcutLabel,
+      publishShortcutWorkspace,
+      suppressPublishShortcut,
       promotePublishShortcut: promoteWorkspaceReviewPublishShortcut,
       publishAttemptsByConversationId,
       selectedConversationId,

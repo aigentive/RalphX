@@ -1123,7 +1123,9 @@ vi.mock("./AgentsArtifactPane", async () => {
       onFocusVerificationSession,
       onFocusWorkspaceReview,
       onOpenAutomation,
+      onOpenPublish,
       onPublishWorkspace,
+      onTabChange,
       workspace,
       projectBaseBranch,
       publishAttempt,
@@ -1155,7 +1157,9 @@ vi.mock("./AgentsArtifactPane", async () => {
         },
       ) => void;
       onOpenAutomation?: (automationId: string) => void;
+      onOpenPublish?: () => void;
       onPublishWorkspace?: (conversationId: string) => Promise<void>;
+      onTabChange?: (tab: string) => void;
     }) => realPublishPanelState.enabled && activeTab === "publish" ? (
       <div
         data-testid="agents-artifact-pane"
@@ -1168,6 +1172,7 @@ vi.mock("./AgentsArtifactPane", async () => {
             ? (publishSubTabRequest?.tab ?? "changes")
             : "changes"
         }
+        data-publish-focus-conversation-id={publishFocusRequest?.conversationId ?? ""}
         data-automation-id={conversation?.automationId ?? ""}
       >
         {onClose ? (
@@ -1211,8 +1216,27 @@ vi.mock("./AgentsArtifactPane", async () => {
             ? (publishSubTabRequest?.tab ?? "changes")
             : "changes"
         }
+        data-publish-focus-conversation-id={publishFocusRequest?.conversationId ?? ""}
         data-automation-id={conversation?.automationId ?? ""}
       >
+        {onTabChange ? (
+          <button
+            type="button"
+            data-testid="mock-select-artifact-tab-publish"
+            onClick={() => onTabChange("publish")}
+          >
+            Select publish tab
+          </button>
+        ) : null}
+        {onOpenPublish ? (
+          <button
+            type="button"
+            data-testid="mock-open-publish-pane"
+            onClick={() => onOpenPublish()}
+          >
+            Open publish pane
+          </button>
+        ) : null}
         {onClose ? (
           <button
             type="button"
