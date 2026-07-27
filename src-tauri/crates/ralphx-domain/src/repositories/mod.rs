@@ -85,7 +85,9 @@ pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssue
 pub use agent_conversation_workspace_repository::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
-    AgentWorkspacePrTerminalSettlement, AgentWorkspaceRepairStateGuard,
+    AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
+    AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
+    AgentWorkspacePublicationUpdate, AgentWorkspaceRepairStateGuard,
     AgentWorkspaceRepairStateTransition,
 };
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;

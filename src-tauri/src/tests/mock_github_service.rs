@@ -25,6 +25,7 @@ pub struct MockGithubState {
     pub mark_pr_ready_result: Option<AppResult<()>>,
     pub update_pr_details_result: Option<AppResult<()>>,
     pub patch_pr_metadata_result: Option<AppResult<()>>,
+    pub patch_pr_metadata_responses: VecDeque<AppResult<()>>,
     pub update_pr_base_result: Option<AppResult<()>>,
     pub check_pr_status_result: Option<AppResult<PrStatus>>,
     pub check_pr_sync_state_result: Option<AppResult<PrSyncState>>,
@@ -250,6 +251,12 @@ impl MockGithubService {
         self.state().create_draft_pr_result = Some(Err(AppError::Infrastructure(msg.into())));
     }
 
+    /// Queue exact metadata-patch responses for ambiguous outcome and retry tests.
+    #[allow(dead_code)]
+    pub fn queue_patch_pr_metadata_result(&self, result: AppResult<()>) {
+        self.state().patch_pr_metadata_responses.push_back(result);
+    }
+
     /// Shorthand: configure find_pr_by_head_branch to return the given result.
     #[allow(dead_code)]
     pub fn set_find_pr_by_head_branch(&self, result: AppResult<Option<(i64, String)>>) {
@@ -388,7 +395,10 @@ impl GithubServiceTrait for MockGithubService {
         ));
         s.last_patch_pr_metadata_body =
             body_file.and_then(|path| std::fs::read_to_string(path).ok());
-        s.patch_pr_metadata_result.take().unwrap_or(Ok(()))
+        s.patch_pr_metadata_responses
+            .pop_front()
+            .or_else(|| s.patch_pr_metadata_result.take())
+            .unwrap_or(Ok(()))
     }
 
     async fn update_pr_base(

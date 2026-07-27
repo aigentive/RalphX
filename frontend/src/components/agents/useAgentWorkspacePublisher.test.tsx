@@ -87,6 +87,7 @@ function publicationEvent(
     status: "started",
     summary: "Checking workspace",
     classification: null,
+    attemptId: null,
     createdAt: new Date().toISOString(),
     ...overrides,
   };
@@ -465,15 +466,29 @@ describe("useAgentWorkspacePublisher", () => {
     const queryClient = createTestQueryClient();
     const baseline = publicationEvent({ id: "baseline" });
     const published = publicationEvent({
-      id: "published",
-      step: "published",
+      id: "metadata-settled",
+      step: "metadata_settled",
       status: "succeeded",
-      summary: "Published pull request",
+      summary: "PR metadata update was applied",
+      classification: "applied",
+      attemptId: "attempt-current",
       createdAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+    const stalePublished = publicationEvent({
+      id: "metadata-settled-stale",
+      step: "metadata_settled",
+      status: "succeeded",
+      summary: "Stale PR metadata update",
+      classification: "applied",
+      attemptId: "attempt-stale",
+      createdAt: new Date(Date.now() + 500).toISOString(),
     });
     const publishedWorkspace = conversationWorkspaceFixture({
       publicationPushStatus: "pushed",
       publicationPrNumber: 404,
+      publicationMetadataAttemptId: "attempt-current",
+      publicationMetadataPhase: "settled",
+      publicationMetadataState: "reconciled",
     });
     const firstPublishDeferred = deferred<PublishAgentConversationWorkspaceResult>();
     listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([baseline]);
@@ -510,7 +525,7 @@ describe("useAgentWorkspacePublisher", () => {
     act(() => {
       queryClient.setQueryData(
         ["agents", "conversation-workspace-publication-events", "conversation-1"],
-        [baseline, published],
+        [baseline, stalePublished, published],
       );
     });
 
@@ -637,6 +652,160 @@ describe("useAgentWorkspacePublisher", () => {
       id: agentWorkspaceOperationToastId("conversation-1", "publish"),
     });
     expect(getAgentConversationWorkspaceFreshnessMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the local attempt open when a direct RPC result still has an unsettled receipt", async () => {
+    const queryClient = createTestQueryClient();
+    const reconcilingWorkspace = conversationWorkspaceFixture({
+      publicationPushStatus: "pushing",
+      publicationMetadataAttemptId: "attempt-current",
+      publicationMetadataPhase: "reconciling",
+      publicationMetadataState: "unknown",
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([]);
+    publishAgentConversationWorkspaceMock.mockResolvedValue({
+      workspace: reconcilingWorkspace,
+      commitSha: "commit-sha",
+      pushed: false,
+      createdPr: false,
+      prNumber: 404,
+      prUrl: "https://github.com/aigentive/ralphx.app/pull/404",
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: conversationWorkspaceFixture(),
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1");
+    });
+
+    await waitFor(() =>
+      expect(publishAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        result.current.publishAttemptsByConversationId["conversation-1"],
+      ).toEqual(expect.objectContaining({ conversationId: "conversation-1" })),
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the local attempt open when the RPC errors while its receipt is unsettled", async () => {
+    const queryClient = createTestQueryClient();
+    const reconcilingWorkspace = conversationWorkspaceFixture({
+      publicationPushStatus: "pushing",
+      publicationMetadataAttemptId: "attempt-current",
+      publicationMetadataPhase: "reconciling",
+      publicationMetadataState: "unknown",
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([]);
+    publishAgentConversationWorkspaceMock.mockRejectedValue(
+      new Error("PR metadata outcome is unknown"),
+    );
+    getAgentConversationWorkspaceMock.mockResolvedValue(reconcilingWorkspace);
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: conversationWorkspaceFixture(),
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1");
+    });
+
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+    expect(
+      result.current.publishAttemptsByConversationId["conversation-1"],
+    ).toEqual(expect.objectContaining({ conversationId: "conversation-1" }));
+    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("settles a push failure when an earlier metadata receipt remains settled", async () => {
+    const queryClient = createTestQueryClient();
+    const baseline = publicationEvent({ id: "baseline" });
+    const pushFailure = publicationEvent({
+      id: "push-failure",
+      step: "failed",
+      status: "failed",
+      summary: "Remote rejected the branch push",
+      classification: "operational",
+      attemptId: null,
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([baseline]);
+    publishAgentConversationWorkspaceMock.mockReturnValue(new Promise(() => undefined));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({
+        publicationPushStatus: "failed",
+        publicationMetadataAttemptId: "attempt-previous",
+        publicationMetadataPhase: "settled",
+        publicationMetadataState: "applied",
+      }),
+    );
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: conversationWorkspaceFixture(),
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    let completed = false;
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1").then(() => {
+        completed = true;
+      });
+    });
+    await waitFor(() => expect(publishAgentConversationWorkspaceMock).toHaveBeenCalled());
+    act(() => {
+      queryClient.setQueryData(
+        ["agents", "conversation-workspace-publication-events", "conversation-1"],
+        [baseline, pushFailure],
+      );
+    });
+
+    await waitFor(() => expect(completed).toBe(true));
+    expect(toastErrorMock).toHaveBeenCalledWith("Failed to publish branch", {
+      closeButton: true,
+      description: "Untitled agent • Remote rejected the branch push",
+      dismissible: true,
+      duration: 12_000,
+      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+    });
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(
+      result.current.publishAttemptsByConversationId["conversation-1"],
+    ).toBeUndefined();
   });
 
   it("settles a durable needs-agent failure before later repair events", async () => {

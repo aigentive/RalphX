@@ -88,8 +88,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairTransitionOutcome,
-    AgentWorkspaceRepairStartRequest, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
     load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
@@ -143,13 +143,12 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
     AgentRunId, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision,
     AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId, ExecutionPlanStatus,
-    GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId,
-    Task, TaskCategory, TeamIntent, TeamMessageTarget,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
+    ExecutionPlanStatus, GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, InternalStatus, PersonaId, PlanBranch,
+    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TeamIntent, TeamMessageTarget,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
@@ -1045,9 +1044,9 @@ impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishComm
             repair_handoff,
         )
         .await?;
-        let pr_number = result.pr_number.ok_or_else(|| {
-            "normal publish completed without a pull-request number".to_string()
-        })?;
+        let pr_number = result
+            .pr_number
+            .ok_or_else(|| "normal publish completed without a pull-request number".to_string())?;
         Ok(AgentWorkspaceRepairPrHandoffResult {
             pr_number,
             pr_url: result.pr_url,
@@ -9338,12 +9337,12 @@ async fn spawn_deferred_agent_workspace_repair_message(
             if wait_started.elapsed() >= Duration::from_secs(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS) {
                 let summary =
                     "Timed out waiting for active workspace agent turn before sending repair";
-                    settle_agent_workspace_repair_dispatch_failure(
-                        state.inner(),
-                        dispatch,
-                        summary,
-                        AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
-                    )
+                settle_agent_workspace_repair_dispatch_failure(
+                    state.inner(),
+                    dispatch,
+                    summary,
+                    AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+                )
                 .await;
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),

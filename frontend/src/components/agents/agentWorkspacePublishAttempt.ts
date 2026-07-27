@@ -174,7 +174,12 @@ export async function readAgentWorkspaceDurablePublishResult(
   let freshness;
   if (
     suffix.some(
-      (event) => event.step === "published" && event.status === "succeeded",
+      (event) =>
+        (event.step === "published" && event.status === "succeeded") ||
+        (event.step === "metadata_settled" &&
+          event.status === "succeeded" &&
+          (event.classification === "applied" ||
+            event.classification === "reconciled")),
     )
   ) {
     try {

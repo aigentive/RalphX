@@ -31,7 +31,10 @@ import {
   agentWorkspaceMaintenanceOperationToastId,
   maintenanceOperationToastLabel,
 } from "./agentWorkspaceOperationToast";
-import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
+import {
+  getAgentWorkspaceTerminalPublicationStatus,
+  isAgentWorkspacePublishActive,
+} from "./agentWorkspacePublishState";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -270,6 +273,10 @@ export function useAgentWorkspacePublisher({
             });
             return;
           }
+          if (isAgentWorkspacePublishActive(result.workspace)) {
+            void invalidateWorkspaceQueries(queryClient, conversationId);
+            return;
+          }
           finalizeAttempt(attempt, { kind: "success", workspace: result.workspace });
         } catch (error) {
           if (activeAttemptsRef.current.get(conversationId)?.token !== token) {
@@ -318,6 +325,17 @@ export function useAgentWorkspacePublisher({
                 refreshedWorkspace.maintenanceOperation.stage,
               ),
             });
+            return;
+          }
+          const receiptNeedsDurableResolution =
+            refreshedWorkspace?.publicationMetadataAttemptId !== null &&
+            refreshedWorkspace?.publicationMetadataAttemptId !== undefined &&
+            (isAgentWorkspacePublishActive(refreshedWorkspace) ||
+              (refreshedWorkspace.publicationMetadataPhase === "settled" &&
+                (refreshedWorkspace.publicationMetadataState === "applied" ||
+                  refreshedWorkspace.publicationMetadataState === "reconciled")));
+          if (receiptNeedsDurableResolution) {
+            void invalidateWorkspaceQueries(queryClient, conversationId);
             return;
           }
           const needsAgent =

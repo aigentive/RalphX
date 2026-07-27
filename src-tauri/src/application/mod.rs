@@ -43,6 +43,7 @@ pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]
 mod agent_workspace_pr_autofix_attempt_tests;
 pub mod agent_workspace_pr_description;
+pub(crate) mod agent_workspace_pr_metadata_reconciliation;
 pub(crate) mod agent_workspace_terminal_cleanup;
 #[cfg(test)]
 mod agent_workspace_terminal_cleanup_tests;
@@ -419,6 +420,8 @@ mod agent_terminal_tests;
 mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_workspace_external_pr_reconciliation_tests;
+#[cfg(test)]
+mod agent_workspace_pr_metadata_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;
 #[cfg(test)]

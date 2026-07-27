@@ -696,6 +696,8 @@ impl GithubServiceTrait for GhCliGithubService {
         title: Option<&str>,
         body_file: Option<&Path>,
     ) -> AppResult<()> {
+        let has_title = title.is_some();
+        let has_body_file = body_file.is_some();
         let body_file = body_file
             .map(|path| {
                 path.to_str().ok_or_else(|| {
@@ -704,8 +706,32 @@ impl GithubServiceTrait for GhCliGithubService {
             })
             .transpose()?;
         let args = build_update_pr_args(pr_number, title, body_file)?;
-        self.runner.run_gh(working_dir, &args).await?;
-        Ok(())
+        debug!(
+            pr_number,
+            has_title,
+            has_body_file,
+            result_class = "attempt",
+            "Patching pull-request metadata"
+        );
+        let result = self.runner.run_gh(working_dir, &args).await;
+        if result.is_ok() {
+            debug!(
+                pr_number,
+                has_title,
+                has_body_file,
+                result_class = "success",
+                "Patching pull-request metadata"
+            );
+        } else {
+            warn!(
+                pr_number,
+                has_title,
+                has_body_file,
+                result_class = "error",
+                "Patching pull-request metadata"
+            );
+        }
+        result.map(|_| ())
     }
 
     async fn update_pr_base(

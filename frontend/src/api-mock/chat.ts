@@ -1013,6 +1013,9 @@ function createMockWorkspace(
     publicationPrUrl: null,
     publicationPrStatus: null,
     publicationPushStatus: null,
+    publicationMetadataAttemptId: null,
+    publicationMetadataPhase: null,
+    publicationMetadataState: null,
     status: "active",
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
@@ -1065,6 +1068,7 @@ export async function mockPublishAgentConversationWorkspace(
       status: "succeeded",
       summary: "Draft pull request is ready",
       classification: null,
+      attemptId: null,
       createdAt: new Date().toISOString(),
     },
   ]);

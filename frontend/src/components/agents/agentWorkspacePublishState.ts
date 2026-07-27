@@ -19,6 +19,18 @@ export type AgentWorkspacePublishTerminalEvent = {
   kind: "failure" | "needs_agent" | "no_changes" | "success";
 };
 
+export type AgentWorkspacePublishReceiptPresentation = {
+  summary: string;
+  title: string;
+  tone: "error" | "neutral";
+};
+
+const ACTIVE_METADATA_RECEIPT_PHASES = new Set([
+  "prepared",
+  "mutating",
+  "reconciling",
+]);
+
 export function hasPublishedWorkspacePr(
   workspace: AgentConversationWorkspace | null
 ): boolean {
@@ -27,11 +39,33 @@ export function hasPublishedWorkspacePr(
 
 export function getAgentWorkspaceDescriptionFailurePresentation(
   targetPullRequestLabel: string | null,
+  receiptState: AgentConversationWorkspace["publicationMetadataState"] = null,
 ): { title: string; summary: string } {
+  if (receiptState === "not_attempted") {
+    return {
+      title: "PR metadata not updated",
+      summary:
+        "The PR changed before the metadata write, so RalphX left the newer remote description untouched.",
+    };
+  }
+  if (receiptState === "not_applied") {
+    return {
+      title: "PR metadata not updated",
+      summary:
+        "GitHub did not apply the requested description update. Retry after reviewing the latest event.",
+    };
+  }
+  if (receiptState === "conflicted") {
+    return {
+      title: "PR metadata changed",
+      summary:
+        "The PR changed during the metadata update. RalphX did not overwrite the newer remote version.",
+    };
+  }
   if (targetPullRequestLabel) {
     return {
       title: "Publishing failed",
-      summary: `RalphX could not finish the metadata step for ${targetPullRequestLabel} and did not apply an unsafe replacement body. Review the latest publish event before retrying Commit & Publish.`,
+      summary: `RalphX could not confirm the prior metadata outcome for ${targetPullRequestLabel}. The next retry will check the linked PR before writing.`,
     };
   }
   return {
@@ -39,6 +73,40 @@ export function getAgentWorkspaceDescriptionFailurePresentation(
     summary:
       "RalphX could not draft a PR description, so no pull request was opened. Review the latest publish event before retrying Commit & Publish.",
   };
+}
+
+export function getAgentWorkspacePublishReceiptPresentation(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspacePublishReceiptPresentation | null {
+  const phase = workspace?.publicationMetadataPhase;
+  const state = workspace?.publicationMetadataState;
+  if (phase === "prepared" || phase === "mutating") {
+    return {
+      title: "Updating PR metadata",
+      summary: "Updating PR metadata…",
+      tone: "neutral",
+    };
+  }
+  if (phase === "reconciling") {
+    return {
+      title: "Verifying PR metadata",
+      summary:
+        "GitHub may have applied the description. RalphX is verifying the linked PR before another write.",
+      tone: "neutral",
+    };
+  }
+  if (phase === "settled" && state && state !== "applied" && state !== "reconciled") {
+    const target = workspace?.publicationPrNumber
+      ? `PR #${workspace.publicationPrNumber}`
+      : workspace?.publicationPrUrl
+        ? "the linked pull request"
+        : null;
+    return {
+      ...getAgentWorkspaceDescriptionFailurePresentation(target, state),
+      tone: "error",
+    };
+  }
+  return null;
 }
 
 function normalizePublicationStatus(status: string | null | undefined): string | null {
@@ -210,6 +278,12 @@ export function isAgentWorkspacePublishActive(
 ): boolean {
   if (!workspace || getAgentWorkspaceTerminalPublicationStatus(workspace)) {
     return false;
+  }
+  if (
+    workspace.publicationMetadataPhase !== null &&
+    ACTIVE_METADATA_RECEIPT_PHASES.has(workspace.publicationMetadataPhase)
+  ) {
+    return true;
   }
   const pushStatus = normalizePublicationStatus(workspace.publicationPushStatus);
   return (
@@ -452,18 +526,39 @@ export function classifyAgentWorkspacePublishTerminalEvent(
   workspace: AgentConversationWorkspace | null,
   freshness: AgentConversationWorkspaceFreshness | undefined,
 ): AgentWorkspacePublishTerminalEvent | null {
+  const currentAttemptId = workspace?.publicationMetadataAttemptId;
+  const authoritativeEvents = currentAttemptId
+    ? events.filter(
+        (event) =>
+          event.attemptId === currentAttemptId || event.attemptId === null,
+      )
+    : events;
   const workspacePushStatus = normalizePublicationStatus(
     workspace?.publicationPushStatus,
   );
-  for (const event of events) {
+  for (const event of authoritativeEvents) {
     const step = event.step.trim().toLowerCase();
     const status = event.status.trim().toLowerCase();
     const classification = event.classification?.trim().toLowerCase() ?? null;
-    if (step === "published" && status === "succeeded") {
+    if (
+      (step === "published" && status === "succeeded") ||
+      (step === "metadata_settled" &&
+        status === "succeeded" &&
+        (classification === "applied" || classification === "reconciled"))
+    ) {
       if (isAgentWorkspacePublishCurrent(workspace, freshness)) {
         return { event, kind: "success" };
       }
       continue;
+    }
+    if (
+      step === "metadata_settled" &&
+      (status === "failed" || status === "skipped") &&
+      (classification === "not_attempted" ||
+        classification === "not_applied" ||
+        classification === "conflicted")
+    ) {
+      return { event, kind: "failure" };
     }
     if (
       step === "needs_agent" &&

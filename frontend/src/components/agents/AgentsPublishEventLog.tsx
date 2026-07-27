@@ -11,17 +11,26 @@ import type { AgentConversationWorkspacePublicationEvent } from "@/api/chat";
 export function selectPublishHistory(
   events: AgentConversationWorkspacePublicationEvent[],
   isPublishing: boolean,
+  currentAttemptId: string | null = null,
 ): {
   activeStartedEventId: string | null;
   visibleEvents: AgentConversationWorkspacePublicationEvent[];
 } {
+  const attemptEvents = currentAttemptId
+    ? events.filter(
+        (event) => event.attemptId === currentAttemptId || event.attemptId === null,
+      )
+    : events;
+  const currentAttemptEvents = currentAttemptId
+    ? events.filter((event) => event.attemptId === currentAttemptId)
+    : attemptEvents;
   const activeStartedEventId =
-    isPublishing && events.length > 0
-      ? ([...events]
+    isPublishing && currentAttemptEvents.length > 0
+      ? ([...currentAttemptEvents]
           .reverse()
           .find((event) => event.status === "started")?.id ?? null)
       : null;
-  const visibleEvents = events
+  const visibleEvents = attemptEvents
     .filter(
       (event) =>
         event.status === "failed" ||
@@ -38,10 +47,12 @@ export function PublishEventLog({
   events,
   isLoading,
   isPublishing,
+  currentAttemptId = null,
 }: {
   events: AgentConversationWorkspacePublicationEvent[];
   isLoading: boolean;
   isPublishing: boolean;
+  currentAttemptId?: string | null;
 }) {
   if (isLoading && events.length === 0) {
     return (
@@ -58,6 +69,7 @@ export function PublishEventLog({
   const { activeStartedEventId, visibleEvents } = selectPublishHistory(
     events,
     isPublishing,
+    currentAttemptId,
   );
 
   if (visibleEvents.length === 0) {

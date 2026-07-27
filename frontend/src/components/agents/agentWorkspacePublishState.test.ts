@@ -33,8 +33,8 @@ describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
     );
 
     const linked = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
-    expect(linked.summary).toContain("metadata step for PR #888");
-    expect(linked.summary).toContain("did not apply an unsafe replacement body");
+    expect(linked.summary).toContain("prior metadata outcome for PR #888");
+    expect(linked.summary).toContain("check the linked PR before writing");
     expect(linked.summary).not.toContain("no pull request was opened");
     expect(linked.summary).not.toContain("branch was unchanged");
   });
