@@ -75,7 +75,10 @@ describe("the alias actually covers typedInvoke (A-3)", () => {
 });
 
 describe("the primitive specifier stays confined to the transport modules", () => {
-  it("is imported only from src/lib/remote", () => {
+  // Same scope as scripts/check-remote-transport-drift.mjs, which is the CI
+  // authority: production modules only. A test file may mock the primitive to put a
+  // spy underneath the wrapper — that is the point of having a private specifier.
+  it("is imported only from src/lib/remote in production code", () => {
     const offenders: string[] = [];
     const walk = (directory: string) => {
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -85,6 +88,7 @@ describe("the primitive specifier stays confined to the transport modules", () =
           continue;
         }
         if (!/\.[cm]?[jt]sx?$/.test(entry.name)) continue;
+        if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry.name)) continue;
         const relative = path
           .relative(frontendRoot, entryPath)
           .split(path.sep)
