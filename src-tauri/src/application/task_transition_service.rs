@@ -35,7 +35,7 @@ use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
     ExecutionRecoveryState, InternalStatus, PlanBranchId, ReviewNote, ReviewOutcome, ReviewerType,
-    Task, TaskCategory, TaskId, TaskOutcomeStatus,
+    Task, TaskCategory, TaskId, TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -2500,13 +2500,13 @@ impl TaskTransitionService {
 
         let mut outcome = new_empty_task_outcome(
             merge_task.project_id.clone(),
-            "github_pr_review",
+            TaskOutcomeSource::GithubPrReview,
             "github_review",
             feedback.review_id.clone(),
         );
         outcome.task_id = Some(merge_task.id.as_str().to_string());
         outcome.review_id = Some(feedback.review_id.clone());
-        outcome.outcome_class = Some("github_pr_changes_requested".to_string());
+        outcome.outcome_class = Some(TaskOutcomeClass::GithubPrChangesRequested);
         outcome.status = TaskOutcomeStatus::Failed;
         outcome.evidence_json = serde_json::json!({
             "task_id": merge_task.id.as_str(),

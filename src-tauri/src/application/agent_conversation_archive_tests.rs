@@ -21,9 +21,16 @@ use crate::domain::entities::{
     ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSessionId,
     PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
 };
-use crate::domain::repositories::TaskOutcomeListOptions;
+use crate::domain::repositories::{
+    TaskOutcomeListOptions, WORKSPACE_PR_CLOSED_CLASS, WORKSPACE_PUBLISH_FAILED_CLASS,
+    WORKSPACE_SESSION_ABANDONED_CLASS,
+};
 use crate::domain::services::github_service::GithubServiceTrait;
-use crate::domain::services::{RunningAgentKey, AGENT_WORKSPACE_PR_OUTCOME_SOURCE};
+use crate::domain::services::{
+    RunningAgentKey, AGENT_WORKSPACE_OUTCOME_SOURCE, AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
+    WORKSPACE_TERMINAL_REASON_ARCHIVE_CLOSED, WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED,
+    WORKSPACE_TERMINAL_REASON_USER_CLOSED,
+};
 use crate::error::AppError;
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -198,6 +205,23 @@ async fn archive_closes_workspace_pr_only_when_requested() {
         .unwrap();
     assert_eq!(workspace.status, AgentConversationWorkspaceStatus::Archived);
     assert_eq!(workspace.publication_pr_status.as_deref(), Some("closed"));
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(&workspace.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("archive outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_PR_CLOSED_CLASS)
+    );
+    assert_eq!(
+        outcomes[0].evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_ARCHIVE_CLOSED
+    );
 }
 
 #[tokio::test]
@@ -262,6 +286,16 @@ async fn explicit_close_immediately_force_removes_local_workspace() {
         .expect("workspace lookup")
         .expect("workspace retained for history");
     assert_eq!(persisted.publication_pr_status.as_deref(), Some("closed"));
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(&persisted.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("explicit close outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_USER_CLOSED
+    );
 }
 
 #[tokio::test]
@@ -305,6 +339,99 @@ async fn explicit_close_remote_failure_preserves_open_local_workspace() {
         .await
         .expect("cleanup status lookup")
         .is_none());
+    assert!(state
+        .task_outcome_repo
+        .list_by_project(&persisted.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("failed-close outcomes should be readable")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn archive_without_pr_records_one_conversation_abandonment_outcome() {
+    let (_temp, state, conversation_id, workspace, github) = setup_archive_state(
+        "no-pr-abandoned",
+        AgentConversationWorkspaceMode::Edit,
+        None,
+    )
+    .await;
+
+    archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect("no-pr archive should succeed");
+    archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect("no-pr archive retry should succeed");
+
+    assert_eq!(github.state().close_pr_calls, 0);
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("abandonment outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_SESSION_ABANDONED_CLASS)
+    );
+}
+
+#[tokio::test]
+async fn archive_without_pr_preserves_publish_failure_classification() {
+    let (_temp, state, conversation_id, workspace, _github) = setup_archive_state(
+        "no-pr-publish-failed",
+        AgentConversationWorkspaceMode::Edit,
+        None,
+    )
+    .await;
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &conversation_id,
+            None,
+            None,
+            None,
+            Some("description_failed"),
+        )
+        .await
+        .expect("publish failure should be persisted");
+
+    archive_agent_conversation_for_state(&conversation_id, &state, false)
+        .await
+        .expect("failed-publish archive should succeed");
+
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("publish failure outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_PUBLISH_FAILED_CLASS)
+    );
+    assert_eq!(
+        outcomes[0].evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED
+    );
 }
 
 #[tokio::test]
@@ -347,6 +474,12 @@ async fn archive_requested_remote_close_failure_preserves_active_state() {
         .await
         .expect("cleanup status lookup")
         .is_none());
+    assert!(state
+        .task_outcome_repo
+        .list_by_project(&persisted.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("failed archive outcomes should be readable")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -522,7 +655,7 @@ async fn archive_skips_remote_close_for_terminal_workspace_pr() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
                 ..Default::default()
             },
         )
@@ -795,7 +928,7 @@ async fn archive_without_pr_close_request_preserves_open_workspace_pr() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
                 ..Default::default()
             },
         )

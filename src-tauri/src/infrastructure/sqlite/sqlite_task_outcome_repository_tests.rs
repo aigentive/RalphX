@@ -4,12 +4,15 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::SqliteTaskOutcomeRepository;
-use crate::domain::entities::{ProjectId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus};
+use crate::domain::entities::{
+    ProjectId, TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
+};
 use crate::domain::repositories::{
     canonical_terminal_pr_source_ref_id, TaskOutcomeRepository, UpsertTaskOutcomeInput,
     AGENT_WORKSPACE_PR_OUTCOME_SOURCE, TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS,
     WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
 };
+use crate::domain::services::new_empty_task_outcome;
 use crate::testing::SqliteTestDb;
 
 async fn setup(name: &str) -> (SqliteTestDb, Arc<SqliteTaskOutcomeRepository>) {
@@ -32,7 +35,7 @@ fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
     TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: ProjectId::from_string("project-1".to_string()),
-        source: AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string(),
+        source: AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
         source_ref_kind: TERMINAL_PR_SOURCE_REF_KIND.to_string(),
         source_ref_id: canonical_terminal_pr_source_ref_id("42"),
         task_id: None,
@@ -42,9 +45,10 @@ fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: Some(outcome_class.to_string()),
+        outcome_class: Some(TaskOutcomeClass::from(outcome_class)),
         status: TaskOutcomeStatus::Eligible,
         evidence_json: json!({ "summary": evidence }),
+        failure_fingerprint: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some("session-1".to_string()),
         created_at: now,
@@ -178,7 +182,7 @@ async fn sqlite_competing_terminal_writes_cannot_leave_lower_rank_winner() {
         .expect("read winner")
         .expect("winner exists");
     assert_eq!(
-        winner.outcome_class.as_deref(),
+        winner.outcome_class.as_ref().map(TaskOutcomeClass::as_str),
         Some(WORKSPACE_PR_MERGED_CLEAN_CLASS)
     );
     assert_eq!(winner.status, TaskOutcomeStatus::Succeeded);
@@ -186,4 +190,107 @@ async fn sqlite_competing_terminal_writes_cannot_leave_lower_rank_winner() {
         winner.evidence_json,
         json!({ "summary": "concurrent merge" })
     );
+}
+
+#[tokio::test]
+async fn sqlite_round_trips_live_sources_open_classes_and_failure_fingerprints() {
+    let (_db, repo) = setup("sqlite-typed-outcome-round-trip").await;
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let fingerprint = "a".repeat(64);
+    let live_sources = [
+        TaskOutcomeSource::AgentSession,
+        TaskOutcomeSource::AgentWorkspace,
+        TaskOutcomeSource::AgentWorkspacePr,
+        TaskOutcomeSource::GithubPrReview,
+        TaskOutcomeSource::AgentConversation,
+        TaskOutcomeSource::Review,
+        TaskOutcomeSource::GitCommitHistory,
+        TaskOutcomeSource::GithubPrHistory,
+        TaskOutcomeSource::PlanMode,
+        TaskOutcomeSource::Merge,
+        TaskOutcomeSource::MergeValidation,
+        TaskOutcomeSource::Verification,
+    ];
+
+    for source in live_sources {
+        let source_ref_id = format!("{}-1", source.as_str());
+        let mut outcome = new_empty_task_outcome(
+            project_id.clone(),
+            source,
+            "typed_round_trip",
+            source_ref_id.clone(),
+        );
+        outcome.outcome_class = Some(TaskOutcomeClass::Other("future_failure_class".to_string()));
+        outcome.status = TaskOutcomeStatus::Failed;
+        outcome.failure_fingerprint = Some(fingerprint.clone());
+        repo.upsert(UpsertTaskOutcomeInput { outcome })
+            .await
+            .unwrap();
+
+        let saved = repo
+            .get_by_dedupe(&project_id, source, "typed_round_trip", &source_ref_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.source, source);
+        assert_eq!(
+            saved.outcome_class,
+            Some(TaskOutcomeClass::Other("future_failure_class".to_string()))
+        );
+        assert_eq!(
+            saved.failure_fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn sqlite_recurrence_corpus_matches_memory_scope_and_ignores_malformed_evidence() {
+    let (db, repo) = setup("sqlite-recurrence-corpus").await;
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let key = format!("token-set-v1:{}", "b".repeat(64));
+    for (index, session) in ["session-1", "session-1", "session-2"].iter().enumerate() {
+        let mut outcome = new_empty_task_outcome(
+            project_id.clone(),
+            match index {
+                0 => TaskOutcomeSource::Review,
+                1 => TaskOutcomeSource::Merge,
+                _ => TaskOutcomeSource::MergeValidation,
+            },
+            "fixture",
+            format!("row-{index}"),
+        );
+        outcome.status = TaskOutcomeStatus::Failed;
+        outcome.evidence_json = json!({
+            "recurrence_key": key,
+            "recurrence_session": session,
+        });
+        repo.upsert(UpsertTaskOutcomeInput { outcome })
+            .await
+            .unwrap();
+    }
+    db.shared_conn()
+        .lock()
+        .await
+        .execute(
+            "INSERT INTO task_outcomes (
+                id, project_id, source, source_ref_kind, source_ref_id, status, evidence_json
+             ) VALUES (
+                'malformed', 'project-1', 'review', 'fixture', 'malformed', 'failed', '{'
+             )",
+            [],
+        )
+        .expect("insert malformed legacy evidence");
+
+    let corpus = repo
+        .recurrence_corpus(&project_id, &key)
+        .await
+        .expect("query recurrence corpus");
+
+    assert_eq!(corpus.eligible_observations, 3);
+    assert_eq!(corpus.distinct_sessions, 2);
+    assert!(repo
+        .recurrence_corpus(&project_id, "not-a-key")
+        .await
+        .is_err());
 }

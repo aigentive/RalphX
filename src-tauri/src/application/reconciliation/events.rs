@@ -8,8 +8,9 @@ use crate::application::task_notification_producer::TaskPipelineNotificationProd
 use crate::domain::entities::{
     AgentRun, AgentRunId, ChatContextType, InternalStatus, MergeFailureSource, MergeRecoveryEvent,
     MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode, MergeRecoverySource,
-    MergeRecoveryState, Task, TaskId,
+    MergeRecoveryState, Task, TaskId, TaskOutcomeClass,
 };
+use crate::domain::services::merge_failure_outcomes::record_merge_failure_outcome;
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
 
 use super::policy::{RecoveryContext, RecoveryEvidence, RecoveryPromptAction, RecoveryPromptEvent};
@@ -294,6 +295,7 @@ impl ReconciliationRunner {
         // across retries (ExecuteEntryActions doesn't create new status_history entries,
         // so latest_status_transition_age returns the original Merging timestamp).
         let timeout_secs = default_reconciliation_merger_timeout_secs() as i64;
+        let attempt = recovery.active_attempt();
 
         let failed_event = MergeRecoveryEvent::new(
             MergeRecoveryEventKind::AttemptFailed,
@@ -304,6 +306,7 @@ impl ReconciliationRunner {
                 timeout_secs
             ),
         )
+        .with_attempt(attempt)
         .with_failure_source(MergeFailureSource::TransientGit);
         recovery.append_event_with_state(failed_event, MergeRecoveryState::Failed);
 
@@ -338,6 +341,35 @@ impl ReconciliationRunner {
                 error = %e,
                 "Failed to persist merge timeout metadata"
             );
+            return;
+        }
+
+        if let Some(repo) = self.task_outcome_repo.as_ref() {
+            let evidence = serde_json::json!({
+                "timeout_seconds": timeout_secs,
+                "source_branch": updated.task_branch,
+                "failure_source": MergeFailureSource::TransientGit,
+                "recovery_state": MergeRecoveryState::Failed,
+            });
+            let fingerprint_evidence =
+                format!("merge timed out after {timeout_secs}s without completion signal");
+            if let Err(error) = record_merge_failure_outcome(
+                std::sync::Arc::clone(repo),
+                &updated,
+                TaskOutcomeClass::MergeTimeout,
+                attempt,
+                evidence,
+                &fingerprint_evidence,
+            )
+            .await
+            {
+                warn!(
+                    task_id = task.id.as_str(),
+                    attempt,
+                    error = %error,
+                    "Failed to record attempt-scoped merge timeout outcome"
+                );
+            }
         }
     }
 

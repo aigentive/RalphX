@@ -11,6 +11,7 @@ use dashmap::DashMap;
 use ralphx_domain::entities::automation::latest_run_holds_goal_authority;
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
+use crate::application::agent_workspace_terminal_cleanup::record_no_pr_terminal_observation_best_effort;
 use crate::application::automation::integration_pr::AutomationIntegrationPrPublisher;
 use crate::application::automation::judge::{
     append_automation_judge_retry_instruction, build_automation_judge_prompt,
@@ -77,7 +78,7 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
     ChatConversationRepository, IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
-    PlanArtifactApprovalRepository,
+    PlanArtifactApprovalRepository, TaskOutcomeRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::domain::services::{
@@ -1281,6 +1282,7 @@ pub struct AutomationScheduler {
     conversation_repo: Arc<dyn ChatConversationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
     plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
@@ -1304,6 +1306,7 @@ impl AutomationScheduler {
         agent_run_repo: Arc<dyn AgentRunRepository>,
         conversation_repo: Arc<dyn ChatConversationRepository>,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
         plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
@@ -1351,6 +1354,7 @@ impl AutomationScheduler {
             conversation_repo,
             run_repo,
             workspace_repo,
+            task_outcome_repo,
             ideation_session_repo,
             plan_approval_repo,
             plan_approval_writer,
@@ -1378,6 +1382,15 @@ impl AutomationScheduler {
         merged_run_finalizer: Arc<dyn AutomationMergedRunFinalizer>,
     ) -> Self {
         self.merged_run_finalizer = merged_run_finalizer;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_task_outcome_repo(
+        mut self,
+        task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    ) -> Self {
+        self.task_outcome_repo = task_outcome_repo;
         self
     }
 
@@ -1842,6 +1855,12 @@ impl AutomationScheduler {
                         .await?
                     {
                         summary.failed_runs += 1;
+                        self.record_no_pr_terminal_after_run_transition(
+                            run,
+                            "agent_cancelled",
+                            "Automation run agent was cancelled",
+                        )
+                        .await;
                         self.service
                             .sync_goal_items_for_closed_run_without_successor(&automation.id)
                             .await;
@@ -2165,6 +2184,12 @@ impl AutomationScheduler {
                     .await?
                 {
                     summary.failed_runs += 1;
+                    self.record_no_pr_terminal_after_run_transition(
+                        run,
+                        "agent_cancelled",
+                        "Automation run planning agent was cancelled",
+                    )
+                    .await;
                     self.service
                         .sync_goal_items_for_closed_run_without_successor(&automation.id)
                         .await;
@@ -3277,6 +3302,8 @@ impl AutomationScheduler {
             .await?
         {
             summary.failed_runs += 1;
+            self.record_no_pr_terminal_after_run_transition(run, code, detail)
+                .await;
         } else {
             tracing::warn!(
                 run_id = %run.id,
@@ -3287,6 +3314,52 @@ impl AutomationScheduler {
             );
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fail_running_run_for_test(
+        &self,
+        run: &AutomationRun,
+        code: &str,
+        detail: &str,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        self.fail_running_run(run, code, detail, summary).await
+    }
+
+    async fn record_no_pr_terminal_after_run_transition(
+        &self,
+        run: &AutomationRun,
+        reason: &str,
+        summary: &str,
+    ) {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return;
+        };
+        let agent_run = match self
+            .latest_agent_run_for_current_phase(conversation_id, run)
+            .await
+        {
+            Ok(agent_run) => agent_run,
+            Err(error) => {
+                tracing::warn!(
+                    run_id = %run.id,
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Failed to load current agent run linkage for terminal workspace outcome"
+                );
+                None
+            }
+        };
+        record_no_pr_terminal_observation_best_effort(
+            &self.workspace_repo,
+            &self.task_outcome_repo,
+            conversation_id,
+            agent_run.as_ref(),
+            reason,
+            summary,
+        )
+        .await;
     }
 
     async fn observe_signal_terminal_run(

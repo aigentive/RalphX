@@ -65,16 +65,21 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
     ChatConversationRepository, IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
-    PlanArtifactApprovalRepository,
+    PlanArtifactApprovalRepository, TaskOutcomeListOptions, TaskOutcomeRepository,
+    WORKSPACE_PUBLISH_FAILED_CLASS, WORKSPACE_SESSION_ABANDONED_CLASS,
 };
 use crate::domain::services::github_service::{PrHealth, PrMergeableState, PrStatus, PrSyncState};
 use crate::domain::services::GithubServiceTrait;
+use crate::domain::services::{
+    AGENT_WORKSPACE_OUTCOME_SOURCE, WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository, MemoryArtifactRepository,
     MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
     MemoryIdeationSessionRepository, MemoryPlanArtifactApprovalRepository,
+    MemoryTaskOutcomeRepository,
 };
 use crate::infrastructure::MockAgenticClient;
 use crate::tests::mock_github_service::MockGithubService;
@@ -1493,6 +1498,7 @@ impl ParkedPlanGateScenario {
             agent_run_repo,
             conversation_repo,
             workspace_repo,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             session_repo,
             plan_approval_repo,
             plan_approval_writer,
@@ -1650,6 +1656,7 @@ fn scheduler_with_judge_and_integration_pr_publisher(
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MemoryChatConversationRepository::new()),
         workspace_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
         plan_approval_repo_trait,
         plan_approval_writer,
@@ -1813,6 +1820,7 @@ fn scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
         agent_run_repo,
         Arc::new(MemoryChatConversationRepository::new()),
         workspace_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         ideation_session_repo,
         plan_approval_repo_trait,
         plan_approval_writer,
@@ -2207,6 +2215,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         Arc::new(MemoryAgentRunRepository::new()),
         conversation_repo,
         workspace_repo,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
         plan_approval_repo_trait,
         plan_approval_writer,
@@ -8097,18 +8106,23 @@ async fn automation_scheduler_marks_no_changes_publish_outcome_as_agent_failed()
         .unwrap();
     let mut workspace = workspace(&conversation_id);
     workspace.publication_push_status = Some("no_changes".to_string());
+    let project_id = workspace.project_id.clone();
     workspace_repo.create_or_update(workspace).await.unwrap();
+    let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
         workspace_repo,
         Arc::new(RecordingSignalChecker::default()),
         AutomationSchedulerConfig::default(),
-    );
+    )
+    .with_task_outcome_repo(outcome_repo.clone());
 
     let summary = scheduler.tick_once().await.unwrap();
+    let retry = scheduler.tick_once().await.unwrap();
 
     assert_eq!(summary.failed_runs, 1);
+    assert_eq!(retry.failed_runs, 0);
     let latest = run_repo
         .latest_for_automation(&automation_id)
         .await
@@ -8116,6 +8130,79 @@ async fn automation_scheduler_marks_no_changes_publish_outcome_as_agent_failed()
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("no_changes"));
+    let outcomes = outcome_repo
+        .list_by_project(
+            &project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("scheduler abandonment outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_SESSION_ABANDONED_CLASS)
+    );
+    assert_eq!(outcomes[0].evidence_json["reason"], "no_changes");
+}
+
+#[tokio::test]
+async fn automation_scheduler_lost_failure_cas_does_not_record_abandonment() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let stale_run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Running,
+        Some(conversation_id.clone()),
+    );
+    let mut persisted_run = stale_run.clone();
+    persisted_run.status = AutomationRunStatus::AgentFailed;
+    run_repo.create_run(persisted_run).await.unwrap();
+    let workspace = workspace(&conversation_id);
+    let project_id = workspace.project_id.clone();
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+    let scheduler = scheduler_with(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    )
+    .with_task_outcome_repo(outcome_repo.clone());
+    let mut summary = AutomationSchedulerTickSummary::default();
+
+    scheduler
+        .fail_running_run_for_test(
+            &stale_run,
+            "stale_failure",
+            "Stale failure attempt",
+            &mut summary,
+        )
+        .await
+        .expect("lost transition should remain non-fatal");
+
+    assert_eq!(summary.failed_runs, 0);
+    assert!(outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("lost-CAS outcomes should be readable")
+        .is_empty());
 }
 
 async fn observe_publication_push_status_with_agent(
@@ -8663,14 +8750,17 @@ async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
         .unwrap();
     let mut workspace = workspace(&conversation_id);
     workspace.publication_push_status = Some("failed".to_string());
+    let project_id = workspace.project_id.clone();
     workspace_repo.create_or_update(workspace).await.unwrap();
+    let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
         workspace_repo,
         Arc::new(RecordingSignalChecker::default()),
         AutomationSchedulerConfig::default(),
-    );
+    )
+    .with_task_outcome_repo(outcome_repo.clone());
 
     let summary = scheduler.tick_once().await.unwrap();
 
@@ -8682,6 +8772,28 @@ async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("publish_failed"));
+    let outcomes = outcome_repo
+        .list_by_project(
+            &project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("scheduler publish failure outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_PUBLISH_FAILED_CLASS)
+    );
+    assert_eq!(
+        outcomes[0].evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED
+    );
 }
 
 #[tokio::test]

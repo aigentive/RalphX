@@ -12,6 +12,11 @@ capabilities:
     - refresh_memory_rule_index
     - ingest_rule_file
     - rebuild_archive_snapshots
+    - list_project_skills
+    - get_project_skill
+    - upsert_project_skill
+    - patch_project_skill
+    - retire_project_skill
   internal_skills:
     auto_match: true
     max_auto_loaded: 1

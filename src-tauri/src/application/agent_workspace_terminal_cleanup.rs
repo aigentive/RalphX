@@ -27,7 +27,8 @@ use crate::domain::services::kill_worktree_processes_async;
 use crate::infrastructure::agents::claude::git_runtime_config;
 
 pub(crate) use super::agent_workspace_terminal_observation::{
-    record_terminal_pr_observation_best_effort, TerminalPrObservation,
+    record_no_pr_terminal_observation_best_effort, record_terminal_pr_observation_best_effort,
+    TerminalPrObservation,
 };
 #[cfg(test)]
 pub(crate) use super::agent_workspace_terminalization::terminalize_agent_workspace_after_pr;

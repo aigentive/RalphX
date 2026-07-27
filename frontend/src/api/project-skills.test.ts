@@ -273,12 +273,15 @@ describe("projectSkillsApi", () => {
     );
   });
 
-  it("processes a conversation for staged project skills", async () => {
+  it("queues a conversation for asynchronous project-skill distillation", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
-        staged_skills: [projectSkill({ id: "skill-3", status: "staged" })],
-        skipped_existing: 1,
         message_count: 4,
+        status: "started",
+        selected_outcomes: 1,
+        batch_count: 1,
+        started_batches: 1,
+        message: "Evidence queued and the skill distiller started.",
       }),
     );
 
@@ -288,9 +291,11 @@ describe("projectSkillsApi", () => {
         conversationId: "conversation-1",
       }),
     ).resolves.toMatchObject({
-      stagedSkills: [{ id: "skill-3", status: "staged" }],
-      skippedExisting: 1,
       messageCount: 4,
+      status: "started",
+      selectedOutcomes: 1,
+      batchCount: 1,
+      startedBatches: 1,
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost:3847/api/project_skills/conversation/process",
@@ -344,12 +349,14 @@ describe("projectSkillsApi", () => {
     await expect(projectSkillsApi.reject("missing-skill")).resolves.toBeNull();
   });
 
-  it("distills eligible outcomes into staged skills", async () => {
+  it("queues eligible outcomes for asynchronous distillation", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
-        staged_skills: [projectSkill({ id: "skill-2", status: "staged" })],
-        skipped_existing: 1,
-        updated_existing: 2,
+        status: "started",
+        selected_outcomes: 5,
+        batch_count: 2,
+        started_batches: 2,
+        message: "Evidence queued and the skill distiller started.",
         ingested_outcomes: 3,
         scanned_git_commits: 8,
         scanned_github_prs: 4,
@@ -365,9 +372,10 @@ describe("projectSkillsApi", () => {
         includeGithubPrHistory: true,
       }),
     ).resolves.toMatchObject({
-      stagedSkills: [{ id: "skill-2", status: "staged" }],
-      skippedExisting: 1,
-      updatedExisting: 2,
+      status: "started",
+      selectedOutcomes: 5,
+      batchCount: 2,
+      startedBatches: 2,
       ingestedOutcomes: 3,
       scannedGitCommits: 8,
       scannedGithubPrs: 4,
@@ -381,83 +389,6 @@ describe("projectSkillsApi", () => {
           limit: 5,
           include_git_history: false,
           include_github_pr_history: true,
-        }),
-      }),
-    );
-  });
-
-  it("lists bounded GitHub PR skill candidates", async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
-        candidates: [
-          {
-            number: 42,
-            title: "Tighten merge validation",
-            state: "MERGED",
-            url: "https://github.com/aigentive/ralphx.app/pull/42",
-            merged_at: "2026-06-14T10:00:00Z",
-            closed_at: null,
-            updated_at: "2026-06-14T10:05:00Z",
-            head_ref_name: "feature/merge-validation",
-            base_ref_name: "main",
-          },
-        ],
-        count: 1,
-        limit: 25,
-      }),
-    );
-
-    await expect(
-      projectSkillsApi.listPullRequestCandidates({
-        projectId: "project-1",
-        limit: 25,
-      }),
-    ).resolves.toMatchObject({
-      count: 1,
-      limit: 25,
-      candidates: [
-        {
-          number: 42,
-          title: "Tighten merge validation",
-          state: "MERGED",
-          baseRefName: "main",
-        },
-      ],
-    });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:3847/api/project_skills/pr_candidates/list",
-      expect.objectContaining({
-        body: JSON.stringify({
-          project_id: "project-1",
-          limit: 25,
-        }),
-      }),
-    );
-  });
-
-  it("stages one GitHub PR draft skill", async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({
-        skill: projectSkill({ id: "skill-pr-42", title: "Draft PR lesson" }),
-        skipped_existing: false,
-      }),
-    );
-
-    await expect(
-      projectSkillsApi.stageFromPullRequest({
-        projectId: "project-1",
-        number: 42,
-      }),
-    ).resolves.toMatchObject({
-      skill: { id: "skill-pr-42", title: "Draft PR lesson" },
-      skippedExisting: false,
-    });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:3847/api/project_skills/pr_candidates/stage",
-      expect.objectContaining({
-        body: JSON.stringify({
-          project_id: "project-1",
-          number: 42,
         }),
       }),
     );

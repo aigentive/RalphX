@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use rusqlite::Connection;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -11,13 +11,17 @@ use super::{
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     ProjectSkill, ProjectSkillCreatedBy, ProjectSkillId, ProjectSkillLifecycleStatus,
-    ProjectSkillVersion, SkillUsageEvent, SkillUsageEventId, TaskOutcome, TaskOutcomeId,
-    TaskOutcomeStatus,
+    ProjectSkillVersion, SkillUsageEvent, SkillUsageEventId, SkillUsageInjectionKind, TaskOutcome,
+    TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
-    ProjectSkillListOptions, ProjectSkillRepository, SkillUsageEventRepository,
+    ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
+    ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
+    ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
+    ProjectSkillResolutionOutcome, ProjectSkillStagingPolicy, SkillUsageEventRepository,
     SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
+use crate::domain::services::project_skill_resolution::import_title_resolution_identity;
 use crate::infrastructure::sqlite::run_migrations;
 
 fn shared_test_connection() -> Arc<Mutex<Connection>> {
@@ -38,7 +42,7 @@ fn task_outcome(status: TaskOutcomeStatus, outcome_class: Option<&str>) -> TaskO
     TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: ProjectId::from_string("project-1".to_string()),
-        source: "task_pipeline".to_string(),
+        source: TaskOutcomeSource::TaskPipeline,
         source_ref_kind: "task".to_string(),
         source_ref_id: "task-1".to_string(),
         task_id: Some("task-1".to_string()),
@@ -48,9 +52,10 @@ fn task_outcome(status: TaskOutcomeStatus, outcome_class: Option<&str>) -> TaskO
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: outcome_class.map(str::to_string),
+        outcome_class: outcome_class.map(TaskOutcomeClass::from),
         status,
         evidence_json: json!({ "summary": "evidence" }),
+        failure_fingerprint: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some("session-1".to_string()),
         created_at: now,
@@ -90,6 +95,280 @@ fn project_skill(
     }
 }
 
+fn outcome_resolution_command(
+    mut skill: ProjectSkill,
+    outcome_id: &str,
+) -> ProjectSkillResolutionCommand {
+    skill.provenance_json = json!({
+        "source": "task_outcome",
+        "outcome_id": outcome_id,
+    });
+    ProjectSkillResolutionCommand {
+        candidate: skill,
+        intent: ProjectSkillResolutionIntent::Upsert {
+            identities: vec![ProjectSkillResolutionIdentity {
+                kind: ProjectSkillResolutionIdentityKind::Outcome,
+                value: outcome_id.to_string(),
+            }],
+            matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
+        },
+        evidence_markdown: None,
+        staging_policy: None,
+    }
+}
+
+fn pipeline_resolution_command(
+    mut skill: ProjectSkill,
+    _identity: &str,
+    role: &str,
+) -> ProjectSkillResolutionCommand {
+    skill.created_by = ProjectSkillCreatedBy::Agent;
+    skill.pipeline_role = Some(role.to_string());
+    skill.provenance_json = json!({
+        "source": "skill_pipeline_mcp",
+        "additional": {"pipeline_role": role},
+    });
+    let resolution_identity =
+        import_title_resolution_identity(&skill.title, &skill.bucket, &skill.stage);
+    ProjectSkillResolutionCommand {
+        candidate: skill,
+        intent: ProjectSkillResolutionIntent::Upsert {
+            identities: vec![resolution_identity],
+            matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
+        },
+        evidence_markdown: None,
+        staging_policy: Some(ProjectSkillStagingPolicy {
+            pipeline_role: role.to_string(),
+            max_staged: 2,
+            window_start: Utc::now() - Duration::hours(24),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn concurrent_sqlite_resolution_converges_to_one_skill_and_snapshot() {
+    let conn = shared_test_connection();
+    let first_repo = SqliteProjectSkillRepository::from_shared(Arc::clone(&conn));
+    let second_repo = SqliteProjectSkillRepository::from_shared(conn);
+    let first = outcome_resolution_command(
+        project_skill(
+            "Concurrent skill",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "outcome-concurrent",
+    );
+    let mut second = first.clone();
+    second.candidate.id = ProjectSkillId::new();
+
+    let (first, second) = tokio::join!(first_repo.resolve(first), second_repo.resolve(second));
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(
+        [first.outcome, second.outcome]
+            .into_iter()
+            .filter(|outcome| *outcome == ProjectSkillResolutionOutcome::CreateNew)
+            .count(),
+        1
+    );
+    assert_eq!(
+        [first.outcome, second.outcome]
+            .into_iter()
+            .filter(|outcome| *outcome == ProjectSkillResolutionOutcome::Duplicate)
+            .count(),
+        1
+    );
+    let created = if first.outcome == ProjectSkillResolutionOutcome::CreateNew {
+        first
+    } else {
+        second
+    };
+    assert_eq!(
+        first_repo
+            .list_by_project(
+                &ProjectId::from_string("project-1".to_string()),
+                ProjectSkillListOptions::default(),
+            )
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        first_repo
+            .list_versions(&created.skill.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn sqlite_pipeline_cap_runs_after_duplicate_and_isolated_by_role_and_bucket() {
+    let repo = SqliteProjectSkillRepository::from_shared(shared_test_connection());
+    let first = pipeline_resolution_command(
+        project_skill(
+            "Pipeline one",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-1",
+        "memory_capture",
+    );
+    let second = pipeline_resolution_command(
+        project_skill(
+            "Pipeline two",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-2",
+        "memory_capture",
+    );
+    repo.resolve(first.clone()).await.expect("first create");
+    repo.resolve(second).await.expect("second create");
+
+    let duplicate = repo.resolve(first).await.expect("duplicate at cap");
+    assert_eq!(duplicate.outcome, ProjectSkillResolutionOutcome::Duplicate);
+    assert!(duplicate.version.is_none());
+
+    let third = pipeline_resolution_command(
+        project_skill(
+            "Pipeline three",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-3",
+        "memory_capture",
+    );
+    assert!(matches!(
+        repo.resolve(third).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    let other_role = pipeline_resolution_command(
+        project_skill(
+            "Maintainer role",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-maintainer",
+        "memory_maintainer",
+    );
+    assert_eq!(
+        repo.resolve(other_role).await.expect("other role").outcome,
+        ProjectSkillResolutionOutcome::CreateNew
+    );
+
+    let other_bucket = pipeline_resolution_command(
+        project_skill(
+            "Planning bucket",
+            "planning",
+            "planning",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-planning",
+        "memory_capture",
+    );
+    assert_eq!(
+        repo.resolve(other_bucket)
+            .await
+            .expect("other bucket")
+            .outcome,
+        ProjectSkillResolutionOutcome::CreateNew
+    );
+}
+
+#[tokio::test]
+async fn sqlite_pipeline_cap_counts_recent_null_role_rows_for_every_role() {
+    let repo = SqliteProjectSkillRepository::from_shared(shared_test_connection());
+    repo.seed_for_test(project_skill(
+        "Legacy NULL role",
+        "review",
+        "review",
+        ProjectSkillLifecycleStatus::Staged,
+        Vec::new(),
+    ))
+    .await
+    .expect("seed null role");
+
+    let first = pipeline_resolution_command(
+        project_skill(
+            "Role-specific row",
+            "review",
+            "review",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-review-1",
+        "memory_capture",
+    );
+    repo.resolve(first).await.expect("one role row after null");
+
+    let blocked = pipeline_resolution_command(
+        project_skill(
+            "Blocked by NULL",
+            "review",
+            "review",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "pipeline-review-2",
+        "memory_capture",
+    );
+    assert!(matches!(
+        repo.resolve(blocked).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+}
+
+#[tokio::test]
+async fn sqlite_resolution_rolls_back_current_row_when_snapshot_insert_fails() {
+    let conn = shared_test_connection();
+    conn.lock()
+        .await
+        .execute_batch(
+            "CREATE TRIGGER fail_project_skill_version_insert
+             BEFORE INSERT ON project_skill_versions
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected version failure');
+             END;",
+        )
+        .unwrap();
+    let repo = SqliteProjectSkillRepository::from_shared(conn);
+    let command = outcome_resolution_command(
+        project_skill(
+            "Rollback skill",
+            "execution",
+            "execution",
+            ProjectSkillLifecycleStatus::Staged,
+            Vec::new(),
+        ),
+        "outcome-rollback",
+    );
+
+    assert!(repo.resolve(command).await.is_err());
+    assert!(repo
+        .list_by_project(
+            &ProjectId::from_string("project-1".to_string()),
+            ProjectSkillListOptions::default(),
+        )
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 #[tokio::test]
 async fn task_outcome_upsert_upgrades_class_without_duplicate() {
     let repo = SqliteTaskOutcomeRepository::from_shared(shared_test_connection());
@@ -107,7 +386,10 @@ async fn task_outcome_upsert_upgrades_class_without_duplicate() {
         .unwrap();
 
     assert_eq!(updated.status, TaskOutcomeStatus::Eligible);
-    assert_eq!(updated.outcome_class.as_deref(), Some("merge_passed"));
+    assert_eq!(
+        updated.outcome_class.as_ref().map(TaskOutcomeClass::as_str),
+        Some("merge_passed")
+    );
 
     let rows = repo
         .list_by_project(
@@ -123,7 +405,7 @@ async fn task_outcome_upsert_upgrades_class_without_duplicate() {
 async fn task_outcomes_filter_by_source_and_status_and_get_missing() {
     let repo = SqliteTaskOutcomeRepository::from_shared(shared_test_connection());
     let mut failed = task_outcome(TaskOutcomeStatus::Failed, Some("review_failed"));
-    failed.source = "github_pr_review".to_string();
+    failed.source = TaskOutcomeSource::GithubPrReview;
     failed.source_ref_kind = "pull_request".to_string();
     failed.source_ref_id = "42:review".to_string();
     let failed_id = failed.id.clone();
@@ -132,7 +414,7 @@ async fn task_outcomes_filter_by_source_and_status_and_get_missing() {
         .unwrap();
 
     let mut succeeded = task_outcome(TaskOutcomeStatus::Succeeded, Some("merge_passed"));
-    succeeded.source = "agent_workspace_pr".to_string();
+    succeeded.source = TaskOutcomeSource::AgentWorkspacePr;
     succeeded.source_ref_kind = "pull_request".to_string();
     succeeded.source_ref_id = "42:terminal:merged".to_string();
     repo.upsert(UpsertTaskOutcomeInput { outcome: succeeded })
@@ -143,7 +425,7 @@ async fn task_outcomes_filter_by_source_and_status_and_get_missing() {
         .list_by_project(
             &ProjectId::from_string("project-1".to_string()),
             TaskOutcomeListOptions {
-                source: Some("github_pr_review".to_string()),
+                source: Some(TaskOutcomeSource::GithubPrReview),
                 status: Some(TaskOutcomeStatus::Failed),
             },
         )
@@ -219,7 +501,7 @@ async fn project_skill_lifecycle_and_usage_round_trip() {
         provider_harness: Some("claude".to_string()),
         stage: Some("execution".to_string()),
         bucket: Some("execution".to_string()),
-        injection_kind: "compact_index".to_string(),
+        injection_kind: SkillUsageInjectionKind::CompactIndex,
         outcome_id: None,
         metadata_json: json!({ "selected": true }),
         created_at: Utc::now(),
@@ -547,7 +829,7 @@ async fn usage_events_filter_by_skill_and_run() {
                 provider_harness: Some("codex".to_string()),
                 stage: Some("execution".to_string()),
                 bucket: Some("execution".to_string()),
-                injection_kind: "compact_index".to_string(),
+                injection_kind: SkillUsageInjectionKind::CompactIndex,
                 outcome_id: Some(TaskOutcomeId::from_string("outcome-1".to_string())),
                 metadata_json: json!({ "run_id": run_id }),
                 created_at: Utc::now(),

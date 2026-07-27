@@ -10,13 +10,14 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::chat_service::MockChatService;
 use crate::domain::entities::agent_run::PersonaRunAttribution;
+use crate::domain::entities::learned_skill::TaskOutcomeRecurrenceCorpus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewMonitor, ArtifactId, ChatContextType, ChatConversationId,
     IdeationAnalysisBaseRefKind, IdeationSessionId, InterruptedConversation, PlanBranch,
-    PlanBranchId, Project, ProjectId, TaskOutcome, TaskOutcomeId,
+    PlanBranchId, Project, ProjectId, TaskOutcome, TaskOutcomeId, TaskOutcomeSource,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceLocalCleanupClaim,
@@ -48,7 +49,7 @@ impl TaskOutcomeRepository for FailingTaskOutcomeRepository {
     async fn get_by_dedupe(
         &self,
         _project_id: &ProjectId,
-        _source: &str,
+        _source: TaskOutcomeSource,
         _source_ref_kind: &str,
         _source_ref_id: &str,
     ) -> AppResult<Option<TaskOutcome>> {
@@ -64,6 +65,14 @@ impl TaskOutcomeRepository for FailingTaskOutcomeRepository {
         _project_id: &ProjectId,
         _options: TaskOutcomeListOptions,
     ) -> AppResult<Vec<TaskOutcome>> {
+        Err(AppError::Database("outcome ledger unavailable".to_string()))
+    }
+
+    async fn recurrence_corpus(
+        &self,
+        _project_id: &ProjectId,
+        _recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus> {
         Err(AppError::Database("outcome ledger unavailable".to_string()))
     }
 }

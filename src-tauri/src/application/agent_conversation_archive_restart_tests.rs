@@ -7,9 +7,14 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversation,
     IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project,
 };
-use crate::domain::repositories::TaskOutcomeListOptions;
+use crate::domain::repositories::{
+    TaskOutcomeListOptions, WORKSPACE_PR_CLOSED_CLASS, WORKSPACE_SESSION_ABANDONED_CLASS,
+};
 use crate::domain::services::github_service::GithubServiceTrait;
-use crate::domain::services::AGENT_WORKSPACE_PR_OUTCOME_SOURCE;
+use crate::domain::services::{
+    AGENT_WORKSPACE_OUTCOME_SOURCE, AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
+    WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED,
+};
 use crate::error::AppError;
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -135,6 +140,23 @@ async fn restart_closes_open_remote_pr_without_clearing_local_pointers() {
         refreshed_workspace.publication_pr_status.as_deref(),
         Some("open")
     );
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(&workspace.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("restart outcomes should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_PR_CLOSED_CLASS)
+    );
+    assert_eq!(
+        outcomes[0].evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED
+    );
 }
 
 #[tokio::test]
@@ -210,18 +232,74 @@ async fn restart_reconciles_distinct_plan_and_workspace_pr_numbers() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
                 ..Default::default()
             },
         )
         .await
         .expect("restart terminal outcomes should be readable");
     let mut keys = outcomes
-        .into_iter()
-        .map(|outcome| outcome.source_ref_id)
+        .iter()
+        .map(|outcome| outcome.source_ref_id.clone())
         .collect::<Vec<_>>();
     keys.sort();
     assert_eq!(keys, vec!["41:terminal", "42:terminal"]);
+    assert!(outcomes.iter().all(|outcome| {
+        outcome.evidence_json["reason"] == WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED
+    }));
+}
+
+#[tokio::test]
+async fn restart_without_pr_records_one_abandonment_outcome() {
+    let (_project_dir, state, mut workspace, mut plan_branch) = setup_restart_pr_state().await;
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    plan_branch.pr_number = None;
+    plan_branch.pr_url = None;
+    plan_branch.pr_status = None;
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &workspace.conversation_id,
+            None,
+            None,
+            None,
+            Some("refreshed"),
+        )
+        .await
+        .expect("workspace PR pointers should be cleared for the no-PR fixture");
+
+    close_agent_workspace_pr_for_restart(&workspace, &plan_branch, &state)
+        .await
+        .expect("no-PR restart should terminalize the superseded session");
+    close_agent_workspace_pr_for_restart(&workspace, &plan_branch, &state)
+        .await
+        .expect("no-PR restart retry should be idempotent");
+
+    let outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("restart abandonment outcome should be readable");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_SESSION_ABANDONED_CLASS)
+    );
+    assert_eq!(
+        outcomes[0].evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_RESTART_SUPERSEDED
+    );
 }
 
 #[tokio::test]
@@ -248,6 +326,12 @@ async fn restart_fails_closed_when_remote_pr_status_lookup_fails() {
             .pr_number,
         Some(41)
     );
+    assert!(state
+        .task_outcome_repo
+        .list_by_project(&workspace.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("failed status-check outcomes should be readable")
+        .is_empty());
 }
 
 #[tokio::test]
@@ -283,6 +367,12 @@ async fn restart_does_not_clear_local_pr_state_when_remote_close_fails() {
         refreshed_workspace.publication_pr_status.as_deref(),
         Some("open")
     );
+    assert!(state
+        .task_outcome_repo
+        .list_by_project(&workspace.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("failed restart outcomes should be readable")
+        .is_empty());
 }
 
 #[tokio::test]

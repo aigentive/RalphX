@@ -66,6 +66,9 @@ pub mod memory_process_repo;
 pub mod memory_project_repo;
 pub mod memory_project_memory_settings_repo;
 pub mod memory_project_skill_settings_repo;
+pub mod memory_project_skill_evidence_batch_repo;
+#[cfg(test)]
+mod memory_project_skill_evidence_batch_repo_tests;
 pub mod memory_proposal_dependency_repo;
 pub mod memory_question_repo;
 pub mod memory_queued_message_repo;
@@ -154,6 +157,7 @@ pub use memory_process_repo::MemoryProcessRepository;
 pub use memory_project_repo::MemoryProjectRepository;
 pub use memory_project_memory_settings_repo::MemoryProjectMemorySettingsRepository;
 pub use memory_project_skill_settings_repo::MemoryProjectSkillSettingsRepository;
+pub use memory_project_skill_evidence_batch_repo::MemoryProjectSkillEvidenceBatchRepository;
 pub use memory_proposal_dependency_repo::MemoryProposalDependencyRepository;
 pub use memory_question_repo::MemoryQuestionRepository;
 pub use memory_queued_message_repo::MemoryQueuedMessageRepository;

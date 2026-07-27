@@ -14,7 +14,7 @@ use crate::domain::repositories::{
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository,
+    TaskDependencyRepository, TaskOutcomeRepository, TaskRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -139,6 +139,7 @@ pub(crate) fn build_startup_chat_resumption_runner(
 
 pub(crate) struct StartupReconciliationDeps {
     pub task_repo: Arc<dyn TaskRepository>,
+    pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
     pub artifact_repo: Arc<dyn ArtifactRepository>,
@@ -184,6 +185,7 @@ pub(crate) fn build_startup_reconciliation_runner(
         deps.execution_state,
         Some(deps.app_handle),
     )
+    .with_task_outcome_repo(deps.task_outcome_repo)
     .with_notification_service(deps.notification_service)
     .with_execution_settings_repo(deps.execution_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)

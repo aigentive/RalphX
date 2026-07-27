@@ -1668,19 +1668,60 @@ pub struct ProcessConversationProjectSkillsRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProcessConversationProjectSkillsResponse {
-    pub staged_skills: Vec<ProjectSkillResponse>,
-    pub skipped_existing: usize,
     pub message_count: usize,
+    pub status: String,
+    pub selected_outcomes: usize,
+    pub batch_count: usize,
+    pub started_batches: usize,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GetProjectSkillRequest {
+    pub project_id: String,
     pub project_skill_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GetProjectSkillResponse {
     pub skill: Option<ProjectSkillResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpsertProjectSkillRequest {
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PatchProjectSkillRequest {
+    pub project_skill_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub bucket: String,
+    pub stage: String,
+    pub scope_paths: Vec<String>,
+    pub compact_guidance: String,
+    pub body_markdown: String,
+    pub predicted_effect: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetireProjectSkillRequest {
+    pub project_id: String,
+    pub project_skill_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSkillPipelineResponse {
+    pub skill: ProjectSkillResponse,
+    pub outcome: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1717,50 +1758,14 @@ pub struct DistillProjectSkillsRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DistillProjectSkillsResponse {
-    pub staged_skills: Vec<ProjectSkillResponse>,
-    pub skipped_existing: usize,
-    pub updated_existing: usize,
+    pub status: String,
+    pub selected_outcomes: usize,
+    pub batch_count: usize,
+    pub started_batches: usize,
+    pub message: Option<String>,
     pub ingested_outcomes: usize,
     pub scanned_git_commits: usize,
     pub scanned_github_prs: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ListProjectSkillPullRequestCandidatesRequest {
-    pub project_id: String,
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ProjectSkillPullRequestCandidateResponse {
-    pub number: i64,
-    pub title: String,
-    pub state: Option<String>,
-    pub url: Option<String>,
-    pub merged_at: Option<String>,
-    pub closed_at: Option<String>,
-    pub updated_at: Option<String>,
-    pub head_ref_name: Option<String>,
-    pub base_ref_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ListProjectSkillPullRequestCandidatesResponse {
-    pub candidates: Vec<ProjectSkillPullRequestCandidateResponse>,
-    pub count: usize,
-    pub limit: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StageProjectSkillFromPullRequestRequest {
-    pub project_id: String,
-    pub number: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct StageProjectSkillFromPullRequestResponse {
-    pub skill: Option<ProjectSkillResponse>,
-    pub skipped_existing: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

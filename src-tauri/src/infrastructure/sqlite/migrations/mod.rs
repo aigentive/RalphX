@@ -323,6 +323,15 @@ mod v20260615092455_project_skill_settings_tests;
 mod v20260722090527_project_skill_schema_versioning;
 #[cfg(test)]
 mod v20260722090527_project_skill_schema_versioning_tests;
+mod v20260723111500_project_skill_evidence_batches;
+#[cfg(test)]
+mod v20260723111500_project_skill_evidence_batches_tests;
+mod v20260723130204_archive_legacy_project_skill_drafts;
+#[cfg(test)]
+mod v20260723130204_archive_legacy_project_skill_drafts_tests;
+mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints;
+#[cfg(test)]
+mod v20260723143416_typed_ledger_sources_classes_failure_fingerprints_tests;
 mod v20260616182441_external_issue_links;
 #[cfg(test)]
 mod v20260616182441_external_issue_links_tests;
@@ -624,7 +633,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260722132100;
+pub const SCHEMA_VERSION: i64 = 20260723143416;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1718,6 +1727,21 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260722132100,
         name: "automation_run_goal_item",
         migrate: v20260722132100_automation_run_goal_item::migrate,
+    },
+    Migration {
+        version: 20260723111500,
+        name: "project_skill_evidence_batches",
+        migrate: v20260723111500_project_skill_evidence_batches::migrate,
+    },
+    Migration {
+        version: 20260723130204,
+        name: "archive_legacy_project_skill_drafts",
+        migrate: v20260723130204_archive_legacy_project_skill_drafts::migrate,
+    },
+    Migration {
+        version: 20260723143416,
+        name: "typed_ledger_sources_classes_failure_fingerprints",
+        migrate: v20260723143416_typed_ledger_sources_classes_failure_fingerprints::migrate,
     },
 ];
 

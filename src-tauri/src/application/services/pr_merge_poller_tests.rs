@@ -45,7 +45,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, NotificationRepository,
-    TaskOutcomeRepository,
+    TaskOutcomeListOptions, TaskOutcomeRepository,
 };
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
@@ -2551,7 +2551,6 @@ async fn review_pr_monitor_terminal_state_also_persists_cleanup_authority() {
 
     super::mark_agent_workspace_pr_terminal(
         Arc::clone(&workspace_repo),
-        Arc::new(MemoryTaskOutcomeRepository::new()),
         &conversation_id,
         "closed",
         "Pull request closed without merging",
@@ -2611,7 +2610,6 @@ async fn review_pr_monitor_merged_terminal_outcome_has_no_error() {
 
     super::mark_agent_workspace_pr_terminal(
         Arc::clone(&workspace_repo),
-        Arc::new(MemoryTaskOutcomeRepository::new()),
         &conversation_id,
         "merged",
         "Pull request merged",
@@ -2635,6 +2633,43 @@ async fn review_pr_monitor_merged_terminal_outcome_has_no_error() {
         .await
         .expect("events should list");
     assert!(events.iter().any(|event| event.step == "pr_merged"));
+}
+
+#[tokio::test]
+async fn direct_terminal_marker_does_not_claim_an_unappended_event() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = supervised_workspace(
+        "direct-terminal-event-failure",
+        "project-direct-terminal-event-failure",
+        worktree.path(),
+    );
+    let project_id = workspace.project_id.clone();
+    let conversation_id = workspace.conversation_id.clone();
+    let concrete_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    concrete_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    concrete_workspace_repo.fail_next_publication_event("publication event unavailable");
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        concrete_workspace_repo.clone();
+    let outcome_repo = Arc::new(MemoryTaskOutcomeRepository::new());
+
+    let error = super::mark_agent_workspace_pr_terminal(
+        workspace_repo,
+        &conversation_id,
+        "merged",
+        "Pull request merged",
+    )
+    .await
+    .expect_err("event persistence failure must keep terminal marking retryable");
+
+    assert!(error.to_string().contains("publication event unavailable"));
+    assert!(outcome_repo
+        .list_by_project(&project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("outcomes should be readable")
+        .is_empty());
 }
 
 #[tokio::test]

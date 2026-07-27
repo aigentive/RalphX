@@ -1060,6 +1060,11 @@ role: project_chat
         parent_conversation_id: Some("conversation-1".to_string()),
         agent_run_id: None,
         task_state: None,
+        pipeline_role: None,
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let composed = compose_codex_prompt_for_profile_with_runtime_context(
@@ -1213,6 +1218,11 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
         agent_run_id: Some("run-123".to_string()),
+        pipeline_role: Some("memory_capture".to_string()),
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1315,6 +1325,10 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("run-123"),
         "expected agent run id value in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("--pipeline-role") && args_override.contains("memory_capture"),
+        "expected pipeline role CLI arg in overrides: {args_override}"
     );
 }
 
@@ -1828,6 +1842,11 @@ harnesses:
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
         agent_run_id: Some("run 789".to_string()),
+        pipeline_role: None,
+        skill_distillation_batch_id: None,
+        skill_distillation_claim_token: None,
+        skill_distillation_fingerprint: None,
+        skill_distillation_outcome_ids: None,
     };
 
     let overrides = build_codex_mcp_overrides(

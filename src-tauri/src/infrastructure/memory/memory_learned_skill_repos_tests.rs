@@ -1,25 +1,27 @@
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use serde_json::json;
 
 use super::{MemoryProjectSkillRepository, MemoryTaskOutcomeRepository};
 use crate::domain::entities::{
     ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcome,
-    TaskOutcomeId, TaskOutcomeStatus,
+    TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
-    canonical_terminal_pr_source_ref_id, ProjectSkillRepository, TaskOutcomeRepository,
-    UpsertTaskOutcomeInput, AGENT_WORKSPACE_PR_OUTCOME_SOURCE, TERMINAL_PR_SOURCE_REF_KIND,
-    WORKSPACE_PR_CLOSED_CLASS, WORKSPACE_PR_FAILED_CLASS, WORKSPACE_PR_MERGED_CLASS,
-    WORKSPACE_PR_MERGED_CLEAN_CLASS, WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS,
-    WORKSPACE_PR_TERMINAL_CLASS,
+    canonical_terminal_pr_source_ref_id, ProjectSkillMatchedMutation, ProjectSkillRepository,
+    ProjectSkillResolutionCommand, ProjectSkillResolutionIntent, ProjectSkillResolutionOutcome,
+    ProjectSkillStagingPolicy, TaskOutcomeRepository, UpsertTaskOutcomeInput,
+    AGENT_WORKSPACE_PR_OUTCOME_SOURCE, TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS,
+    WORKSPACE_PR_FAILED_CLASS, WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
+    WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS, WORKSPACE_PR_TERMINAL_CLASS,
 };
+use crate::domain::services::project_skill_resolution::import_title_resolution_identity;
 
 fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
     let now = Utc::now();
     TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: ProjectId::from_string("project-1".to_string()),
-        source: AGENT_WORKSPACE_PR_OUTCOME_SOURCE.to_string(),
+        source: AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
         source_ref_kind: TERMINAL_PR_SOURCE_REF_KIND.to_string(),
         source_ref_id: canonical_terminal_pr_source_ref_id("42"),
         task_id: None,
@@ -29,9 +31,10 @@ fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: Some(outcome_class.to_string()),
+        outcome_class: Some(TaskOutcomeClass::from(outcome_class)),
         status: TaskOutcomeStatus::Eligible,
         evidence_json: json!({ "summary": evidence }),
+        failure_fingerprint: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some("session-1".to_string()),
         created_at: now,
@@ -78,7 +81,7 @@ async fn canonical_terminal_lattice_preserves_identity_context_and_lower_winner(
     equal.provider_session_id = None;
     let equal = upsert(&repo, equal).await;
     assert_eq!(
-        equal.outcome_class.as_deref(),
+        equal.outcome_class.as_ref().map(TaskOutcomeClass::as_str),
         Some(WORKSPACE_PR_FAILED_CLASS)
     );
     assert_eq!(equal.evidence_json, json!({ "summary": "failed detail" }));
@@ -110,7 +113,10 @@ async fn canonical_terminal_lattice_preserves_identity_context_and_lower_winner(
     .await;
     assert_eq!(followups.id.as_str(), clean.id.as_str());
     assert_eq!(
-        followups.outcome_class.as_deref(),
+        followups
+            .outcome_class
+            .as_ref()
+            .map(TaskOutcomeClass::as_str),
         Some(WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS)
     );
     assert_eq!(followups.evidence_json, json!({ "summary": "followups" }));
@@ -128,7 +134,10 @@ async fn noncanonical_outcomes_remain_last_write_wins_and_missing_dedupe_is_none
     second.source_ref_id = "42:terminal:legacy".to_string();
     second.status = TaskOutcomeStatus::Eligible;
     let saved = upsert(&repo, second).await;
-    assert_eq!(saved.outcome_class.as_deref(), Some("second"));
+    assert_eq!(
+        saved.outcome_class.as_ref().map(TaskOutcomeClass::as_str),
+        Some("second")
+    );
     assert_eq!(saved.status, TaskOutcomeStatus::Eligible);
 
     let unknown = upsert(&repo, terminal_outcome("unrecognized", "unknown")).await;
@@ -149,6 +158,53 @@ async fn noncanonical_outcomes_remain_last_write_wins_and_missing_dedupe_is_none
         .await
         .expect("missing read")
         .is_none());
+}
+
+#[tokio::test]
+async fn memory_recurrence_corpus_is_project_and_distinct_session_scoped() {
+    let repo = MemoryTaskOutcomeRepository::new();
+    let key = format!("token-set-v1:{}", "a".repeat(64));
+    for (index, session) in ["session-1", "session-1", "session-2"].iter().enumerate() {
+        let mut outcome = terminal_outcome("recurrence", "same failure");
+        outcome.source = match index {
+            0 => TaskOutcomeSource::Review,
+            1 => TaskOutcomeSource::Merge,
+            _ => TaskOutcomeSource::AgentConversation,
+        };
+        outcome.source_ref_kind = "fixture".to_string();
+        outcome.source_ref_id = format!("row-{index}");
+        outcome.status = if index == 2 {
+            TaskOutcomeStatus::Eligible
+        } else {
+            TaskOutcomeStatus::Failed
+        };
+        outcome.evidence_json = json!({
+            "recurrence_key": key,
+            "recurrence_session": session,
+        });
+        upsert(&repo, outcome).await;
+    }
+    let mut missing_session = terminal_outcome("recurrence", "same failure");
+    missing_session.source = TaskOutcomeSource::MergeValidation;
+    missing_session.source_ref_kind = "fixture".to_string();
+    missing_session.source_ref_id = "missing-session".to_string();
+    missing_session.status = TaskOutcomeStatus::Failed;
+    missing_session.evidence_json = json!({ "recurrence_key": key });
+    upsert(&repo, missing_session).await;
+
+    let corpus = repo
+        .recurrence_corpus(&ProjectId::from_string("project-1".to_string()), &key)
+        .await
+        .expect("query recurrence corpus");
+
+    assert_eq!(corpus.eligible_observations, 3);
+    assert_eq!(corpus.distinct_sessions, 2);
+    assert_eq!(
+        repo.recurrence_corpus(&ProjectId::from_string("project-2".to_string()), &key,)
+            .await
+            .expect("query other project"),
+        Default::default()
+    );
 }
 
 fn project_skill() -> ProjectSkill {
@@ -174,6 +230,36 @@ fn project_skill() -> ProjectSkill {
         pipeline_role: Some("caller-controlled".to_string()),
         created_at: now,
         updated_at: now,
+    }
+}
+
+fn pipeline_command(
+    mut skill: ProjectSkill,
+    identity: &str,
+    role: &str,
+) -> ProjectSkillResolutionCommand {
+    skill.id = ProjectSkillId::new();
+    skill.title = identity.to_string();
+    skill.created_by = crate::domain::entities::ProjectSkillCreatedBy::Agent;
+    skill.pipeline_role = Some(role.to_string());
+    skill.provenance_json = json!({
+        "source": "skill_pipeline_mcp",
+        "additional": {"pipeline_role": role},
+    });
+    let resolution_identity =
+        import_title_resolution_identity(&skill.title, &skill.bucket, &skill.stage);
+    ProjectSkillResolutionCommand {
+        candidate: skill,
+        intent: ProjectSkillResolutionIntent::Upsert {
+            identities: vec![resolution_identity],
+            matched_mutation: ProjectSkillMatchedMutation::PatchExisting,
+        },
+        evidence_markdown: None,
+        staging_policy: Some(ProjectSkillStagingPolicy {
+            pipeline_role: role.to_string(),
+            max_staged: 2,
+            window_start: Utc::now() - Duration::hours(24),
+        }),
     }
 }
 
@@ -214,4 +300,145 @@ async fn memory_project_skill_repository_persists_versions_only_when_explicitly_
     .await
     .unwrap();
     assert_eq!(repo.list_versions(&created.id).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn memory_pipeline_cap_is_project_scoped_and_leaves_blocked_state_unchanged() {
+    let repo = MemoryProjectSkillRepository::new();
+    let mut first = project_skill();
+    first.project_id = ProjectId::from_string("project-1".to_string());
+    let mut second = first.clone();
+    second.id = ProjectSkillId::new();
+    repo.resolve(pipeline_command(first, "project-one-a", "memory_capture"))
+        .await
+        .expect("first create");
+    repo.resolve(pipeline_command(second, "project-one-b", "memory_capture"))
+        .await
+        .expect("second create");
+
+    let mut blocked = project_skill();
+    blocked.project_id = ProjectId::from_string("project-1".to_string());
+    let project_id = blocked.project_id.clone();
+    let rows_before = repo
+        .list_by_project(&project_id, Default::default())
+        .await
+        .expect("rows before")
+        .len();
+    assert!(matches!(
+        repo.resolve(pipeline_command(blocked, "project-one-c", "memory_capture"))
+            .await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+    assert_eq!(
+        repo.list_by_project(&project_id, Default::default())
+            .await
+            .expect("rows after")
+            .len(),
+        rows_before
+    );
+
+    let mut other_project = project_skill();
+    other_project.project_id = ProjectId::from_string("project-2".to_string());
+    assert_eq!(
+        repo.resolve(pipeline_command(
+            other_project,
+            "project-two-a",
+            "memory_capture"
+        ))
+        .await
+        .expect("other project")
+        .outcome,
+        ProjectSkillResolutionOutcome::CreateNew
+    );
+}
+
+#[tokio::test]
+async fn memory_pipeline_cap_runs_after_duplicate_and_counts_null_role_for_every_role() {
+    let repo = MemoryProjectSkillRepository::new();
+    let mut legacy = project_skill();
+    legacy.project_id = ProjectId::from_string("project-null-role".to_string());
+    legacy.bucket = "review".to_string();
+    legacy.stage = "review".to_string();
+    legacy.title = "Legacy NULL role".to_string();
+    legacy.pipeline_role = None;
+    repo.seed_for_test(legacy)
+        .await
+        .expect("seed legacy null-role row");
+
+    let mut first = project_skill();
+    first.project_id = ProjectId::from_string("project-null-role".to_string());
+    first.bucket = "review".to_string();
+    first.stage = "review".to_string();
+    first.title = "Role-specific row".to_string();
+    let first_command = pipeline_command(first, "role-specific", "memory_capture");
+    repo.resolve(first_command.clone())
+        .await
+        .expect("create after null-role row");
+
+    let duplicate = repo
+        .resolve(first_command)
+        .await
+        .expect("duplicate remains allowed at cap");
+    assert_eq!(duplicate.outcome, ProjectSkillResolutionOutcome::Duplicate);
+    assert!(duplicate.version.is_none());
+
+    let mut capture_blocked = project_skill();
+    capture_blocked.project_id = ProjectId::from_string("project-null-role".to_string());
+    capture_blocked.bucket = "review".to_string();
+    capture_blocked.stage = "review".to_string();
+    capture_blocked.title = "Blocked memory capture".to_string();
+    assert!(matches!(
+        repo.resolve(pipeline_command(
+            capture_blocked,
+            "capture-blocked",
+            "memory_capture",
+        ))
+        .await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    let mut maintainer_first = project_skill();
+    maintainer_first.project_id = ProjectId::from_string("project-null-role".to_string());
+    maintainer_first.bucket = "review".to_string();
+    maintainer_first.stage = "review".to_string();
+    maintainer_first.title = "Maintainer remaining slot".to_string();
+    repo.resolve(pipeline_command(
+        maintainer_first,
+        "maintainer-first",
+        "memory_maintainer",
+    ))
+    .await
+    .expect("maintainer has one slot after the null-role row");
+
+    let mut maintainer_blocked = project_skill();
+    maintainer_blocked.project_id = ProjectId::from_string("project-null-role".to_string());
+    maintainer_blocked.bucket = "review".to_string();
+    maintainer_blocked.stage = "review".to_string();
+    maintainer_blocked.title = "Blocked memory maintainer".to_string();
+    assert!(matches!(
+        repo.resolve(pipeline_command(
+            maintainer_blocked,
+            "maintainer-blocked",
+            "memory_maintainer",
+        ))
+        .await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    let mut other_bucket = project_skill();
+    other_bucket.project_id = ProjectId::from_string("project-null-role".to_string());
+    other_bucket.bucket = "planning".to_string();
+    other_bucket.stage = "planning".to_string();
+    other_bucket.title = "Independent bucket".to_string();
+    assert_eq!(
+        repo.resolve(pipeline_command(
+            other_bucket,
+            "independent-bucket",
+            "memory_capture",
+        ))
+        .await
+        .expect("other bucket")
+        .outcome,
+        ProjectSkillResolutionOutcome::CreateNew
+    );
 }

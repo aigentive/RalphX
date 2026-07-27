@@ -32,7 +32,7 @@ use crate::domain::repositories::{
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
     PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskRepository,
+    TaskOutcomeRepository, TaskRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 
@@ -63,6 +63,7 @@ pub struct ReconciliationRunner {
     pub(crate) branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub(crate) interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub(crate) review_repo: Option<Arc<dyn ReviewRepository>>,
+    pub(crate) task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
     pub(crate) app_handle: Option<AppHandle>,
     pub(crate) policy: RecoveryPolicy,
     /// Optional application notification effect, injected for non-Tauri runners and tests.
@@ -114,6 +115,7 @@ impl ReconciliationRunner {
             branch_update_repo: None,
             interactive_process_registry: None,
             review_repo: None,
+            task_outcome_repo: None,
             app_handle,
             policy: RecoveryPolicy,
             notification_service: None,
@@ -163,6 +165,11 @@ impl ReconciliationRunner {
         repo: Arc<dyn crate::domain::repositories::ReviewRepository>,
     ) -> Self {
         self.review_repo = Some(repo);
+        self
+    }
+
+    pub fn with_task_outcome_repo(mut self, repo: Arc<dyn TaskOutcomeRepository>) -> Self {
+        self.task_outcome_repo = Some(repo);
         self
     }
 

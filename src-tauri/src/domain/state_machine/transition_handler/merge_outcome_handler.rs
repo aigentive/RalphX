@@ -16,9 +16,10 @@ use crate::domain::entities::{
         MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
         MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
     },
-    InternalStatus, MergeValidationMode, Project, Task, TaskId,
+    InternalStatus, MergeValidationMode, Project, Task, TaskId, TaskOutcomeClass,
 };
 use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
+use crate::domain::services::merge_failure_outcomes::record_merge_failure_outcome;
 use crate::domain::state_machine::services::{NotificationContext, Notifier, TaskNotification};
 
 use super::merge_completion::complete_merge_internal_with_pr_sync_notifier_and_outcome;
@@ -668,6 +669,35 @@ impl<'a> super::TransitionHandler<'a> {
             task.metadata = Some(meta.to_string());
         }
 
+        let mut recovery = get_or_create_recovery(task);
+        let attempt = recovery.active_attempt();
+        let conflict_event = MergeRecoveryEvent::new(
+            MergeRecoveryEventKind::AttemptFailed,
+            MergeRecoverySource::System,
+            MergeRecoveryReasonCode::GitError,
+            format!(
+                "{} conflict detected in {} files",
+                opts.strategy_label,
+                conflict_file_strings.len()
+            ),
+        )
+        .with_target_branch(target_branch)
+        .with_source_branch(source_branch)
+        .with_attempt(attempt)
+        .with_failure_source(MergeFailureSource::SystemDetected);
+        recovery.append_event_with_state(conflict_event, MergeRecoveryState::Failed);
+        match recovery.update_task_metadata(task.metadata.as_deref()) {
+            Ok(metadata) => task.metadata = Some(metadata),
+            Err(error) => {
+                tracing::error!(
+                    task_id = task_id_str,
+                    error = %error,
+                    "Failed to serialize conflict attempt metadata"
+                );
+                return;
+            }
+        }
+
         task.internal_status = InternalStatus::Merging;
         task.touch();
         if let Err(e) = task_repo.update(task).await {
@@ -691,6 +721,37 @@ impl<'a> super::TransitionHandler<'a> {
             .event_emitter
             .emit_status_change(task_id_str, "pending_merge", "merging")
             .await;
+
+        if let Some(repo) = self.machine.context.services.task_outcome_repo.as_ref() {
+            let fingerprint_evidence = format!(
+                "{} conflict\n{}",
+                opts.strategy_label,
+                conflict_file_strings.join("\n")
+            );
+            let evidence = serde_json::json!({
+                "source_branch": source_branch,
+                "target_branch": target_branch,
+                "strategy": opts.strategy_label,
+                "conflict_files": conflict_file_strings,
+            });
+            if let Err(error) = record_merge_failure_outcome(
+                Arc::clone(repo),
+                task,
+                TaskOutcomeClass::MergeConflict,
+                attempt,
+                evidence,
+                &fingerprint_evidence,
+            )
+            .await
+            {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    attempt,
+                    error = %error,
+                    "Failed to record attempt-scoped merge conflict outcome"
+                );
+            }
+        }
 
         // Emit merge:conflict via both channels: external_events (SSE/poll) + webhook publisher.
         {
@@ -1019,7 +1080,7 @@ impl<'a> super::TransitionHandler<'a> {
         tracing::error!(task_id = task_id_str, error = %error, strategy = opts.strategy_label, "Merge failed → MergeIncomplete");
 
         let mut recovery = get_or_create_recovery(task);
-        let attempt = retry_attempt_count(&recovery);
+        let attempt = recovery.active_attempt();
         let failure_source = git_cmd::classify_git_failure_source(&error);
         let failed_event = MergeRecoveryEvent::new(
             MergeRecoveryEventKind::AttemptFailed,
@@ -1085,7 +1146,7 @@ impl<'a> super::TransitionHandler<'a> {
             (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
         let (source_branch, target_branch) = (bp.source_branch, bp.target_branch);
         let mut recovery = get_or_create_recovery(task);
-        let attempt = retry_attempt_count(&recovery);
+        let attempt = recovery.active_attempt();
         let repeat_count = if repeated {
             super::commit_hook_repeat_count(task, fingerprint) + 1
         } else {

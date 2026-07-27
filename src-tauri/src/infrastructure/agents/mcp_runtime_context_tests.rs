@@ -1,4 +1,6 @@
-use super::mcp_runtime_context::McpRuntimeContext;
+use super::mcp_runtime_context::{
+    append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +19,26 @@ fn full_agent_env() -> HashMap<String, String> {
         ("RALPHX_AGENT_RUN_ID".to_string(), " run-1 ".to_string()),
         ("RALPHX_TASK_ID".to_string(), " task-1 ".to_string()),
         ("RALPHX_TASK_STATE".to_string(), " executing ".to_string()),
+        (
+            "RALPHX_PIPELINE_ROLE".to_string(),
+            " memory_capture ".to_string(),
+        ),
+        (
+            "RALPHX_SKILL_DISTILLATION_BATCH_ID".to_string(),
+            " batch-1 ".to_string(),
+        ),
+        (
+            "RALPHX_SKILL_DISTILLATION_CLAIM_TOKEN".to_string(),
+            " claim-1 ".to_string(),
+        ),
+        (
+            "RALPHX_SKILL_DISTILLATION_FINGERPRINT".to_string(),
+            format!(" {} ", "a".repeat(64)),
+        ),
+        (
+            "RALPHX_SKILL_DISTILLATION_OUTCOME_IDS".to_string(),
+            " [\"outcome-1\"] ".to_string(),
+        ),
         (
             "RALPHX_PARENT_CONVERSATION_ID".to_string(),
             " conversation-parent ".to_string(),
@@ -42,6 +64,23 @@ fn from_agent_env_maps_all_a2_fields_and_trusts_the_working_directory_argument()
     assert_eq!(context.agent_run_id.as_deref(), Some("run-1"));
     assert_eq!(context.task_id.as_deref(), Some("task-1"));
     assert_eq!(context.task_state.as_deref(), Some("executing"));
+    assert_eq!(context.pipeline_role.as_deref(), Some("memory_capture"));
+    assert_eq!(
+        context.skill_distillation_batch_id.as_deref(),
+        Some("batch-1")
+    );
+    assert_eq!(
+        context.skill_distillation_claim_token.as_deref(),
+        Some("claim-1")
+    );
+    assert_eq!(
+        context.skill_distillation_fingerprint.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        context.skill_distillation_outcome_ids.as_deref(),
+        Some("[\"outcome-1\"]")
+    );
     assert_eq!(
         context.parent_conversation_id.as_deref(),
         Some("conversation-parent")
@@ -116,4 +155,53 @@ fn from_agent_env_omits_blank_optional_values() {
     assert_eq!(context.context_id, None);
     assert_eq!(context.task_id, None);
     assert_eq!(context.parent_conversation_id, None);
+    assert_eq!(context.pipeline_role, None);
+}
+
+#[test]
+fn pipeline_role_is_additive_in_cli_and_query_transport() {
+    let context = McpRuntimeContext {
+        pipeline_role: Some("memory_maintainer".to_string()),
+        project_id: Some("project-1".to_string()),
+        ..Default::default()
+    };
+
+    let mut args = Vec::new();
+    append_mcp_runtime_args(&mut args, Some(&context));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--pipeline-role", "memory_maintainer"]));
+
+    let mut url = "http://127.0.0.1/mcp".to_string();
+    append_mcp_runtime_query(&mut url, Some(&context));
+    assert!(url.contains("pipeline_role=memory_maintainer"));
+}
+
+#[test]
+fn skill_distillation_claim_is_cli_only_transport_context() {
+    let context = McpRuntimeContext {
+        skill_distillation_batch_id: Some("batch-1".to_string()),
+        skill_distillation_claim_token: Some("claim-1".to_string()),
+        skill_distillation_fingerprint: Some("a".repeat(64)),
+        skill_distillation_outcome_ids: Some("[\"outcome-1\"]".to_string()),
+        ..Default::default()
+    };
+
+    let mut args = Vec::new();
+    append_mcp_runtime_args(&mut args, Some(&context));
+    for (option, value) in [
+        ("--skill-distillation-batch-id", "batch-1"),
+        ("--skill-distillation-claim-token", "claim-1"),
+        (
+            "--skill-distillation-fingerprint",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        ("--skill-distillation-outcome-ids", "[\"outcome-1\"]"),
+    ] {
+        assert!(args.windows(2).any(|pair| pair == [option, value]));
+    }
+
+    let mut url = "http://127.0.0.1/mcp".to_string();
+    append_mcp_runtime_query(&mut url, Some(&context));
+    assert_eq!(url, "http://127.0.0.1/mcp");
 }

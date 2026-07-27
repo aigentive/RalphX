@@ -1,15 +1,16 @@
 use super::agent_workspace_outcomes::*;
 use std::sync::{Arc, RwLock};
 
+use crate::domain::entities::learned_skill::TaskOutcomeRecurrenceCorpus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ProjectId, TaskOutcome, TaskOutcomeId,
-    TaskOutcomeStatus,
+    TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::entities::{AgentRunStatus, ChatConversationId, IdeationAnalysisBaseRefKind};
 use crate::domain::repositories::{
     resolve_task_outcome_upsert, TaskOutcomeListOptions, TaskOutcomeRepository,
-    UpsertTaskOutcomeInput,
+    UpsertTaskOutcomeInput, WORKSPACE_PUBLISH_FAILED_CLASS, WORKSPACE_SESSION_ABANDONED_CLASS,
 };
 use crate::error::AppResult;
 use async_trait::async_trait;
@@ -47,7 +48,7 @@ impl TaskOutcomeRepository for TestTaskOutcomeRepository {
     async fn get_by_dedupe(
         &self,
         project_id: &ProjectId,
-        source: &str,
+        source: TaskOutcomeSource,
         source_ref_kind: &str,
         source_ref_id: &str,
     ) -> AppResult<Option<TaskOutcome>> {
@@ -89,12 +90,20 @@ impl TaskOutcomeRepository for TestTaskOutcomeRepository {
             .filter(|row| {
                 options
                     .source
-                    .as_deref()
-                    .is_none_or(|source| row.source == source)
+                    .as_ref()
+                    .is_none_or(|source| row.source == *source)
             })
             .filter(|row| options.status.is_none_or(|status| row.status == status))
             .cloned()
             .collect())
+    }
+
+    async fn recurrence_corpus(
+        &self,
+        _project_id: &ProjectId,
+        _recurrence_key: &str,
+    ) -> AppResult<TaskOutcomeRecurrenceCorpus> {
+        Ok(TaskOutcomeRecurrenceCorpus::default())
     }
 }
 
@@ -132,7 +141,7 @@ async fn records_direct_workspace_turn_with_conversation_dedupe() {
         .list_by_project(
             &workspace.project_id,
             TaskOutcomeListOptions {
-                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE.to_string()),
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
                 status: Some(TaskOutcomeStatus::Eligible),
             },
         )
@@ -144,7 +153,10 @@ async fn records_direct_workspace_turn_with_conversation_dedupe() {
     assert_eq!(second.source_ref_id, "11111111-1111-1111-1111-111111111111");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some("workspace_code_changes")
     );
 }
@@ -165,7 +177,7 @@ async fn records_pr_terminal_with_stable_pull_request_key() {
     );
 
     let outcome = adapter
-        .record_pr_terminal(&workspace, Some(&event), 42, "merged", "PR merged")
+        .record_pr_terminal(&workspace, Some(&event), 42, "merged", None, "PR merged")
         .await
         .expect("record terminal pr outcome");
 
@@ -183,15 +195,29 @@ async fn terminal_pr_retries_converge_without_stale_downgrade() {
     workspace.publication_pr_number = Some(7);
 
     let closed = adapter
-        .record_pr_terminal(&workspace, None, 42, "closed", "PR closed")
+        .record_pr_terminal(
+            &workspace,
+            None,
+            42,
+            "closed",
+            Some(WORKSPACE_TERMINAL_REASON_USER_CLOSED),
+            "PR closed",
+        )
         .await
         .expect("record closed outcome");
     let merged = adapter
-        .record_pr_terminal(&workspace, None, 42, "merged", "PR merged")
+        .record_pr_terminal(&workspace, None, 42, "merged", None, "PR merged")
         .await
         .expect("upgrade merged outcome");
     let stale = adapter
-        .record_pr_terminal(&workspace, None, 42, "closed", "stale close")
+        .record_pr_terminal(
+            &workspace,
+            None,
+            42,
+            "closed",
+            Some(WORKSPACE_TERMINAL_REASON_ARCHIVE_CLOSED),
+            "stale close",
+        )
         .await
         .expect("ignore stale close");
     let outcomes = repo
@@ -209,8 +235,106 @@ async fn terminal_pr_retries_converge_without_stale_downgrade() {
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].pull_request_id.as_deref(), Some("42"));
     assert_eq!(
-        outcomes[0].outcome_class.as_deref(),
+        outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some("workspace_pr_merged")
     );
     assert_eq!(outcomes[0].status, TaskOutcomeStatus::Succeeded);
+}
+
+#[tokio::test]
+async fn terminal_pr_retry_preserves_exact_close_reason_when_later_observation_is_generic() {
+    let repo = Arc::new(TestTaskOutcomeRepository::default());
+    let adapter = AgentWorkspaceOutcomeAdapter::new(repo.clone());
+    let mut workspace = workspace();
+    workspace.publication_pr_number = Some(42);
+
+    let first = adapter
+        .record_pr_terminal(
+            &workspace,
+            None,
+            42,
+            "closed",
+            Some(WORKSPACE_TERMINAL_REASON_USER_CLOSED),
+            "PR closed",
+        )
+        .await
+        .expect("record closed outcome");
+    let retried = adapter
+        .record_pr_terminal(&workspace, None, 42, "closed", None, "PR already closed")
+        .await
+        .expect("retry closed outcome");
+    let outcomes = repo
+        .list_by_project(&workspace.project_id, TaskOutcomeListOptions::default())
+        .await
+        .expect("list outcomes");
+
+    assert_eq!(retried.id, first.id);
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_USER_CLOSED
+    );
+    assert_eq!(outcomes[0].evidence_json["summary"], "PR already closed");
+}
+
+#[tokio::test]
+async fn no_pr_terminal_outcomes_replace_the_conversation_row_and_link_the_agent_run() {
+    let repo = Arc::new(TestTaskOutcomeRepository::default());
+    let adapter = AgentWorkspaceOutcomeAdapter::new(repo.clone());
+    let workspace = workspace();
+    let mut run = AgentRun::new(workspace.conversation_id.clone());
+    run.status = AgentRunStatus::Failed;
+
+    adapter
+        .record_turn_with_code_changes(&workspace, Some(&run))
+        .await
+        .expect("record initial code changes");
+    let abandoned = adapter
+        .record_no_pr_terminal(&workspace, Some(&run), "no_changes", "Nothing to publish")
+        .await
+        .expect("record abandonment");
+    let publish_failed = adapter
+        .record_no_pr_terminal(
+            &workspace,
+            Some(&run),
+            WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED,
+            "Publication failed",
+        )
+        .await
+        .expect("upgrade current conversation outcome");
+    let outcomes = repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("list workspace outcomes");
+
+    assert_eq!(abandoned.source_ref_kind, "conversation");
+    assert_eq!(abandoned.status, TaskOutcomeStatus::Failed);
+    assert_eq!(
+        abandoned.outcome_class.as_ref().map(|class| class.as_str()),
+        Some(WORKSPACE_SESSION_ABANDONED_CLASS)
+    );
+    assert_eq!(publish_failed.id, abandoned.id);
+    assert_eq!(publish_failed.status, TaskOutcomeStatus::Failed);
+    assert_eq!(
+        publish_failed
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_PUBLISH_FAILED_CLASS)
+    );
+    assert_eq!(publish_failed.agent_run_id, Some(run.id.as_str()));
+    assert_eq!(
+        publish_failed.evidence_json["reason"],
+        WORKSPACE_TERMINAL_REASON_PUBLISH_FAILED
+    );
+    assert_eq!(outcomes.len(), 1);
 }

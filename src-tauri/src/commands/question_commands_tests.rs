@@ -1,9 +1,8 @@
 use super::question_commands::{
     accepted_plan_mode_proposal, build_plan_mode_proposal_continuation,
     plan_mode_proposal_continuation_metadata,
-    plan_mode_proposal_continuation_metadata_with_outcome,
-    task_outcome_from_plan_mode_verdict, PLAN_MODE_PROPOSAL_ACCEPT_VALUE,
-    PLAN_MODE_PROPOSAL_CONTINUATION_BASE, PLAN_MODE_PROPOSAL_KIND,
+    plan_mode_proposal_continuation_metadata_with_outcome, task_outcome_from_plan_mode_verdict,
+    PLAN_MODE_PROPOSAL_ACCEPT_VALUE, PLAN_MODE_PROPOSAL_CONTINUATION_BASE, PLAN_MODE_PROPOSAL_KIND,
 };
 use crate::application::{PendingQuestionInfo, QuestionAnswer, QuestionOption};
 use crate::domain::services::learned_skill_adapters::PlanModeVerdictOutcome;
@@ -225,11 +224,14 @@ fn plan_mode_verdict_outcome_converts_to_task_outcome_ledger_row() {
         task_outcome_from_plan_mode_verdict(&outcome).expect("task outcome conversion");
 
     assert_eq!(task_outcome.project_id.as_str(), "project-1");
-    assert_eq!(task_outcome.source, "plan_mode");
+    assert_eq!(task_outcome.source.as_str(), "plan_mode");
     assert_eq!(task_outcome.source_ref_kind, "planning_session");
     assert_eq!(task_outcome.source_ref_id, "planning-session-1");
     assert_eq!(
-        task_outcome.outcome_class.as_deref(),
+        task_outcome
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
         Some("plan_mode_accepted")
     );
     assert_eq!(task_outcome.status.to_string(), "eligible");

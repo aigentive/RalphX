@@ -72,9 +72,10 @@ use crate::domain::repositories::{
     MemoryEntryRepository, MemoryEventRepository, MethodologyRepository, NotificationRepository,
     NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
     PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectMemorySettingsRepository, ProjectRepository, ProjectSkillRepository,
-    ProjectSkillSettingsRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, SkillUsageEventRepository,
+    ProcessRepository, ProjectMemorySettingsRepository, ProjectRepository,
+    ProjectSkillEvidenceBatchRepository, ProjectSkillRepository, ProjectSkillSettingsRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, SkillUsageEventRepository,
     TaskDependencyRepository, TaskOutcomeRepository, TaskProposalRepository, TaskQARepository,
     TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
     TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
@@ -108,7 +109,8 @@ use crate::infrastructure::memory::{
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
-    MemoryProjectMemorySettingsRepository, MemoryProjectRepository, MemoryProjectSkillRepository,
+    MemoryProjectMemorySettingsRepository, MemoryProjectRepository,
+    MemoryProjectSkillEvidenceBatchRepository, MemoryProjectSkillRepository,
     MemoryProjectSkillSettingsRepository, MemoryProposalDependencyRepository,
     MemoryQuestionRepository, MemoryQueuedMessageRepository, MemoryReviewIssueRepository,
     MemoryReviewRepository, MemoryReviewSettingsRepository, MemorySecretStore,
@@ -147,7 +149,8 @@ use crate::infrastructure::sqlite::{
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
     SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
     SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
-    SqliteProjectMemorySettingsRepository, SqliteProjectRepository, SqliteProjectSkillRepository,
+    SqliteProjectMemorySettingsRepository, SqliteProjectRepository,
+    SqliteProjectSkillEvidenceBatchRepository, SqliteProjectSkillRepository,
     SqliteProjectSkillSettingsRepository, SqliteProposalDependencyRepository,
     SqliteQuestionRepository, SqliteQueuedMessageRepository, SqliteReviewIssueRepository,
     SqliteReviewRepository, SqliteReviewSettingsRepository, SqliteRunningAgentRegistry,
@@ -361,6 +364,8 @@ pub struct AppState {
     pub memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
     /// Learned task outcome ledger repository
     pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    /// Immutable outcome evidence batches and leased distiller claims
+    pub project_skill_evidence_batch_repo: Arc<dyn ProjectSkillEvidenceBatchRepository>,
     /// Project-scoped learned skill repository
     pub project_skill_repo: Arc<dyn ProjectSkillRepository>,
     /// Learned skill usage event repository
@@ -1483,6 +1488,9 @@ impl AppState {
             task_outcome_repo: Arc::new(SqliteTaskOutcomeRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            project_skill_evidence_batch_repo: Arc::new(
+                SqliteProjectSkillEvidenceBatchRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             project_skill_repo: Arc::new(SqliteProjectSkillRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1736,6 +1744,9 @@ impl AppState {
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
             task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
@@ -1935,6 +1946,9 @@ impl AppState {
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
             task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
@@ -2156,6 +2170,9 @@ impl AppState {
                     .expect("Failed to create in-memory connection for memory_archive"),
             )),
             task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
@@ -2329,6 +2346,9 @@ impl AppState {
                     .expect("Failed to create in-memory connection"),
             )),
             task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
+            project_skill_evidence_batch_repo: Arc::new(
+                MemoryProjectSkillEvidenceBatchRepository::new(),
+            ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
             team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),

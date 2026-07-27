@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildArtifactMutationTransportHeaders, buildRuntimeTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "../runtime-context.js";
+import { buildArtifactMutationTransportHeaders, buildProjectSkillPipelineTransportHeaders, buildRuntimeTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "../runtime-context.js";
 describe("parseCliOptionFromArgs", () => {
     it("supports inline and pair-style CLI options", () => {
         expect(parseCliOptionFromArgs(["node", "index.js", "--context-type=ideation"], "context-type")).toBe("ideation");
@@ -37,6 +37,16 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
             "conversation-789",
             "--agent-run-id",
             "run-current",
+            "--pipeline-role",
+            "memory_capture",
+            "--skill-distillation-batch-id",
+            "batch-1",
+            "--skill-distillation-claim-token",
+            "claim-1",
+            "--skill-distillation-fingerprint",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--skill-distillation-outcome-ids",
+            '["outcome-1"]',
             "--task-state",
             "re_executing",
             "--project-id",
@@ -59,6 +69,11 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(runtimeContext.coordinationMode).toBe("rx_native_workflow");
         expect(runtimeContext.parentConversationId).toBe("conversation-789");
         expect(runtimeContext.agentRunId).toBe("run-current");
+        expect(runtimeContext.pipelineRole).toBe("memory_capture");
+        expect(runtimeContext.skillDistillationBatchId).toBe("batch-1");
+        expect(runtimeContext.skillDistillationClaimToken).toBe("claim-1");
+        expect(runtimeContext.skillDistillationFingerprint).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        expect(runtimeContext.skillDistillationOutcomeIds).toBe('["outcome-1"]');
         expect(runtimeContext.taskState).toBe("re_executing");
         expect(runtimeContext.projectId).toBe("project-456");
         expect(runtimeContext.workingDirectory).toBe("/tmp/workspace");
@@ -73,6 +88,11 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(env.RALPHX_COORDINATION_MODE).toBe("rx_native_workflow");
         expect(env.RALPHX_PARENT_CONVERSATION_ID).toBe("conversation-789");
         expect(env.RALPHX_AGENT_RUN_ID).toBe("run-current");
+        expect(env.RALPHX_PIPELINE_ROLE).toBe("memory_capture");
+        expect(env.RALPHX_SKILL_DISTILLATION_BATCH_ID).toBe("batch-1");
+        expect(env.RALPHX_SKILL_DISTILLATION_CLAIM_TOKEN).toBe("claim-1");
+        expect(env.RALPHX_SKILL_DISTILLATION_FINGERPRINT).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        expect(env.RALPHX_SKILL_DISTILLATION_OUTCOME_IDS).toBe('["outcome-1"]');
         expect(env.RALPHX_TASK_STATE).toBe("re_executing");
         expect(env.RALPHX_PROJECT_ID).toBe("project-456");
         expect(env.RALPHX_WORKING_DIRECTORY).toBe("/tmp/workspace");
@@ -145,6 +165,61 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         const runtimeContext = hydrateRalphxRuntimeEnvFromCli(["node", "index.js"], env);
         expect(runtimeContext.filesystemReadRoots).toBe(ambient);
         expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(ambient);
+    });
+});
+describe("buildProjectSkillPipelineTransportHeaders", () => {
+    it("carries hidden backend-owned authoring context", () => {
+        expect(buildProjectSkillPipelineTransportHeaders({
+            filesystemEnforced: false,
+            agentType: "ralphx-memory-capture",
+            pipelineRole: "memory_capture",
+            projectId: "project-1",
+            contextType: "project",
+            contextId: "project-1",
+            conversationId: "conversation-1",
+            agentRunId: "run-1",
+        })).toEqual({
+            "x-ralphx-agent-name": "ralphx-memory-capture",
+            "x-ralphx-pipeline-role": "memory_capture",
+            "x-ralphx-project-id": "project-1",
+            "x-ralphx-context-type": "project",
+            "x-ralphx-context-id": "project-1",
+            "x-ralphx-conversation-id": "conversation-1",
+            "x-ralphx-agent-run-id": "run-1",
+        });
+    });
+    it("omits incomplete authority instead of sending partial headers", () => {
+        expect(buildProjectSkillPipelineTransportHeaders({
+            filesystemEnforced: false,
+            agentType: "ralphx-memory-capture",
+            projectId: "project-1",
+        })).toBeUndefined();
+    });
+    it("carries backend-owned skill distillation claim context", () => {
+        expect(buildProjectSkillPipelineTransportHeaders({
+            filesystemEnforced: false,
+            agentType: "ralphx-memory-capture",
+            pipelineRole: "skill_distiller",
+            projectId: "project-1",
+            contextType: "project",
+            contextId: "project-1",
+            conversationId: "conversation-1",
+            skillDistillationBatchId: "batch-1",
+            skillDistillationClaimToken: "claim-1",
+            skillDistillationFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            skillDistillationOutcomeIds: '["outcome-1"]',
+        })).toEqual({
+            "x-ralphx-agent-name": "ralphx-memory-capture",
+            "x-ralphx-pipeline-role": "skill_distiller",
+            "x-ralphx-project-id": "project-1",
+            "x-ralphx-context-type": "project",
+            "x-ralphx-context-id": "project-1",
+            "x-ralphx-conversation-id": "conversation-1",
+            "x-ralphx-skill-distillation-batch-id": "batch-1",
+            "x-ralphx-skill-distillation-claim-token": "claim-1",
+            "x-ralphx-skill-distillation-fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "x-ralphx-skill-distillation-outcome-ids": '["outcome-1"]',
+        });
     });
 });
 describe("buildArtifactMutationTransportHeaders", () => {

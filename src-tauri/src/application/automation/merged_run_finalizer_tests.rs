@@ -9,7 +9,11 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, TaskOutcomeListOptions, WORKSPACE_PR_MERGED_CLASS,
+    WORKSPACE_SESSION_ABANDONED_CLASS,
+};
+use crate::domain::services::{AGENT_WORKSPACE_OUTCOME_SOURCE, AGENT_WORKSPACE_PR_OUTCOME_SOURCE};
 use crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository;
 
 async fn setup_finalizer_state(
@@ -153,6 +157,41 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
             .as_deref(),
         Some("failed_unsafe")
     );
+    let pr_outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("merged finalizer outcomes should be readable");
+    assert_eq!(pr_outcomes.len(), 1);
+    assert_eq!(
+        pr_outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_PR_MERGED_CLASS)
+    );
+    assert_eq!(pr_outcomes[0].pull_request_id.as_deref(), Some("42"));
+    let no_pr_outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .expect("merged finalizer no-PR outcomes should be readable");
+    assert!(no_pr_outcomes.iter().all(|outcome| {
+        outcome.outcome_class.as_ref().map(|class| class.as_str())
+            != Some(WORKSPACE_SESSION_ABANDONED_CLASS)
+    }));
 }
 
 #[tokio::test]

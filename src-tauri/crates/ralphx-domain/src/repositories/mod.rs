@@ -54,6 +54,7 @@ pub mod persona_repository;
 pub mod process_repo;
 pub mod project_memory_settings_repository;
 pub mod project_skill_settings_repository;
+pub mod project_skill_evidence_batch_repository;
 pub mod project_skill_repository;
 pub mod project_repository;
 pub mod proposal_dependency_repository;
@@ -153,7 +154,13 @@ pub use persona_repository::PersonaRepository;
 pub use process_repo::ProcessRepository;
 pub use project_memory_settings_repository::ProjectMemorySettingsRepository;
 pub use project_skill_settings_repository::ProjectSkillSettingsRepository;
-pub use project_skill_repository::{ProjectSkillListOptions, ProjectSkillRepository};
+pub use project_skill_evidence_batch_repository::ProjectSkillEvidenceBatchRepository;
+pub use project_skill_repository::{
+    ProjectSkillListOptions, ProjectSkillMatchedMutation, ProjectSkillRepository,
+    ProjectSkillResolutionCommand, ProjectSkillResolutionIdentity,
+    ProjectSkillResolutionIdentityKind, ProjectSkillResolutionIntent,
+    ProjectSkillResolutionOutcome, ProjectSkillResolutionResult, ProjectSkillStagingPolicy,
+};
 pub use project_repository::ProjectRepository;
 pub use proposal_dependency_repository::ProposalDependencyRepository;
 pub use review_repository::ReviewRepository;
@@ -169,6 +176,7 @@ pub use task_outcome_repository::{
     TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS, WORKSPACE_PR_FAILED_CLASS,
     WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
     WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS, WORKSPACE_PR_TERMINAL_CLASS,
+    WORKSPACE_PUBLISH_FAILED_CLASS, WORKSPACE_SESSION_ABANDONED_CLASS,
 };
 pub use task_proposal_repository::TaskProposalRepository;
 pub use task_qa_repository::TaskQARepository;

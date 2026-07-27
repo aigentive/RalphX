@@ -21,10 +21,11 @@ use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
     ExecutionRecoveryState, IdeationSessionId, InternalStatus, NotificationCategory,
     NotificationSeverity, NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project,
-    ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, Task, TaskOutcomeStatus,
-    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
-    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
-    ValidationRun, ValidationRunMode, ValidationRunStatus, VerificationStatus,
+    ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageInjectionKind,
+    Task, TaskOutcomeStatus, ValidationCacheDecision, ValidationCommandCategory,
+    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
+    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
+    ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -2193,7 +2194,10 @@ async fn test_interactive_stdin_learned_skill_usage_is_recorded_as_unscored() {
         Some(expected_conversation_id.as_str())
     );
     assert_eq!(event.agent_run_id, None);
-    assert_eq!(event.injection_kind, "interactive_stdin_unattributed");
+    assert_eq!(
+        event.injection_kind,
+        SkillUsageInjectionKind::InteractiveStdinUnattributed
+    );
     assert_eq!(event.metadata_json["scoring_eligible"], false);
     assert_eq!(
         event.metadata_json["scoring_disabled_reason"],
@@ -2946,7 +2950,7 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
         .unwrap();
     assert_eq!(outcomes.len(), 1);
     let outcome = &outcomes[0];
-    assert_eq!(outcome.source, "agent_session");
+    assert_eq!(outcome.source.as_str(), "agent_session");
     assert_eq!(outcome.source_ref_kind, "agent_run");
     assert_eq!(outcome.source_ref_id, "run-id-incomplete-success");
     assert_eq!(outcome.task_id.as_deref(), Some(task_id.as_str()));
@@ -2960,7 +2964,7 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
         Some("run-id-incomplete-success")
     );
     assert_eq!(
-        outcome.outcome_class.as_deref(),
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
         Some("task_execution_no_output")
     );
     assert_eq!(outcome.status, TaskOutcomeStatus::Failed);

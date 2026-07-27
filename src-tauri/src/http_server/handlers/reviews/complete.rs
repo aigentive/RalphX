@@ -1,5 +1,6 @@
 use super::*;
 use crate::application::task_diff_base::task_allows_empty_captured_diff;
+use crate::domain::entities::{TaskOutcomeClass, TaskOutcomeSource};
 
 pub async fn ensure_task_still_reviewing_before_transition(
     state: &HttpServerState,
@@ -45,21 +46,18 @@ async fn record_review_decision_outcome(
 ) {
     let mut task_outcome = new_empty_task_outcome(
         task.project_id.clone(),
-        "review",
+        TaskOutcomeSource::Review,
         "review_note",
         review_note_id.as_str().to_string(),
     );
     task_outcome.task_id = Some(task.id.as_str().to_string());
     task_outcome.review_id = Some(review_note_id.as_str().to_string());
-    task_outcome.outcome_class = Some(
-        match outcome {
-            ReviewToolOutcome::Approved => "review_approved",
-            ReviewToolOutcome::ApprovedNoChanges => "review_approved_no_changes",
-            ReviewToolOutcome::NeedsChanges => "review_changes_requested",
-            ReviewToolOutcome::Escalate => "review_escalated",
-        }
-        .to_string(),
-    );
+    task_outcome.outcome_class = Some(match outcome {
+        ReviewToolOutcome::Approved => TaskOutcomeClass::ReviewApproved,
+        ReviewToolOutcome::ApprovedNoChanges => TaskOutcomeClass::ReviewApprovedNoChanges,
+        ReviewToolOutcome::NeedsChanges => TaskOutcomeClass::ReviewChangesRequested,
+        ReviewToolOutcome::Escalate => TaskOutcomeClass::ReviewEscalated,
+    });
     task_outcome.status = match outcome {
         ReviewToolOutcome::Approved | ReviewToolOutcome::ApprovedNoChanges => {
             crate::domain::entities::TaskOutcomeStatus::Succeeded
@@ -88,6 +86,40 @@ async fn record_review_decision_outcome(
         "scope_drift_classification": req.scope_drift_classification,
         "followup_session_id": followup_session_id,
     });
+    if matches!(
+        outcome,
+        ReviewToolOutcome::NeedsChanges | ReviewToolOutcome::Escalate
+    ) {
+        let mut recurrence_parts = [
+            req.summary.as_deref(),
+            req.feedback.as_deref(),
+            req.escalation_reason.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        if let Some(issues) = req.issues.as_ref() {
+            for issue in issues {
+                recurrence_parts.extend(
+                    [
+                        issue.title.as_deref(),
+                        issue.description.as_deref(),
+                        issue.category.as_deref(),
+                        issue.file_path.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(str::to_string),
+                );
+            }
+        }
+        crate::domain::services::failure_fingerprint::attach_recurrence_evidence(
+            &mut task_outcome.evidence_json,
+            &recurrence_parts.join("\n"),
+            task.ideation_session_id.as_ref().map(|id| id.as_str()),
+        );
+    }
 
     let service = OutcomeLedgerService::new(Arc::clone(&state.app_state.task_outcome_repo));
     if let Err(error) = service.record_outcome(task_outcome).await {

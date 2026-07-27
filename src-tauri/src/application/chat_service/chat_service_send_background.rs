@@ -19,7 +19,9 @@ use super::{event_context, has_meaningful_output, EventContextPayload, Streaming
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
-use crate::application::memory_orchestration::trigger_memory_pipelines;
+use crate::application::memory_orchestration::{
+    trigger_memory_pipelines, ProjectSkillDistillationDependencies,
+};
 use crate::application::notification_service::NotificationService;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
@@ -219,6 +221,18 @@ async fn resolve_memory_agent_runtime_for_background<R: Runtime>(
             None
         }
     }
+}
+
+fn project_skill_distillation_dependencies<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+) -> Option<ProjectSkillDistillationDependencies> {
+    let state = app_handle?.try_state::<crate::application::AppState>()?;
+    Some(ProjectSkillDistillationDependencies {
+        outcome_repo: Arc::clone(&state.task_outcome_repo),
+        batch_repo: Arc::clone(&state.project_skill_evidence_batch_repo),
+        settings_repo: Arc::clone(&state.project_skill_settings_repo),
+        skill_repo: Arc::clone(&state.project_skill_repo),
+    })
 }
 
 const AGENT_TASK_LEDGER_SUBSTANTIAL_TOOL_CALL_COUNT: usize = 3;
@@ -1969,6 +1983,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         Some(Arc::clone(&memory_event_repo)),
                         Some(Arc::clone(&project_memory_settings_repo)),
                         memory_agent_runtime.clone(),
+                        project_skill_distillation_dependencies(app_handle.as_ref()),
                     )
                     .await;
                 } else {
@@ -2081,6 +2096,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         Some(Arc::clone(&memory_event_repo)),
                         Some(Arc::clone(&project_memory_settings_repo)),
                         memory_agent_runtime.clone(),
+                        project_skill_distillation_dependencies(app_handle.as_ref()),
                     )
                     .await;
                 } else {

@@ -42,6 +42,39 @@ harnesses:
     .unwrap();
 }
 
+fn write_skill_distiller_profile_agent(root: &std::path::Path) {
+    let agent_root = root.join("agents/ralphx-memory-capture");
+    std::fs::create_dir_all(agent_root.join("profiles/skill_distiller/claude")).unwrap();
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: ralphx-memory-capture
+role: memory_capture
+capabilities:
+  mcp_tools: [search_memories, upsert_memories]
+harnesses:
+  claude:
+    tools:
+      include: [Read]
+profiles:
+  skill_distiller:
+    role: skill_distiller
+    capabilities:
+      mcp_tools: [upsert_project_skill, patch_project_skill, retire_project_skill]
+    harnesses:
+      claude:
+        tools:
+          mcp_only: true
+        preapproved_cli_tools: []
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent_root.join("profiles/skill_distiller/claude/prompt.md"),
+        "You are the profile-scoped skill distiller.",
+    )
+    .unwrap();
+}
+
 fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.iter()
         .position(|arg| arg == flag)
@@ -379,6 +412,41 @@ fn test_agent_command_context_maps_env_for_mcp_and_preserves_agent_arguments() {
         arg_value(&args, "--permission-mode"),
         Some("bypassPermissions")
     );
+}
+
+#[test]
+fn agent_command_uses_backend_selected_profile_for_claude_mcp_and_tool_surface() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    write_skill_distiller_profile_agent(&root);
+    let client = ClaudeCodeClient::new().with_cli_path("/fake/claude");
+    let config = AgentConfig::worker("Author reusable guidance")
+        .with_agent("ralphx:ralphx-memory-capture")
+        .with_plugin_dir(plugin_dir)
+        .with_working_dir("/trusted/workspace")
+        .with_env("RALPHX_PROJECT_ID", "project-1")
+        .with_env("RALPHX_AGENT_PROFILE", "skill_distiller");
+
+    let spawnable = client
+        .build_spawnable_agent_command(&config, None, false)
+        .expect("profile-aware Claude command");
+    let args = spawnable.get_args_for_test();
+    let mcp_config_path = arg_value(&args, "--mcp-config").expect("profile-aware MCP config path");
+    let mcp_config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(mcp_config_path).expect("read profile-aware MCP config"),
+    )
+    .expect("parse MCP config");
+    let mcp_args = mcp_server_args(&mcp_config);
+
+    assert!(mcp_args
+        .windows(2)
+        .any(|pair| pair == ["--agent-profile", "skill_distiller"]));
+    assert!(!args.contains(&"--tools".to_string()));
+    let allowed = arg_value(&args, "--allowedTools").expect("allowed MCP tools");
+    assert!(allowed.contains("mcp__ralphx__upsert_project_skill"));
+    assert!(allowed.contains("mcp__ralphx__patch_project_skill"));
+    assert!(allowed.contains("mcp__ralphx__retire_project_skill"));
+    assert!(!allowed.contains("search_memories"));
+    assert!(!allowed.contains("upsert_memories"));
 }
 
 #[test]

@@ -47,6 +47,9 @@ pub mod project_memory_settings;
 pub mod project_skill_settings;
 #[cfg(test)]
 mod project_skill_settings_tests;
+pub mod project_skill_evidence_batch;
+#[cfg(test)]
+mod project_skill_evidence_batch_tests;
 pub mod project_skill_versioning;
 #[cfg(test)]
 mod project_skill_versioning_tests;
@@ -184,7 +187,8 @@ pub use ideation::{
 };
 pub use learned_skill::{
     ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageEvent, SkillUsageEventId,
-    TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+    SkillUsageInjectionKind, TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource,
+    TaskOutcomeStatus,
 };
 pub use memory_archive::{
     ArchiveJobPayload, ArchiveJobStatus, ArchiveJobType, FullRebuildPayload, MemoryArchiveJob,
@@ -208,6 +212,11 @@ pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
 pub use persona::{Persona, PersonaDirective, PersonaId, PersonaScopeFilter, PersonaStatus};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use project_memory_settings::ProjectMemorySettings;
+pub use project_skill_evidence_batch::{
+    ProjectSkillEvidenceBatch, ProjectSkillEvidenceBatchId, ProjectSkillEvidenceBatchItem,
+    ProjectSkillEvidenceBatchStatus, PROJECT_SKILL_EVIDENCE_BATCH_MAX_ITEMS,
+    PROJECT_SKILL_EVIDENCE_DIGEST_MAX_CHARS,
+};
 pub use project_skill_settings::{ProjectSkillSettings, ProjectSkillSettingsPatch};
 pub use project_skill_versioning::{
     prepare_new_project_skill, project_skill_authorship_from_provenance,

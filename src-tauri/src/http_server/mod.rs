@@ -308,6 +308,9 @@ pub async fn start_http_server(
             post(process_conversation_project_skills),
         )
         .route("/api/project_skills/get", post(get_project_skill))
+        .route("/api/project_skills/upsert", post(upsert_project_skill))
+        .route("/api/project_skills/patch", post(patch_project_skill))
+        .route("/api/project_skills/retire", post(retire_project_skill))
         .route("/api/project_skills/approve", post(approve_project_skill))
         .route("/api/project_skills/reject", post(reject_project_skill))
         .route("/api/project_skills/archive", post(archive_project_skill))
@@ -315,14 +318,6 @@ pub async fn start_http_server(
         .route("/api/project_skills/unpin", post(unpin_project_skill))
         .route("/api/project_skills/update", post(update_project_skill))
         .route("/api/project_skills/distill", post(distill_project_skills))
-        .route(
-            "/api/project_skills/pr_candidates/list",
-            post(list_project_skill_pull_request_candidates),
-        )
-        .route(
-            "/api/project_skills/pr_candidates/stage",
-            post(stage_project_skill_from_pull_request),
-        )
         .route(
             "/api/project_skills/report_cards",
             post(list_project_skill_report_cards),

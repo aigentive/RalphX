@@ -18,7 +18,7 @@ use crate::domain::state_machine::transition_handler::merge_completion::{
     set_pending_cleanup_metadata,
 };
 use crate::infrastructure::memory::MemoryTaskRepository;
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 // ==================
@@ -231,11 +231,14 @@ async fn complete_merge_sets_pending_cleanup_metadata() {
         .unwrap();
     assert_eq!(outcomes.len(), 1);
     let outcome = &outcomes[0];
-    assert_eq!(outcome.source, "merge");
+    assert_eq!(outcome.source.as_str(), "merge");
     assert_eq!(outcome.source_ref_kind, "task");
     assert_eq!(outcome.source_ref_id, task.id.as_str());
     assert_eq!(outcome.task_id.as_deref(), Some(task.id.as_str()));
-    assert_eq!(outcome.outcome_class.as_deref(), Some("merge_completed"));
+    assert_eq!(
+        outcome.outcome_class.as_ref().map(|class| class.as_str()),
+        Some("merge_completed")
+    );
     assert_eq!(outcome.status, TaskOutcomeStatus::Succeeded);
     assert_eq!(
         outcome.evidence_json["commit_sha"].as_str(),
