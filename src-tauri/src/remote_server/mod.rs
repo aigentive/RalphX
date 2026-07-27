@@ -58,8 +58,8 @@ use crate::remote_server::auth::{
     RemoteAuthContext,
 };
 use crate::remote_server::auth_endpoints::{
-    pair_handler, session_introspection_handler, session_teardown_handler, ws_ticket_handler,
-    REMOTE_AUTH_BODY_LIMIT_BYTES,
+    pair_handler, self_revoke_handler, session_introspection_handler, session_teardown_handler,
+    ws_ticket_handler, REMOTE_AUTH_BODY_LIMIT_BYTES,
 };
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
@@ -73,6 +73,9 @@ use crate::remote_server::settings::{
 pub(crate) const DESCRIPTOR_PATH: &str = "/.well-known/ralphx/environment";
 pub(crate) const PAIR_PATH: &str = "/remote/v1/auth/pair";
 pub(crate) const WS_TICKET_PATH: &str = "/remote/v1/auth/ws-ticket";
+/// Bearer-authenticated self-revocation, called by the client's staged remove/re-pair
+/// machines (§6.1 "host revoke (best-effort) → Keychain delete → row delete", P-27).
+pub(crate) const REVOKE_PATH: &str = "/remote/v1/auth/revoke";
 pub(crate) const SESSION_PATH: &str = "/remote/v1/session";
 pub(crate) const HEALTH_PATH: &str = "/health";
 
@@ -133,10 +136,34 @@ struct ActiveRemoteListener {
     serve: RemoteServeStatus,
 }
 
+/// Serve exposure as observed **at listener start**.
+///
+/// Snapshot semantics, deliberately: nothing re-probes `tailscaled` afterwards, so `active`
+/// stays `true` for the listener's lifetime even if the daemon dies or the user runs
+/// `tailscale serve off` by hand. PR 1.7's pane must treat it as "what the last start
+/// achieved" and revalidate through a reachability probe before claiming a host is reachable.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RemoteServeStatus {
     pub(crate) active: bool,
     pub(crate) degraded_reason: Option<String>,
+    /// Machine-readable companion to `degraded_reason` (rule 5: no string matching). PR 1.7
+    /// branches on this to say "install Tailscale" vs "enable Serve" instead of grepping
+    /// prose.
+    pub(crate) degraded_kind: Option<RemoteServeDegradedKind>,
+}
+
+/// Why Serve is not active, as a value the UI can branch on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteServeDegradedKind {
+    /// The `tailscale` CLI could not be resolved — the "install Tailscale" case.
+    CliUnavailable,
+    /// The CLI exists but could not be launched.
+    LaunchFailed,
+    /// The command hung past the timeout.
+    Timeout,
+    /// The command ran and refused (Serve/HTTPS not enabled on the tailnet, not logged in).
+    CommandFailed,
 }
 
 /// Process-owned handle for the single remote listener.
@@ -229,6 +256,12 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
         .route(
             WS_TICKET_PATH,
             post(ws_ticket_handler)
+                .options(remote_preflight_handler)
+                .layer(DefaultBodyLimit::max(REMOTE_AUTH_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            REVOKE_PATH,
+            post(self_revoke_handler)
                 .options(remote_preflight_handler)
                 .layer(DefaultBodyLimit::max(REMOTE_AUTH_BODY_LIMIT_BYTES)),
         )
@@ -354,17 +387,32 @@ pub(crate) async fn start_listener(
             Ok(()) => RemoteServeStatus {
                 active: true,
                 degraded_reason: None,
+                degraded_kind: None,
             },
             Err(error) => {
                 let degraded_reason = tailscale_serve_degraded_reason(&error);
+                let degraded_kind = tailscale_serve_degraded_kind(&error);
                 tracing::warn!(%error, address = %bound_address, "Tailscale Serve unavailable; remote listener remains loopback-only");
+                // Serve mode means RalphX owns the :443 mapping, and this start did not
+                // establish it. A mapping left by an earlier (crashed) Serve run would keep
+                // forwarding tailnet :443 at whatever now holds that loopback port, while
+                // this listener reports itself loopback-only. Clearing is idempotent.
+                sweep_stale_serve_mapping(tailscale).await;
                 RemoteServeStatus {
                     active: false,
                     degraded_reason: Some(degraded_reason),
+                    degraded_kind: Some(degraded_kind),
                 }
             }
         }
     } else {
+        // Deliberately does NOT clear Serve state. `tailscale serve --bg` is durable in
+        // tailscaled and can outlive a crashed Serve run, but the release command is a
+        // blanket `serve --https=443 off`: sweeping it from a direct-exposure start would
+        // delete whatever the USER mapped onto :443 for their own services. RalphX only owns
+        // :443 while it is the one configuring it (the Serve arm above). Residual, accepted:
+        // a crash under Serve leaves a mapping this process cannot distinguish from the
+        // user's own, so it is cleared on the next Serve start/stop, not by guesswork.
         RemoteServeStatus::default()
     };
 
@@ -540,6 +588,27 @@ fn tailscale_serve_degraded_reason(error: &TailscaleServeError) -> String {
         | TailscaleServeError::Timeout
         | TailscaleServeError::Output(_)
         | TailscaleServeError::Exit(_) => error.to_string(),
+    }
+}
+
+fn tailscale_serve_degraded_kind(error: &TailscaleServeError) -> RemoteServeDegradedKind {
+    match error {
+        TailscaleServeError::CliUnavailable => RemoteServeDegradedKind::CliUnavailable,
+        TailscaleServeError::Launch(_) => RemoteServeDegradedKind::LaunchFailed,
+        TailscaleServeError::Timeout => RemoteServeDegradedKind::Timeout,
+        TailscaleServeError::Output(_) | TailscaleServeError::Exit(_) => {
+            RemoteServeDegradedKind::CommandFailed
+        }
+    }
+}
+
+/// Best-effort clearing of a Serve mapping this process does not own.
+///
+/// Separate from [`release_serve_best_effort`] because the common outcome here is "no
+/// Tailscale installed", which is not worth a warning on every loopback start.
+async fn sweep_stale_serve_mapping(tailscale: &dyn TailscaleCommandRunner) {
+    if let Err(error) = tailscale.run_serve_release().await {
+        tracing::debug!(%error, "No stale Tailscale Serve mapping was cleared");
     }
 }
 

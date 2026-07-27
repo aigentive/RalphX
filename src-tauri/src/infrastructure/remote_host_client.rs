@@ -21,6 +21,12 @@ use serde::{Deserialize, Serialize};
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
+// NOTE (C-11 placement): `PairWire*` duplicates the host's `PairRequest`/`PairResponse`
+// (`remote_server/auth_endpoints.rs`) instead of living in `ralphx-remote-protocol` with
+// `EnvironmentDescriptor`/`Scope`. Until PR 1.4/2.2 move the pairing/invoke wire types into
+// the protocol crate, the parity test in `remote_server/auth_tests.rs` is what ties the two
+// definitions together — a host-side rename must fail that test, not production pairing.
+
 /// Pre-auth descriptor route (mirrors `remote_server::DESCRIPTOR_PATH`).
 pub const REMOTE_DESCRIPTOR_PATH: &str = "/.well-known/ralphx/environment";
 /// Pairing exchange route (§4.2).
@@ -36,6 +42,9 @@ pub const REMOTE_REVOKE_PATH: &str = "/remote/v1/auth/revoke";
 pub struct PairWireRequest {
     pub pairing_code: String,
     pub device_name: String,
+    /// §3.1 defines it and the host audits it; omitting it logs every real pairing as
+    /// "unknown client".
+    pub client_version: String,
     pub requested_scopes: Vec<Scope>,
 }
 
@@ -48,6 +57,11 @@ pub struct PairWireResponse {
     pub device_id: String,
     pub scopes: Vec<Scope>,
     pub environment_id: String,
+    /// The version the host reports on the AUTHENTICATED exchange. `Option` because a host
+    /// older than this field omits it; when present it is preferred over the pre-auth
+    /// descriptor's copy for the stored row.
+    #[serde(default)]
+    pub protocol_version: Option<u32>,
 }
 
 /// Typed failures from the client→host wire.
@@ -175,6 +189,18 @@ fn join_url(base_url: &str, path: &str) -> String {
     format!("{}{}", base_url.trim_end_matches('/'), path)
 }
 
+/// Whether `status` proves the host no longer holds the token.
+///
+/// A host that answered at all — 2xx, or 401/403 for a bearer it refuses — has nothing left
+/// to revoke. **404 is deliberately excluded**: the remote router answers it from its
+/// fallback when a route is absent, so counting it as success would report every revoke
+/// against a host without the route as done while its device row stayed live — precisely the
+/// orphaned valid-but-unreferenced bearer §6.1/P-27 exists to prevent. Callers treat the
+/// error as the best-effort residual it is.
+fn revoke_completed(status: StatusCode) -> bool {
+    status.is_success() || status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN
+}
+
 fn rejected(status: StatusCode, body: &[u8]) -> RemoteHostClientError {
     RemoteHostClientError::Rejected {
         status: status.as_u16(),
@@ -242,12 +268,7 @@ impl RemoteHostClient for HyperRemoteHostClient {
         let (status, body) = self
             .request_json(Method::POST, &url, Some(token), None)
             .await?;
-        // A host that no longer knows the token has nothing left to revoke.
-        if status.is_success()
-            || status == StatusCode::UNAUTHORIZED
-            || status == StatusCode::FORBIDDEN
-            || status == StatusCode::NOT_FOUND
-        {
+        if revoke_completed(status) {
             return Ok(());
         }
         Err(rejected(status, &body))
@@ -431,6 +452,7 @@ mod tests {
         let request = PairWireRequest {
             pairing_code: "rxp_0123456789abcdefghijklmnopqrstuv".to_string(),
             device_name: "RalphX Desktop".to_string(),
+            client_version: "0.81.0".to_string(),
             requested_scopes: vec![Scope::UiRead, Scope::UiOperate],
         };
         let json = serde_json::to_value(&request).expect("request should serialize");
@@ -439,6 +461,9 @@ mod tests {
             serde_json::json!({
                 "pairingCode": "rxp_0123456789abcdefghijklmnopqrstuv",
                 "deviceName": "RalphX Desktop",
+                // §3.1 defines clientVersion and the host audits it; pin it so it cannot be
+                // dropped again.
+                "clientVersion": "0.81.0",
                 "requestedScopes": ["ui:read", "ui:operate"],
             })
         );
@@ -450,7 +475,8 @@ mod tests {
             "deviceToken": "rxd_live_secret",
             "deviceId": "device-1",
             "scopes": ["ui:read", "ui:operate"],
-            "environmentId": "env-1"
+            "environmentId": "env-1",
+            "protocolVersion": 1
         }"#;
         let response: PairWireResponse =
             serde_json::from_str(raw).expect("response should parse");
@@ -458,6 +484,37 @@ mod tests {
         assert_eq!(response.device_id, "device-1");
         assert_eq!(response.scopes, vec![Scope::UiRead, Scope::UiOperate]);
         assert_eq!(response.environment_id, "env-1");
+        assert_eq!(response.protocol_version, Some(1));
+    }
+
+    /// A host older than the `protocolVersion` field must still pair; the descriptor's copy
+    /// is the fallback.
+    #[test]
+    fn pair_response_tolerates_a_host_without_protocol_version() {
+        let raw = r#"{
+            "deviceToken": "rxd_live_secret",
+            "deviceId": "device-1",
+            "scopes": ["ui:read"],
+            "environmentId": "env-1"
+        }"#;
+        let response: PairWireResponse = serde_json::from_str(raw).expect("response should parse");
+        assert_eq!(response.protocol_version, None);
+    }
+
+    /// The revoke seam must not read "route not mounted" as "token revoked": 404 comes from
+    /// the remote router's fallback, while a mounted route answers 401/403 for a dead bearer
+    /// (§6.1 / P-27 — a revoke reported as done but never performed orphans a live bearer).
+    #[test]
+    fn only_a_host_that_answered_counts_as_a_completed_revoke() {
+        assert!(revoke_completed(StatusCode::OK));
+        assert!(revoke_completed(StatusCode::NO_CONTENT));
+        assert!(revoke_completed(StatusCode::UNAUTHORIZED));
+        assert!(revoke_completed(StatusCode::FORBIDDEN));
+        assert!(
+            !revoke_completed(StatusCode::NOT_FOUND),
+            "404 means the route is not mounted, not that the token died"
+        );
+        assert!(!revoke_completed(StatusCode::INTERNAL_SERVER_ERROR));
     }
 
     #[test]
