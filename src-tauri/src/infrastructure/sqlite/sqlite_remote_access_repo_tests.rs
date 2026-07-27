@@ -33,6 +33,7 @@ fn redemption(raw_code: &str, now: &str) -> RemotePairingRedemption {
         token_prefix: token.chars().take(13).collect(),
         requested_scopes: None,
         now: now.to_string(),
+        audit_detail: Some("rxd_live_test (0.81.0)".to_string()),
     }
 }
 
@@ -476,6 +477,63 @@ async fn audit_rows_are_appended_newest_first() {
     assert_eq!(entries[1].action, "auth_accepted");
     assert_eq!(entries[1].device_id.as_ref(), Some(&device.id));
     assert_eq!(entries[1].detail.as_deref(), Some("GET /remote/v1/session"));
+}
+
+/// Retention: the request path appends a row per auth decision, so the log needs a ceiling.
+#[tokio::test]
+async fn pruning_drops_only_rows_older_than_the_cutoff() {
+    let db = SqliteTestDb::new("remote-access-audit-prune");
+    let repo = repo(&db);
+    let device = paired_device(&repo).await;
+    repo.record(Some(&device.id), RemoteAuditAction::AuthAccepted, None, NOW)
+        .await
+        .expect("old audit row writes");
+    repo.record(
+        Some(&device.id),
+        RemoteAuditAction::AuthAccepted,
+        None,
+        MUCH_LATER,
+    )
+    .await
+    .expect("recent audit row writes");
+
+    let pruned = repo.prune_before(LATER).await.expect("prune should run");
+    let entries = repo.list_recent(Some(10)).await.expect("audit log reads");
+
+    assert_eq!(pruned, 1);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].created_at, MUCH_LATER);
+}
+
+/// The pairing trail commits with the device: a `pairing_succeeded` row exists the moment the
+/// device row does, so a post-commit audit failure can never strand an active credential whose
+/// token was never delivered.
+#[tokio::test]
+async fn redeeming_a_code_writes_its_audit_row_in_the_same_transaction() {
+    let db = SqliteTestDb::new("remote-access-redeem-audit");
+    let repo = repo(&db);
+    let raw = generate_prefixed_key("rxp_");
+    repo.create(pairing_code(
+        &raw,
+        RemoteScopeSet::default_pairing_grant(),
+        MUCH_LATER,
+    ))
+    .await
+    .expect("pairing code writes");
+
+    let outcome = repo
+        .redeem(redemption(&raw, NOW))
+        .await
+        .expect("redemption should run");
+
+    let RemotePairingOutcome::Paired(device) = outcome else {
+        panic!("a live code should pair: {outcome:?}");
+    };
+    let entries = repo.list_recent(Some(10)).await.expect("audit log reads");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].action, "pairing_succeeded");
+    assert_eq!(entries[0].device_id.as_ref(), Some(&device.id));
+    assert_eq!(entries[0].detail.as_deref(), Some("rxd_live_test (0.81.0)"));
 }
 
 /// A malformed scope column must surface as a store error rather than an empty grant.

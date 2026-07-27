@@ -34,6 +34,7 @@ fn pair_response(environment_id: &str) -> PairWireResponse {
         device_id: "device-1".to_string(),
         scopes: vec![Scope::UiRead, Scope::UiOperate],
         environment_id: environment_id.to_string(),
+        protocol_version: Some(PROTOCOL_VERSION),
     }
 }
 
@@ -431,6 +432,82 @@ async fn set_active_environment_rejects_unknown_and_non_active_rows() {
         Err(RemoteEnvironmentError::EnvironmentNotUsable(..))
     ));
     assert_eq!(f.service.active_environment_id().await, "local");
+}
+
+/// P-26: the mirror is not the whole authority. A row that leaves `active` — a dedup re-pair
+/// demotes it to `pending_add` while its Keychain token is being replaced — must not be
+/// invocable just because the mirror still names it. PR 2.2 hangs the real transport off this
+/// authorization, so an invoke here would be signed with a half-installed credential.
+#[tokio::test]
+async fn invoke_is_refused_while_the_active_environment_is_mid_re_pair() {
+    let f = fixture();
+    let env = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("pairing should succeed");
+    f.service
+        .set_active_environment(env.id.as_str())
+        .await
+        .expect("activating should succeed");
+    f.repo
+        .set_status(&env.id, RemoteEnvironmentStatus::PendingAdd)
+        .await
+        .expect("status write");
+
+    let error = f
+        .service
+        .invoke(
+            env.id.as_str(),
+            "req-1",
+            "health_check",
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("a non-active row must not be invocable");
+    let probe = f
+        .service
+        .fetch(
+            env.id.as_str(),
+            crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH,
+        )
+        .await;
+
+    assert!(
+        matches!(error, RemoteEnvironmentError::EnvironmentNotUsable(..)),
+        "expected a status refusal, got {error:?}"
+    );
+    assert!(
+        probe.is_ok(),
+        "health probes stay available while a row reconciles"
+    );
+}
+
+/// Re-pairing the CURRENTLY ACTIVE environment demotes its row to `pending_add`; the mirror
+/// must not keep naming it while the credential is swapped underneath.
+#[tokio::test]
+async fn re_pairing_the_active_environment_drops_the_active_mirror() {
+    let f = fixture();
+    let env = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("first pairing should succeed");
+    f.service
+        .set_active_environment(env.id.as_str())
+        .await
+        .expect("activating should succeed");
+
+    f.service
+        .pair(HOST_URL_DIRECT, "rxp_code2", "Mac Studio")
+        .await
+        .expect("re-pairing the same host should succeed");
+
+    assert_eq!(
+        f.service.active_environment_id().await,
+        LOCAL_ENVIRONMENT_ID,
+        "the mirror falls back to local rather than pointing through a re-pair window"
+    );
 }
 
 #[tokio::test]

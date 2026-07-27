@@ -177,12 +177,30 @@ describe("hydrateActiveEnvironment", () => {
     expect(useEnvironmentStore.getState().activeEnvironmentId).toBe("row-1");
   });
 
-  it("falls back to local for an unknown authoritative id", async () => {
+  it("loads the registry before deciding an id is unknown", async () => {
+    // Hydration racing ahead of loadEnvironments must not clamp a live remote id.
+    mockedApi.getActiveEnvironment.mockResolvedValue("row-1");
+    mockedApi.list.mockResolvedValue([summary()]);
+
+    await useEnvironmentStore.getState().hydrateActiveEnvironment();
+
+    expect(mockedApi.list).toHaveBeenCalled();
+    expect(useEnvironmentStore.getState().activeEnvironmentId).toBe("row-1");
+    expect(mockedApi.setActiveEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("falls back to local for an unknown authoritative id and tells Rust", async () => {
     mockedApi.getActiveEnvironment.mockResolvedValue("stale-row");
+    mockedApi.list.mockResolvedValue([]);
+    mockedApi.setActiveEnvironment.mockResolvedValue(null);
 
     await useEnvironmentStore.getState().hydrateActiveEnvironment();
 
     expect(useEnvironmentStore.getState().activeEnvironmentId).toBe(
+      LOCAL_ENVIRONMENT_ID
+    );
+    // The mirror clamped, so the Rust authority must clamp with it.
+    expect(mockedApi.setActiveEnvironment).toHaveBeenCalledWith(
       LOCAL_ENVIRONMENT_ID
     );
   });

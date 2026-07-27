@@ -78,6 +78,13 @@ pub(crate) struct SessionTeardownResponse {
     pub closed_sessions: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SelfRevokeResponse {
+    pub device_id: String,
+    pub closed_sessions: usize,
+}
+
 /// Exchanges a single-use pairing code for a device token.
 ///
 /// Rate limiting here keys on the **presented code**, not the socket: under Serve every
@@ -127,6 +134,14 @@ pub(crate) async fn pair_handler(
             .clone()
             .map(|scopes| RemoteScopeSet::from_scopes(scopes)),
         now: now_timestamp(),
+        audit_detail: Some(format!(
+            "{} ({})",
+            device_token_prefix(&raw_token),
+            request
+                .client_version
+                .as_deref()
+                .unwrap_or("unknown client")
+        )),
     };
 
     let outcome = match auth.pairing_codes.redeem(redemption).await {
@@ -147,24 +162,9 @@ pub(crate) async fn pair_handler(
     match outcome {
         RemotePairingOutcome::Paired(device) => {
             auth.limiter.record_success(&code_key);
-            if !auth
-                .record_audit(
-                    Some(&device.id),
-                    RemoteAuditAction::PairingSucceeded,
-                    Some(&format!(
-                        "{} ({})",
-                        device.token_prefix,
-                        request
-                            .client_version
-                            .as_deref()
-                            .unwrap_or("unknown client")
-                    )),
-                )
-                .await
-            {
-                return RemoteAuthRejection::StoreUnavailable("audit log write failed".to_string())
-                    .into_response();
-            }
+            // The `pairing_succeeded` audit row committed with the device inside `redeem`;
+            // there is deliberately no post-commit audit write here, because failing one
+            // would strand an active device whose token was never handed to anybody.
             tracing::info!(device_id = %device.id, "Remote device paired");
             (
                 StatusCode::OK,
@@ -256,6 +256,56 @@ pub(crate) async fn ws_ticket_handler(
         .into_response()
 }
 
+/// Kills the caller's **own** device credential, not just its sessions.
+///
+/// The client's staged remove/re-pair machines are specified as "host revoke (best-effort) →
+/// Keychain delete → row delete" (§6.1, P-27), which requires a host surface a client can
+/// actually call — device management itself stays host-local Tauri (§3.1/§5.4), so this is
+/// deliberately self-scoped: the identity comes from the bearer the middleware already
+/// resolved, never from the body, so no device can revoke another.
+///
+/// Order matches `revoke_remote_device` (§4.4): durable `revoked_at` first, then the audit
+/// row, then the live-session teardown. A repository failure answers 500 so the client keeps
+/// the token referenced and retries on the next reconcile instead of orphaning a live bearer.
+pub(crate) async fn self_revoke_handler(
+    State(state): State<RemoteRouterState>,
+    Extension(identity): Extension<RemoteIdentity>,
+) -> Response {
+    let auth = state.auth().clone();
+    let revoked = match auth
+        .devices
+        .revoke(&identity.device_id, &now_timestamp())
+        .await
+    {
+        Ok(Some(device)) => device,
+        // The row vanished between the middleware's lookup and this write: the token is
+        // already unusable, which is exactly what the caller asked for.
+        Ok(None) => return RemoteAuthRejection::UnknownToken.into_response(),
+        Err(error) => {
+            return RemoteAuthRejection::StoreUnavailable(error.to_string()).into_response()
+        }
+    };
+    auth.record_audit(
+        Some(&revoked.id),
+        RemoteAuditAction::DeviceRevoked,
+        Some("client requested self-revocation"),
+    )
+    .await;
+    let closed_sessions = auth
+        .tear_down_device_sessions(&revoked.id, ResetReason::Revoked)
+        .await;
+    tracing::info!(device_id = %revoked.id, sessions = closed_sessions, "Remote device self-revoked");
+
+    (
+        StatusCode::OK,
+        Json(SelfRevokeResponse {
+            device_id: revoked.id.to_string(),
+            closed_sessions,
+        }),
+    )
+        .into_response()
+}
+
 /// Reports the caller's currently effective grant.
 ///
 /// Built from the identity the middleware resolved on **this** request, so it reflects
@@ -282,6 +332,12 @@ pub(crate) async fn session_introspection_handler(
 ///
 /// PR 1.4 narrows this to the calling WS session once a session id exists at request time;
 /// over plain HTTP the caller has no session identity beyond its device.
+///
+/// The reset reason is `Revoked` only because the pinned v1 vocabulary has no "session
+/// closed on request" member — the credential is untouched. A client that receives it after
+/// asking for teardown (or after an agent-control narrowing, `remote_device_commands.rs`)
+/// must reconnect and re-introspect (P-28) rather than treating its token as dead;
+/// `POST /remote/v1/auth/revoke` is the only path that actually kills the credential.
 pub(crate) async fn session_teardown_handler(
     State(state): State<RemoteRouterState>,
     Extension(identity): Extension<RemoteIdentity>,
