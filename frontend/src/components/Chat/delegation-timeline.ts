@@ -185,11 +185,22 @@ export function projectDelegationTimelineMessages(
   }
 
   const liveByJobId = new Map<string, StreamingTask>();
-  for (const task of streamingTasks.values()) {
-    if (!task.delegatedJobId) continue;
-    const current = liveByJobId.get(task.delegatedJobId);
+  const liveByToolUseId = new Map<string, StreamingTask>();
+  const retainMostCompleteTask = (
+    target: Map<string, StreamingTask>,
+    key: string,
+    task: StreamingTask,
+  ) => {
+    const current = target.get(key);
     if (!current || (!isTerminalDelegationStatus(current.status) && isTerminalDelegationStatus(task.status))) {
-      liveByJobId.set(task.delegatedJobId, task);
+      target.set(key, task);
+    }
+  };
+  for (const [key, task] of streamingTasks) {
+    retainMostCompleteTask(liveByToolUseId, key, task);
+    retainMostCompleteTask(liveByToolUseId, task.toolUseId, task);
+    if (task.delegatedJobId) {
+      retainMostCompleteTask(liveByJobId, task.delegatedJobId, task);
     }
   }
 
@@ -198,12 +209,19 @@ export function projectDelegationTimelineMessages(
     const persisted = persistedTimelineToolCall(message);
     if (!persisted || !isDelegationStartToolCall(persisted.name)) return message;
     const jobId = delegationJobIdForToolCall(persisted);
-    const live = jobId ? liveByJobId.get(jobId) : undefined;
+    const live = (jobId ? liveByJobId.get(jobId) : undefined)
+      ?? liveByToolUseId.get(persisted.id);
     if (!live) return message;
 
     liveAliases.add(live.toolUseId);
     for (const [key, task] of streamingTasks) {
-      if (task.delegatedJobId === jobId) liveAliases.add(key);
+      if (
+        (jobId != null && task.delegatedJobId === jobId)
+        || task.toolUseId === live.toolUseId
+        || key === persisted.id
+      ) {
+        liveAliases.add(key);
+      }
     }
     const result = enrichedDelegationResult(persisted, live);
     const updateTool = <T extends ToolCall>(toolCall: T): T =>
