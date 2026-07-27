@@ -197,6 +197,10 @@ fn remote_cors_layer() -> CorsLayer {
 /// PR 1.2 lands bearer extraction, hashing, device lookup, and header stripping here. Until
 /// then every non-allowlisted route is refused, so no route can accidentally ship unauthenticated.
 async fn remote_auth_slot(request: Request, next: Next) -> Response {
+    // OPTIONS must stay pre-auth: browser/mobile CORS preflight carries no Authorization header
+    // (§3.1), so folding it into the bearer check would 401 every cross-origin mobile request at
+    // preflight — and desktop tests would not catch it, because the desktop client is
+    // Rust-proxied and never preflights. PR 1.2 keeps this bypass.
     if request.method() == Method::OPTIONS {
         return next.run(request).await;
     }
