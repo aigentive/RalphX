@@ -6,12 +6,6 @@
     "excludedFromV1": false
   },
   {
-    "name": "task:deleted",
-    "delivery": "durable",
-    "origin": "backend",
-    "excludedFromV1": false
-  },
-  {
     "name": "task:status_changed",
     "delivery": "durable",
     "origin": "backend",
@@ -114,25 +108,7 @@
     "excludedFromV1": false
   },
   {
-    "name": "team:message",
-    "delivery": "durable",
-    "origin": "backend",
-    "excludedFromV1": false
-  },
-  {
-    "name": "team:status_changed",
-    "delivery": "durable",
-    "origin": "backend",
-    "excludedFromV1": false
-  },
-  {
     "name": "automation:updated",
-    "delivery": "durable",
-    "origin": "backend",
-    "excludedFromV1": false
-  },
-  {
-    "name": "automation:run_updated",
     "delivery": "durable",
     "origin": "backend",
     "excludedFromV1": false

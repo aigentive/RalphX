@@ -137,6 +137,17 @@ fn event_classification_is_exact_and_snapshotted() {
             .delivery,
         EventDelivery::Durable
     );
+    for stale_name in [
+        "task:deleted",
+        "team:message",
+        "team:status_changed",
+        "automation:run_updated",
+    ] {
+        assert!(
+            EventClassification::find(stale_name).is_none(),
+            "{stale_name} has no production emitter or UI consumer and must not reserve a remote event classification"
+        );
+    }
 }
 
 const _: () = assert!(!ralphx_remote_protocol::class_permits(

@@ -275,7 +275,6 @@ const fn webview(name: &'static str) -> EventClassification {
 // lifecycle invalidations are durable because clients must refetch authoritative state after replay.
 pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     backend("task:created", EventDelivery::Durable),
-    backend("task:deleted", EventDelivery::Durable),
     backend("task:status_changed", EventDelivery::Durable),
     backend("task:merge_progress", EventDelivery::Durable),
     backend("task:merge_phases", EventDelivery::Durable),
@@ -293,10 +292,7 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     backend("agent:queue_sent", EventDelivery::Durable),
     backend("agent:message_queued", EventDelivery::Durable),
     backend("agent:session_recovered", EventDelivery::Durable),
-    backend("team:message", EventDelivery::Durable),
-    backend("team:status_changed", EventDelivery::Durable),
     backend("automation:updated", EventDelivery::Durable),
-    backend("automation:run_updated", EventDelivery::Durable),
     backend("automation:deleted", EventDelivery::Durable),
     backend("ticketing:cache_invalidated", EventDelivery::Durable),
     backend("task_validation:event", EventDelivery::Durable),
