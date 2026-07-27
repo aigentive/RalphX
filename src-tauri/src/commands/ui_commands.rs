@@ -26,6 +26,8 @@ pub struct UiFeatureFlagsResponse {
     pub agent_conversation_team: bool,
     pub agent_conversation_workflows: bool,
     pub agent_conversation_autopilot: bool,
+    /// Remote multi-environment client UI (Phase 2 ships dark behind this).
+    pub remote_environments: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,6 +60,7 @@ fn ui_feature_flags_response_with_standalone(
         agent_conversation_team: agent_capabilities.team,
         agent_conversation_workflows: agent_capabilities.workflows,
         agent_conversation_autopilot: agent_capabilities.autopilot,
+        remote_environments: flags.remote_environments,
     }
 }
 

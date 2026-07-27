@@ -47,6 +47,9 @@ ui:
     standalone_conversations: false
     # A20 escape hatch: skip --resume on the send after a persona switch.
     persona_switch_forces_fresh_provider_session: false
+    # Remote multi-environment client UI (Phase 2 ships dark behind this).
+    # Env override: RALPHX_UI_REMOTE_ENVIRONMENTS=true|false
+    remote_environments: false
 
 # Compatibility runtime row for the PersonaBuilder-only extractor. Canonical
 # `agents/ralphx-persona-extractor/agent.yaml` remains authoritative.

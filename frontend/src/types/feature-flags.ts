@@ -11,6 +11,7 @@ export const featureFlagsSchema = z.object({
   agentConversationWorkflows: z.boolean().default(false),
   standaloneConversations: z.boolean().default(false),
   agentConversationAutopilot: z.boolean().default(false),
+  remoteEnvironments: z.boolean().default(false),
 });
 
 /**
@@ -24,10 +25,12 @@ export type FeatureFlags = Omit<
   | "agentConversationWorkflows"
   | "standaloneConversations"
   | "agentConversationAutopilot"
+  | "remoteEnvironments"
 > & {
   agentPersonas?: boolean;
   agentConversationTeam?: boolean;
   agentConversationWorkflows?: boolean;
   standaloneConversations?: boolean;
   agentConversationAutopilot?: boolean;
+  remoteEnvironments?: boolean;
 };
