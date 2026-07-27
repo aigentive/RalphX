@@ -181,7 +181,7 @@ jobs:
           fi
 
       - name: Checkout release automation
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: workflow-support
