@@ -8,6 +8,8 @@
 pub mod capture;
 pub mod endpoints;
 #[cfg(test)]
+mod endpoints_tests;
+#[cfg(test)]
 mod listener_tests;
 pub mod settings;
 #[cfg(test)]
@@ -37,13 +39,13 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::AppError;
+use crate::infrastructure::tailscale::TailscaleSelfAddressProvider;
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
 };
 use crate::remote_server::settings::{
     effective_remote_port, resolve_bind_address, RemoteBindError, RemoteExposureMode,
     RemoteHostSettings, RemoteHostSettingsStore, TailnetSelfAddressProvider,
-    UnconfiguredTailnetProvider,
 };
 
 pub(crate) const DESCRIPTOR_PATH: &str = "/.well-known/ralphx/environment";
@@ -399,7 +401,7 @@ pub(crate) async fn auto_start_remote_listener_from_handle(app_handle: &tauri::A
     let store = RemoteHostSettingsStore::from_db(state.db.clone());
     let handle = remote_listener_handle(app_handle);
 
-    match auto_start_if_enabled(&handle, &store, &UnconfiguredTailnetProvider).await {
+    match auto_start_if_enabled(&handle, &store, &TailscaleSelfAddressProvider).await {
         Ok(Some(address)) => {
             tracing::info!(%address, "Remote listener auto-started from persisted settings");
         }

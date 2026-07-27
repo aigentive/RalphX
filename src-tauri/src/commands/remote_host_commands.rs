@@ -5,8 +5,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::infrastructure::tailscale::TailscaleSelfAddressProvider;
 use crate::remote_server::settings::{
-    RemoteExposureMode, RemoteHostSettings, RemoteHostSettingsStore, UnconfiguredTailnetProvider,
+    RemoteExposureMode, RemoteHostSettings, RemoteHostSettingsStore,
 };
 use crate::remote_server::{
     apply_exposure_mode, remote_listener_handle, start_listener, stop_listener,
@@ -58,7 +59,7 @@ pub async fn start_remote_listener(
 ) -> Result<RemoteListenerStatus, String> {
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
-    start_listener(&handle, &store, &UnconfiguredTailnetProvider)
+    start_listener(&handle, &store, &TailscaleSelfAddressProvider)
         .await
         .map_err(|error| error.to_string())?;
     let settings = store.get_or_create().await.map_err(|e| e.to_string())?;
@@ -92,7 +93,7 @@ pub async fn set_remote_exposure_mode(
     let settings = apply_exposure_mode(
         &handle,
         &store,
-        &UnconfiguredTailnetProvider,
+        &TailscaleSelfAddressProvider,
         input.exposure_mode,
     )
     .await

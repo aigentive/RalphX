@@ -4,10 +4,13 @@
 //! stranger can read, so it publishes identity and version negotiation data only (§3.1, §4.6).
 
 use std::sync::Arc;
+use std::{net::Ipv4Addr, string::ToString};
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
 use serde::Serialize;
+
+use crate::remote_server::settings::RemoteExposureMode;
 
 /// Oldest client protocol this host will negotiate with.
 ///
@@ -37,6 +40,58 @@ impl RemoteRouterState {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteHealthBody {
     pub status: &'static str,
+}
+
+// Consumed by PR 1.7's Remote Access pane (endpoint list).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AdvertisedEndpointKind {
+    LoopbackServe,
+    TailnetDirect,
+}
+
+// Consumed by PR 1.7's Remote Access pane (endpoint list).
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AdvertisedEndpoint {
+    pub kind: AdvertisedEndpointKind,
+    pub url: String,
+    pub available: bool,
+}
+
+/// Describes remote URLs from already-observed reachability facts without granting access.
+// Consumed by PR 1.7's Remote Access pane (endpoint list).
+#[allow(dead_code)]
+pub(crate) fn advertised_endpoints(
+    exposure_mode: RemoteExposureMode,
+    port: u16,
+    magicdns_name: Option<&str>,
+    serve_reachable: bool,
+    tailnet_self_ip: Option<Ipv4Addr>,
+) -> Vec<AdvertisedEndpoint> {
+    match exposure_mode {
+        RemoteExposureMode::Serve => magicdns_name
+            .map(str::trim)
+            .map(|name| name.trim_end_matches('.'))
+            .filter(|name| !name.is_empty())
+            .map(|name| AdvertisedEndpoint {
+                kind: AdvertisedEndpointKind::LoopbackServe,
+                url: format!("https://{name}"),
+                available: serve_reachable,
+            })
+            .into_iter()
+            .collect(),
+        RemoteExposureMode::TailnetDirect => tailnet_self_ip
+            .map(|address| AdvertisedEndpoint {
+                kind: AdvertisedEndpointKind::TailnetDirect,
+                url: format!("https://{address}:{port}"),
+                available: true,
+            })
+            .into_iter()
+            .collect(),
+    }
 }
 
 /// Builds the five-field descriptor published at `/.well-known/ralphx/environment`.
