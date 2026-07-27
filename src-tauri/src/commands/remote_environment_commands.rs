@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::remote_environment_service::{
-    RemoteEnvironmentError, RemoteEnvironmentService,
+    RemoteEnvironmentError, RemoteEnvironmentService, RemoteFetchCall, RemoteFetchOutcome,
+    RemoteInvokeOutcome,
 };
 use crate::domain::entities::remote_environment::{RemoteEnvironment, RemoteEnvironmentStatus};
 use crate::AppState;
@@ -77,18 +78,30 @@ pub struct RemoteInvokeInput {
     pub args: serde_json::Value,
 }
 
-/// Fetch seam as of PR 2.1: id + path only.
+/// Fetch seam, widened in PR 2.2 exactly as the PR 2.1 review-2 note required.
 ///
-/// PR 2.2 migrates `backendFetch(path, init)` call sites that POST JSON bodies and branch on
-/// `res.ok`/`res.status`, so it MUST widen this additively — `method`, `body`, `headers` here,
-/// and a `{ status, body }` envelope out of `remote_fetch` — rather than reinterpreting the
-/// current bare-`Value` return. Nothing consumes the command yet, so the widening is not a
-/// break; silently keeping this shape is.
+/// `backendFetch(path, init)` call sites POST JSON bodies and branch on
+/// `res.ok`/`res.status`, so the seam carries `method`/`headers`/`body` in and a
+/// `{ status, body }` envelope out. The webview's `method` and `headers` are
+/// ALLOWLIST-validated in the service before a bearer is attached — this struct is
+/// untrusted input, not a validated request.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteFetchInput {
     pub id: String,
     pub path: String,
+    /// Defaults to `GET` so the health/descriptor probes stay a two-field call.
+    #[serde(default = "default_fetch_method")]
+    pub method: String,
+    /// Header pairs, allowlisted service-side (`content-type`, `accept`).
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+fn default_fetch_method() -> String {
+    "GET".to_string()
 }
 
 fn service<'a>(state: &'a State<'_, AppState>) -> &'a RemoteEnvironmentService {
@@ -187,29 +200,46 @@ pub async fn remote_disconnect(
         .map_err(to_command_error)
 }
 
-/// Forwards one command invoke through the Rust proxy. Active-env-bound (P-26);
-/// the bearer stays in Rust. HTTP transport lands in PR 2.2.
+/// Forwards one command invoke through the Rust proxy (§6.3). Active-env-bound
+/// (P-26); the bearer stays in Rust.
+///
+/// Two failure channels, deliberately: a HOST COMMAND that returned `Err(E)` resolves
+/// with `RemoteInvokeOutcome::CommandError { error: E }` so `NetworkInvoke` can reject
+/// with `E` verbatim (Tauri parity, §6.3), while a TRANSPORT failure takes the `Err`
+/// channel as `"{CODE}: {message}"`.
 #[tauri::command]
 pub async fn remote_invoke(
     input: RemoteInvokeInput,
     state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<RemoteInvokeOutcome, String> {
     service(&state)
         .invoke(&input.id, &input.request_id, &input.cmd, input.args)
         .await
         .map_err(to_command_error)
 }
 
-/// Fetches a host resource through the Rust proxy. Health paths (descriptor,
+/// Fetches a host resource through the Rust proxy (§3.5). Health paths (descriptor,
 /// health probe) are allowed for background environments; everything else is
 /// active-env-bound (P-26).
+///
+/// A non-2xx host answer is DATA, not an `Err`: `backendFetch` rebuilds a real
+/// `Response` from `{status, body}` so migrated call sites keep reading `res.ok` and
+/// their own error bodies. Only 401/403 lift into the taxonomy.
 #[tauri::command]
 pub async fn remote_fetch(
     input: RemoteFetchInput,
     state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<RemoteFetchOutcome, String> {
     service(&state)
-        .fetch(&input.id, &input.path)
+        .fetch(
+            &input.id,
+            RemoteFetchCall {
+                path: input.path,
+                method: input.method,
+                headers: input.headers,
+                body: input.body,
+            },
+        )
         .await
         .map_err(to_command_error)
 }

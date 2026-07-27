@@ -64,11 +64,54 @@ pub struct PairWireResponse {
     pub protocol_version: Option<u32>,
 }
 
+/// Wire request for `POST /remote/v1/invoke` (§3.1, C-11: camelCase).
+///
+/// `requestId` is the client-minted UUID the host binds to a `cmd`+args hash for
+/// mutation dedup (§3.3). It is generated per call in `network-invoke.ts` and passed
+/// through untouched — the proxy must never re-mint it, or a client retrying a lost
+/// response would lose its dedup identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvokeWireRequest {
+    pub request_id: String,
+    pub cmd: String,
+    pub args: serde_json::Value,
+}
+
+/// One authenticated request against a remounted `/api/…` route (§3.5).
+///
+/// `path`, `method`, and `headers` are already validated by the application layer;
+/// this struct is the post-validation shape, not the raw JS input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFetchRequest {
+    /// Absolute, host-relative path beginning with `/`.
+    pub path: String,
+    pub method: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+}
+
+/// A host answer, uninterpreted: status plus the raw body text.
+///
+/// The client deliberately does NOT classify statuses — what a 403 or a 409 means is
+/// protocol policy and lives in the application layer, where the error taxonomy is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteHttpResponse {
+    pub status: u16,
+    pub body: String,
+}
+
 /// Typed failures from the client→host wire.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum RemoteHostClientError {
     #[error("host unreachable: {0}")]
     Unreachable(String),
+    /// The request was sent but no answer arrived in time. Distinct from
+    /// `Unreachable` on purpose: a timed-out mutation may already have been applied
+    /// host-side, so it is an UNKNOWN outcome (§3.3) and must never be retried
+    /// blindly, whereas a refused connection provably did nothing.
+    #[error("host did not answer in time: {0}")]
+    Timeout(String),
     /// The host answered with a non-success status (bad pairing code, revoked token, …).
     #[error("host rejected the request ({status}): {message}")]
     Rejected { status: u16, message: String },
@@ -106,7 +149,30 @@ pub trait RemoteHostClient: Send + Sync {
     /// Best-effort self-revocation of `token` on the host (staged remove, P-27).
     async fn revoke_token(&self, base_url: &str, token: &str)
         -> Result<(), RemoteHostClientError>;
+
+    /// `POST /remote/v1/invoke` — one bearer-authenticated command dispatch (§3.1).
+    ///
+    /// Returns the raw status/body; classification is the caller's job. No retries at
+    /// this layer (A-5) — a resend would change the outcome of a dedup-guarded
+    /// mutation from "unknown" to "possibly applied twice".
+    async fn invoke(
+        &self,
+        base_url: &str,
+        token: &str,
+        request: &InvokeWireRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError>;
+
+    /// One bearer-authenticated request against a remounted `/api/…` route (§3.5).
+    async fn fetch(
+        &self,
+        base_url: &str,
+        token: &str,
+        request: &RemoteFetchRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError>;
 }
+
+/// `POST /remote/v1/invoke` (mirrors `remote_server::mod` route constants).
+pub const REMOTE_INVOKE_PATH: &str = "/remote/v1/invoke";
 
 // ============================================================================
 // Production implementation using hyper 1.x
@@ -115,6 +181,10 @@ pub trait RemoteHostClient: Send + Sync {
 pub struct HyperRemoteHostClient {
     client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     request_timeout: Duration,
+    /// Separate, longer budget for command dispatch. §6.3 pins the client-visible
+    /// invoke timeout at 30 s; the 15 s pairing/health budget would turn a slow but
+    /// healthy command into a spurious unknown outcome.
+    dispatch_timeout: Duration,
 }
 
 fn install_rustls_crypto_provider() {
@@ -139,6 +209,7 @@ impl HyperRemoteHostClient {
         Ok(Self {
             client: Client::builder(TokioExecutor::new()).build(https),
             request_timeout: Duration::from_secs(15),
+            dispatch_timeout: Duration::from_secs(30),
         })
     }
 
@@ -149,13 +220,34 @@ impl HyperRemoteHostClient {
         bearer: Option<&str>,
         body: Option<Vec<u8>>,
     ) -> Result<(StatusCode, Vec<u8>), RemoteHostClientError> {
+        self.send(
+            method,
+            url,
+            bearer,
+            &[("Content-Type".to_string(), "application/json".to_string())],
+            body,
+            self.request_timeout,
+        )
+        .await
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        url: &str,
+        bearer: Option<&str>,
+        headers: &[(String, String)],
+        body: Option<Vec<u8>>,
+        timeout: Duration,
+    ) -> Result<(StatusCode, Vec<u8>), RemoteHostClientError> {
         let uri: hyper::Uri = url
             .parse()
             .map_err(|error| RemoteHostClientError::Unreachable(format!("invalid URL: {error}")))?;
-        let mut builder = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("Content-Type", "application/json");
+        let mut builder = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        // Set last so a caller-supplied header can never displace the bearer.
         if let Some(bearer) = bearer {
             builder = builder.header("Authorization", format!("Bearer {bearer}"));
         }
@@ -164,12 +256,14 @@ impl HyperRemoteHostClient {
             .map_err(|error| {
                 RemoteHostClientError::Unreachable(format!("build request: {error}"))
             })?;
-        let response = tokio::time::timeout(self.request_timeout, self.client.request(request))
+        let response = tokio::time::timeout(timeout, self.client.request(request))
             .await
             .map_err(|_| {
-                RemoteHostClientError::Unreachable(format!(
-                    "request timed out after {}s",
-                    self.request_timeout.as_secs()
+                // Timeout, not Unreachable: the request WAS sent, so the outcome is
+                // unknown rather than provably nothing (§3.3).
+                RemoteHostClientError::Timeout(format!(
+                    "no answer after {}s",
+                    timeout.as_secs()
                 ))
             })?
             .map_err(|error| RemoteHostClientError::Unreachable(error.to_string()))?;
@@ -183,6 +277,16 @@ impl HyperRemoteHostClient {
             .to_vec();
         Ok((status, body))
     }
+}
+
+/// Decodes a host body as UTF-8 text, tolerating invalid sequences.
+///
+/// A lossy decode is deliberate: a malformed body must still reach the caller with
+/// its STATUS intact, because the status is what the error taxonomy keys on. Failing
+/// the whole request on a decode error would convert a typed `REMOTE_FORBIDDEN` into
+/// an untyped transport failure.
+fn body_text(body: Vec<u8>) -> String {
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 fn join_url(base_url: &str, path: &str) -> String {
@@ -273,6 +377,58 @@ impl RemoteHostClient for HyperRemoteHostClient {
         }
         Err(rejected(status, &body))
     }
+
+    async fn invoke(
+        &self,
+        base_url: &str,
+        token: &str,
+        request: &InvokeWireRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError> {
+        let url = join_url(base_url, REMOTE_INVOKE_PATH);
+        let payload = serde_json::to_vec(request)
+            .map_err(|error| RemoteHostClientError::InvalidResponse(error.to_string()))?;
+        let (status, body) = self
+            .send(
+                Method::POST,
+                &url,
+                Some(token),
+                &[("Content-Type".to_string(), "application/json".to_string())],
+                Some(payload),
+                self.dispatch_timeout,
+            )
+            .await?;
+        // Non-success is NOT an error here: the taxonomy mapping needs the status.
+        Ok(RemoteHttpResponse {
+            status: status.as_u16(),
+            body: body_text(body),
+        })
+    }
+
+    async fn fetch(
+        &self,
+        base_url: &str,
+        token: &str,
+        request: &RemoteFetchRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError> {
+        let url = join_url(base_url, &request.path);
+        let method = Method::from_bytes(request.method.as_bytes()).map_err(|error| {
+            RemoteHostClientError::InvalidResponse(format!("invalid HTTP method: {error}"))
+        })?;
+        let (status, body) = self
+            .send(
+                method,
+                &url,
+                Some(token),
+                &request.headers,
+                request.body.clone().map(String::into_bytes),
+                self.dispatch_timeout,
+            )
+            .await?;
+        Ok(RemoteHttpResponse {
+            status: status.as_u16(),
+            body: body_text(body),
+        })
+    }
 }
 
 /// Fallback client used when TLS roots are unavailable at AppState construction
@@ -321,6 +477,24 @@ impl RemoteHostClient for UnavailableRemoteHostClient {
     ) -> Result<(), RemoteHostClientError> {
         Err(RemoteHostClientError::Unreachable(self.reason.clone()))
     }
+
+    async fn invoke(
+        &self,
+        _base_url: &str,
+        _token: &str,
+        _request: &InvokeWireRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError> {
+        Err(RemoteHostClientError::Unreachable(self.reason.clone()))
+    }
+
+    async fn fetch(
+        &self,
+        _base_url: &str,
+        _token: &str,
+        _request: &RemoteFetchRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError> {
+        Err(RemoteHostClientError::Unreachable(self.reason.clone()))
+    }
 }
 
 // ============================================================================
@@ -331,12 +505,22 @@ impl RemoteHostClient for UnavailableRemoteHostClient {
 pub type MockHostResult<T> = Result<T, RemoteHostClientError>;
 
 /// Recorded call log entry for assertion in tests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RecordedHostCall {
     Descriptor { base_url: String },
     Pair { base_url: String, request: PairWireRequest },
     Validate { base_url: String, token: String },
     Revoke { base_url: String, token: String },
+    Invoke {
+        base_url: String,
+        token: String,
+        request: InvokeWireRequest,
+    },
+    Fetch {
+        base_url: String,
+        token: String,
+        request: RemoteFetchRequest,
+    },
 }
 
 /// Mock host for pairing/reconciler tests: scripted responses + a recorded call log.
@@ -345,7 +529,17 @@ pub struct MockRemoteHostClient {
     pub pair_response: Mutex<MockHostResult<PairWireResponse>>,
     pub validate_response: Mutex<MockHostResult<bool>>,
     pub revoke_response: Mutex<MockHostResult<()>>,
+    pub invoke_response: Mutex<MockHostResult<RemoteHttpResponse>>,
+    pub fetch_response: Mutex<MockHostResult<RemoteHttpResponse>>,
     pub calls: Mutex<Vec<RecordedHostCall>>,
+}
+
+/// The default scripted dispatch answer: a `Read` command that returned `Ok(null)`.
+fn default_invoke_response() -> RemoteHttpResponse {
+    RemoteHttpResponse {
+        status: 200,
+        body: r#"{"ok":true,"result":null}"#.to_string(),
+    }
 }
 
 impl MockRemoteHostClient {
@@ -355,6 +549,8 @@ impl MockRemoteHostClient {
             pair_response: Mutex::new(Ok(pair_response)),
             validate_response: Mutex::new(Ok(true)),
             revoke_response: Mutex::new(Ok(())),
+            invoke_response: Mutex::new(Ok(default_invoke_response())),
+            fetch_response: Mutex::new(Ok(default_invoke_response())),
             calls: Mutex::new(Vec::new()),
         }
     }
@@ -366,9 +562,32 @@ impl MockRemoteHostClient {
             descriptor: Mutex::new(Err(error.clone())),
             pair_response: Mutex::new(Err(error.clone())),
             validate_response: Mutex::new(Err(error.clone())),
-            revoke_response: Mutex::new(Err(error)),
+            revoke_response: Mutex::new(Err(error.clone())),
+            invoke_response: Mutex::new(Err(error.clone())),
+            fetch_response: Mutex::new(Err(error)),
             calls: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Scripts the next dispatch answer (status + raw body), for taxonomy tests.
+    pub fn script_invoke(&self, status: u16, body: impl Into<String>) {
+        *self.invoke_response.lock().expect("mock invoke poisoned") = Ok(RemoteHttpResponse {
+            status,
+            body: body.into(),
+        });
+    }
+
+    /// Scripts the next dispatch failure (timeout / connection refused).
+    pub fn script_invoke_error(&self, error: RemoteHostClientError) {
+        *self.invoke_response.lock().expect("mock invoke poisoned") = Err(error);
+    }
+
+    /// Scripts the next remounted-route answer.
+    pub fn script_fetch(&self, status: u16, body: impl Into<String>) {
+        *self.fetch_response.lock().expect("mock fetch poisoned") = Ok(RemoteHttpResponse {
+            status,
+            body: body.into(),
+        });
     }
 
     pub fn recorded_calls(&self) -> Vec<RecordedHostCall> {
@@ -437,6 +656,40 @@ impl RemoteHostClient for MockRemoteHostClient {
         self.revoke_response
             .lock()
             .expect("mock revoke response poisoned")
+            .clone()
+    }
+
+    async fn invoke(
+        &self,
+        base_url: &str,
+        token: &str,
+        request: &InvokeWireRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError> {
+        self.record(RecordedHostCall::Invoke {
+            base_url: base_url.to_string(),
+            token: token.to_string(),
+            request: request.clone(),
+        });
+        self.invoke_response
+            .lock()
+            .expect("mock invoke response poisoned")
+            .clone()
+    }
+
+    async fn fetch(
+        &self,
+        base_url: &str,
+        token: &str,
+        request: &RemoteFetchRequest,
+    ) -> Result<RemoteHttpResponse, RemoteHostClientError> {
+        self.record(RecordedHostCall::Fetch {
+            base_url: base_url.to_string(),
+            token: token.to_string(),
+            request: request.clone(),
+        });
+        self.fetch_response
+            .lock()
+            .expect("mock fetch response poisoned")
             .clone()
     }
 }
