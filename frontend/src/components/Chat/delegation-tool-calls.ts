@@ -192,6 +192,22 @@ function getContentText(content: unknown): string | undefined {
   return undefined;
 }
 
+const NO_OUTPUT_ERROR_PREFIX = "Codex exited without a response";
+
+function formatNoOutputDelegationFailure(error: string | undefined): string | undefined {
+  if (!error?.startsWith(NO_OUTPUT_ERROR_PREFIX)) return undefined;
+
+  const details: string[] = [];
+  const exitCode = error.match(/\bcode=Some\((-?\d+)\)/)?.[1];
+  const exitSignal = error.match(/\bsignal=Some\((-?\d+)\)/)?.[1];
+  if (exitCode) details.push(`Exit code: ${exitCode}`);
+  if (exitSignal) details.push(`Exit signal: ${exitSignal}`);
+
+  return details.length > 0
+    ? `Delegate completed without a response\n\n${details.join("\n")}`
+    : "Delegate completed without a response";
+}
+
 function deriveDurationMs(startedAt?: string, completedAt?: string): number | undefined {
   if (!startedAt || !completedAt) return undefined;
   const started = Date.parse(startedAt);
@@ -356,7 +372,7 @@ export function buildDelegationLifecycleTask(
     ...(payload.text_output != null
       ? { textOutput: payload.text_output }
       : payload.error != null
-        ? { textOutput: payload.error }
+        ? { textOutput: formatNoOutputDelegationFailure(payload.error) ?? payload.error }
         : {}),
     ...(payload.seq != null ? { seq: payload.seq } : {}),
     ...(payload.timestamp_provenance === "delegated_run"
@@ -734,9 +750,12 @@ export function extractDelegationMetadata(
           + (cacheReadTokens ?? 0)
         : undefined);
 
+  const rawError = getFirstString(resultRecord, "error");
   const textOutput =
     getFirstString(resultRecord, "content")
     ?? getContentText(resultRecord?.content)
+    ?? formatNoOutputDelegationFailure(rawError)
+    ?? rawError
     ?? getLastMessageText(delegatedStatus?.recent_messages ?? delegatedStatus?.recentMessages);
 
   const jobId =

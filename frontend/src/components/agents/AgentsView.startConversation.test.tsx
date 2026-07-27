@@ -1162,6 +1162,11 @@ describe("AgentsView start conversation", () => {
     await userEvent.click(
       screen.getByRole("button", { name: /^Capabilities,/ }),
     );
+    expect(
+      screen.getByTestId("agents-start-capability-rx_native_team"),
+    ).toHaveTextContent(
+      "Let this agent delegate to RalphX teammates when it helps; it may also work alone.",
+    );
     await userEvent.click(
       screen.getByTestId("agents-start-capability-rx_native_team"),
     );

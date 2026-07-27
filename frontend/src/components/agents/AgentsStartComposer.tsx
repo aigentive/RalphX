@@ -65,6 +65,7 @@ import {
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
 } from "./AgentComposerSurface";
+import { buildCapabilityOptions } from "./composer/runtime/capabilityOptions";
 import {
   buildAgentStartConversationRetryInput,
   parseLinkedSetupFailure,
@@ -474,35 +475,11 @@ export function AgentsStartComposer({
     codexProviderSettings?.ultraSupportedModels,
   );
   const capabilityOptions = useMemo(() => {
-    const options = [
-      {
-        id: "solo",
-        label: "Defaults",
-        description: "Use the selected provider without extra orchestration.",
-      },
-    ];
-    if (featureFlags.agentConversationTeam) {
-      options.push({
-        id: "rx_native_team",
-        label: "Team",
-        description: "Coordinate RalphX-native delegated teammates.",
-      });
-    }
-    if (featureFlags.agentConversationWorkflows) {
-      options.push({
-        id: "rx_native_workflow",
-        label: "Workflow",
-        description: "Generate and run a durable reviewed orchestration script.",
-      });
-    }
-    if (codexUltraAvailable) {
-      options.push({
-        id: "codex_native_ultra",
-        label: "Ultra",
-        description: "Activate Codex provider-native subagents and maximum reasoning.",
-      });
-    }
-    return options;
+    return buildCapabilityOptions({
+      teamEnabled: featureFlags.agentConversationTeam,
+      workflowsEnabled: featureFlags.agentConversationWorkflows,
+      codexUltraAvailable,
+    });
   }, [
     codexUltraAvailable,
     featureFlags.agentConversationTeam,
