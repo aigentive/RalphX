@@ -46,6 +46,8 @@ jobs:
               - 'scripts/tests/test-coverage-rust-shards.sh'
               - 'scripts/check-raw-tauri-event-listen.mjs'
               - 'scripts/tests/test-raw-tauri-event-listen-guard.sh'
+              - 'scripts/check-remote-transport-drift.mjs'
+              - 'scripts/remote-transport-drift-baseline.json'
               - 'scripts/event-manifest-scanner/**'
               - 'scripts/event-manifest.json'
               - 'scripts/build-prod-release.sh'
