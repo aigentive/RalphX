@@ -417,6 +417,15 @@ async fn cleanup_plan_gate_artifacts_for_run_conversations(
             )
             .await;
         }
+        if let Some(plan_blueprint_artifact_id) = session.plan_blueprint_artifact_id.as_ref() {
+            archive_plan_artifact_chain(
+                state,
+                automation_id,
+                session_id.as_str(),
+                plan_blueprint_artifact_id,
+            )
+            .await;
+        }
         approval_repo.delete_by_session(session_id).await?;
         state.ideation_session_repo.delete(session_id).await?;
     }

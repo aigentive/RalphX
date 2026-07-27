@@ -562,10 +562,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     plan_reference,
                 )
                 .await?;
-                composer_artifact_references = rewrite_imported_plan_reference(
+                composer_artifact_references = rewrite_imported_plan_references(
                     &composer_artifact_references,
                     plan_reference,
-                    &import.composer_reference,
+                    &import.composer_references,
                 );
             } else {
                 ensure_plan_workspace_planning_session_link(

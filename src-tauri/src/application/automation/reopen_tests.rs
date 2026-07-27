@@ -138,6 +138,7 @@ pub(super) fn run(
         plan_reminder_count: 3,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: Some(now - Duration::hours(2)),
         conversation_id,
         run_prompt: "Continue the existing implementation".to_string(),

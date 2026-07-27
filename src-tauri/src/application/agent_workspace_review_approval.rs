@@ -56,7 +56,7 @@ pub async fn approve_agent_workspace_review_anyway(
         target.scope,
         target.head_sha.as_deref(),
         &target.diff_fingerprint,
-    ) && monitor.review_artifact_id.is_some();
+    ) && monitor.has_review_artifact_pair();
     let snapshot_matches = artifact_current
         && monitor.status == AgentWorkspaceReviewMonitorStatus::Ready
         && monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking

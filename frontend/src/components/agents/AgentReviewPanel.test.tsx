@@ -18,8 +18,16 @@ import {
 import { AgentReviewPanel } from "./AgentReviewPanel";
 
 vi.mock("@/components/Ideation/PlanDisplay", () => ({
-  PlanDisplay: ({ artifactLabel }: { artifactLabel: string }) => (
-    <div data-testid="mock-plan-display">{artifactLabel}</div>
+  PlanDisplay: ({
+    artifactLabel,
+    plan,
+  }: {
+    artifactLabel: string;
+    plan: Artifact;
+  }) => (
+    <div data-testid="mock-plan-display">
+      {artifactLabel}: {plan.name}
+    </div>
   ),
 }));
 
@@ -51,6 +59,9 @@ function reviewMonitor(
     reviewArtifactId: "review-artifact-1",
     reviewArtifactVersion: 1,
     reviewArtifactUpdatedAt: "2026-07-10T00:00:00.000Z",
+    reviewRequestedChangesArtifactId: "review-requested-changes-1",
+    reviewRequestedChangesArtifactVersion: 1,
+    reviewRequestedChangesArtifactUpdatedAt: "2026-07-10T00:00:00.000Z",
     reviewGateBypassedAt: null,
     reviewGateBypassedTargetScope: null,
     reviewGateBypassedDiffFingerprint: null,
@@ -69,6 +80,7 @@ function reviewMonitor(
     workspaceHeadSha: "head-sha",
     currentDiffFingerprint: reviewTarget.diffFingerprint,
     previousVersionId: null,
+    reviewRequestedChangesPreviousVersionId: null,
     reviewBlockingSummary: null,
     reviewBlockingFingerprint: null,
     reviewFixerRunId: null,
@@ -169,6 +181,15 @@ function reviewArtifact(): Artifact {
   };
 }
 
+function requestedChangesArtifact(): Artifact {
+  return {
+    ...reviewArtifact(),
+    id: "review-requested-changes-1",
+    name: "Workspace Review — Requested Changes",
+    content: { type: "inline", text: "Detailed repair blueprint" },
+  };
+}
+
 function renderPanel(
   props: Partial<ComponentProps<typeof AgentReviewPanel>> = {},
 ) {
@@ -189,6 +210,55 @@ function renderPanel(
 }
 
 describe("AgentReviewPanel", () => {
+  it("keeps the Review status shell visible while documents load", () => {
+    renderPanel({
+      reviewArtifact: null,
+      reviewRequestedChangesArtifact: null,
+      isReviewLoading: true,
+    });
+
+    expect(screen.getByText("Review is outdated")).toBeInTheDocument();
+    expect(screen.getByText("Loading review...")).toBeInTheDocument();
+  });
+
+  it("switches between Overview and Requested Changes artifacts", async () => {
+    const user = userEvent.setup();
+    renderPanel({
+      reviewRequestedChangesArtifact: requestedChangesArtifact(),
+    });
+
+    expect(screen.getByTestId("mock-plan-display")).toHaveTextContent(
+      "Review: Workspace Review",
+    );
+    await user.click(
+      screen.getByRole("tab", { name: "Requested Changes" }),
+    );
+    expect(screen.getByTestId("mock-plan-display")).toHaveTextContent(
+      "Review: Workspace Review — Requested Changes",
+    );
+  });
+
+  it("keeps Requested Changes visible with an upgrade state for legacy reviews", async () => {
+    const user = userEvent.setup();
+    renderPanel({
+      reviewRequestedChangesArtifact: null,
+      reviewContext: reviewContext({
+        monitor: reviewMonitor({
+          reviewRequestedChangesArtifactId: null,
+          reviewRequestedChangesArtifactVersion: null,
+          reviewRequestedChangesArtifactUpdatedAt: null,
+        }),
+      }),
+    });
+
+    await user.click(
+      screen.getByRole("tab", { name: "Requested Changes" }),
+    );
+    expect(
+      screen.getByText("Requested Changes not available"),
+    ).toBeInTheDocument();
+  });
+
   it("removes the outer artifact padding when embedded in Commit & Publish", () => {
     renderPanel({ embedded: true, reviewArtifact: null });
 

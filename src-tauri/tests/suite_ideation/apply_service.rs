@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use ralphx_lib::application::{ApplyProposalsOptions, ApplyService, TargetColumn};
+use ralphx_lib::domain::entities::ideation::{PLAN_CONTRACT_V1, PLAN_CONTRACT_V2};
 use ralphx_lib::domain::entities::{self, *};
 use ralphx_lib::domain::repositories::{self, *};
 use ralphx_lib::error::{AppError, AppResult};
@@ -1356,12 +1357,16 @@ fn create_service(
 }
 
 fn create_test_proposal(session_id: &IdeationSessionId, title: &str) -> TaskProposal {
-    TaskProposal::new(
+    let mut proposal = TaskProposal::new(
         session_id.clone(),
         title,
         ProposalCategory::Feature,
         Priority::Medium,
-    )
+    );
+    proposal.blueprint_artifact_id =
+        Some(ArtifactId::from_string("blueprint-artifact-1".to_string()));
+    proposal.blueprint_version_at_creation = Some(1);
+    proposal
 }
 
 // ========================================================================
@@ -1515,6 +1520,60 @@ async fn test_apply_proposals_creates_tasks() {
     assert_eq!(result.created_tasks.len(), 2);
     assert!(result.created_tasks.iter().any(|t| t.title == "Task 1"));
     assert!(result.created_tasks.iter().any(|t| t.title == "Task 2"));
+}
+
+#[tokio::test]
+async fn test_apply_proposals_rejects_blueprintless_proposal_after_v2_promotion() {
+    let project_id = ProjectId::new();
+    let mut session = IdeationSession::new(project_id.clone());
+    session.plan_contract_version = PLAN_CONTRACT_V1;
+    let session_id = session.id.clone();
+    let proposal = TaskProposal::new(
+        session_id.clone(),
+        "Legacy proposal",
+        ProposalCategory::Feature,
+        Priority::Medium,
+    );
+
+    session.plan_contract_version = PLAN_CONTRACT_V2;
+    session.plan_artifact_id = Some(ArtifactId::from_string("overview-2".to_string()));
+    session.plan_blueprint_artifact_id = Some(ArtifactId::from_string("blueprint-1".to_string()));
+
+    let task_repo = Arc::new(MockTaskRepository::new());
+    let service = ApplyService::new(
+        Arc::new(MockSessionRepository::with_session(session)),
+        Arc::new(MockProposalRepository::with_proposals(vec![
+            proposal.clone()
+        ])),
+        Arc::new(MockProposalDependencyRepository::with_dependencies(vec![])),
+        task_repo.clone(),
+        Arc::new(MockTaskDependencyRepository::new()),
+        Arc::new(MockTaskStepRepository::new()),
+    );
+
+    let error = service
+        .apply_proposals(
+            &session_id,
+            ApplyProposalsOptions {
+                proposal_ids: vec![proposal.id],
+                target_column: TargetColumn::Backlog,
+            },
+        )
+        .await
+        .expect_err("promoted v2 sessions must reject blueprint-less proposal lineage");
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("blueprint")),
+        "expected a blueprint validation error"
+    );
+    assert!(
+        task_repo
+            .get_by_project(&project_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "validation must happen before any task is persisted"
+    );
 }
 
 #[tokio::test]

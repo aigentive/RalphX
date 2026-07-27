@@ -177,6 +177,14 @@ pub trait AutomationRunRepository: Send + Sync {
         plan_judge_lease_expires_at: Option<DateTime<Utc>>,
     ) -> AppResult<bool>;
 
+    /// Clears a stale verdict after a plan identity change while preserving the reset state.
+    async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let _ = id;
+        Err(AppError::Infrastructure(
+            "automation run repository does not support clearing a plan judge verdict".to_string(),
+        ))
+    }
+
     async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool>;
 
     async fn set_plan_pending_instructions(
@@ -195,6 +203,13 @@ pub trait AutomationRunRepository: Send + Sync {
         &self,
         id: &AutomationRunId,
         plan_last_parked_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_plan_last_parked_artifact_ids(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+        plan_last_parked_blueprint_artifact_id: Option<String>,
     ) -> AppResult<Option<AutomationRun>>;
 
     async fn set_plan_reminder_count(

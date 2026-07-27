@@ -880,6 +880,10 @@
         monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
         monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
         monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
+        monitor.review_artifact_version = Some(1);
+        monitor.review_requested_changes_artifact_id =
+            Some(ArtifactId::from_string("requested-changes-artifact"));
+        monitor.review_requested_changes_artifact_version = Some(1);
         monitor.reviewed_target_scope = Some(target.scope);
         monitor.reviewed_head_sha = target.head_sha.clone();
         monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint.clone());
@@ -3746,6 +3750,7 @@
                     plan_reminder_count: 0,
                     plan_pending_instructions: None,
                     plan_last_parked_artifact_id: None,
+                    plan_last_parked_blueprint_artifact_id: None,
                     agent_phase_started_at: None,
                     conversation_id: Some(conversation_id.clone()),
                     run_prompt: "Run".to_string(),

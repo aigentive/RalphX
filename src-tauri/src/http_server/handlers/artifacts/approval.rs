@@ -6,15 +6,19 @@ pub async fn approve_plan_artifact(
 ) -> Result<Json<ArtifactResponse>, HttpError> {
     let session_id_str = req.session_id.clone();
     let requested_artifact_id = req.artifact_id.clone();
+    let requested_blueprint_artifact_id = req.blueprint_artifact_id.clone();
+    let requested_blueprint_artifact_version = req.blueprint_artifact_version;
 
     let approved = state
         .app_state
         .db
         .run_transaction(move |conn| {
-            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_for_displayed_bundle_sync(
                 conn,
                 IdeationSessionId::from_string(session_id_str),
                 requested_artifact_id.as_deref(),
+                requested_blueprint_artifact_id.as_deref(),
+                requested_blueprint_artifact_version,
                 crate::domain::repositories::PlanApprovalActor::User,
             )
         })
@@ -24,7 +28,34 @@ pub async fn approve_plan_artifact(
             map_app_err(e)
         })?;
 
+    let blueprint_id = approved
+        .blueprint_artifact
+        .as_ref()
+        .map(|artifact| artifact.id.to_string());
+    let blueprint_version = approved
+        .blueprint_artifact
+        .as_ref()
+        .map(|artifact| artifact.metadata.version);
+    let plan_bundle = PlanArtifactBundle {
+        overview_id: approved.artifact.id.clone(),
+        blueprint_id: approved
+            .blueprint_artifact
+            .as_ref()
+            .map(|artifact| artifact.id.clone()),
+        contract_version: if approved.blueprint_artifact.is_some() {
+            2
+        } else {
+            1
+        },
+        is_inherited: false,
+    };
     let mut response = ArtifactResponse::from(approved.artifact);
+    if let Some(blueprint) = approved.blueprint_artifact {
+        let mut blueprint_response = ArtifactResponse::from(blueprint);
+        blueprint_response.artifact_role = Some("blueprint".to_string());
+        response.blueprint_artifact = Some(Box::new(blueprint_response));
+        response.plan_contract_version = Some(2);
+    }
     response.session_id = Some(approved.session_id.as_str().to_string());
     let response_id = response.id.clone();
     let response_version = response.version;
@@ -33,6 +64,8 @@ pub async fn approve_plan_artifact(
         PlanApprovalView::approved(
             response_id.clone(),
             response_version,
+            blueprint_id.clone(),
+            blueprint_version,
             approved.approved_at.clone(),
         ),
     );
@@ -44,19 +77,17 @@ pub async fn approve_plan_artifact(
             "sessionId": approved.session_id.as_str(),
             "artifactId": response_id.clone(),
             "version": response_version,
+            "blueprintArtifactId": blueprint_id,
+            "blueprintVersion": blueprint_version,
             "approvedAt": approved.approved_at,
         }),
     );
-    state
-        .app_state
-        .notification_service()
-        .resolve_workflow_notification(
-            &crate::application::interactive_notification_producer::plan_notification_key(
-                approved.session_id.as_str(),
-                &response_id,
-            ),
-        )
-        .await;
+    crate::application::plan_approval_notification_service::resolve_plan_approval_notifications(
+        &state.app_state,
+        &approved.session_id,
+        &plan_bundle,
+    )
+    .await;
 
     let tasks_enabled = state
         .app_state

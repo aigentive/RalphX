@@ -29,14 +29,15 @@ const _IDLE_STATUSES: &[&str] = &["backlog", "ready", "blocked"];
 /// SELECT columns for IdeationSession — single source of truth (DRY).
 /// Must be kept in sync with IdeationSession::from_row column names.
 const SESSION_COLUMNS: &str = "id, project_id, title, title_source, status, plan_artifact_id, \
-    verified_plan_artifact_id, verified_plan_agent_run_id, \
-    inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, \
+    plan_blueprint_artifact_id, verified_plan_artifact_id, verified_plan_blueprint_artifact_id, \
+    verified_plan_agent_run_id, inherited_plan_artifact_id, inherited_plan_blueprint_artifact_id, \
+    plan_contract_version, seed_task_id, parent_session_id, created_at, \
     updated_at, archived_at, converted_at, \
     verification_status, verification_in_progress, verification_generation, \
     verification_current_round, verification_max_rounds, \
     verification_gap_count, verification_gap_score, verification_convergence_reason, \
     source_project_id, source_session_id, session_purpose, session_flow, \
-    cross_project_checked, plan_version_last_read, origin, \
+    cross_project_checked, plan_version_last_read, blueprint_version_last_read, origin, \
     expected_proposal_count, auto_accept_status, auto_accept_started_at, \
     api_key_id, idempotency_key, external_activity_phase, external_last_read_message_id, \
     dependencies_acknowledged, pending_initial_prompt, source_task_id, source_context_type, \
@@ -136,7 +137,9 @@ impl SqliteIdeationSessionRepository {
         conn.execute(
             "INSERT INTO ideation_sessions \
              (id, project_id, title, title_source, status, plan_artifact_id, \
-              inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, \
+              plan_blueprint_artifact_id, verified_plan_artifact_id, verified_plan_blueprint_artifact_id, verified_plan_agent_run_id, \
+              inherited_plan_artifact_id, inherited_plan_blueprint_artifact_id, \
+              plan_contract_version, seed_task_id, parent_session_id, created_at, \
              updated_at, archived_at, converted_at, \
               verification_status, verification_in_progress, verification_generation, \
               verification_current_round, verification_max_rounds, verification_gap_count, \
@@ -147,7 +150,7 @@ impl SqliteIdeationSessionRepository {
               pending_initial_prompt, source_task_id, source_context_type, source_context_id, spawn_reason, blocker_fingerprint, \
               analysis_base_ref_kind, analysis_base_ref, analysis_base_display_name, analysis_workspace_kind, \
               analysis_workspace_path, analysis_base_commit, analysis_base_locked_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51)",
             rusqlite::params![
                 session.id.as_str(),
                 session.project_id.as_str(),
@@ -155,7 +158,22 @@ impl SqliteIdeationSessionRepository {
                 session.title_source,
                 session.status.to_string(),
                 session.plan_artifact_id.as_ref().map(|id| id.as_str()),
+                session
+                    .plan_blueprint_artifact_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
+                session.verified_plan_artifact_id.as_ref().map(|id| id.as_str()),
+                session
+                    .verified_plan_blueprint_artifact_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
+                session.verified_plan_agent_run_id.as_deref(),
                 session.inherited_plan_artifact_id.as_ref().map(|id| id.as_str()),
+                session
+                    .inherited_plan_blueprint_artifact_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
+                session.plan_contract_version,
                 session.seed_task_id.as_ref().map(|id| id.as_str()),
                 session.parent_session_id.as_ref().map(|id| id.as_str()),
                 session.created_at.to_rfc3339(),
@@ -229,6 +247,21 @@ impl SqliteIdeationSessionRepository {
         Ok(sessions)
     }
 
+    pub(crate) fn get_by_plan_blueprint_artifact_id_sync(
+        conn: &Connection,
+        artifact_id: &str,
+    ) -> AppResult<Vec<IdeationSession>> {
+        let sql = format!(
+            "SELECT {} FROM ideation_sessions WHERE plan_blueprint_artifact_id = ?1",
+            SESSION_COLUMNS
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let sessions = stmt
+            .query_map([artifact_id], IdeationSession::from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(sessions)
+    }
+
     /// Fetch sessions by their inherited_plan_artifact_id.
     pub(crate) fn get_by_inherited_plan_artifact_id_sync(
         conn: &Connection,
@@ -236,6 +269,21 @@ impl SqliteIdeationSessionRepository {
     ) -> AppResult<Vec<IdeationSession>> {
         let sql = format!(
             "SELECT {} FROM ideation_sessions WHERE inherited_plan_artifact_id = ?1",
+            SESSION_COLUMNS
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let sessions = stmt
+            .query_map([artifact_id], IdeationSession::from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(sessions)
+    }
+
+    pub(crate) fn get_by_inherited_plan_blueprint_artifact_id_sync(
+        conn: &Connection,
+        artifact_id: &str,
+    ) -> AppResult<Vec<IdeationSession>> {
+        let sql = format!(
+            "SELECT {} FROM ideation_sessions WHERE inherited_plan_blueprint_artifact_id = ?1",
             SESSION_COLUMNS
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -256,6 +304,83 @@ impl SqliteIdeationSessionRepository {
             "UPDATE ideation_sessions SET plan_artifact_id = ?2, updated_at = ?3 WHERE id = ?1",
             rusqlite::params![id, plan_artifact_id, now.to_rfc3339()],
         )?;
+        Ok(())
+    }
+
+    pub(crate) fn update_plan_blueprint_artifact_id_sync(
+        conn: &Connection,
+        id: &str,
+        artifact_id: &str,
+    ) -> AppResult<()> {
+        conn.execute(
+            "UPDATE ideation_sessions
+             SET plan_blueprint_artifact_id = ?2,
+                 verified_plan_artifact_id = NULL,
+                 verified_plan_blueprint_artifact_id = NULL,
+                 updated_at = ?3
+             WHERE id = ?1",
+            rusqlite::params![id, artifact_id, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn update_plan_bundle_sync(
+        conn: &Connection,
+        id: &str,
+        overview_artifact_id: &str,
+        blueprint_artifact_id: &str,
+        overview_version: i32,
+        blueprint_version: i32,
+    ) -> AppResult<()> {
+        let now = Utc::now();
+        let changed = conn.execute(
+            "UPDATE ideation_sessions
+             SET plan_artifact_id = ?2,
+                 plan_blueprint_artifact_id = ?3,
+                 plan_contract_version = 2,
+                 plan_version_last_read = ?4,
+                 blueprint_version_last_read = ?5,
+                 verified_plan_artifact_id = NULL,
+                 verified_plan_blueprint_artifact_id = NULL,
+                 updated_at = ?6
+             WHERE id = ?1",
+            rusqlite::params![
+                id,
+                overview_artifact_id,
+                blueprint_artifact_id,
+                overview_version,
+                blueprint_version,
+                now.to_rfc3339(),
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("Session {id} not found")));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn acknowledge_plan_bundle_read_sync(
+        conn: &Connection,
+        id: &str,
+        overview_version: i32,
+        blueprint_version: Option<i32>,
+    ) -> AppResult<()> {
+        let changed = conn.execute(
+            "UPDATE ideation_sessions
+             SET plan_version_last_read = ?2,
+                 blueprint_version_last_read = ?3,
+                 updated_at = ?4
+             WHERE id = ?1",
+            rusqlite::params![
+                id,
+                overview_version,
+                blueprint_version,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!("Session {id} not found")));
+        }
         Ok(())
     }
 
@@ -633,24 +758,34 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
         &self,
         id: &IdeationSessionId,
         agent_run_id: &str,
-        artifact_id: &str,
+        action_target_id: &str,
     ) -> AppResult<bool> {
         let id = id.as_str().to_string();
         let agent_run_id = agent_run_id.to_string();
-        let artifact_id = artifact_id.to_string();
+        let action_target_id = action_target_id.to_string();
         self.db
             .run_transaction(move |conn| {
                 let changed = conn.execute(
                     "UPDATE ideation_sessions
-                     SET verified_plan_artifact_id = ?2,
+                     SET verified_plan_artifact_id = plan_artifact_id,
+                         verified_plan_blueprint_artifact_id = plan_blueprint_artifact_id,
                          verified_plan_agent_run_id = ?3,
                          verification_status = 'verified',
                          verification_in_progress = 0,
                          updated_at = ?4
                      WHERE id = ?1
-                       AND plan_artifact_id = ?2
                        AND (
-                         verified_plan_artifact_id IS NOT ?2
+                         (plan_contract_version = 1 AND plan_artifact_id = ?2)
+                         OR (
+                           plan_contract_version = 2
+                           AND plan_artifact_id IS NOT NULL
+                           AND plan_blueprint_artifact_id IS NOT NULL
+                           AND ?2 = 'plan_bundle:v2:' || plan_artifact_id || ':' || plan_blueprint_artifact_id
+                         )
+                       )
+                       AND (
+                         verified_plan_artifact_id IS NOT plan_artifact_id
+                         OR verified_plan_blueprint_artifact_id IS NOT plan_blueprint_artifact_id
                          OR verified_plan_agent_run_id IS NOT ?3
                        )
                        AND EXISTS (
@@ -669,7 +804,12 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                              OR (cc.context_type = 'ideation' AND cc.context_id = ?1)
                            )
                        )",
-                    rusqlite::params![id, artifact_id, agent_run_id, Utc::now().to_rfc3339()],
+                    rusqlite::params![
+                        id,
+                        action_target_id,
+                        agent_run_id,
+                        Utc::now().to_rfc3339()
+                    ],
                 )?;
                 Ok(changed == 1)
             })

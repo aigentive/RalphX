@@ -2633,6 +2633,13 @@ describe("chat api", () => {
       workspace: planSeedWorkspaceResponse(),
       session_id: "session-plan",
       artifact: planSeedArtifactResponse(),
+      blueprint_artifact: {
+        ...planSeedArtifactResponse(),
+        id: "artifact-blueprint",
+        name: "Implementation Blueprint",
+        content: "# Blueprint",
+        derived_from: ["source-blueprint"],
+      },
     });
 
     const result = await copyAgentConversationPlan({
@@ -2658,6 +2665,12 @@ describe("chat api", () => {
       name: "Imported plan",
       content: { type: "inline", text: "# Imported plan" },
       planApproval: { status: "draft" },
+    });
+    expect(result.blueprintArtifact).toMatchObject({
+      id: "artifact-blueprint",
+      name: "Implementation Blueprint",
+      content: { type: "inline", text: "# Blueprint" },
+      derivedFrom: ["source-blueprint"],
     });
   });
 
@@ -2694,6 +2707,7 @@ describe("chat api", () => {
       content: { type: "inline", text: "# Dropped plan" },
       derivedFrom: [],
     });
+    expect(result.blueprintArtifact).toBeNull();
   });
 
   it("forks an agent conversation and transforms child workspace metadata", async () => {
@@ -3409,6 +3423,9 @@ describe("getConversationActiveState", () => {
     review_artifact_id: "review-artifact-1",
     review_artifact_version: 2,
     review_artifact_updated_at: "2026-06-18T12:05:00Z",
+    review_requested_changes_artifact_id: "requested-changes-artifact-1",
+    review_requested_changes_artifact_version: 2,
+    review_requested_changes_artifact_updated_at: "2026-06-18T12:05:00Z",
     reviewed_head_sha: "head-sha",
     reviewed_diff_fingerprint: "fingerprint-1",
     selected_source_base_ref: null,
@@ -3422,6 +3439,8 @@ describe("getConversationActiveState", () => {
     workspace_head_sha: "head-sha",
     current_diff_fingerprint: "fingerprint-1",
     previous_version_id: "review-artifact-0",
+    review_requested_changes_previous_version_id:
+      "requested-changes-artifact-0",
     last_run_id: "run-1",
     last_error: null,
     created_at: "2026-06-18T12:00:00Z",
@@ -3635,6 +3654,9 @@ describe("getConversationActiveState", () => {
     expect(result.target?.scope).toBe("workspace_delta");
     expect(result.target?.diffFingerprint).toBe("fingerprint-1");
     expect(result.monitor.reviewArtifactVersion).toBe(2);
+    expect(result.monitor.reviewRequestedChangesArtifactId).toBe(
+      "requested-changes-artifact-1",
+    );
     expect(result.monitor.reviewConversationId).toBe("review-conversation-1");
     expect(result.monitor.previousVersionId).toBe("review-artifact-0");
     expect(result.isCurrent).toBe(true);

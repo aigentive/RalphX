@@ -1,10 +1,10 @@
 import type { PlanComplexityAssessment } from "@/types/artifact";
 
 export const PLAN_TO_PROPOSALS_REQUEST =
-  "Create implementation task proposals for the approved plan. Read the current plan, run cross_project_guide if needed, define the complete proposal set, and analyze dependencies. Stop after proposal and dependency updates; do not finalize, apply, accept, or schedule tasks.";
+  "Create implementation task proposals for the approved plan bundle. Read both the Plan Overview and Implementation Blueprint, run cross_project_guide if needed, define the complete proposal set with exact blueprint lineage, and analyze dependencies. Stop after proposal and dependency updates; do not finalize, apply, accept, or schedule tasks.";
 
 export const PLAN_IMPLEMENT_DIRECTLY_REQUEST =
-  "Implement the approved plan directly. Use the linked plan as implementation guidance and edit the workspace branch.";
+  "Implement the approved plan directly. Use both the linked Plan Overview and Implementation Blueprint as implementation guidance and edit the workspace branch.";
 
 const PLAN_RECOMMENDATION_PENDING_WINDOW_MS = 2 * 60 * 1000;
 

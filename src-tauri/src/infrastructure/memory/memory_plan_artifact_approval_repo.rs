@@ -33,6 +33,31 @@ impl MemoryPlanArtifactApprovalRepository {
             session_id: session_id.clone(),
             artifact_id,
             artifact_version,
+            blueprint_artifact_id: None,
+            blueprint_artifact_version: None,
+            approved_at: Utc::now().to_rfc3339(),
+            approved_by: approved_by.as_str().to_string(),
+        };
+        self.approvals
+            .write()
+            .unwrap()
+            .insert(session_id.as_str().to_string(), approval);
+    }
+
+    pub fn approve_bundle(
+        &self,
+        session_id: IdeationSessionId,
+        artifact_id: ArtifactId,
+        blueprint_artifact_id: ArtifactId,
+        artifact_version: u32,
+        approved_by: PlanApprovalActor,
+    ) {
+        let approval = PlanArtifactApproval {
+            session_id: session_id.clone(),
+            artifact_id,
+            artifact_version,
+            blueprint_artifact_id: Some(blueprint_artifact_id),
+            blueprint_artifact_version: Some(artifact_version),
             approved_at: Utc::now().to_rfc3339(),
             approved_by: approved_by.as_str().to_string(),
         };

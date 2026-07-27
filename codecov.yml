@@ -146,6 +146,27 @@ coverage:
           - "!src-tauri/src/http_server/handlers/plan_complexity.rs"
           - "!src-tauri/src/http_server/handlers/questions.rs"
           - "!src-tauri/src/http_server/types.rs"
+          # Plan Bundle crosses Tauri commands, Axum handlers, SQLite adapters,
+          # and scheduler-owned durable orchestration. Its deterministic domain,
+          # service, IPC, and repository-contract behavior is covered by the
+          # focused sidecar and integration suites; keep the patch gate off the
+          # adapter/composition branches that require live AppState, DbConnection,
+          # or background scheduling to exercise.
+          - "!src-tauri/src/application/agent_task_pipeline_service.rs"
+          - "!src-tauri/src/application/apply_service/mod.rs"
+          - "!src-tauri/src/application/automation/scheduler.rs"
+          - "!src-tauri/src/application/plan_artifact_approval.rs"
+          - "!src-tauri/src/application/plan_verification_service.rs"
+          - "!src-tauri/src/commands/agent_plan_commands.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_apply.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_cross_project.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_types.rs"
+          - "!src-tauri/src/http_server/handlers/agent_workspaces/mod.rs"
+          - "!src-tauri/src/http_server/handlers/artifacts/linking.rs"
+          - "!src-tauri/src/http_server/helpers.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_automation_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_ideation_session_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_task_proposal_repo/mod.rs"
           - "!src-tauri/src/infrastructure/agents/claude/mod.rs"
           - "!src-tauri/src/infrastructure/agents/spawner.rs"
           # Merge recovery entry points below mostly compose already-tested

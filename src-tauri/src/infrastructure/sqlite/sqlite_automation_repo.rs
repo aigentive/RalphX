@@ -491,12 +491,12 @@ impl SqliteAutomationRunRepository {
                 pr_merged_at, merge_commit_sha, diff_stats_json, agent_summary,
                 judge_verdict_json, judge_model_id, error_code, error_detail,
                 signal_check_failures, started_at, finished_at, created_at, updated_at,
-                goal_item_id
+                goal_item_id, plan_last_parked_blueprint_artifact_id
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                 ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
-                ?36, ?37, ?38, ?39, ?40
+                ?36, ?37, ?38, ?39, ?40, ?41
             )",
             params![
                 run.id.as_str(),
@@ -539,6 +539,7 @@ impl SqliteAutomationRunRepository {
                 run.created_at.to_rfc3339(),
                 run.updated_at.to_rfc3339(),
                 run.goal_item_id.as_deref(),
+                run.plan_last_parked_blueprint_artifact_id.as_deref(),
             ],
         )
         .map_err(|error| match error {
@@ -571,6 +572,7 @@ impl SqliteAutomationRunRepository {
             plan_reminder_count: row.get(10)?,
             plan_pending_instructions: row.get(11)?,
             plan_last_parked_artifact_id: row.get(12)?,
+            plan_last_parked_blueprint_artifact_id: row.get(40)?,
             agent_phase_started_at: parse_datetime(row.get(13)?),
             conversation_id: row
                 .get::<_, Option<String>>(14)?
@@ -616,7 +618,7 @@ const SELECT_RUN: &str = "SELECT
     pr_url, pr_title, pr_head_ref_name, pr_base_ref_name, pr_merged_at, merge_commit_sha,
     diff_stats_json, agent_summary, judge_verdict_json, judge_model_id, error_code,
     error_detail, signal_check_failures, started_at, finished_at, created_at, updated_at,
-    goal_item_id
+    goal_item_id, plan_last_parked_blueprint_artifact_id
 FROM automation_runs";
 const AUTOMATION_RUN_SINGLE_OPEN_CONSTRAINT: &str =
     "UNIQUE constraint failed: automation_runs.automation_id";
@@ -1221,6 +1223,21 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_judge_verdict_json = NULL, updated_at = ?1
+                     WHERE id = ?2",
+                    params![Utc::now().to_rfc3339(), id],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
+
     async fn clear_judge_state(&self, id: &AutomationRunId) -> AppResult<()> {
         let id = id.as_str().to_string();
         self.db
@@ -1325,6 +1342,39 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                          updated_at = ?3
                      WHERE id = ?1",
                     params![id, plan_last_parked_artifact_id, Utc::now().to_rfc3339()],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn set_plan_last_parked_artifact_ids(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+        plan_last_parked_blueprint_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_last_parked_artifact_id = ?2,
+                         plan_last_parked_blueprint_artifact_id = ?3,
+                         updated_at = ?4
+                     WHERE id = ?1",
+                    params![
+                        id,
+                        plan_last_parked_artifact_id,
+                        plan_last_parked_blueprint_artifact_id,
+                        Utc::now().to_rfc3339()
+                    ],
                 )?;
                 if affected == 0 {
                     return Ok(None);

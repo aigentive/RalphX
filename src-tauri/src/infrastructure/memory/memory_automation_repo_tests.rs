@@ -72,6 +72,7 @@ fn run(
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: format!("Run {index} prompt"),
@@ -811,6 +812,32 @@ async fn memory_plan_judge_cas_rejects_wrong_from_without_mutating_fields() {
         unchanged.plan_judge_verdict_json.as_deref(),
         Some(r#"{"decision":"revise"}"#)
     );
+}
+
+#[tokio::test]
+async fn memory_clear_plan_judge_verdict_preserves_plan_judge_state() {
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
+    let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
+    let mut run = run(
+        "run-plan-clear-verdict",
+        "automation-1",
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run.plan_judge_state = AutomationPlanJudgeState::Done;
+    run.plan_judge_lease_expires_at = Some(lease_expires_at);
+    run.plan_judge_verdict_json = Some(r#"{"decision":"revise"}"#.to_string());
+    repo.create_run(run.clone()).await.unwrap();
+
+    assert!(repo.clear_plan_judge_verdict(&run.id).await.unwrap());
+    let cleared = repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(cleared.plan_judge_state, AutomationPlanJudgeState::Done);
+    assert_eq!(cleared.plan_judge_lease_expires_at, Some(lease_expires_at));
+    assert_eq!(cleared.plan_judge_verdict_json, None);
+
+    let missing = AutomationRunId::from_string("missing-run");
+    assert!(!repo.clear_plan_judge_verdict(&missing).await.unwrap());
 }
 
 #[tokio::test]

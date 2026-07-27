@@ -563,6 +563,14 @@ impl AutomationTransitionService {
         }
         Ok(changed)
     }
+
+    pub async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let changed = self.run_repo.clear_plan_judge_verdict(id).await?;
+        if changed {
+            self.emit_run_updated_after_run_change(id).await;
+        }
+        Ok(changed)
+    }
 }
 
 fn automation_target(automation: &Automation, run: Option<&AutomationRun>) -> NotificationTarget {

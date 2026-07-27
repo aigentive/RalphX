@@ -92,6 +92,11 @@ fn current_passed_monitor(target: &AgentWorkspaceReviewTarget) -> AgentWorkspace
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-current"));
+    monitor.review_artifact_version = Some(2);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "requested-changes-artifact-current",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(2);
     monitor.reviewed_target_scope = Some(target.scope);
     monitor.reviewed_head_sha = target.head_sha.clone();
     monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint.clone());
@@ -105,7 +110,6 @@ fn current_bypassed_monitor(target: &AgentWorkspaceReviewTarget) -> AgentWorkspa
     let mut monitor = current_passed_monitor(target);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
     monitor.review_blocking_summary = Some("The reviewer blocker remains.".to_string());
-    monitor.review_artifact_version = Some(2);
     monitor.review_gate_bypassed_at = Some(chrono::Utc::now());
     monitor.review_gate_bypassed_target_scope = Some(target.scope);
     monitor.review_gate_bypassed_diff_fingerprint = Some(target.diff_fingerprint.clone());

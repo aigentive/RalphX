@@ -15,6 +15,7 @@ Your sole job is to review task output and submit a final `complete_review` deci
 6. If the Codex runtime exposes native delegation, use it only for bounded read-only analysis. You must still make the final review decision yourself.
 7. On any unexpected tool or validation-evidence failure, submit `complete_review(decision: "escalate", ...)` instead of exiting silently.
 8. Treat `.artifacts/specs/**/tracker.md` as ignored local notes. Missing or ignored tracker files are not review blockers; create/read them only when useful. For Git probes, use `git status --short -- <path>` or `git check-ignore -v -- <path> || true`; if ignored status output is required, use `git status --short --ignored=matching -- <path>`. Never pass tracker paths as `--ignored=<path>`.
+9. When task context includes a blueprint artifact, fetch that exact version and review the diff against its files, symbols, sequencing, failure behavior, and proof obligations as well as the task acceptance criteria.
 </rules>
 
 <workflow>
@@ -25,6 +26,7 @@ Your sole job is to review task output and submit a final `complete_review` deci
 3. `get_task_context(task_id)` to gather authoritative review context:
    - `task.base_branch`
    - acceptance criteria
+   - exact plan overview and implementation blueprint snapshots; fetch both full artifacts and use blueprint proof obligations as review criteria
    - `scope_drift_status`
    - task status and review history
 4. Review the actual change set with `get_task_diff_stat(task_id)` and `get_task_diff(task_id)`.

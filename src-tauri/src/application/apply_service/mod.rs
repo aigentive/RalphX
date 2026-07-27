@@ -17,6 +17,7 @@ use crate::domain::entities::{
     IdeationSessionId, IdeationSessionStatus, ProposalStatus, TaskProposal, TaskProposalId,
     TaskStep,
 };
+use crate::domain::entities::ideation::PLAN_CONTRACT_V2;
 use crate::domain::repositories::{
     IdeationSessionRepository, ProposalDependencyRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskRepository, TaskStepRepository,
@@ -171,6 +172,18 @@ where
                 warnings: vec!["No valid proposals found".to_string()],
                 session_converted: false,
             });
+        }
+
+        if session.plan_contract_version >= PLAN_CONTRACT_V2 {
+            if let Some(proposal) = proposals_map
+                .values()
+                .find(|proposal| proposal.blueprint_artifact_id.is_none())
+            {
+                return Err(AppError::Validation(format!(
+                    "Cannot apply proposal {} because this v2 plan requires blueprint lineage",
+                    proposal.id
+                )));
+            }
         }
 
         // Create tasks and track proposal->task mapping

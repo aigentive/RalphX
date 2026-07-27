@@ -1837,18 +1837,24 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ? planApprovalArtifact.planApproval?.status ?? "draft"
     : null;
   const isPlanApproved = planArtifactApprovalStatus === "approved";
+  const isPlanBundleComplete =
+    planApprovalArtifact?.planContractVersion !== 2 ||
+    Boolean(planApprovalArtifact.blueprint);
   const canApproveComposerPlan =
     !!planApprovalSessionId &&
     !!planApprovalArtifact &&
+    isPlanBundleComplete &&
     planArtifactApprovalStatus === "draft";
   const canCreatePlanProposals =
     !!planApprovalSessionId &&
     isPlanApproved &&
+    isPlanBundleComplete &&
     !activeAutomationRunId &&
     tasksEnabled;
   const canImplementPlanDirectly = Boolean(
     planApprovalSessionId &&
       isPlanApproved &&
+      isPlanBundleComplete &&
       activeWorkspace?.conversationId &&
       activeProjectId &&
       !activeAutomationRunId,
@@ -1860,6 +1866,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       planApprovalSessionId,
       planApprovalArtifact?.id,
       planApprovalArtifact?.metadata.version,
+      planApprovalArtifact?.blueprint?.id,
+      planApprovalArtifact?.blueprint?.metadata.version,
     ],
     queryFn: () => artifactApi.getPlanComplexityAssessment(planApprovalSessionId!),
     enabled: Boolean(
@@ -1913,6 +1921,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       const approved = await artifactApi.approvePlanArtifact({
         sessionId: planApprovalSessionId,
         artifactId: planApprovalArtifact.id,
+        ...(planApprovalArtifact.blueprint && {
+          blueprintArtifactId: planApprovalArtifact.blueprint.id,
+          blueprintArtifactVersion: planApprovalArtifact.blueprint.metadata.version,
+        }),
       });
       queryClient.setQueryData(
         ["agents", "plan-approval", planApprovalSessionId],

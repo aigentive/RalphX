@@ -1219,6 +1219,7 @@ describe('agent workspace publish tool transport', () => {
         const callTauri = vi.fn().mockResolvedValue({ success: true });
         await expect(callWriteWorkspaceReviewArtifactTool(callTauri, {
             content: '## Summary\n\nLooks good.',
+            requested_changes_content: '## Result\n\nNo changes requested.',
             target_scope: 'workspace_delta',
             head_sha: 'abc123',
             diff_fingerprint: 'fingerprint-1',
@@ -1230,6 +1231,8 @@ describe('agent workspace publish tool transport', () => {
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-artifact', {
             title: undefined,
             content: '## Summary\n\nLooks good.',
+            requested_changes_title: undefined,
+            requested_changes_content: '## Result\n\nNo changes requested.',
             target_scope: 'workspace_delta',
             head_sha: 'abc123',
             diff_fingerprint: 'fingerprint-1',
@@ -1301,6 +1304,11 @@ describe('agent workspace publish tool transport', () => {
             expect(schema.properties ?? {}).not.toHaveProperty('created_by_run_id');
             expect(schema.required ?? []).not.toContain('created_by_run_id');
         }
+    });
+    it('requires Overview and Requested Changes in one workspace Review write', () => {
+        const tool = AGENT_WORKSPACE_TOOLS.find((candidate) => candidate.name === 'write_workspace_review_artifact');
+        const schema = tool?.inputSchema;
+        expect(schema.required).toEqual(expect.arrayContaining(['content', 'requested_changes_content']));
     });
     it('routes proposed Review PR actions to the agent workspace endpoint', async () => {
         const callTauri = vi.fn().mockResolvedValue({ success: true });
@@ -1376,6 +1384,7 @@ describe('agent workspace publish tool transport', () => {
         await expect(callAgentWorkspaceTool('get_workspace_review_context', callTauri, callTauriGet, {}, runtimeContext)).resolves.toEqual({ success: true });
         await expect(callAgentWorkspaceTool('write_workspace_review_artifact', callTauri, callTauriGet, {
             content: '## Summary',
+            requested_changes_content: '## Result\n\nNo changes requested.',
             target_scope: 'selected_source',
             head_sha: 'head-sha',
             diff_fingerprint: 'fingerprint-1',
@@ -1415,6 +1424,8 @@ describe('agent workspace publish tool transport', () => {
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-artifact', {
             title: undefined,
             content: '## Summary',
+            requested_changes_title: undefined,
+            requested_changes_content: '## Result\n\nNo changes requested.',
             target_scope: 'selected_source',
             head_sha: 'head-sha',
             diff_fingerprint: 'fingerprint-1',
@@ -1556,6 +1567,8 @@ describe('agent workspace publish tool transport', () => {
             {
                 title: 'Generated title',
                 content: '## Summary\n\nGenerated body',
+                requested_changes_title: undefined,
+                requested_changes_content: '## Requested Changes\n\nGenerated blueprint',
                 target_scope: 'workspace_delta',
                 head_sha: 'head-sha',
                 diff_fingerprint: 'fingerprint-1',
@@ -1634,6 +1647,7 @@ describe('agent workspace publish tool transport', () => {
             title: 'Generated title',
             body_markdown: '## Summary\n\nGenerated body',
             content: '## Summary\n\nGenerated body',
+            requested_changes_content: '## Requested Changes\n\nGenerated blueprint',
             target_scope: 'workspace_delta',
             head_sha: 'head-sha',
             diff_fingerprint: 'fingerprint-1',

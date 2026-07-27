@@ -259,6 +259,8 @@ async fn test_plan_created_emits_event() {
             session_id: session_id.as_str().to_string(),
             title: "Test Plan".to_string(),
             content: "# Test plan content".to_string(),
+            blueprint_title: None,
+            blueprint_content: Some("# Implementation Blueprint".to_string()),
         }),
     )
     .await;

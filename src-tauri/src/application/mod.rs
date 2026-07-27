@@ -169,6 +169,8 @@ pub mod plan_verification_service;
 mod plan_verification_service_tests;
 pub mod plan_ranking;
 pub(crate) mod plan_reference_import;
+#[cfg(test)]
+mod plan_reference_import_tests;
 pub mod pr_startup_recovery;
 pub mod priority_service;
 pub mod project_pr_template;

@@ -130,6 +130,13 @@ export const AutomationRunSchema = z.object({
   plan_revision_pending: z.boolean(),
   plan_phase: z.boolean(),
   plan_artifact_id: z.string().nullable(),
+  plan_blueprint_artifact_id: z.string().nullable().optional().default(null),
+  parked_plan_artifact_id: z.string().nullable().optional().default(null),
+  parked_plan_blueprint_artifact_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   plan_approved_by: z.string().nullable(),
   plan_approved_artifact_version: z.number().int().positive().nullable(),
   plan_approved_at: z.string().nullable(),

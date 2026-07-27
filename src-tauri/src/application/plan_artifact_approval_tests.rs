@@ -3,7 +3,9 @@ use rusqlite::Connection;
 use crate::domain::entities::IdeationSessionId;
 use crate::domain::repositories::PlanApprovalActor;
 
-use super::approve_current_plan_artifact_sync;
+use super::{
+    approve_current_plan_artifact_for_displayed_bundle_sync, approve_current_plan_artifact_sync,
+};
 
 fn setup_db() -> Connection {
     let conn = Connection::open_in_memory().expect("open test db");
@@ -13,7 +15,9 @@ fn setup_db() -> Connection {
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
             session_flow TEXT NOT NULL,
-            plan_artifact_id TEXT
+            plan_artifact_id TEXT,
+            plan_blueprint_artifact_id TEXT,
+            plan_contract_version INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE artifacts (
             id TEXT PRIMARY KEY,
@@ -36,6 +40,8 @@ fn setup_db() -> Connection {
             session_id TEXT PRIMARY KEY,
             artifact_id TEXT NOT NULL,
             artifact_version INTEGER NOT NULL,
+            blueprint_artifact_id TEXT,
+            blueprint_artifact_version INTEGER,
             status TEXT NOT NULL,
             approved_at TEXT NOT NULL,
             approved_by TEXT NOT NULL
@@ -111,6 +117,46 @@ fn approve_current_plan_artifact_rejects_changed_requested_artifact() {
         PlanApprovalActor::User,
     )
     .expect_err("stale artifact approval should fail");
+
+    assert!(err.to_string().contains("Plan changed before approval"));
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM plan_artifact_approvals", [], |row| {
+            row.get(0)
+        })
+        .expect("approval count");
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn approve_current_plan_artifact_rejects_a_blueprint_the_user_did_not_view() {
+    let conn = setup_db();
+    conn.execute(
+        "INSERT INTO artifacts (
+            id, type, name, content_type, content_text, created_by, version, created_at
+        ) VALUES (
+            'blueprint-2', 'specification', 'Blueprint v2', 'inline', 'new blueprint', 'tester', 2,
+            '2026-01-02T00:00:00Z'
+        )",
+        [],
+    )
+    .expect("insert revised blueprint");
+    conn.execute(
+        "UPDATE ideation_sessions
+         SET plan_blueprint_artifact_id = 'blueprint-2', plan_contract_version = 2
+         WHERE id = 'session-1'",
+        [],
+    )
+    .expect("point session at revised blueprint");
+
+    let err = approve_current_plan_artifact_for_displayed_bundle_sync(
+        &conn,
+        IdeationSessionId::from_string("session-1"),
+        Some("artifact-1"),
+        Some("blueprint-1"),
+        Some(1),
+        PlanApprovalActor::User,
+    )
+    .expect_err("approval must reject a Blueprint changed after the user viewed it");
 
     assert!(err.to_string().contains("Plan changed before approval"));
     let count: i64 = conn

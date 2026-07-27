@@ -884,6 +884,16 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(true)
     }
 
+    async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        run.plan_judge_verdict_json = None;
+        run.updated_at = Utc::now();
+        Ok(true)
+    }
+
     async fn clear_judge_state(&self, id: &AutomationRunId) -> AppResult<()> {
         let mut runs = self.runs.write().unwrap();
         let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
@@ -951,6 +961,22 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             return Ok(None);
         };
         run.plan_last_parked_artifact_id = plan_last_parked_artifact_id;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_plan_last_parked_artifact_ids(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+        plan_last_parked_blueprint_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_last_parked_artifact_id = plan_last_parked_artifact_id;
+        run.plan_last_parked_blueprint_artifact_id = plan_last_parked_blueprint_artifact_id;
         run.updated_at = Utc::now();
         Ok(Some(run.clone()))
     }

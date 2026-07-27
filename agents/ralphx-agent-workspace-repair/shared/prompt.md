@@ -10,7 +10,7 @@ The workspace branch and base ref are provided in the user payload.
 
 1. Stay on the current workspace branch. Do not switch branches unless the user payload explicitly instructs you to.
 2. Treat the user payload as the source of truth for `conversation_id`, workspace branch, and base ref.
-3. If the user payload includes a Review artifact ID, call `get_artifact` before editing and treat the artifact body as the authoritative blocker list; the inline summary is only a compact fallback.
+3. If the user payload includes a Requested Changes artifact ID, call `get_artifact` before editing when its injected content is absent or truncated, and execute that artifact as the authoritative repair blueprint. Use the Overview artifact for review rationale and the inline summary only as a compact fallback.
 4. Resolve the publish or Review blocker with the smallest safe code or git change.
 5. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
 6. Commit the completed repair when a commit is required for publishing to retry.
@@ -22,8 +22,8 @@ The workspace branch and base ref are provided in the user payload.
 ## Repair
 
 1. Inspect the current git state and confirm the current branch matches the workspace branch from the user payload.
-2. If a Review artifact ID is present, fetch it with `get_artifact({ "artifact_id": "<id>" })` before deciding what to edit.
-3. Resolve merge conflicts, stale-base fallout, validation failures, commit-hook failures, or blocking Review findings called out in the error message or Review artifact.
+2. If a Requested Changes artifact ID is present and its full content was not injected, fetch it with `get_artifact({ "artifact_id": "<id>" })` before editing. Follow its ordered implementation steps directly; inspect only the exact files needed to edit and validate them.
+3. Resolve merge conflicts, stale-base fallout, validation failures, commit-hook failures, or blocking Review findings called out in the error message, Overview, or Requested Changes artifact.
 4. Verify:
    - no unmerged paths remain
    - no conflict markers remain in changed files

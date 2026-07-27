@@ -153,6 +153,7 @@ macro_rules! register_tauri_commands {
             commands::agent_plan_commands::copy_agent_conversation_plan,
             commands::agent_plan_commands::import_agent_conversation_plan,
             commands::agent_plan_commands::activate_agent_task_pipeline,
+            commands::agent_plan_commands::activate_agent_plan_direct_implementation,
             commands::agent_plan_commands::start_agent_task_pipeline,
             commands::qa_commands::get_qa_settings,
             commands::qa_commands::update_qa_settings,

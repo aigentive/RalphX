@@ -89,6 +89,10 @@ pub struct Task {
     /// Used by worker to fetch implementation context during execution
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_artifact_id: Option<ArtifactId>,
+    /// Blueprint artifact paired with the plan overview at task creation.
+    /// This immutable snapshot prevents later plan edits from changing execution context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_blueprint_artifact_id: Option<ArtifactId>,
     /// Direct link to the originating ideation session
     /// Always valid (no FK constraint issues unlike plan_artifact_id fallback)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,6 +167,7 @@ impl Task {
             needs_review_point: false,
             source_proposal_id: None,
             plan_artifact_id: None,
+            plan_blueprint_artifact_id: None,
             ideation_session_id: None,
             execution_plan_id: None,
             created_at: now,
@@ -257,6 +262,10 @@ impl Task {
                 .map(TaskProposalId::from_string),
             plan_artifact_id: row
                 .get::<_, Option<String>>("plan_artifact_id")?
+                .map(ArtifactId::from_string),
+            plan_blueprint_artifact_id: row
+                .get::<_, Option<String>>("plan_blueprint_artifact_id")
+                .unwrap_or(None)
                 .map(ArtifactId::from_string),
             ideation_session_id: row
                 .get::<_, Option<String>>("ideation_session_id")?

@@ -420,6 +420,7 @@ fn automation_run(
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: Some(ChatConversationId::from_string(format!(
             "conversation-{run_index}"
@@ -938,6 +939,17 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         &self,
         _id: &AutomationRunId,
         _plan_last_parked_artifact_id: Option<String>,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn set_plan_last_parked_artifact_ids(
+        &self,
+        _id: &AutomationRunId,
+        _plan_last_parked_artifact_id: Option<String>,
+        _plan_last_parked_blueprint_artifact_id: Option<String>,
     ) -> crate::error::AppResult<Option<AutomationRun>> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),

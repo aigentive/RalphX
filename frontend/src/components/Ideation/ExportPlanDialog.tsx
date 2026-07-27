@@ -22,9 +22,12 @@ export interface ExportPlanDialogProps {
   sessionId: string;
   sessionTitle: string | null;
   verificationStatus: string;
-  planArtifact: Artifact | null;
+  overviewArtifact: Artifact | null;
+  blueprintArtifact: Artifact | null;
   projectId: string;
 }
+
+type MarkdownExportMode = "overview" | "blueprint" | "bundle";
 
 // ============================================================================
 // Helpers
@@ -34,6 +37,37 @@ function getVerificationBadgeLabel(status: string): string {
   if (status === "imported_verified") return "Verified (imported)";
   if (status === "verified") return "Verified";
   return status.replace(/_/g, " ");
+}
+
+function getInlineContent(artifact: Artifact | null): string | null {
+  return artifact?.content.type === "inline" ? artifact.content.text : null;
+}
+
+function buildCompleteBundleMarkdown(
+  sessionTitle: string | null,
+  overviewArtifact: Artifact,
+  overviewContent: string,
+  blueprintArtifact: Artifact,
+  blueprintContent: string,
+): string {
+  return [
+    `# ${sessionTitle ?? "Plan"} — Complete Plan Bundle`,
+    "",
+    "## Overview",
+    "",
+    `Artifact ID: \`${overviewArtifact.id}\``,
+    `Version: ${overviewArtifact.metadata.version}`,
+    "",
+    overviewContent,
+    "",
+    "## Blueprint",
+    "",
+    `Artifact ID: \`${blueprintArtifact.id}\``,
+    `Version: ${blueprintArtifact.metadata.version}`,
+    "",
+    blueprintContent,
+    "",
+  ].join("\n");
 }
 
 // ============================================================================
@@ -46,45 +80,71 @@ export function ExportPlanDialog({
   sessionId,
   sessionTitle,
   verificationStatus,
-  planArtifact,
+  overviewArtifact,
+  blueprintArtifact,
   projectId,
 }: ExportPlanDialogProps) {
-  const [isDownloadingMarkdown, setIsDownloadingMarkdown] = useState(false);
+  const [downloadingMarkdownMode, setDownloadingMarkdownMode] =
+    useState<MarkdownExportMode | null>(null);
 
   const { exportSession, isExporting } = useSessionExportImport();
 
   const badgeLabel = getVerificationBadgeLabel(verificationStatus);
 
-  const planContent =
-    planArtifact?.content.type === "inline" ? planArtifact.content.text : "";
-
-  const hasPlan = planArtifact !== null;
-  const hasInlineContent = planArtifact !== null && planArtifact.content.type === "inline";
+  const overviewContent = getInlineContent(overviewArtifact);
+  const blueprintContent = getInlineContent(blueprintArtifact);
+  const hasPlan = overviewArtifact !== null || blueprintArtifact !== null;
+  const hasCompleteInlineBundle =
+    overviewArtifact !== null &&
+    overviewContent !== null &&
+    blueprintArtifact !== null &&
+    blueprintContent !== null;
 
   const handleDownloadJson = async () => {
     await exportSession(sessionId, projectId, hasPlan);
   };
 
-  const handleDownloadMarkdown = async () => {
-    if (!planContent) return;
+  const handleDownloadMarkdown = async (mode: MarkdownExportMode) => {
+    let markdown: string | null = null;
+    if (mode === "overview") {
+      markdown = overviewContent;
+    } else if (mode === "blueprint") {
+      markdown = blueprintContent;
+    } else if (hasCompleteInlineBundle) {
+      markdown = buildCompleteBundleMarkdown(
+        sessionTitle,
+        overviewArtifact,
+        overviewContent,
+        blueprintArtifact,
+        blueprintContent,
+      );
+    }
+    if (markdown === null) return;
 
-    setIsDownloadingMarkdown(true);
+    const filenameSuffix =
+      mode === "overview"
+        ? ""
+        : mode === "blueprint"
+          ? "-blueprint"
+          : "-bundle";
+
+    setDownloadingMarkdownMode(mode);
     try {
       const savePath = await save({
         filters: [{ name: "Markdown", extensions: ["md"] }],
-        defaultPath: `${sessionTitle ?? "plan"}.md`,
+        defaultPath: `${sessionTitle ?? "plan"}${filenameSuffix}.md`,
       });
 
       if (savePath === null) {
         return;
       }
 
-      await writeTextFile(savePath, planContent);
+      await writeTextFile(savePath, markdown);
       toast.success("Plan exported as Markdown");
     } catch {
       toast.error("Failed to export plan as Markdown");
     } finally {
-      setIsDownloadingMarkdown(false);
+      setDownloadingMarkdownMode(null);
     }
   };
 
@@ -174,6 +234,7 @@ export function ExportPlanDialog({
               <button
                 onClick={handleDownloadJson}
                 disabled={!hasPlan || isExporting}
+                aria-label="Download JSON"
                 className="text-sm px-3 py-1.5 rounded-md font-medium transition-opacity disabled:opacity-50"
                 style={{
                   backgroundColor: "var(--accent-primary)",
@@ -209,21 +270,56 @@ export function ExportPlanDialog({
                   className="text-xs mt-0.5"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  Plan content as readable .md file for sharing or reference.
+                  Export either document or a complete labeled bundle with
+                  artifact IDs and versions.
                 </p>
               </div>
             </div>
-            <div className="flex justify-end mt-3">
+            <div className="flex flex-wrap justify-end gap-2 mt-3">
               <button
-                onClick={handleDownloadMarkdown}
-                disabled={!hasInlineContent || isDownloadingMarkdown}
+                onClick={() => handleDownloadMarkdown("overview")}
+                disabled={
+                  overviewContent === null || downloadingMarkdownMode !== null
+                }
                 className="text-sm px-3 py-1.5 rounded-md font-medium transition-opacity disabled:opacity-50"
                 style={{
                   backgroundColor: "var(--accent-primary)",
                   color: "white",
                 }}
               >
-                {isDownloadingMarkdown ? "Exporting..." : "Download"}
+                {downloadingMarkdownMode === "overview"
+                  ? "Exporting..."
+                  : "Download overview"}
+              </button>
+              <button
+                onClick={() => handleDownloadMarkdown("blueprint")}
+                disabled={
+                  blueprintContent === null || downloadingMarkdownMode !== null
+                }
+                className="text-sm px-3 py-1.5 rounded-md font-medium transition-opacity disabled:opacity-50"
+                style={{
+                  backgroundColor: "var(--accent-primary)",
+                  color: "white",
+                }}
+              >
+                {downloadingMarkdownMode === "blueprint"
+                  ? "Exporting..."
+                  : "Download blueprint"}
+              </button>
+              <button
+                onClick={() => handleDownloadMarkdown("bundle")}
+                disabled={
+                  !hasCompleteInlineBundle || downloadingMarkdownMode !== null
+                }
+                className="text-sm px-3 py-1.5 rounded-md font-medium transition-opacity disabled:opacity-50"
+                style={{
+                  backgroundColor: "var(--accent-primary)",
+                  color: "white",
+                }}
+              >
+                {downloadingMarkdownMode === "bundle"
+                  ? "Exporting..."
+                  : "Download complete bundle"}
               </button>
             </div>
           </div>

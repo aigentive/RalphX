@@ -8,10 +8,11 @@ use tracing::error;
 
 use super::*;
 use crate::application::verification_event_emitters::emit_verification_status_changed;
+use crate::domain::entities::ideation::PlanArtifactBundle;
 use crate::domain::entities::{
-    Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    VerificationStatus,
+    Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelation,
+    ArtifactRelationId, ArtifactRelationType, ArtifactType, IdeationSession, IdeationSessionFlow,
+    IdeationSessionId, VerificationStatus,
 };
 use crate::domain::repositories::IdeationSessionRepository;
 use crate::domain::services::running_agent_registry::{RunningAgentKey, RunningAgentRegistry};
@@ -44,7 +45,8 @@ pub use update::update_plan_artifact;
 
 use events::emit_plan_update_events;
 use shared::{
-    attach_plan_approval, finalize_plan_update, map_app_err, plan_approval_view_sync,
-    reconcile_plan_notifications, resolve_artifact_mutation_authority, resolve_caller_session_id,
-    PlanApprovalView,
+    attach_plan_approval, delete_current_bundle_relation_sync, finalize_plan_update, map_app_err,
+    next_artifact_version_sync, plan_approval_view_sync, reconcile_plan_notifications,
+    resolve_artifact_mutation_authority, resolve_caller_session_id,
+    retarget_verification_authority_sync, PlanApprovalView,
 };
