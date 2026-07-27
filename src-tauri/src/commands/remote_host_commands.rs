@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::infrastructure::tailscale::TailscaleSelfAddressProvider;
+use crate::infrastructure::tailscale::{RealTailscaleCommandRunner, TailscaleSelfAddressProvider};
 use crate::remote_server::settings::{
     RemoteExposureMode, RemoteHostSettings, RemoteHostSettingsStore,
 };
@@ -24,6 +24,8 @@ pub struct RemoteListenerStatus {
     pub environment_id: String,
     pub running: bool,
     pub bind_address: Option<String>,
+    pub serve_active: bool,
+    pub serve_degraded_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +43,7 @@ async fn listener_status(
     handle: &RemoteListenerHandle,
 ) -> RemoteListenerStatus {
     let bind_address = handle.bound_address().await;
+    let serve = handle.serve_status().await;
     RemoteListenerStatus {
         enabled: settings.enabled,
         exposure_mode: settings.exposure_mode,
@@ -48,6 +51,8 @@ async fn listener_status(
         environment_id: settings.environment_id,
         running: bind_address.is_some(),
         bind_address: bind_address.map(|address| address.to_string()),
+        serve_active: serve.active,
+        serve_degraded_reason: serve.degraded_reason,
     }
 }
 
@@ -59,9 +64,14 @@ pub async fn start_remote_listener(
 ) -> Result<RemoteListenerStatus, String> {
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
-    start_listener(&handle, &store, &TailscaleSelfAddressProvider)
-        .await
-        .map_err(|error| error.to_string())?;
+    start_listener(
+        &handle,
+        &store,
+        &TailscaleSelfAddressProvider,
+        &RealTailscaleCommandRunner,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     let settings = store.get_or_create().await.map_err(|e| e.to_string())?;
     Ok(listener_status(settings, &handle).await)
 }
@@ -74,7 +84,7 @@ pub async fn stop_remote_listener(
 ) -> Result<RemoteListenerStatus, String> {
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
-    stop_listener(&handle, &store)
+    stop_listener(&handle, &store, &RealTailscaleCommandRunner)
         .await
         .map_err(|error| error.to_string())?;
     let settings = store.get_or_create().await.map_err(|e| e.to_string())?;
@@ -94,6 +104,7 @@ pub async fn set_remote_exposure_mode(
         &handle,
         &store,
         &TailscaleSelfAddressProvider,
+        &RealTailscaleCommandRunner,
         input.exposure_mode,
     )
     .await

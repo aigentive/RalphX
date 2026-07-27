@@ -49,7 +49,10 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::AppError;
-use crate::infrastructure::tailscale::TailscaleSelfAddressProvider;
+use crate::infrastructure::tailscale::{
+    RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
+    TailscaleServeError,
+};
 use crate::remote_server::auth::{
     authenticate_remote_request, enforce_auth_endpoint_rate_limit, strip_trust_headers,
     RemoteAuthContext,
@@ -127,6 +130,13 @@ struct ActiveRemoteListener {
     shutdown: CancellationToken,
     stopped: oneshot::Receiver<()>,
     bind_address: SocketAddr,
+    serve: RemoteServeStatus,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RemoteServeStatus {
+    pub(crate) active: bool,
+    pub(crate) degraded_reason: Option<String>,
 }
 
 /// Process-owned handle for the single remote listener.
@@ -164,6 +174,15 @@ impl RemoteListenerHandle {
 
     pub(crate) async fn is_running(&self) -> bool {
         self.bound_address().await.is_some()
+    }
+
+    pub(crate) async fn serve_status(&self) -> RemoteServeStatus {
+        self.active
+            .lock()
+            .await
+            .as_ref()
+            .map(|listener| listener.serve.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -288,6 +307,7 @@ pub(crate) async fn start_listener(
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<SocketAddr, RemoteListenerError> {
     let mut active = handle.active.lock().await;
     if let Some(listener) = active.as_ref() {
@@ -329,7 +349,31 @@ pub(crate) async fn start_listener(
         }
     };
 
-    store.set_enabled(true).await?;
+    let serve = if settings.exposure_mode == RemoteExposureMode::Serve {
+        match tailscale.run_serve_acquire(bound_address.port()).await {
+            Ok(()) => RemoteServeStatus {
+                active: true,
+                degraded_reason: None,
+            },
+            Err(error) => {
+                let degraded_reason = tailscale_serve_degraded_reason(&error);
+                tracing::warn!(%error, address = %bound_address, "Tailscale Serve unavailable; remote listener remains loopback-only");
+                RemoteServeStatus {
+                    active: false,
+                    degraded_reason: Some(degraded_reason),
+                }
+            }
+        }
+    } else {
+        RemoteServeStatus::default()
+    };
+
+    if let Err(error) = store.set_enabled(true).await {
+        if serve.active {
+            release_serve_best_effort(tailscale, bound_address).await;
+        }
+        return Err(error.into());
+    }
 
     let shutdown = CancellationToken::new();
     let serve_shutdown = shutdown.clone();
@@ -361,6 +405,7 @@ pub(crate) async fn start_listener(
         shutdown,
         stopped,
         bind_address: bound_address,
+        serve,
     });
     tracing::info!(
         address = %bound_address,
@@ -376,6 +421,7 @@ pub(crate) async fn start_listener(
 pub(crate) async fn stop_listener(
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
+    tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<bool, RemoteListenerError> {
     let mut active = handle.active.lock().await;
     // Durable intent first, then the teardown effect: a caller that observes `enabled =
@@ -398,6 +444,9 @@ pub(crate) async fn stop_listener(
     // Waiting for the serve task guarantees the port is released before the lock is released,
     // so a subsequent enable can re-acquire it.
     let _ = listener.stopped.await;
+    if listener.serve.active {
+        release_serve_best_effort(tailscale, listener.bind_address).await;
+    }
     tracing::info!(address = %listener.bind_address, "Remote listener stopped");
     Ok(true)
 }
@@ -410,11 +459,12 @@ pub(crate) async fn apply_exposure_mode(
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
     exposure_mode: RemoteExposureMode,
 ) -> Result<RemoteHostSettings, RemoteListenerError> {
     let was_running = handle.is_running().await;
     if was_running {
-        stop_listener(handle, store).await?;
+        stop_listener(handle, store, tailscale).await?;
     }
 
     let settings = store.set_exposure_mode(exposure_mode).await?;
@@ -422,7 +472,7 @@ pub(crate) async fn apply_exposure_mode(
         return Ok(settings);
     }
 
-    match start_listener(handle, store, provider).await {
+    match start_listener(handle, store, provider, tailscale).await {
         Ok(_) => Ok(store.get_or_create().await?),
         Err(error) => {
             tracing::error!(
@@ -440,6 +490,7 @@ pub(crate) async fn auto_start_if_enabled(
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<Option<SocketAddr>, RemoteListenerError> {
     let Some(settings) = store.get().await? else {
         tracing::debug!("Remote host settings are absent; remote listener stays off");
@@ -449,7 +500,9 @@ pub(crate) async fn auto_start_if_enabled(
         tracing::debug!("Remote host mode is disabled; remote listener stays off");
         return Ok(None);
     }
-    start_listener(handle, store, provider).await.map(Some)
+    start_listener(handle, store, provider, tailscale)
+        .await
+        .map(Some)
 }
 
 /// Startup hook, invoked from the same setup phase that calls `start_server_boot`.
@@ -464,11 +517,37 @@ pub(crate) async fn auto_start_remote_listener_from_handle(app_handle: &tauri::A
     let store = RemoteHostSettingsStore::from_db(state.db.clone());
     let handle = remote_listener_handle(app_handle);
 
-    match auto_start_if_enabled(&handle, &store, &TailscaleSelfAddressProvider).await {
+    match auto_start_if_enabled(
+        &handle,
+        &store,
+        &TailscaleSelfAddressProvider,
+        &RealTailscaleCommandRunner,
+    )
+    .await
+    {
         Ok(Some(address)) => {
             tracing::info!(%address, "Remote listener auto-started from persisted settings");
         }
         Ok(None) => {}
         Err(error) => tracing::error!(%error, "Remote listener auto-start failed"),
+    }
+}
+
+fn tailscale_serve_degraded_reason(error: &TailscaleServeError) -> String {
+    match error {
+        TailscaleServeError::CliUnavailable
+        | TailscaleServeError::Launch(_)
+        | TailscaleServeError::Timeout
+        | TailscaleServeError::Output(_)
+        | TailscaleServeError::Exit(_) => error.to_string(),
+    }
+}
+
+async fn release_serve_best_effort(
+    tailscale: &dyn TailscaleCommandRunner,
+    bind_address: SocketAddr,
+) {
+    if let Err(error) = tailscale.run_serve_release().await {
+        tracing::warn!(%error, address = %bind_address, "Tailscale Serve release failed");
     }
 }

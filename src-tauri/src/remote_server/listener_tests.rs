@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
@@ -12,7 +14,8 @@ use tower::ServiceExt;
 
 use super::endpoints::{environment_descriptor, RemoteRouterState, MIN_CLIENT_PROTOCOL};
 use super::settings::{
-    RemoteExposureMode, RemoteHostSettingsStore, UnconfiguredTailnetProvider, REMOTE_PORT_ENV,
+    RemoteExposureMode, RemoteHostSettingsStore, TailnetProviderError, UnconfiguredTailnetProvider,
+    REMOTE_PORT_ENV,
 };
 use super::{
     allowed_app_origins, apply_exposure_mode, authenticated_remote_routes, auto_start_if_enabled,
@@ -20,12 +23,73 @@ use super::{
     DESCRIPTOR_PATH, HEALTH_PATH, PAIR_PATH, PRE_AUTH_ALLOWLIST,
 };
 use crate::infrastructure::sqlite::DbConnection;
+use crate::infrastructure::tailscale::{TailscaleCommandRunner, TailscaleServeError};
 use crate::testing::SqliteTestDb;
 use crate::utils::backend_endpoint::{
     backend_http_base_url, backend_http_bind_addr, backend_http_port, PRODUCTION_BACKEND_PORT,
 };
 
 const TEST_APP_ORIGIN: &str = "tauri://localhost";
+
+struct ConfiguredTailnetProvider;
+
+#[async_trait]
+impl super::settings::TailnetSelfAddressProvider for ConfiguredTailnetProvider {
+    async fn self_addresses(&self) -> Result<Vec<IpAddr>, TailnetProviderError> {
+        Ok(vec![IpAddr::V4(Ipv4Addr::new(100, 101, 102, 103))])
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecordingTailscaleCommandRunner {
+    calls: Arc<Mutex<Vec<TailscaleCall>>>,
+    acquire_error: Option<TailscaleServeError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TailscaleCall {
+    Acquire(u16),
+    Release,
+}
+
+impl RecordingTailscaleCommandRunner {
+    fn failing_acquire(error: TailscaleServeError) -> Self {
+        Self {
+            calls: Arc::default(),
+            acquire_error: Some(error),
+        }
+    }
+
+    fn calls(&self) -> Vec<TailscaleCall> {
+        self.calls.lock().expect("command recorder mutex").clone()
+    }
+}
+
+#[async_trait]
+impl TailscaleCommandRunner for RecordingTailscaleCommandRunner {
+    async fn run_status(&self) -> Result<String, TailnetProviderError> {
+        Ok(String::new())
+    }
+
+    async fn run_serve_acquire(&self, port: u16) -> Result<(), TailscaleServeError> {
+        self.calls
+            .lock()
+            .expect("command recorder mutex")
+            .push(TailscaleCall::Acquire(port));
+        match self.acquire_error.as_ref() {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    async fn run_serve_release(&self) -> Result<(), TailscaleServeError> {
+        self.calls
+            .lock()
+            .expect("command recorder mutex")
+            .push(TailscaleCall::Release);
+        Ok(())
+    }
+}
 
 async fn response_body(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -286,8 +350,9 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
     let port = reserve_loopback_port().await;
     set_configured_port(&db, port);
     let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
 
-    let first = start_listener(&handle, &store, &UnconfiguredTailnetProvider)
+    let first = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
         .expect("serve mode should start");
     let (first_status, _) = http_get_over_socket(first, DESCRIPTOR_PATH)
@@ -298,7 +363,7 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
         .await
         .expect("settings should read")
         .expect("settings row should exist");
-    let stopped = stop_listener(&handle, &store)
+    let stopped = stop_listener(&handle, &store, &runner)
         .await
         .expect("stop should succeed");
     let disabled_after_stop = store
@@ -307,13 +372,13 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
         .expect("settings should read")
         .expect("settings row should exist");
     let closed = http_get_over_socket(first, DESCRIPTOR_PATH).await;
-    let second = start_listener(&handle, &store, &UnconfiguredTailnetProvider)
+    let second = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
         .expect("serve mode should start again on the released port");
     let (second_status, _) = http_get_over_socket(second, DESCRIPTOR_PATH)
         .await
         .expect("descriptor should answer after the restart");
-    stop_listener(&handle, &store)
+    stop_listener(&handle, &store, &runner)
         .await
         .expect("final stop should succeed");
 
@@ -326,6 +391,15 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
     assert_eq!(second, first);
     assert_eq!(second_status, 200);
     assert!(!handle.is_running().await);
+    assert_eq!(
+        runner.calls(),
+        vec![
+            TailscaleCall::Acquire(port),
+            TailscaleCall::Release,
+            TailscaleCall::Acquire(port),
+            TailscaleCall::Release,
+        ]
+    );
 }
 
 #[tokio::test]
@@ -335,18 +409,101 @@ async fn starting_an_already_running_listener_is_idempotent() {
     store.get_or_create().await.expect("settings should mint");
     set_configured_port(&db, reserve_loopback_port().await);
     let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
 
-    let first = start_listener(&handle, &store, &UnconfiguredTailnetProvider)
+    let first = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
         .expect("first start should succeed");
-    let second = start_listener(&handle, &store, &UnconfiguredTailnetProvider)
+    let second = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
         .expect("second start should reuse the running listener");
-    stop_listener(&handle, &store)
+    stop_listener(&handle, &store, &runner)
         .await
         .expect("stop should succeed");
 
     assert_eq!(first, second);
+    assert_eq!(
+        runner.calls(),
+        vec![TailscaleCall::Acquire(first.port()), TailscaleCall::Release]
+    );
+}
+
+#[tokio::test]
+async fn serve_start_acquires_bound_port_and_reports_healthy_status() {
+    let db = SqliteTestDb::new("remote-listener-serve-healthy");
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+    store.get_or_create().await.expect("settings should mint");
+    let port = reserve_loopback_port().await;
+    set_configured_port(&db, port);
+    let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
+
+    let address = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
+        .await
+        .expect("serve mode should start");
+    let status = handle.serve_status().await;
+    stop_listener(&handle, &store, &runner)
+        .await
+        .expect("stop should succeed");
+
+    assert_eq!(address, SocketAddr::from(([127, 0, 0, 1], port)));
+    assert!(status.active);
+    assert!(status.degraded_reason.is_none());
+    assert_eq!(
+        runner.calls(),
+        vec![TailscaleCall::Acquire(port), TailscaleCall::Release]
+    );
+}
+
+#[tokio::test]
+async fn failed_serve_acquire_keeps_loopback_listener_running_with_degraded_status() {
+    let db = SqliteTestDb::new("remote-listener-serve-degraded");
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+    store.get_or_create().await.expect("settings should mint");
+    let port = reserve_loopback_port().await;
+    set_configured_port(&db, port);
+    let handle = RemoteListenerHandle::new();
+    let runner =
+        RecordingTailscaleCommandRunner::failing_acquire(TailscaleServeError::CliUnavailable);
+
+    let address = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
+        .await
+        .expect("serve degradation must not fail listener start");
+    let status = handle.serve_status().await;
+    stop_listener(&handle, &store, &runner)
+        .await
+        .expect("degraded listener should stop");
+
+    assert_eq!(address, SocketAddr::from(([127, 0, 0, 1], port)));
+    assert!(!status.active);
+    assert!(status.degraded_reason.is_some());
+    assert_eq!(runner.calls(), vec![TailscaleCall::Acquire(port)]);
+}
+
+#[tokio::test]
+async fn stopping_twice_releases_a_serve_mapping_only_once() {
+    let db = SqliteTestDb::new("remote-listener-double-stop");
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+    store.get_or_create().await.expect("settings should mint");
+    let port = reserve_loopback_port().await;
+    set_configured_port(&db, port);
+    let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
+
+    start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
+        .await
+        .expect("serve listener should start");
+    assert!(stop_listener(&handle, &store, &runner)
+        .await
+        .expect("first stop should succeed"));
+    assert!(!stop_listener(&handle, &store, &runner)
+        .await
+        .expect("second stop should be a no-op"));
+
+    assert_eq!(
+        runner.calls(),
+        vec![TailscaleCall::Acquire(port), TailscaleCall::Release]
+    );
 }
 
 #[tokio::test]
@@ -358,8 +515,9 @@ async fn tailnet_direct_start_is_refused_while_the_provider_reports_no_tailnet()
         .await
         .expect("exposure mode should persist");
     let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
 
-    let error = start_listener(&handle, &store, &UnconfiguredTailnetProvider)
+    let error = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
         .expect_err("direct exposure must be refused without a validated tailnet address");
     let settings = store
@@ -374,6 +532,32 @@ async fn tailnet_direct_start_is_refused_while_the_provider_reports_no_tailnet()
         "a refused bind must never persist an enabled listener"
     );
     assert!(!handle.is_running().await);
+    assert!(runner.calls().is_empty());
+}
+
+#[tokio::test]
+async fn successful_tailnet_direct_start_never_changes_serve_configuration() {
+    let db = SqliteTestDb::new("remote-listener-tailnet-direct");
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+    store
+        .set_exposure_mode(RemoteExposureMode::TailnetDirect)
+        .await
+        .expect("exposure mode should persist");
+    let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
+
+    let address = start_listener(&handle, &store, &ConfiguredTailnetProvider, &runner)
+        .await
+        .expect("direct exposure should bind a validated tailnet address");
+
+    assert_eq!(address.ip(), IpAddr::V4(Ipv4Addr::new(100, 101, 102, 103)));
+    assert!(runner.calls().is_empty());
+
+    stop_listener(&handle, &store, &runner)
+        .await
+        .expect("direct listener should stop");
+
+    assert!(runner.calls().is_empty());
 }
 
 #[tokio::test]
@@ -390,14 +574,21 @@ async fn auto_start_does_nothing_without_an_enabling_settings_row() {
         .await
         .expect("settings should mint disabled");
     let disabled_handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
 
-    let absent = auto_start_if_enabled(&absent_handle, &absent_store, &UnconfiguredTailnetProvider)
-        .await
-        .expect("an absent row is not an error");
+    let absent = auto_start_if_enabled(
+        &absent_handle,
+        &absent_store,
+        &UnconfiguredTailnetProvider,
+        &runner,
+    )
+    .await
+    .expect("an absent row is not an error");
     let disabled = auto_start_if_enabled(
         &disabled_handle,
         &disabled_store,
         &UnconfiguredTailnetProvider,
+        &runner,
     )
     .await
     .expect("a disabled row is not an error");
@@ -423,11 +614,12 @@ async fn auto_start_binds_when_the_persisted_row_enables_the_listener() {
     store.set_enabled(true).await.expect("settings should mint");
     set_configured_port(&db, reserve_loopback_port().await);
     let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
 
-    let started = auto_start_if_enabled(&handle, &store, &UnconfiguredTailnetProvider)
+    let started = auto_start_if_enabled(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
         .expect("an enabled row should auto-start");
-    stop_listener(&handle, &store)
+    stop_listener(&handle, &store, &runner)
         .await
         .expect("stop should succeed");
 
@@ -439,11 +631,13 @@ async fn changing_exposure_mode_persists_while_the_listener_is_stopped() {
     let db = SqliteTestDb::new("remote-listener-exposure-mode");
     let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
     let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
 
     let settings = apply_exposure_mode(
         &handle,
         &store,
         &UnconfiguredTailnetProvider,
+        &runner,
         RemoteExposureMode::TailnetDirect,
     )
     .await
@@ -460,7 +654,8 @@ async fn a_refused_exposure_mode_change_leaves_remote_access_disabled() {
     store.get_or_create().await.expect("settings should mint");
     set_configured_port(&db, reserve_loopback_port().await);
     let handle = RemoteListenerHandle::new();
-    start_listener(&handle, &store, &UnconfiguredTailnetProvider)
+    let runner = RecordingTailscaleCommandRunner::default();
+    start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
         .expect("serve mode should start");
 
@@ -468,6 +663,7 @@ async fn a_refused_exposure_mode_change_leaves_remote_access_disabled() {
         &handle,
         &store,
         &UnconfiguredTailnetProvider,
+        &runner,
         RemoteExposureMode::TailnetDirect,
     )
     .await
