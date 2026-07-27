@@ -21,6 +21,75 @@ use crate::http_server::types::{
 
 use super::{json_error, JsonError};
 
+async fn record_user_plan_verdict(
+    state: &HttpServerState,
+    session_id: &IdeationSessionId,
+    verdict: crate::application::plan_verdict_ledger::PlanVerdict,
+    source_surface: &str,
+) -> Result<(), JsonError> {
+    let session = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Ideation session not found"))?;
+    let Some(artifact_id) = session.plan_artifact_id.as_ref() else {
+        // Legacy proposal-only ideation sessions have no Plan artifact. Their
+        // acceptance remains valid, but there is no versioned plan verdict to
+        // project into the typed ledger.
+        return Ok(());
+    };
+    let artifact = state
+        .app_state
+        .artifact_repo
+        .get_by_id(artifact_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Current plan artifact not found"))?;
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(session_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let conversation_id = workspace
+        .as_ref()
+        .map(|workspace| workspace.conversation_id.as_str().to_string());
+    let automation_id = match workspace {
+        Some(workspace) => state
+            .app_state
+            .chat_conversation_repo
+            .get_by_id(&workspace.conversation_id)
+            .await
+            .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .and_then(|conversation| conversation.automation_id)
+            .map(|automation_id| automation_id.as_str().to_string()),
+        None => None,
+    };
+    crate::application::plan_verdict_ledger::record_plan_verdict(
+        std::sync::Arc::clone(&state.app_state.task_outcome_repo),
+        crate::application::plan_verdict_ledger::PlanVerdictLedgerInput {
+            project_id: session.project_id,
+            session_id: session_id.as_str().to_string(),
+            artifact_id: artifact.id.as_str().to_string(),
+            artifact_version: artifact.metadata.version,
+            actor: crate::domain::repositories::PlanApprovalActor::User,
+            verdict,
+            source_surface: source_surface.to_string(),
+            linkage: crate::application::plan_verdict_ledger::PlanVerdictLinkage {
+                conversation_id,
+                automation_id,
+                imported_from_session_id: None,
+            },
+            reason: None,
+        },
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(())
+}
+
 /// Accept the pending finalize confirmation for a session.
 ///
 /// Applies the pending proposal set and consumes Pending → Accepted in the
@@ -43,6 +112,14 @@ pub async fn accept_finalize(
             };
             json_error(status, e.to_string())
         })?;
+    let session_id = IdeationSessionId::from_string(req.session_id.clone());
+    record_user_plan_verdict(
+        &state,
+        &session_id,
+        crate::application::plan_verdict_ledger::PlanVerdict::Accepted,
+        "ideation_accept_finalize",
+    )
+    .await?;
 
     spawn_ready_task_scheduler_if_needed(
         &state.app_state,
@@ -59,28 +136,65 @@ pub async fn accept_finalize(
 
 /// Reject the pending finalize confirmation.
 ///
-/// Resets acceptance_status to null, allowing the agent to re-finalize.
+/// Records a recoverable rejected marker, persists the verdict, then resets
+/// acceptance_status to null so the agent can re-finalize.
 pub async fn reject_finalize(
     State(state): State<HttpServerState>,
     Json(req): Json<RejectFinalizeRequest>,
 ) -> Result<Json<AcceptanceActionResponse>, JsonError> {
     let session_id = IdeationSessionId::from_string(req.session_id.clone());
 
-    // CAS: only transition from Pending → None
-    let was_pending = state
+    // Keep a durable intermediate marker so a retry can heal the ledger if the
+    // process stops after consuming Pending but before recording the verdict.
+    let claimed_rejection = state
         .app_state
         .ideation_session_repo
-        .update_acceptance_status(&session_id, Some(AcceptanceStatus::Pending), None)
+        .update_acceptance_status(
+            &session_id,
+            Some(AcceptanceStatus::Pending),
+            Some(AcceptanceStatus::Rejected),
+        )
         .await
         .map_err(|e| {
-            error!("Failed to reset acceptance_status: {}", e);
+            error!("Failed to claim pending rejection: {}", e);
             json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 
-    if !was_pending {
+    if !claimed_rejection {
+        let session = state
+            .app_state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if session.and_then(|session| session.acceptance_status) != Some(AcceptanceStatus::Rejected)
+        {
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                "Session is not in pending_acceptance state",
+            ));
+        }
+    }
+    record_user_plan_verdict(
+        &state,
+        &session_id,
+        crate::application::plan_verdict_ledger::PlanVerdict::Declined,
+        "ideation_reject_finalize",
+    )
+    .await?;
+    let cleared_rejection = state
+        .app_state
+        .ideation_session_repo
+        .update_acceptance_status(&session_id, Some(AcceptanceStatus::Rejected), None)
+        .await
+        .map_err(|e| {
+            error!("Failed to clear recorded rejection: {}", e);
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+    if !cleared_rejection {
         return Err(json_error(
             StatusCode::CONFLICT,
-            "Session is not in pending_acceptance state",
+            "Rejected acceptance marker changed before completion",
         ));
     }
 

@@ -18,6 +18,59 @@ use crate::domain::repositories::{
     AgentWorkspaceRepairStateTransition,
 };
 
+#[tokio::test]
+async fn publication_pushed_sha_setter_is_branch_fenced_and_restart_clears_it() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-pushed-sha-memory");
+    let workspace = repo
+        .create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+
+    assert!(repo
+        .set_publication_pushed_sha(
+            &conversation_id,
+            &workspace.branch_name,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .await
+        .unwrap());
+    assert!(!repo
+        .set_publication_pushed_sha(
+            &conversation_id,
+            "stale-branch",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .await
+        .unwrap());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pushed_sha
+            .as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+
+    repo.restore_after_restart(
+        &conversation_id,
+        &IdeationSessionId::from_string("session-restart"),
+        &PlanBranchId::from_string("plan-branch-restart"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pushed_sha,
+        None
+    );
+}
+
 fn pr_review_action(
     conversation_id: ChatConversationId,
     pr_number: i64,

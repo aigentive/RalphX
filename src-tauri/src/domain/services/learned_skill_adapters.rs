@@ -190,8 +190,8 @@ pub fn capture_plan_mode_verdict(
     }
 
     let outcome_class = match input.verdict {
-        PlanModeVerdict::Accepted => "plan_mode_accepted",
-        PlanModeVerdict::Declined => "plan_mode_declined",
+        PlanModeVerdict::Accepted => "accepted",
+        PlanModeVerdict::Declined => "declined",
         PlanModeVerdict::Skipped => unreachable!("skipped verdicts return before capture"),
     };
 
@@ -474,7 +474,7 @@ mod tests {
         })
         .expect("accepted verdict should be captured");
 
-        assert_eq!(accepted.outcome_class, "plan_mode_accepted");
+        assert_eq!(accepted.outcome_class, "accepted");
         assert_eq!(accepted.status, "eligible");
         assert_eq!(
             accepted.refs.get("accepted_session_id").map(String::as_str),
@@ -497,7 +497,7 @@ mod tests {
             reason: Some(" ".to_string()),
         })
         .expect("declined verdict should be captured");
-        assert_eq!(declined.outcome_class, "plan_mode_declined");
+        assert_eq!(declined.outcome_class, "declined");
         assert_eq!(
             declined.evidence_summary,
             "Plan-mode verdict captured without model transcript body."

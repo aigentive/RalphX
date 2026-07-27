@@ -265,6 +265,7 @@ fn parses_valid_approve_verdict() {
         .to_string(),
         AutomationPlanJudgeValidationContext {
             expected_artifact_id: Some("plan-artifact-1"),
+            expected_artifact_version: Some(3),
         },
     )
     .unwrap();
@@ -272,6 +273,69 @@ fn parses_valid_approve_verdict() {
     assert_eq!(verdict.decision, AutomationPlanJudgeDecision::Approve);
     assert!(verdict.revision_instructions.is_none());
     assert_eq!(verdict.evaluated_artifact_id, "plan-artifact-1");
+    assert_eq!(verdict.evaluated_artifact_version, Some(3));
+}
+
+#[test]
+fn stamps_backend_artifact_version_over_model_supplied_version() {
+    let verdict = parse_automation_plan_judge_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": "The plan is scoped to the current automatic judge slice.",
+            "confidence": "high",
+            "evaluatedArtifactId": "plan-artifact-1",
+            "evaluatedArtifactVersion": 99
+        })
+        .to_string(),
+        AutomationPlanJudgeValidationContext {
+            expected_artifact_id: Some("plan-artifact-1"),
+            expected_artifact_version: Some(3),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(verdict.evaluated_artifact_version, Some(3));
+}
+
+#[test]
+fn preserves_stored_artifact_version_when_replaying_without_a_pin() {
+    let verdict = parse_automation_plan_judge_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": "The plan is scoped to the current automatic judge slice.",
+            "confidence": "high",
+            "evaluatedArtifactId": "plan-artifact-1",
+            "evaluatedArtifactVersion": 2
+        })
+        .to_string(),
+        AutomationPlanJudgeValidationContext {
+            expected_artifact_id: None,
+            expected_artifact_version: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(verdict.evaluated_artifact_version, Some(2));
+}
+
+#[test]
+fn legacy_stored_verdict_without_version_replays_as_unversioned() {
+    let verdict = parse_automation_plan_judge_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": "The plan is scoped to the current automatic judge slice.",
+            "confidence": "high",
+            "evaluatedArtifactId": "plan-artifact-1"
+        })
+        .to_string(),
+        AutomationPlanJudgeValidationContext {
+            expected_artifact_id: None,
+            expected_artifact_version: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(verdict.evaluated_artifact_version, None);
 }
 
 #[test]
@@ -287,6 +351,7 @@ fn parses_valid_revise_verdict() {
         .to_string(),
         AutomationPlanJudgeValidationContext {
             expected_artifact_id: Some("plan-artifact-1"),
+            expected_artifact_version: Some(3),
         },
     )
     .unwrap();
@@ -310,6 +375,7 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
         .to_string(),
         AutomationPlanJudgeValidationContext {
             expected_artifact_id: Some("plan-artifact-1"),
+            expected_artifact_version: Some(3),
         },
     )
     .unwrap_err();
@@ -326,6 +392,7 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
         .to_string(),
         AutomationPlanJudgeValidationContext {
             expected_artifact_id: Some("plan-artifact-1"),
+            expected_artifact_version: Some(3),
         },
     )
     .unwrap_err();
@@ -342,6 +409,7 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
         .to_string(),
         AutomationPlanJudgeValidationContext {
             expected_artifact_id: Some("plan-artifact-1"),
+            expected_artifact_version: Some(3),
         },
     )
     .unwrap_err();
@@ -360,6 +428,7 @@ fn rejects_wrong_evaluated_artifact_when_context_expects_a_pin() {
         .to_string(),
         AutomationPlanJudgeValidationContext {
             expected_artifact_id: Some("plan-artifact-1"),
+            expected_artifact_version: Some(3),
         },
     )
     .unwrap_err();

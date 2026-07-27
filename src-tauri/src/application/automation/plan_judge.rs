@@ -91,11 +91,17 @@ pub struct AutomationPlanJudgeVerdict {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision_instructions: Option<String>,
     pub evaluated_artifact_id: String,
+    /// Backend-stamped version of the plan artifact the judge actually evaluated.
+    /// Never model-supplied: it is overwritten from the prompt payload during
+    /// fresh-output validation and preserved verbatim when a stored verdict is replayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluated_artifact_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutomationPlanJudgeValidationContext<'a> {
     pub expected_artifact_id: Option<&'a str>,
+    pub expected_artifact_version: Option<u32>,
 }
 
 pub fn build_automation_plan_judge_prompt(
@@ -239,6 +245,9 @@ pub fn validate_automation_plan_judge_verdict(
                 verdict.evaluated_artifact_id, expected
             )));
         }
+        // Fresh model output can never author the evaluated version: stamp the
+        // backend-known prompt payload version instead.
+        verdict.evaluated_artifact_version = context.expected_artifact_version;
     }
 
     match verdict.decision {

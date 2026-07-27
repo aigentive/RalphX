@@ -299,6 +299,24 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         push_status: Option<&str>,
     ) -> AppResult<()>;
 
+    /// Persist authoritative pushed-SHA evidence only while the caller still
+    /// owns the exact active workspace branch it pushed.
+    async fn set_publication_pushed_sha(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_branch_name: &str,
+        _pushed_sha: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn clear_publication_pushed_sha(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn compare_and_set_repair_state(
         &self,
         _conversation_id: &ChatConversationId,

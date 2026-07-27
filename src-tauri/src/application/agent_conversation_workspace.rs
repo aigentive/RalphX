@@ -520,6 +520,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
         publication_pr_url,
         publication_pr_status,
         publication_push_status: None,
+        publication_pushed_sha: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,

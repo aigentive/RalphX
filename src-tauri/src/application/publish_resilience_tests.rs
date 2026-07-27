@@ -3,9 +3,10 @@ use super::publish_resilience::{
     count_unpublished_publish_commits, publish_branch_freshness_outcome_from_source_update,
     publish_branch_freshness_status_from_commits,
     publish_branch_freshness_status_from_commits_and_branch, publish_push_status_for_failure,
-    remote_tracking_ref_for_publish, verify_agent_workspace_repair_completion,
-    verify_agent_workspace_settled_current_head, AgentWorkspaceRepairCompletionCheck,
-    AgentWorkspaceSettledHeadCheck, PublishBranchFreshnessOutcome, PublishFailureClass,
+    push_publish_branch_with, remote_tracking_ref_for_publish,
+    verify_agent_workspace_repair_completion, verify_agent_workspace_settled_current_head,
+    AgentWorkspaceRepairCompletionCheck, AgentWorkspaceSettledHeadCheck,
+    PublishBranchFreshnessOutcome, PublishFailureClass,
 };
 use super::publish_resilience::{ensure_plan_publish_branch_fresh, review_base_for_publish};
 use crate::domain::entities::Project;
@@ -38,6 +39,55 @@ fn setup_publish_freshness_repo(repo: &Path) -> String {
     git(repo, &["add", "README.md"]);
     git(repo, &["commit", "-m", "base"]);
     git(repo, &["rev-parse", "HEAD"])
+}
+
+#[tokio::test]
+async fn push_publish_branch_returns_the_exact_stable_branch_tip() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    let expected_sha = setup_publish_freshness_repo(repo.path());
+
+    let receipt = push_publish_branch_with(repo.path(), "main", || async { Ok(()) })
+        .await
+        .expect("stable push should return a receipt");
+
+    assert_eq!(receipt.branch, "main");
+    assert_eq!(receipt.sha, expected_sha);
+}
+
+#[tokio::test]
+async fn push_publish_branch_rejects_branch_movement_during_push() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    setup_publish_freshness_repo(repo.path());
+
+    let error = push_publish_branch_with(repo.path(), "main", || async {
+        std::fs::write(repo.path().join("follow-up.txt"), "follow-up\n")
+            .expect("follow-up fixture should be written");
+        git(repo.path(), &["add", "follow-up.txt"]);
+        git(repo.path(), &["commit", "-m", "follow-up"]);
+        Ok(())
+    })
+    .await
+    .expect_err("a moving branch must not produce authoritative pushed-SHA evidence");
+
+    assert!(error
+        .to_string()
+        .contains("moved while it was being pushed"));
+}
+
+#[tokio::test]
+async fn push_publish_branch_propagates_push_failure_without_a_receipt() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    setup_publish_freshness_repo(repo.path());
+
+    let error = push_publish_branch_with(repo.path(), "main", || async {
+        Err(crate::error::AppError::Infrastructure(
+            "push unavailable".to_string(),
+        ))
+    })
+    .await
+    .expect_err("failed pushes must not return evidence");
+
+    assert!(error.to_string().contains("push unavailable"));
 }
 
 #[test]

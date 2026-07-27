@@ -1815,7 +1815,7 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     project_repo: Arc<dyn ProjectRepository>,
-    _github_service: Option<Arc<dyn GithubServiceTrait>>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
@@ -1824,7 +1824,7 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         plan_branch_repo,
         project_repo,
         None,
-        _github_service,
+        github_service,
         blocked_git_project_ids,
         running_agent_registry,
     )
@@ -1837,7 +1837,7 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup_with_ou
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     task_outcome_repo: Option<Arc<dyn TaskOutcomeRepository>>,
-    _github_service: Option<Arc<dyn GithubServiceTrait>>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
@@ -1901,7 +1901,19 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup_with_ou
             }
 
             let outcome = if let Some(task_outcome_repo) = task_outcome_repo.as_ref() {
-                let observation = TerminalPrObservation::from_persisted_workspace(&workspace);
+                let observation =
+                    match TerminalPrObservation::from_persisted_workspace(&workspace) {
+                        Some(observation) => Some(
+                            crate::application::agent_workspace_terminal_observation::resolve_merge_cleanliness_best_effort(
+                                github_service.as_ref(),
+                                std::path::Path::new(&project.working_directory),
+                                &workspace,
+                                observation,
+                            )
+                            .await,
+                        ),
+                        None => None,
+                    };
                 cleanup_terminal_agent_workspace_after_pr_with_observation(
                     Arc::clone(&workspace_repo),
                     Some(Arc::clone(&plan_branch_repo)),

@@ -7,6 +7,7 @@ use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
     TerminalPrObservation,
 };
+use crate::application::agent_workspace_terminal_observation::resolve_merge_cleanliness_best_effort;
 use crate::application::chat_service::ChatService;
 use crate::application::AppState;
 use crate::domain::entities::ChatConversationId;
@@ -65,7 +66,18 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
                     ))
                 })?;
             let chat_service: Arc<dyn ChatService> = Arc::new(self.state.build_chat_service());
-            let observation = TerminalPrObservation::from_persisted_workspace(&workspace);
+            let observation = match TerminalPrObservation::from_persisted_workspace(&workspace) {
+                Some(observation) => Some(
+                    resolve_merge_cleanliness_best_effort(
+                        self.state.github_service.as_ref(),
+                        std::path::Path::new(&project.working_directory),
+                        &workspace,
+                        observation,
+                    )
+                    .await,
+                ),
+                None => None,
+            };
             let terminalized = terminalize_agent_workspace_after_pr_with_observation(
                 Arc::clone(&self.state.agent_conversation_workspace_repo),
                 Arc::clone(&self.state.agent_run_repo),

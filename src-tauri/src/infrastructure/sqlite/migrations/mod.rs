@@ -563,6 +563,9 @@ mod v20260724113627_agent_task_delegate_assignments_tests;
 mod v20260724222347_agent_task_assignment_planned_run_identity;
 #[cfg(test)]
 mod v20260724222347_agent_task_assignment_planned_run_identity_tests;
+mod v20260727115607_agent_workspace_publication_pushed_sha;
+#[cfg(test)]
+mod v20260727115607_agent_workspace_publication_pushed_sha_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -657,7 +660,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260724222347;
+pub const SCHEMA_VERSION: i64 = 20260727115607;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1807,6 +1810,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260724222347,
         name: "agent_task_assignment_planned_run_identity",
         migrate: v20260724222347_agent_task_assignment_planned_run_identity::migrate,
+    },
+    Migration {
+        version: 20260727115607,
+        name: "agent_workspace_publication_pushed_sha",
+        migrate: v20260727115607_agent_workspace_publication_pushed_sha::migrate,
     },
 ];
 
