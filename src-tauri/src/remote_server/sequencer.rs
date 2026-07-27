@@ -70,8 +70,11 @@ impl std::fmt::Display for StreamEpoch {
 }
 
 /// Why the live epoch rolled. Both causes mean "an event may be missing from the stream".
+///
+/// `pub` rather than `pub(crate)` because it travels on `CaptureReceivers`, whose fields are part
+/// of the capture bank's public shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EpochRollCause {
+pub enum EpochRollCause {
     /// The bounded capture channel was full, so a durable event was dropped before allocation.
     CaptureOverload,
     /// A batch commit failed; the rows are not durable and must never be published.
@@ -83,7 +86,7 @@ pub(crate) enum EpochRollCause {
 /// Carried on a **separate unbounded channel** precisely because the bounded one being full is
 /// what triggers the signal — a shared channel could not deliver the overload notice (§3.4 #3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SequencerControl {
+pub enum SequencerControl {
     RollEpoch(EpochRollCause),
 }
 

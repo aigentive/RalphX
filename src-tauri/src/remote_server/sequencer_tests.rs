@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -12,7 +13,7 @@ use serde_json::json;
 use super::*;
 use crate::error::AppError;
 use crate::infrastructure::sqlite::{RemotePruneOutcome, RemotePruneRequest};
-use crate::remote_server::capture::{CaptureFeed, CaptureSink};
+use crate::remote_server::capture::{CaptureFeed, CaptureSink, EventRegistrar, RemoteEventCapture};
 
 // ------------------------------------------------------------------------------------------
 // A log double that can fail on demand — `reset(read_error)` and commit-failure rolls are only
@@ -25,7 +26,6 @@ pub(super) struct FakeEventLog {
     high_water: Mutex<u64>,
     fail_commit: AtomicBool,
     fail_read: AtomicBool,
-    pruned_floor: Mutex<u64>,
 }
 
 impl FakeEventLog {
@@ -41,10 +41,6 @@ impl FakeEventLog {
 
     pub(super) fn fail_commits(&self, fail: bool) {
         self.fail_commit.store(fail, AtomicOrdering::SeqCst);
-    }
-
-    pub(super) fn fail_reads(&self, fail: bool) {
-        self.fail_read.store(fail, AtomicOrdering::SeqCst);
     }
 
     pub(super) fn seqs(&self) -> Vec<u64> {
@@ -63,11 +59,6 @@ impl FakeEventLog {
             .iter()
             .map(|row| row.name.clone())
             .collect()
-    }
-
-    pub(super) fn set_pruned_floor(&self, floor: u64) {
-        *self.pruned_floor.lock().unwrap() = floor;
-        self.rows.lock().unwrap().retain(|row| row.seq > floor);
     }
 }
 
@@ -197,6 +188,38 @@ fn durable_seqs(frames: &[StreamFrame]) -> Vec<u64> {
         .collect()
 }
 
+type CaptureHandler = Box<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Clone)]
+struct TargetEventRegistrar {
+    target: &'static str,
+    handler: Arc<Mutex<Option<CaptureHandler>>>,
+}
+
+impl TargetEventRegistrar {
+    fn new(target: &'static str) -> Self {
+        Self {
+            target,
+            handler: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn emit(&self, payload: &str) {
+        let handler = self.handler.lock().unwrap();
+        handler
+            .as_ref()
+            .expect("the target event should have a capture handler")(payload);
+    }
+}
+
+impl EventRegistrar for TargetEventRegistrar {
+    fn listen(&self, name: &'static str, handler: CaptureHandler) {
+        if name == self.target {
+            *self.handler.lock().unwrap() = Some(handler);
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------
 // P-22: the epoch is fresh per boot, unconditionally
 // ------------------------------------------------------------------------------------------
@@ -244,6 +267,41 @@ fn listener_disable_and_re_enable_do_not_roll_the_epoch() {
 
     assert_eq!(before, after);
     assert_eq!(harness.handle.epoch_window().floor_seq, 0);
+}
+
+/// P-23: installing the stream is independent of starting the listener. A durable event emitted
+/// during the disabled window still reaches the log and is available for a later replay.
+#[tokio::test]
+async fn a_stream_installed_while_the_listener_is_disabled_records_captured_events() {
+    let log = FakeEventLog::new();
+    let (feed, receivers) = CaptureFeed::channels(16);
+    let stream = RemoteSequencer::start(log.clone(), receivers, RetentionLeaseRegistry::new())
+        .await
+        .expect("the durable stream should start");
+    let listener = crate::remote_server::RemoteListenerHandle::new();
+    assert!(listener.install_stream(stream));
+    assert!(
+        !listener.is_running().await,
+        "no network listener was started"
+    );
+    let registrar = TargetEventRegistrar::new("notification:created");
+    RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
+
+    registrar.emit(r#"{"id":"during-disabled-window"}"#);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while log.names().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the sequencer should commit the captured event");
+    assert_eq!(log.names(), vec!["notification:created"]);
+    assert_eq!(log.seqs(), vec![1]);
+    assert!(
+        !listener.is_running().await,
+        "durable capture must not depend on listener exposure"
+    );
 }
 
 /// P-22(b): a commit failure rolls the in-memory epoch live and kicks connected clients.
