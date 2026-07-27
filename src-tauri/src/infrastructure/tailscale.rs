@@ -51,11 +51,21 @@ pub(crate) struct RealTailscaleCommandRunner;
 impl TailscaleCommandRunner for RealTailscaleCommandRunner {
     async fn run_status(&self) -> Result<String, TailnetProviderError> {
         let path = find_tailscale_cli_path().ok_or_else(|| {
-            TailnetProviderError::Unavailable("tailscale CLI disappeared after resolution".into())
+            TailnetProviderError::Unavailable("tailscale CLI is unavailable".into())
         })?;
         let output = run_command(path, status_args())
             .await
             .map_err(TailscaleProcessError::into_provider_error)?;
+        if !output.success {
+            // A down daemon exits non-zero with an empty stdout and an actionable stderr
+            // ("failed to connect to local tailscaled..."). Parsing that as JSON would surface
+            // the useless "invalid tailscale status JSON: EOF" instead.
+            return Err(TailnetProviderError::Unavailable(format!(
+                "tailscale status failed with {}{}",
+                output.status,
+                stderr_suffix(&output.stderr)
+            )));
+        }
         Ok(output.stdout)
     }
 
@@ -73,9 +83,9 @@ pub(crate) struct TailscaleSelfAddressProvider;
 #[async_trait]
 impl TailnetSelfAddressProvider for TailscaleSelfAddressProvider {
     async fn self_addresses(&self) -> Result<Vec<IpAddr>, TailnetProviderError> {
-        if find_tailscale_cli_path().is_none() {
-            return Ok(Vec::new());
-        }
+        // "Tailscale is not installed" is a provider failure, not "this host owns no tailnet
+        // address" — the whole point of `TailnetProviderError`. Both refuse the bind, but only
+        // the typed error lets PR 1.7's pane say "install Tailscale" instead of "log in".
         let stdout = RealTailscaleCommandRunner.run_status().await?;
         Ok(parse_status(&stdout)?.self_addresses())
     }
@@ -97,16 +107,23 @@ struct TailscaleSelfStatus {
     #[allow(dead_code)]
     #[serde(rename = "DNSName", default)]
     dns_name: String,
+    /// `Option` rather than a bare `Vec`: Go marshals `ipnstate.PeerStatus.TailscaleIPs` with no
+    /// `omitempty`, so a logged-out/stopped daemon emits `"TailscaleIPs": null` — and
+    /// `#[serde(default)]` only covers an ABSENT key, not an explicit null. Deserializing that
+    /// as a hard error would turn "logged out" into `Unavailable`, breaking §5.3's
+    /// "logged-out ⇒ empty endpoint list, never an error".
     #[serde(rename = "TailscaleIPs", default)]
-    tailscale_ips: Vec<IpAddr>,
+    tailscale_ips: Option<Vec<IpAddr>>,
 }
 
 impl TailscaleStatus {
     pub(crate) fn self_addresses(&self) -> Vec<IpAddr> {
         self.self_status
             .as_ref()
+            .and_then(|status| status.tailscale_ips.as_ref())
             .into_iter()
-            .flat_map(|status| status.tailscale_ips.iter().copied())
+            .flatten()
+            .copied()
             .filter(|address| matches!(address, IpAddr::V4(ip) if is_tailnet_cgnat_ipv4(*ip)))
             .collect()
     }
@@ -197,12 +214,33 @@ async fn run_serve_command(args: Vec<String>) -> Result<(), TailscaleServeError>
     if output.success {
         Ok(())
     } else {
-        Err(TailscaleServeError::Exit(output.status))
+        // Serve failures print the actionable reason on stderr ("Serve is not enabled on your
+        // tailnet", HTTPS not enabled, …). Without it the user sees only "exit status: 1".
+        Err(TailscaleServeError::Exit(format!(
+            "{}{}",
+            output.status,
+            stderr_suffix(&output.stderr)
+        )))
     }
+}
+
+/// Renders a bounded stderr snippet for an error message, or nothing when stderr was silent.
+fn stderr_suffix(stderr: &str) -> String {
+    const MAX_STDERR: usize = 400;
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let snippet = trimmed
+        .char_indices()
+        .nth(MAX_STDERR)
+        .map_or(trimmed, |(index, _)| &trimmed[..index]);
+    format!(": {snippet}")
 }
 
 struct CommandOutput {
     stdout: String,
+    stderr: String,
     success: bool,
     status: String,
 }
@@ -250,10 +288,11 @@ async fn run_command(
         let (stdout, stderr, status) =
             tokio::join!(read_stream(stdout), read_stream(stderr), child.wait());
         let stdout = stdout.map_err(TailscaleProcessError::Output)?;
-        stderr.map_err(TailscaleProcessError::Output)?;
+        let stderr = stderr.map_err(TailscaleProcessError::Output)?;
         let status = status.map_err(|error| TailscaleProcessError::Output(error.to_string()))?;
         Ok(CommandOutput {
             stdout,
+            stderr,
             success: status.success(),
             status: status.to_string(),
         })

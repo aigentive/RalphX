@@ -3,8 +3,8 @@
 //! The environment descriptor is deliberately minimal: it is the one pre-auth response a
 //! stranger can read, so it publishes identity and version negotiation data only (§3.1, §4.6).
 
+use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::{net::Ipv4Addr, string::ToString};
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
@@ -72,6 +72,15 @@ pub(crate) struct AdvertisedEndpoint {
 }
 
 /// Describes remote URLs from already-observed reachability facts without granting access.
+///
+/// Scheme per mode is a transport fact, not a preference: only Serve terminates TLS at the
+/// tailnet edge, so it advertises `https://<magicdns>`. The listener itself is plain-HTTP axum
+/// with no TLS acceptor, and §4.4 assigns direct-mode confidentiality to WireGuard, not to app
+/// TLS ("the Rust backend terminates plain HTTP"), so direct exposure advertises `http://` —
+/// an `https://` direct URL would always fail its handshake against the plaintext socket.
+///
+/// `port` is the port the listener is actually bound on; callers must pass the bound port, not
+/// the persisted setting, because `RALPHX_REMOTE_PORT` can override it.
 // Consumed by PR 1.7's Remote Access pane (endpoint list).
 #[allow(dead_code)]
 pub(crate) fn advertised_endpoints(
@@ -82,6 +91,8 @@ pub(crate) fn advertised_endpoints(
     tailnet_self_ip: Option<Ipv4Addr>,
 ) -> Vec<AdvertisedEndpoint> {
     match exposure_mode {
+        // Defensive re-normalization: `TailscaleStatus::magicdns_name()` already trims the
+        // trailing dot, but this function also takes names from callers/settings.
         RemoteExposureMode::Serve => magicdns_name
             .map(str::trim)
             .map(|name| name.trim_end_matches('.'))
@@ -96,7 +107,7 @@ pub(crate) fn advertised_endpoints(
         RemoteExposureMode::TailnetDirect => tailnet_self_ip
             .map(|address| AdvertisedEndpoint {
                 kind: AdvertisedEndpointKind::TailnetDirect,
-                url: format!("https://{address}:{port}"),
+                url: format!("http://{address}:{port}"),
                 available: true,
             })
             .into_iter()

@@ -42,13 +42,42 @@ function sourceFiles(directory) {
   });
 }
 
+// Raw event subscription/emission acquired through a static import/export.
+// `emit` counts too: subscribers live on the bus's own registry in a remote environment, so a
+// raw emit reaches nobody there, and on a host it would be captured as backend truth.
 function rawEventImports(source) {
   const importOrExportPattern = /(?:import|export)\s+([\s\S]*?)\s+from\s+["']@tauri-apps\/api\/event["']/g;
   return [...source.matchAll(importOrExportPattern)].filter((match) => {
     const bindings = match[1] ?? "";
-    return /(?:^|[,{\s])(?:listen|once)(?:\s+as\s+[A-Za-z_$][\w$]*)?(?=\s*[,}])/.test(bindings)
+    return /(?:^|[,{\s])(?:listen|once|emit|emitTo)(?:\s+as\s+[A-Za-z_$][\w$]*)?(?=\s*[,}])/.test(bindings)
       || /^\s*\*/.test(bindings);
   });
+}
+
+// `const { listen } = await import("@tauri-apps/api/event")` has no `from` clause, so the
+// static pattern above never sees it. The module has no legitimate use outside the bus.
+function dynamicEventImports(source) {
+  return [...source.matchAll(/import\s*\(\s*["']@tauri-apps\/api\/event["']\s*\)/g)];
+}
+
+// Window/webview handles expose their own `.listen()`/`.once()`, which subscribe to the raw
+// Tauri event system without ever touching @tauri-apps/api/event. Only flag these modules when
+// the file actually subscribes, so legitimate uses (onDragDropEvent, window sizing) stay clean.
+const WINDOW_EVENT_MODULES = /["']@tauri-apps\/api\/(?:window|webview|webviewWindow)["']/g;
+
+function windowScopedListenImports(source) {
+  if (!/\.\s*(?:listen|once)\s*(?:<[^;\n]*>)?\s*\(/.test(source)) {
+    return [];
+  }
+  return [...source.matchAll(WINDOW_EVENT_MODULES)];
+}
+
+function violationsIn(source) {
+  return [
+    ...rawEventImports(source),
+    ...dynamicEventImports(source),
+    ...windowScopedListenImports(source),
+  ];
 }
 
 if (!fs.existsSync(sourceRoot)) {
@@ -64,14 +93,14 @@ for (const filePath of sourceFiles(sourceRoot)) {
   }
 
   const source = fs.readFileSync(filePath, "utf8");
-  for (const match of rawEventImports(source)) {
+  for (const match of violationsIn(source)) {
     const line = source.slice(0, match.index).split("\n").length;
     violations.push(`${repoPath}:${line}`);
   }
 }
 
 if (violations.length > 0) {
-  console.error("FAIL: raw Tauri event listen imports must go through useEventBus().");
+  console.error("FAIL: raw Tauri event listen/emit must go through useEventBus().");
   console.error(`Allowed raw-listen module: ${[...RAW_LISTEN_ALLOWLIST].join(", ")}`);
   violations.forEach((violation) => console.error(`  ${violation}`));
   process.exit(1);
