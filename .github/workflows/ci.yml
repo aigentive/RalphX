@@ -44,6 +44,8 @@ jobs:
               - 'scripts/test-rust-fast.sh'
               - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
               - 'scripts/tests/test-coverage-rust-shards.sh'
+              - 'scripts/check-raw-tauri-event-listen.mjs'
+              - 'scripts/tests/test-raw-tauri-event-listen-guard.sh'
               - 'scripts/event-manifest-scanner/**'
               - 'scripts/event-manifest.json'
               - 'scripts/build-prod-release.sh'
@@ -159,6 +161,10 @@ jobs:
       - name: Validate Rust coverage shard topology
         shell: bash
         run: bash scripts/tests/test-coverage-rust-shards.sh
+
+      - name: Validate raw Tauri event listen guard
+        shell: bash
+        run: bash scripts/tests/test-raw-tauri-event-listen-guard.sh
 
       - name: Validate release scripts
         shell: bash
