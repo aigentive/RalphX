@@ -83,7 +83,6 @@ function mainRegionProps(
     selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn((_: ReactNode) => undefined),
     switchingConversationModeId: null,
-    updatingTeamConversationId: null,
     terminalArchivedReason: null,
     terminalUnavailableReason: null,
     ...overrides,

@@ -506,6 +506,23 @@ describe("delegation-tool-calls", () => {
     );
   });
 
+  it("maps an empty delegated completion to a typed cause and safe terminal details", () => {
+    const metadata = extractDelegationMetadata(
+      { job_id: "job-no-output" },
+      {
+        job_id: "job-no-output",
+        status: "failed",
+        error: "Codex exited without a response (context=project, code=Some(1), signal=None); diagnostics: Reading additional input from stdin...",
+      },
+    );
+
+    expect(metadata.status).toBe("failed");
+    expect(metadata.textOutput).toBe(
+      "Delegate completed without a response\n\nExit code: 1",
+    );
+    expect(metadata.textOutput).not.toContain("stdin");
+  });
+
   it("falls back to the delegated handoff message when top-level content is absent", () => {
     const metadata = extractDelegationMetadata(
       { agent_name: "ralphx-general-explorer" },
