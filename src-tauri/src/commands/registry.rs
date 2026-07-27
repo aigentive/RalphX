@@ -21,6 +21,16 @@ macro_rules! register_tauri_commands {
             commands::notification_commands::get_unread_notification_count,
             #[cfg(debug_assertions)]
             commands::notification_commands::debug_send_test_notification,
+            // remote environment registry (PR 2.1)
+            commands::remote_environment_commands::pair_remote_environment,
+            commands::remote_environment_commands::list_remote_environments,
+            commands::remote_environment_commands::remove_remote_environment,
+            commands::remote_environment_commands::get_active_environment,
+            commands::remote_environment_commands::set_active_environment,
+            commands::remote_environment_commands::remote_connect,
+            commands::remote_environment_commands::remote_disconnect,
+            commands::remote_environment_commands::remote_invoke,
+            commands::remote_environment_commands::remote_fetch,
             // remote auth (PR 1.2)
             commands::remote_host_commands::start_remote_listener,
             commands::remote_host_commands::stop_remote_listener,
