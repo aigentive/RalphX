@@ -1923,57 +1923,57 @@
     {
       "name": "execution:error",
       "reason_code": "no-tauri-emitter",
-      "reason": "execution error state is surfaced through query invalidation, not a Tauri emit"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "file:change",
       "reason_code": "no-tauri-emitter",
-      "reason": "file changes are consumed from watcher state without a Tauri emit"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "proposal:deleted",
       "reason_code": "no-tauri-emitter",
-      "reason": "proposal deletion has no current Tauri event producer"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "qa:prep",
       "reason_code": "no-tauri-emitter",
-      "reason": "QA preparation state has no current Tauri event producer"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "qa:test",
       "reason_code": "no-tauri-emitter",
-      "reason": "QA test state has no current Tauri event producer"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "step:deleted",
       "reason_code": "no-tauri-emitter",
-      "reason": "step deletion has no current Tauri event producer"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "step:status_changed",
       "reason_code": "no-tauri-emitter",
-      "reason": "step status changes have no current Tauri event producer"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "steps:reordered",
       "reason_code": "no-tauri-emitter",
-      "reason": "step reordering has no current Tauri event producer"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     },
     {
       "name": "supervisor:alert",
-      "reason_code": "no-tauri-emitter",
-      "reason": "supervisor alerts have no current Tauri event producer"
+      "reason_code": "no-tauri-bridge",
+      "reason": "frontend consumer exists; backend has internal Supervisor EventBus but no Tauri bridge"
     },
     {
       "name": "supervisor:event",
-      "reason_code": "no-tauri-emitter",
-      "reason": "supervisor events have no current Tauri event producer"
+      "reason_code": "no-tauri-bridge",
+      "reason": "frontend consumer exists; backend has internal Supervisor EventBus but no Tauri bridge"
     },
     {
       "name": "execution:stderr",
       "reason_code": "no-tauri-emitter",
-      "reason": "execution stderr is consumed from process state without a Tauri emit"
+      "reason": "frontend consumer exists; no current Tauri event producer"
     }
   ]
 }

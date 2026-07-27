@@ -75,17 +75,17 @@ const STATIC_EVENT_FUNCTIONS: &[StaticEventFunction] = &[StaticEventFunction {
 /// producer in the current application. This is deliberately a closed list: either adding a
 /// classification or landing its source emit requires a corresponding reviewed ledger update.
 const UNMATCHED_EVENT_GAPS: &[ReviewedUnmatchedEvent] = &[
-    ReviewedUnmatchedEvent::new("execution:error", "no-tauri-emitter", "execution error state is surfaced through query invalidation, not a Tauri emit"),
-    ReviewedUnmatchedEvent::new("file:change", "no-tauri-emitter", "file changes are consumed from watcher state without a Tauri emit"),
-    ReviewedUnmatchedEvent::new("proposal:deleted", "no-tauri-emitter", "proposal deletion has no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("qa:prep", "no-tauri-emitter", "QA preparation state has no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("qa:test", "no-tauri-emitter", "QA test state has no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("step:deleted", "no-tauri-emitter", "step deletion has no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("step:status_changed", "no-tauri-emitter", "step status changes have no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("steps:reordered", "no-tauri-emitter", "step reordering has no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("supervisor:alert", "no-tauri-emitter", "supervisor alerts have no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("supervisor:event", "no-tauri-emitter", "supervisor events have no current Tauri event producer"),
-    ReviewedUnmatchedEvent::new("execution:stderr", "no-tauri-emitter", "execution stderr is consumed from process state without a Tauri emit"),
+    ReviewedUnmatchedEvent::new("execution:error", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("file:change", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("proposal:deleted", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("qa:prep", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("qa:test", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("step:deleted", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("step:status_changed", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("steps:reordered", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
+    ReviewedUnmatchedEvent::new("supervisor:alert", "no-tauri-bridge", "frontend consumer exists; backend has internal Supervisor EventBus but no Tauri bridge"),
+    ReviewedUnmatchedEvent::new("supervisor:event", "no-tauri-bridge", "frontend consumer exists; backend has internal Supervisor EventBus but no Tauri bridge"),
+    ReviewedUnmatchedEvent::new("execution:stderr", "no-tauri-emitter", "frontend consumer exists; no current Tauri event producer"),
 ];
 
 #[derive(Clone, Copy)]
@@ -196,7 +196,7 @@ pub enum ScanError {
 pub fn scan_rust_source(file: impl Into<String>, source: &str) -> Result<Vec<EmitSite>, ScanError> {
     let file = file.into();
     let syntax = syn::parse_file(source).map_err(|error| ScanError::Parse(format!("{file}: {error}")))?;
-    let constants = collect_constants_from_file(&syntax);
+    let constants = collect_constants_from_file(&syntax, "");
     let functions = collect_functions(&syntax, &file);
     let calls = collect_call_sites(&syntax, &file);
     verify_wrapper_contract(&constants, &functions, &calls)?;
@@ -251,7 +251,7 @@ pub fn scan_production_rust_tree(root: &Path) -> Result<Vec<EmitSite>> {
         let file = relative(root, &path);
         let source = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let syntax = syn::parse_file(&source).with_context(|| format!("parse {}", path.display()))?;
-        constants.extend(collect_constants_from_file(&syntax));
+        constants.extend(collect_constants_from_file(&syntax, &module_path_for_file(root, &path)));
         functions.extend(collect_functions(&syntax, &file));
         calls.extend(collect_call_sites(&syntax, &file));
         source_files.push((file, syntax));
@@ -378,21 +378,33 @@ impl ConstantTable {
         if requested.is_empty() {
             return None;
         }
+        let exact = self
+            .bindings
+            .iter()
+            .filter(|binding| binding.qualified_name == requested)
+            .collect::<Vec<_>>();
+        if exact.len() == 1 {
+            return Some(exact[0].value.clone());
+        }
+        if exact.len() > 1 {
+            return None;
+        }
+
         let suffix = format!("::{requested}");
         let matches = self
             .bindings
             .iter()
             .filter(|binding| {
-                binding.qualified_name == requested
-                    || binding.qualified_name.ends_with(&suffix)
-                    || requested.ends_with(&format!("::{}", binding.qualified_name))
+                binding.qualified_name.ends_with(&suffix)
+                    || (requested.contains("::")
+                        && requested.ends_with(&format!("::{}", binding.qualified_name)))
             })
             .collect::<Vec<_>>();
         (matches.len() == 1).then(|| matches[0].value.clone())
     }
 }
 
-fn collect_constants_from_file(file: &File) -> ConstantTable {
+fn collect_constants_from_file(file: &File, module_path: &str) -> ConstantTable {
     fn collect_items(items: &[Item], prefix: &str, table: &mut ConstantTable) {
         for item in items {
             match item {
@@ -422,7 +434,7 @@ fn collect_constants_from_file(file: &File) -> ConstantTable {
     }
 
     let mut table = ConstantTable::default();
-    collect_items(&file.items, "", &mut table);
+    collect_items(&file.items, module_path, &mut table);
     table
 }
 
@@ -1034,6 +1046,27 @@ fn is_cfg_test(attributes: &[syn::Attribute]) -> bool {
 
 fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).display().to_string()
+}
+
+fn module_path_for_file(root: &Path, path: &Path) -> String {
+    let mut parts = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let Some(file_name) = parts.pop() else {
+        return String::new();
+    };
+    let stem = Path::new(&file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    if !matches!(stem, "lib" | "main" | "mod") {
+        parts.push(stem.to_owned());
+    }
+    parts.join("::")
 }
 
 fn consumed_names(root: &Path) -> Result<Vec<String>> {

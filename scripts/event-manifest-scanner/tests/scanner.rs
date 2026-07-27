@@ -76,6 +76,47 @@ fn resolves_qualified_constants_and_rejects_ambiguous_leaf_constants() {
 }
 
 #[test]
+fn resolves_qualified_constants_across_module_files_and_rejects_bare_leaf() {
+    let root = tempfile::tempdir().expect("temp root");
+    std::fs::write(
+        root.path().join("module_a.rs"),
+        "pub const EVENT: &str = \"task:created\";",
+    )
+    .expect("module a");
+    std::fs::write(
+        root.path().join("module_b.rs"),
+        "pub const EVENT: &str = \"task:deleted\";",
+    )
+    .expect("module b");
+    std::fs::write(
+        root.path().join("caller.rs"),
+        r#"
+            fn emits(app: &App) {
+                app.emit(module_a::EVENT, ()).unwrap();
+                app.emit(module_b::EVENT, ()).unwrap();
+            }
+        "#,
+    )
+    .expect("caller");
+
+    let names = scan_production_rust_tree(root.path())
+        .expect("qualified multi-file constants resolve")
+        .into_iter()
+        .map(|site| site.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["task:created", "task:deleted"]);
+
+    std::fs::write(
+        root.path().join("caller.rs"),
+        "fn emits(app: &App) { app.emit(EVENT, ()).unwrap(); }",
+    )
+    .expect("ambiguous caller");
+    let error = scan_production_rust_tree(root.path())
+        .expect_err("bare multi-file constant must be ambiguous");
+    assert!(error.to_string().contains("unresolved event name"));
+}
+
+#[test]
 fn production_census_excludes_test_only_emit_sites() {
     let root = tempfile::tempdir().expect("temp root");
     std::fs::write(
@@ -149,12 +190,23 @@ fn renders_reason_coded_reviewed_unmatched_event_gaps() {
     let gaps = reviewed_unmatched_events();
     assert_eq!(gaps.len(), 11);
     assert!(gaps.iter().any(|gap| gap.name() == "execution:stderr"));
-    assert!(serde_json::to_value(&gaps)
-        .expect("gaps serialize")
+    let rendered_value = serde_json::to_value(&gaps).expect("gaps serialize");
+    let rendered = rendered_value
         .as_array()
-        .expect("gap list")
+        .expect("gap list");
+    assert!(rendered
         .iter()
         .all(|gap| gap.get("reason_code").is_some() && gap.get("reason").is_some()));
+    assert!(rendered.iter().any(|gap| {
+        gap.get("name").and_then(serde_json::Value::as_str) == Some("execution:error")
+            && gap.get("reason").and_then(serde_json::Value::as_str)
+                == Some("frontend consumer exists; no current Tauri event producer")
+    }));
+    assert!(rendered.iter().any(|gap| {
+        gap.get("name").and_then(serde_json::Value::as_str) == Some("supervisor:event")
+            && gap.get("reason").and_then(serde_json::Value::as_str)
+                == Some("frontend consumer exists; backend has internal Supervisor EventBus but no Tauri bridge")
+    }));
 }
 
 #[test]
