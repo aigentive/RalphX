@@ -65,7 +65,9 @@ describe("PublishWorkspaceDialog", () => {
       />,
     );
 
-    expect(screen.getByText(/metadata step for PR #888/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/could not confirm the prior metadata outcome for PR #888/),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/no pull request was opened/)).not.toBeInTheDocument();
   });
 });

@@ -547,7 +547,7 @@ pub fn classify_readback(
         return AgentWorkspacePrMetadataReadbackClassification::Conflicted;
     }
 
-    if requested.is_empty() || requested.iter().any(|state| *state == FieldReadback::Other) {
+    if requested.is_empty() || requested.contains(&FieldReadback::Other) {
         return AgentWorkspacePrMetadataReadbackClassification::Conflicted;
     }
     if requested

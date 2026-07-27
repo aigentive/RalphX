@@ -690,7 +690,7 @@ describe("AgentsView publish", () => {
       changes: [reviewFile],
       reviewGateStatus: null,
       title: "Publishing failed",
-      detail: "metadata step for PR #888",
+      detail: "could not confirm the prior metadata outcome for PR #888",
     },
     {
       name: "automatic publishing paused",
