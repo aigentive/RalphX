@@ -76,6 +76,7 @@ use crate::application::persona_resolver::{resolve_persona_for_send, PersonaReso
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
+use crate::application::ClickUpIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
 use crate::domain::agents::{
@@ -1665,6 +1666,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     linear_integration_service: Option<Arc<LinearIntegrationService>>,
     granola_integration_service: Option<Arc<GranolaIntegrationService>>,
+    clickup_integration_service: Option<Arc<ClickUpIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     mcp_policy_service: Option<crate::application::mcp_policy_service::McpPolicyService>,
@@ -1731,6 +1733,44 @@ struct ResolvedProviderLaunchSettings {
 /// Compatibility alias for older callsites/tests that still use the legacy concrete name.
 pub type ClaudeChatService<R = tauri::Wry> = AppChatService<R>;
 
+fn merge_conversation_integration_references(
+    inherited_references: &[ComposerIntegrationReference],
+    current_references: &[ComposerIntegrationReference],
+    assigned_jira_issue: Option<&AgentConversationJiraIssueLink>,
+    assigned_linear_issue: Option<&AgentConversationLinearIssueLink>,
+    assigned_granola_note: Option<&AgentConversationGranolaNoteLink>,
+) -> Vec<ComposerIntegrationReference> {
+    let mut references = current_references.to_vec();
+    references.extend_from_slice(inherited_references);
+    let references =
+        crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
+            assigned_jira_issue,
+            &references,
+        );
+    let references =
+        crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
+            assigned_linear_issue,
+            &references,
+        );
+    let references =
+        crate::application::agent_conversation_granola_note::merge_assigned_granola_reference(
+            assigned_granola_note,
+            &references,
+        );
+    let mut seen = HashSet::new();
+
+    references
+        .into_iter()
+        .filter(|reference| {
+            seen.insert((
+                reference.provider.trim().to_string(),
+                reference.kind.trim().to_string(),
+                reference.id.trim().to_string(),
+            ))
+        })
+        .collect()
+}
+
 impl<R: Runtime> AppChatService<R> {
     pub fn new(
         chat_message_repo: Arc<dyn ChatMessageRepository>,
@@ -1775,6 +1815,7 @@ impl<R: Runtime> AppChatService<R> {
             atlassian_integration_service: None,
             linear_integration_service: None,
             granola_integration_service: None,
+            clickup_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             mcp_policy_service: None,
@@ -2175,6 +2216,14 @@ impl<R: Runtime> AppChatService<R> {
         service: Arc<GranolaIntegrationService>,
     ) -> Self {
         self.granola_integration_service = Some(service);
+        self
+    }
+
+    pub fn with_clickup_integration_service(
+        mut self,
+        service: Arc<ClickUpIntegrationService>,
+    ) -> Self {
+        self.clickup_integration_service = Some(service);
         self
     }
 
@@ -4569,21 +4618,29 @@ impl<R: Runtime> AppChatService<R> {
         } else {
             None
         };
-        let merged_jira_references =
-            crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
-                assigned_jira_issue.as_ref(),
-                integration_references,
-            );
-        let merged_linear_references =
-            crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
-                assigned_linear_issue.as_ref(),
-                &merged_jira_references,
-            );
-        let merged_integration_references =
-            crate::application::agent_conversation_granola_note::merge_assigned_granola_reference(
-                assigned_granola_note.as_ref(),
-                &merged_linear_references,
-            );
+        let inherited_integration_references = if let Some(conversation_id) =
+            conversation_id_override
+        {
+            crate::application::conversation_reference_inheritance::collect_conversation_inherited_integration_references(
+                self.chat_message_repo.as_ref(),
+                conversation_id,
+            )
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        } else {
+            crate::application::conversation_reference_inheritance::ConversationInheritedIntegrationReferences {
+                references: Vec::new(),
+                skipped_references: Vec::new(),
+            }
+        };
+        log_skipped_integration_references(&inherited_integration_references.skipped_references);
+        let merged_integration_references = merge_conversation_integration_references(
+            &inherited_integration_references.references,
+            integration_references,
+            assigned_jira_issue.as_ref(),
+            assigned_linear_issue.as_ref(),
+            assigned_granola_note.as_ref(),
+        );
         let edit_plan_handoff_artifact = self
             .load_edit_mode_plan_handoff_artifact(agent_workspace.as_ref())
             .await;
@@ -4627,6 +4684,7 @@ impl<R: Runtime> AppChatService<R> {
             self.atlassian_integration_service.clone(),
             self.linear_integration_service.clone(),
             self.granola_integration_service.clone(),
+            self.clickup_integration_service.clone(),
         )
         .await;
         log_skipped_integration_references(&integration_expansion.skipped_references);

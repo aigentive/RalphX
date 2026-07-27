@@ -131,8 +131,17 @@ pub struct RemoteEnvironmentReconcileReport {
     pub deleted_husks: Vec<String>,
     /// `pending_delete` rows completed: revoke retried, secret deleted, row deleted.
     pub completed_removals: Vec<String>,
-    /// `pending_add` rows whose token the host explicitly refused → surfaced for
-    /// re-pair (row kept so the UI can offer it).
+    /// `pending_add` rows whose token the host explicitly refused.
+    ///
+    /// **Not durable.** The row keeps `status = pending_add`, which is
+    /// indistinguishable through `list_remote_environments` from a row still
+    /// waiting on an unreachable host, so this verdict lives only for the
+    /// lifetime of the report (it is logged per row). §6.1's "surfaced for
+    /// re-pair" therefore has no consumer-visible carrier yet: the status
+    /// vocabulary is pinned to `active | pending_add | pending_delete` by the
+    /// spec, so giving the pairing UI a real signal needs a spec-level decision
+    /// (extra status value or a `last_reconcile_outcome` column) — an obligation
+    /// for whichever PR builds that pane, not a silent local invention.
     pub needs_repair: Vec<String>,
     /// Rows skipped fail-closed (Keychain unavailable, host unreachable, write
     /// failure) — retried on the next startup.
@@ -202,6 +211,7 @@ impl RemoteEnvironmentService {
                 &PairWireRequest {
                     pairing_code: code.to_string(),
                     device_name: client_device_name(),
+                    client_version: env!("CARGO_PKG_VERSION").to_string(),
                     requested_scopes: DEFAULT_REQUESTED_SCOPES.to_vec(),
                 },
             )
@@ -215,16 +225,29 @@ impl RemoteEnvironmentService {
         }
 
         // 3. Row FIRST, as pending_add (dedup-merges on environment_id, §6.1).
+        //
+        // Dedup is keyed on the host's SELF-ASSERTED environment_id (readable pre-auth from
+        // any host's descriptor), so a host the user is talked into pairing with can claim an
+        // existing row and have its token overwrite that row's Keychain entry. `base_url` is
+        // preserved, so no traffic is redirected, but the merged row's credential is
+        // clobbered. Accepted v1 residual of self-asserted identity — recorded here so it is
+        // not mistaken for cross-host verification.
         let env = self
             .repo
             .upsert_paired(UpsertPairedEnvironment {
                 environment_id: response.environment_id,
                 name: name.to_string(),
-                url,
+                url: url.clone(),
                 scopes: response.scopes,
-                protocol_version: descriptor.protocol_version,
+                // Prefer the authenticated exchange's version over the pre-auth descriptor's.
+                protocol_version: response
+                    .protocol_version
+                    .unwrap_or(descriptor.protocol_version),
             })
             .await?;
+        // The upsert just moved the row to `pending_add`. If it was the active environment,
+        // the mirror must not keep pointing at it while its credential is being replaced.
+        self.reset_active_if(env.id.as_str()).await;
 
         // On a dedup re-pair the same Keychain entry is about to be overwritten;
         // remember the replaced bearer so it can be revoked on the host after the
@@ -253,11 +276,10 @@ impl RemoteEnvironmentService {
         //    fully installed (never before — a failed re-pair must not kill the
         //    working credential).
         if let Some(previous_token) = replaced_token {
-            if let Err(error) = self
-                .host_client
-                .revoke_token(&env.base_url, &previous_token)
-                .await
-            {
+            // Against `url`, not `env.base_url`: after a dedup merge the stored base_url is
+            // still the OLD preferred endpoint, which is exactly the one that may have died
+            // and prompted this re-pair. `url` just completed a descriptor+pair exchange.
+            if let Err(error) = self.host_client.revoke_token(&url, &previous_token).await {
                 tracing::warn!(
                     environment = env.id.as_str(),
                     %error,
@@ -392,8 +414,14 @@ impl RemoteEnvironmentService {
                 }
             },
             Ok(false) => {
-                // The host provably refuses this bearer — keep the row so the UI
-                // can surface a re-pair; the dead token is not an orphan hazard.
+                // The host provably refuses this bearer. The row is kept (the dead token is
+                // not an orphan hazard), but nothing durable records WHY it is still
+                // pending_add — see `needs_repair` — so log it per row rather than only
+                // counting it.
+                tracing::warn!(
+                    environment = %row_id,
+                    "Host refused this environment's stored token; it needs re-pairing"
+                );
                 report.needs_repair.push(row_id);
             }
             Err(error) => {
@@ -490,8 +518,15 @@ impl RemoteEnvironmentService {
     }
 
     /// Authorizes a proxy call for `id` (P-26). Non-health ops require `id` to
-    /// equal the Rust-side active environment; health ops only require a
-    /// registered environment. `"local"` never routes through the remote proxy.
+    /// equal the Rust-side active environment **and** a settled `active` row;
+    /// health ops only require a registered row that is not being removed.
+    /// `"local"` never routes through the remote proxy.
+    ///
+    /// The status check is load-bearing, not belt-and-braces: the active mirror
+    /// can outlive a row's `Active` status (a dedup re-pair demotes the row to
+    /// `pending_add` while its Keychain token is mid-replacement), and PR 2.2
+    /// hangs the real HTTP transport off this authorization. Without it an
+    /// invoke could be signed with a half-installed credential.
     async fn authorize_proxy_target(
         &self,
         id: &str,
@@ -505,6 +540,20 @@ impl RemoteEnvironmentService {
             .get(&RemoteEnvironmentId::from_string(id))
             .await?
             .ok_or_else(|| RemoteEnvironmentError::UnknownEnvironment(id.to_string()))?;
+        let usable = if health_op {
+            // Health probes are how a background or reconciling environment is
+            // observed at all, so `pending_add` stays probeable; a row on its way
+            // out does not.
+            env.status != RemoteEnvironmentStatus::PendingDelete
+        } else {
+            env.status == RemoteEnvironmentStatus::Active
+        };
+        if !usable {
+            return Err(RemoteEnvironmentError::EnvironmentNotUsable(
+                id.to_string(),
+                env.status.as_str(),
+            ));
+        }
         if !health_op {
             let active = self.active_environment_id.read().await;
             if *active != id {

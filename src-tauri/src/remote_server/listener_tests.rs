@@ -477,7 +477,51 @@ async fn failed_serve_acquire_keeps_loopback_listener_running_with_degraded_stat
     assert_eq!(address, SocketAddr::from(([127, 0, 0, 1], port)));
     assert!(!status.active);
     assert!(status.degraded_reason.is_some());
-    assert_eq!(runner.calls(), vec![TailscaleCall::Acquire(port)]);
+    assert_eq!(
+        status.degraded_kind,
+        Some(super::RemoteServeDegradedKind::CliUnavailable),
+        "PR 1.7 branches on the kind, never on the reason prose (rule 5)"
+    );
+    assert_eq!(
+        runner.calls(),
+        vec![TailscaleCall::Acquire(port), TailscaleCall::Release],
+        "a Serve start that failed to acquire must clear any mapping an earlier run left \
+         behind rather than stay silently tailnet-reachable"
+    );
+}
+
+/// The doc contract on `start_listener` — "a failed persist releases the socket" — applied to
+/// the Serve mapping: an enable that cannot be persisted must not leave :443 forwarding at a
+/// listener this process is about to abandon.
+#[tokio::test]
+async fn a_failed_enable_persist_releases_the_acquired_serve_mapping() {
+    let db = SqliteTestDb::new("remote-listener-persist-failure");
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+    store.get_or_create().await.expect("settings should mint");
+    let port = reserve_loopback_port().await;
+    set_configured_port(&db, port);
+    // Break the store only AFTER the row and port are in place, so the failure lands exactly
+    // on `set_enabled` — after the bind and after the Serve acquire.
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_settings_update BEFORE UPDATE ON remote_host_settings
+             BEGIN SELECT RAISE(ABORT, 'settings store is unavailable'); END;",
+        )
+        .expect("refusing trigger should install");
+    });
+    let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
+
+    let error = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
+        .await
+        .expect_err("a failed enable persist must fail the start");
+
+    assert!(matches!(error, RemoteListenerError::Settings(_)));
+    assert!(!handle.is_running().await);
+    assert_eq!(
+        runner.calls(),
+        vec![TailscaleCall::Acquire(port), TailscaleCall::Release]
+    );
 }
 
 #[tokio::test]

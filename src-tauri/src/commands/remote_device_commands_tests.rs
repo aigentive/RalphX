@@ -37,6 +37,10 @@ impl RemoteAuditLogRepository for RecordingAuditRepository {
         self.limits.lock().expect("limits lock").push(limit);
         Ok(self.entries.clone())
     }
+
+    async fn prune_before(&self, _cutoff: &str) -> AppResult<usize> {
+        unreachable!("audit listing must not prune")
+    }
 }
 
 #[tokio::test]

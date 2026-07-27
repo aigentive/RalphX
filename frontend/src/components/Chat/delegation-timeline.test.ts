@@ -202,4 +202,37 @@ describe("projectDelegationTimelineMessages", () => {
       }),
     });
   });
+
+  it("matches a persisted start to its live task by tool-use identity before the job id is persisted", () => {
+    const persistedStart: ChatMessageData = {
+      id: "persisted-start",
+      role: "assistant",
+      content: "Delegated reviewer",
+      createdAt: "2026-07-23T00:00:00Z",
+      timelineSequence: 20,
+      contentBlocks: [{
+        type: "tool_use",
+        id: "provider-marker",
+        name: "delegate_start",
+        arguments: { agent_name: "ralphx-general-explorer" },
+        result: { status: "running" },
+      }],
+    };
+
+    const projection = projectDelegationTimelineMessages(
+      [persistedStart],
+      new Map([["provider-marker", liveTask()]]),
+    );
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]?.contentBlocks?.[0]).toMatchObject({
+      result: expect.objectContaining({
+        job_id: "job-1",
+        status: "completed",
+        content: "Live terminal handoff",
+        delegated_conversation_id: "child-conversation",
+      }),
+    });
+    expect(projection.liveAliases).toEqual(new Set(["provider-marker"]));
+  });
 });

@@ -90,6 +90,10 @@ import {
 import { useChatActions } from "@/hooks/useChatActions";
 import { useChatEvents } from "@/hooks/useChatEvents";
 import { useChatRecovery } from "@/hooks/useChatRecovery";
+import {
+  projectPersistedStreamingContentBlocks,
+  removePersistedStreamingPrefix,
+} from "@/hooks/chat-active-state";
 import { useQueuedMessagesHydration } from "@/hooks/useQueuedMessagesHydration";
 // useAgentEvents is already called inside useChat — no direct import needed
 import {
@@ -869,6 +873,12 @@ export function IntegratedChatPanel({
     enabled: !!activeConversationId,
     staleTime: 5000,
   });
+  const persistedStreamingContentBlocks = useMemo(
+    () => projectPersistedStreamingContentBlocks(
+      currentPrimaryConversationData?.messages ?? [],
+    ),
+    [currentPrimaryConversationData?.messages],
+  );
 
   // Recovery and polling effects (extracted to hook)
   const { isStreamingHydrated } = useChatRecovery({
@@ -884,6 +894,8 @@ export function IntegratedChatPanel({
     agentRunStatus: agentRunQuery.data?.status ?? undefined,
     ...(agentRunQuery.data?.id != null ? { activeAgentRunId: agentRunQuery.data.id } : {}),
     isVisible,
+    persistedStreamingContentBlocks,
+    isTimelineHydrated: currentPrimaryConversationData != null,
     setStreamingTasks,
     setStreamingToolCalls,
     setStreamingContentBlocks,
@@ -1354,6 +1366,23 @@ export function IntegratedChatPanel({
     streamingToolCalls.length > 0 ||
     (streamingContentBlocks?.length ?? 0) > 0 ||
     streamingTasks.size > 0;
+  const supplementalStreamingContentBlocks = useMemo(
+    () => removePersistedStreamingPrefix(
+      streamingContentBlocks ?? [],
+      persistedStreamingContentBlocks,
+    ),
+    [persistedStreamingContentBlocks, streamingContentBlocks],
+  );
+  const persistedStreamingToolIds = useMemo(
+    () => new Set(persistedStreamingContentBlocks.flatMap((block) =>
+      block.type === "tool_use" ? [block.toolCall.id] : []
+    )),
+    [persistedStreamingContentBlocks],
+  );
+  const supplementalStreamingToolCalls = useMemo(
+    () => streamingToolCalls.filter((toolCall) => !persistedStreamingToolIds.has(toolCall.id)),
+    [persistedStreamingToolIds, streamingToolCalls],
+  );
   const shouldUsePersistedStreamingTimelineItems =
     hasPersistedStreamingTimelineItems &&
     (!hasClientLiveStreamingState || !isStreamingHydrated);
@@ -1728,7 +1757,7 @@ export function IntegratedChatPanel({
                 streamingToolCalls={
                   shouldUsePersistedStreamingTimelineItems
                     ? []
-                    : streamingToolCalls
+                    : supplementalStreamingToolCalls
                 }
                 streamingTasks={
                   shouldUsePersistedStreamingTimelineItems
@@ -1738,7 +1767,7 @@ export function IntegratedChatPanel({
                 streamingContentBlocks={
                   shouldUsePersistedStreamingTimelineItems
                     ? []
-                    : streamingContentBlocks
+                    : supplementalStreamingContentBlocks
                 }
                 scrollToTimestamp={
                   isHistoryMode ? taskHistoryState?.timestamp : null

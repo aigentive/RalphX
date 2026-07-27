@@ -40,6 +40,14 @@ pub struct RemotePairingRedemption {
     pub requested_scopes: Option<RemoteScopeSet>,
     /// RFC3339 timestamp used for both the expiry comparison and the written rows.
     pub now: String,
+    /// Detail for the `pairing_succeeded` audit row, written **inside** the same
+    /// transaction as the device mint.
+    ///
+    /// It lives here rather than in the handler because a post-commit audit write that fails
+    /// leaves a consumed code plus an active device whose token was never delivered — an
+    /// unusable row the owner has to clean up by hand. Mint and trail commit together or not
+    /// at all.
+    pub audit_detail: Option<String>,
 }
 
 /// Outcome of redeeming a pairing code. Exactly one concurrent redemption can be `Paired`.
@@ -100,7 +108,8 @@ pub trait RemoteDeviceRepository: Send + Sync {
 pub trait RemotePairingCodeRepository: Send + Sync {
     async fn create(&self, code: RemotePairingCode) -> AppResult<RemotePairingCode>;
 
-    /// Validates and consumes a code, minting the device **in the same transaction**.
+    /// Validates and consumes a code, minting the device **and its audit row** in the same
+    /// transaction.
     ///
     /// `BEGIN IMMEDIATE` plus a guarded `consumed_at IS NULL` update means two concurrent
     /// redemptions of one code can never both succeed (P-7).
@@ -167,4 +176,11 @@ pub trait RemoteAuditLogRepository: Send + Sync {
     /// Most recent first. Named `list_recent` so it does not collide with
     /// [`RemoteDeviceRepository::list`] on a type implementing both.
     async fn list_recent(&self, limit: Option<i64>) -> AppResult<Vec<RemoteAuditEntry>>;
+
+    /// Drops rows older than `cutoff` (RFC3339), returning how many were removed.
+    ///
+    /// The log is append-only on the request path, so without retention it grows for the life
+    /// of the install inside the main app database. Reads are capped at 1000 rows; writes need
+    /// a ceiling too.
+    async fn prune_before(&self, cutoff: &str) -> AppResult<usize>;
 }

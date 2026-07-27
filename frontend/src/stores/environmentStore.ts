@@ -131,11 +131,24 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
 
   hydrateActiveEnvironment: async () => {
     const id = await remoteEnvironmentsApi.getActiveEnvironment();
-    set((state) => ({
-      activeEnvironmentId: state.environments.some((entry) => entry.id === id)
-        ? id
-        : LOCAL_ENVIRONMENT_ID,
-    }));
+    const isKnown = () => get().environments.some((entry) => entry.id === id);
+
+    // An id that is not in the list may simply mean the registry has not loaded yet.
+    // Clamping on that would silently diverge from the Rust authority, which keeps
+    // authorizing the environment the UI stopped showing.
+    if (!isKnown()) {
+      await get().loadEnvironments();
+    }
+    if (isKnown()) {
+      set({ activeEnvironmentId: id });
+      return;
+    }
+
+    // A genuine clamp: tell Rust too, so mirror and authority agree.
+    set({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    if (id !== LOCAL_ENVIRONMENT_ID) {
+      await remoteEnvironmentsApi.setActiveEnvironment(LOCAL_ENVIRONMENT_ID);
+    }
   },
 
   setConnectionState: (id, connection) => {

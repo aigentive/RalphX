@@ -7,6 +7,35 @@ use crate::domain::services::{
 };
 use crate::infrastructure::agents::claude::agent_names;
 
+#[test]
+fn queue_reference_merge_uses_the_live_deduplication_seam() {
+    let inherited = ComposerIntegrationReference {
+        provider: "clickup".to_string(),
+        kind: "task".to_string(),
+        id: "CU-42".to_string(),
+        key: None,
+        title: Some("Inherited".to_string()),
+        url: None,
+        summary_excerpt: None,
+        include_transcript: None,
+    };
+    let current = ComposerIntegrationReference {
+        title: Some("Queued current".to_string()),
+        ..inherited.clone()
+    };
+
+    let merged = super::super::merge_conversation_integration_references(
+        &[inherited],
+        &[current],
+        None,
+        None,
+        None,
+    );
+
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].title.as_deref(), Some("Queued current"));
+}
+
 fn codex_continuation_runtime() -> super::super::continuation_runtime::ContinuationRuntime {
     super::super::continuation_runtime::ContinuationRuntime {
         harness: AgentHarnessKind::Codex,
