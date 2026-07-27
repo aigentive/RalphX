@@ -5,8 +5,10 @@ use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePublicationMetadataPhase, AgentWorkspacePublicationMetadataReceipt,
+    AgentWorkspacePublicationMetadataState, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewFixerSnapshot,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, ChatConversationId,
     IdeationSessionId, PlanBranchId, ProjectId,
@@ -68,6 +70,62 @@ pub struct AgentWorkspaceRepairStateTransition {
     pub pr_supervision_updated_at: DateTime<Utc>,
     pub pr_auto_merge_current: Option<bool>,
     pub base_commit: Option<String>,
+}
+
+/// Publication fields settled together with a metadata receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationUpdate {
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub pr_status: Option<String>,
+    pub push_status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationGuard {
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub pr_status: Option<String>,
+    pub push_status: Option<String>,
+    pub metadata_attempt_id: Option<String>,
+    pub metadata_phase: Option<AgentWorkspacePublicationMetadataPhase>,
+    pub metadata_state: Option<AgentWorkspacePublicationMetadataState>,
+}
+
+impl AgentWorkspacePublicationGuard {
+    pub fn from_workspace(workspace: &AgentConversationWorkspace) -> Self {
+        Self {
+            pr_number: workspace.publication_pr_number,
+            pr_url: workspace.publication_pr_url.clone(),
+            pr_status: workspace.publication_pr_status.clone(),
+            push_status: workspace.publication_push_status.clone(),
+            metadata_attempt_id: workspace.publication_metadata_attempt_id.clone(),
+            metadata_phase: workspace.publication_metadata_phase,
+            metadata_state: workspace.publication_metadata_state,
+        }
+    }
+}
+
+/// Claims a receipt together with the exact normalized metadata decision it authorizes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationMetadataReceiptClaim {
+    pub receipt: AgentWorkspacePublicationMetadataReceipt,
+    pub decision: AgentWorkspacePrMetadataDecision,
+    pub event: AgentConversationWorkspacePublicationEvent,
+}
+
+/// One attempt-scoped redraft. The CAS guard prevents a stale retry from replacing authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspacePublicationMetadataReceiptRefresh {
+    pub decision: AgentWorkspacePrMetadataDecision,
+    pub target_pr_number: i64,
+    pub before_authority_sha256: String,
+    pub before_title_sha256: String,
+    pub before_editable_body_sha256: String,
+    pub before_managed_suffix_sha256: Option<String>,
+    pub intended_title_sha256: Option<String>,
+    pub intended_editable_body_sha256: Option<String>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[async_trait]
@@ -266,6 +324,19 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Lists active workspaces whose current PR metadata receipt still requires recovery.
+    ///
+    /// This is intentionally separate from generic transient publish statuses because receipt
+    /// recovery owns `pushing`, while generic stale recovery must never downgrade it. The age
+    /// cutoff prevents periodic recovery from preempting an in-flight metadata mutation.
+    async fn list_active_pending_publication_metadata_receipt_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = stale_older_than_secs;
+        Ok(Vec::new())
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,
@@ -298,6 +369,68 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         pr_status: Option<&str>,
         push_status: Option<&str>,
     ) -> AppResult<()>;
+
+    /// Exclusively starts an existing-PR metadata receipt and its first audit event.
+    /// Terminal prior receipts may be replaced; pending receipts remain authoritative.
+    async fn claim_publication_metadata_receipt(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _claim: AgentWorkspacePublicationMetadataReceiptClaim,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Changes receipt state and appends its audit events only while the exact attempt and
+    /// expected receipt phase/state still own the workspace.
+    async fn compare_and_set_publication_metadata_receipt_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: &str,
+        _expected_phase: AgentWorkspacePublicationMetadataPhase,
+        _expected_state: AgentWorkspacePublicationMetadataState,
+        _next_phase: AgentWorkspacePublicationMetadataPhase,
+        _next_state: AgentWorkspacePublicationMetadataState,
+        _refresh: Option<AgentWorkspacePublicationMetadataReceiptRefresh>,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Atomically settles general publication fields, the receipt, and receipt-scoped events
+    /// while the exact attempt and expected receipt phase/state remain current.
+    async fn settle_publication_metadata_receipt_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: &str,
+        _expected_phase: AgentWorkspacePublicationMetadataPhase,
+        _expected_state: AgentWorkspacePublicationMetadataState,
+        _next_phase: AgentWorkspacePublicationMetadataPhase,
+        _next_state: AgentWorkspacePublicationMetadataState,
+        _publication: AgentWorkspacePublicationUpdate,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Atomically updates general publication state and appends events for paths with no
+    /// existing-PR metadata receipt (for example Preserve and initial PR creation).
+    async fn update_publication_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspacePublicationGuard,
+        _publication: AgentWorkspacePublicationUpdate,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Returns no receipt for legacy rows. Partial receipt columns are invalid and fail closed.
+    async fn get_publication_metadata_receipt(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePublicationMetadataReceipt>> {
+        Ok(None)
+    }
 
     async fn compare_and_set_repair_state(
         &self,

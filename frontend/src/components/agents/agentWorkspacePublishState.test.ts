@@ -12,6 +12,7 @@ import {
   getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceDescriptionFailurePresentation,
+  getAgentWorkspacePublishReceiptPresentation,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
@@ -29,10 +30,37 @@ describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
     );
 
     const linked = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
-    expect(linked.summary).toContain("metadata step for PR #888");
-    expect(linked.summary).toContain("did not apply an unsafe replacement body");
+    expect(linked.summary).toContain("metadata outcome for PR #888");
+    expect(linked.summary).toContain("could not confirm");
+    expect(linked.summary).not.toContain("did not apply");
     expect(linked.summary).not.toContain("no pull request was opened");
     expect(linked.summary).not.toContain("branch was unchanged");
+  });
+
+  it("does not claim a legacy description failure left a linked PR untouched", () => {
+    const presentation = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
+
+    expect(presentation.summary).not.toContain("did not apply");
+    expect(presentation.summary).toContain("could not confirm");
+  });
+});
+
+describe("getAgentWorkspacePublishReceiptPresentation", () => {
+  it.each([
+    ["prepared", "not_attempted", /Updating PR metadata/i],
+    ["reconciling", "unknown", /may have applied the description/i],
+    ["settled", "not_applied", /did not apply the requested description/i],
+    ["settled", "conflicted", /did not overwrite the newer remote version/i],
+  ] as const)("renders truthful %s/%s evidence", (phase, state, summary) => {
+    expect(
+      getAgentWorkspacePublishReceiptPresentation(
+        workspace({
+          publicationMetadataPhase: phase,
+          publicationMetadataState: state,
+          publicationPrNumber: 888,
+        }),
+      )?.summary,
+    ).toMatch(summary);
   });
 });
 
@@ -203,6 +231,18 @@ describe("isAgentWorkspacePublishActive", () => {
   it("handles a missing workspace", () => {
     expect(isAgentWorkspacePublishActive(null)).toBe(false);
   });
+
+  it("keeps unsettled metadata receipts active even when the legacy status is nonterminal", () => {
+    expect(
+      isAgentWorkspacePublishActive(
+        workspace({
+          publicationPushStatus: "pushing",
+          publicationMetadataPhase: "reconciling",
+          publicationMetadataState: "unknown",
+        }),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("getPostBaselinePublicationEvents", () => {
@@ -304,6 +344,88 @@ describe("classifyAgentWorkspacePublishTerminalEvent", () => {
       ),
     ).toBeNull();
   });
+
+  it("classifies current receipt settlement without accepting stale-attempt evidence", () => {
+    const applied = publicationEvent({
+      id: "applied",
+      step: "metadata_settled",
+      status: "succeeded",
+      classification: "applied",
+      attemptId: "attempt-current",
+    });
+    const staleFailure = publicationEvent({
+      id: "stale-failure",
+      step: "metadata_settled",
+      status: "failed",
+      classification: "conflicted",
+      attemptId: "attempt-stale",
+    });
+    const receiptWorkspace = workspace({
+      publicationPrNumber: 78,
+      publicationPushStatus: "pushed",
+      publicationMetadataAttemptId: "attempt-current",
+      publicationMetadataPhase: "settled",
+      publicationMetadataState: "reconciled",
+    });
+
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [staleFailure, applied],
+        receiptWorkspace,
+        currentFreshness,
+      ),
+    ).toEqual({ event: applied, kind: "success" });
+  });
+
+  it("classifies an unscoped push failure after an earlier receipt settled", () => {
+    const pushFailure = publicationEvent({
+      id: "push-failure",
+      step: "failed",
+      status: "failed",
+      classification: "operational",
+      attemptId: null,
+    });
+    const receiptWorkspace = workspace({
+      publicationPushStatus: "failed",
+      publicationMetadataAttemptId: "attempt-previous",
+      publicationMetadataPhase: "settled",
+      publicationMetadataState: "applied",
+    });
+
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [pushFailure],
+        receiptWorkspace,
+        undefined,
+      ),
+    ).toEqual({ event: pushFailure, kind: "failure" });
+  });
+
+  it.each([
+    ["skipped", "not_attempted"],
+    ["failed", "not_applied"],
+    ["failed", "conflicted"],
+  ] as const)(
+    "classifies terminal receipt %s/%s as failure",
+    (status, classification) => {
+      const event = publicationEvent({
+        step: "metadata_settled",
+        status,
+        classification,
+        attemptId: "attempt-current",
+      });
+      expect(
+        classifyAgentWorkspacePublishTerminalEvent(
+          [event],
+          workspace({
+            publicationMetadataAttemptId: "attempt-current",
+            publicationMetadataPhase: "settled",
+          }),
+          undefined,
+        ),
+      ).toEqual({ event, kind: "failure" });
+    },
+  );
 
   it.each([
     ["needs_agent", "failed", "agent_fixable", "needs_agent"],
