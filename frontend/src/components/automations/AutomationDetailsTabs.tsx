@@ -19,10 +19,10 @@ export function AutomationDetailsTabs({
 }: AutomationDetailsTabsProps) {
   return (
     <section
-      className="rounded-md p-4"
+      className="rounded-lg p-5 shadow-[var(--shadow-xs)]"
       style={{
-        backgroundColor: "var(--bg-surface)",
-        borderColor: "var(--border-default)",
+        backgroundColor: "var(--bg-elevated, #232329)",
+        borderColor: "var(--border-subtle, #2e2e36)",
         borderStyle: "solid",
         borderWidth: "1px",
       }}
@@ -30,17 +30,23 @@ export function AutomationDetailsTabs({
     >
       <Tabs defaultValue="config">
         <TabsList
-          className="h-9 justify-start rounded-md bg-transparent p-0"
+          className="h-9 justify-start rounded-md p-1"
+          style={{
+            backgroundColor: "var(--bg-surface, #1e1e23)",
+            borderColor: "var(--border-subtle, #2e2e36)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+          }}
           aria-label="Automation details"
         >
-          <TabsTrigger className="rounded-sm px-3 py-1 text-xs" value="config">
+          <TabsTrigger className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm" value="config">
             Config
           </TabsTrigger>
-          <TabsTrigger className="rounded-sm px-3 py-1 text-xs" value="spec">
+          <TabsTrigger className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm" value="spec">
             Spec
             {hasSpec ? <span className="ml-1" aria-hidden="true">•</span> : null}
           </TabsTrigger>
-          <TabsTrigger className="rounded-sm px-3 py-1 text-xs" value="inputs">
+          <TabsTrigger className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm" value="inputs">
             Inputs{inputCount > 0 ? ` (${inputCount})` : ""}
           </TabsTrigger>
         </TabsList>

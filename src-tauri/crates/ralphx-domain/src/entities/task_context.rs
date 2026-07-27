@@ -33,6 +33,9 @@ pub struct TaskContext {
     /// Implementation plan artifact (summary, not full content)
     pub plan_artifact: Option<ArtifactSummary>,
 
+    /// Exact implementation blueprint used to create the source proposal/task.
+    pub blueprint_artifact: Option<ArtifactSummary>,
+
     /// Other artifacts related to the plan
     pub related_artifacts: Vec<ArtifactSummary>,
 

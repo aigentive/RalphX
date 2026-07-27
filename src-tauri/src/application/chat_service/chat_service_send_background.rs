@@ -11,7 +11,9 @@ use tracing::Instrument;
 
 use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
-use super::chat_service_streaming::{is_completion_tool_name, process_stream_background};
+use super::chat_service_streaming::{
+    completion_tool_result_accepted, is_completion_tool_name, process_stream_background,
+};
 use super::chat_service_types::{
     AgentMessageCreatedPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
 };
@@ -256,19 +258,20 @@ fn is_mutating_work_tool(tool_name: &str) -> bool {
     AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES.contains(&tool_name)
 }
 
-fn is_nonrecoverable_terminal_tool(tool_name: &str) -> bool {
-    if is_completion_tool_name(tool_name) {
-        return true;
-    }
-
+fn is_nonrecoverable_terminal_tool(tool_name: &str, result: Option<&serde_json::Value>) -> bool {
     let normalized = tool_name.trim().to_ascii_lowercase();
     normalized.ends_with("ask_user_question")
         || normalized.ends_with("permission_request")
         || normalized.ends_with("resolve_permission_request")
+        || (is_completion_tool_name(tool_name)
+            && result.is_some_and(|result| completion_tool_result_accepted(Some(result))))
 }
 
-fn is_recoverable_terminal_tool_activity(tool_name: &str) -> bool {
-    !is_nonrecoverable_terminal_tool(tool_name)
+fn is_recoverable_terminal_tool_activity(
+    tool_name: &str,
+    result: Option<&serde_json::Value>,
+) -> bool {
+    !is_nonrecoverable_terminal_tool(tool_name, result)
 }
 
 fn has_recoverable_tool_activity_after_final_text(
@@ -278,9 +281,9 @@ fn has_recoverable_tool_activity_after_final_text(
 ) -> bool {
     if content_blocks.is_empty() {
         return response_text.trim().is_empty()
-            && tool_calls
-                .last()
-                .is_some_and(|tool_call| is_recoverable_terminal_tool_activity(&tool_call.name));
+            && tool_calls.last().is_some_and(|tool_call| {
+                is_recoverable_terminal_tool_activity(&tool_call.name, tool_call.result.as_ref())
+            });
     }
 
     let mut recoverable_tool_after_last_text = false;
@@ -290,8 +293,9 @@ fn has_recoverable_tool_activity_after_final_text(
                 recoverable_tool_after_last_text = false;
             }
             ContentBlockItem::Text { .. } => {}
-            ContentBlockItem::ToolUse { name, .. } => {
-                recoverable_tool_after_last_text = is_recoverable_terminal_tool_activity(name);
+            ContentBlockItem::ToolUse { name, result, .. } => {
+                recoverable_tool_after_last_text =
+                    is_recoverable_terminal_tool_activity(name, result.as_ref());
             }
         }
     }
@@ -1102,6 +1106,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 let stderr_text = crate::utils::secret_redactor::redact(&outcome.stderr_text);
                 let turns_finalized = outcome.turns_finalized;
                 let turn_completion_applied = outcome.completion_applied;
+                let mode_handoff_exit = outcome.mode_handoff_exit;
                 // Debug: Log what we got from stream processing
                 tracing::info!(
                     "[CHAT_SERVICE] Stream complete: context={}/{}, response_len={}, tool_calls={}, session_id={:?}",
@@ -1734,11 +1739,15 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     0
                 };
                 let initial_queue_count = initial_memory_queue_count + initial_durable_queue_count;
+                // A runtime-handoff watchdog cancels only the retiring owner. Its
+                // replacement must not inherit that cancelled token or be mistaken
+                // for a user-requested stop.
+                let queue_cancellation_requested = cancellation_requested && !mode_handoff_exit;
                 let will_process_queue = should_process_stream_queue(
                     initial_queue_count,
                     has_session_for_queue,
                     outcome.silent_interactive_exit,
-                    cancellation_requested,
+                    queue_cancellation_requested,
                 );
 
                 tracing::info!(
@@ -1747,6 +1756,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     turns_finalized,
                     skip_post_loop_finalization,
                     silent_interactive_exit = outcome.silent_interactive_exit,
+                    mode_handoff_exit,
                     cancellation_requested,
                     initial_queue_count,
                     has_session_for_queue,
@@ -1889,7 +1899,11 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         app_handle.clone(),
                         resolved_project_id.as_deref(),
                         conversation_coordination_mode,
-                        cancellation_token.clone(),
+                        if mode_handoff_exit {
+                            CancellationToken::new()
+                        } else {
+                            cancellation_token.clone()
+                        },
                         run_chain_id.as_deref(),
                         Some(&agent_run_id),
                         streaming_state_cache.clone(),

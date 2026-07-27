@@ -52,6 +52,7 @@ fn test_build_unrelated_drift_followup_prompt_includes_scope_context() {
             ..Default::default()
         }),
         plan_artifact: None,
+        blueprint_artifact: None,
         related_artifacts: Vec::new(),
         steps: Vec::new(),
         step_progress: None,

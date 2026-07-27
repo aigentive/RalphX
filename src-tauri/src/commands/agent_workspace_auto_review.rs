@@ -106,12 +106,12 @@ impl AutoReviewSkipReason {
     }
 }
 
-pub(crate) fn install_agent_workspace_auto_review_listeners<R>(app: &tauri::App<R>)
+pub(crate) fn install_agent_workspace_auto_review_listeners<R>(app_handle: tauri::AppHandle<R>)
 where
     R: Runtime,
 {
-    let run_completed_handle = app.handle().clone();
-    app.listen_any(AGENT_RUN_COMPLETED, move |event| {
+    let run_completed_handle = app_handle.clone();
+    app_handle.listen_any(AGENT_RUN_COMPLETED, move |event| {
         spawn_auto_review_from_completion_event(
             run_completed_handle.clone(),
             AGENT_RUN_COMPLETED,
@@ -119,8 +119,8 @@ where
         );
     });
 
-    let turn_completed_handle = app.handle().clone();
-    app.listen_any(AGENT_TURN_COMPLETED, move |event| {
+    let turn_completed_handle = app_handle.clone();
+    app_handle.listen_any(AGENT_TURN_COMPLETED, move |event| {
         spawn_auto_review_from_completion_event(
             turn_completed_handle.clone(),
             AGENT_TURN_COMPLETED,

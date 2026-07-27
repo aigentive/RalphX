@@ -20,9 +20,7 @@ export const FEATURE_FLAGS_QUERY_KEY = ["featureFlags"] as const;
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
-  ideationPage: false,
   automationsPage: true,
-  battleMode: true,
   atlassianOauth: false,
   ticketingDashboard: false,
   agentPersonas: false,

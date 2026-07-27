@@ -1,8 +1,11 @@
+use rusqlite::OptionalExtension;
+
 use crate::application::interactive_notification_producer::{
     plan_notification_key, InteractiveNotificationProducer,
 };
 use crate::application::plan_verification_service::get_plan_verification_status;
 use crate::application::{AppState, NotificationContextResolver};
+use crate::domain::entities::ideation::PlanArtifactBundle;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentRunActionKind,
     AgentRunId, AgentRunStatus, ChatConversationId, IdeationSession, IdeationSessionFlow,
@@ -36,20 +39,23 @@ async fn set_deferred_marker(
     state: &AppState,
     session_id: &IdeationSessionId,
     artifact_id: &str,
+    plan_target_id: &str,
 ) -> AppResult<()> {
     let session_id = session_id.as_str().to_string();
     let artifact_id = artifact_id.to_string();
+    let plan_target_id = plan_target_id.to_string();
     state
         .db
         .run(move |conn| {
             conn.execute(
                 "INSERT INTO deferred_plan_approval_notifications
-                    (session_id, artifact_id, created_at)
-                 VALUES (?1, ?2, datetime('now'))
+                    (session_id, artifact_id, plan_target_id, created_at)
+                 VALUES (?1, ?2, ?3, datetime('now'))
                  ON CONFLICT(session_id) DO UPDATE SET
                     artifact_id = excluded.artifact_id,
+                    plan_target_id = excluded.plan_target_id,
                     created_at = excluded.created_at",
-                rusqlite::params![session_id, artifact_id],
+                rusqlite::params![session_id, artifact_id, plan_target_id],
             )?;
             Ok(())
         })
@@ -69,6 +75,27 @@ async fn deferred_artifact_id(
             )?;
             let mut rows = statement.query([session_id])?;
             Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
+        })
+        .await
+}
+
+async fn deferred_plan_marker(
+    state: &AppState,
+    session_id: &IdeationSessionId,
+) -> AppResult<Option<(String, String)>> {
+    let session_id = session_id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.query_row(
+                "SELECT artifact_id, COALESCE(plan_target_id, artifact_id)
+                 FROM deferred_plan_approval_notifications
+                 WHERE session_id = ?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(Into::into)
         })
         .await
 }
@@ -109,6 +136,27 @@ pub async fn has_deferred_plan_approval_in_db(
                 WHERE session_id = ?1 AND artifact_id = ?2
              )",
             rusqlite::params![session_id, artifact_id],
+            |row| row.get::<_, bool>(0),
+        )?)
+    })
+    .await
+}
+
+pub async fn has_deferred_plan_target_in_db(
+    db: &crate::infrastructure::sqlite::DbConnection,
+    session_id: &IdeationSessionId,
+    plan_target_id: &str,
+) -> AppResult<bool> {
+    let session_id = session_id.as_str().to_string();
+    let plan_target_id = plan_target_id.to_string();
+    db.run(move |conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM deferred_plan_approval_notifications
+                WHERE session_id = ?1
+                  AND COALESCE(plan_target_id, artifact_id) = ?2
+             )",
+            rusqlite::params![session_id, plan_target_id],
             |row| row.get::<_, bool>(0),
         )?)
     })
@@ -188,7 +236,6 @@ async fn should_defer_on_publish(
 async fn record_plan_approval(
     state: &AppState,
     session: &IdeationSession,
-    artifact_id: &str,
 ) -> AppResult<PlanApprovalNotificationDisposition> {
     if !session_is_notification_eligible(state, session).await? {
         clear_deferred_marker(state, &session.id).await?;
@@ -198,7 +245,12 @@ async fn record_plan_approval(
         .plan_approval_repo
         .get_by_session(&session.id)
         .await?
-        .is_some_and(|approval| approval.artifact_id.as_str() == artifact_id)
+        .is_some_and(|approval| {
+            session.plan_artifact_bundle().is_some_and(|bundle| {
+                approval.artifact_id == bundle.overview_id
+                    && approval.blueprint_artifact_id == bundle.blueprint_id
+            })
+        })
     {
         clear_deferred_marker(state, &session.id).await?;
         return Ok(PlanApprovalNotificationDisposition::Skipped);
@@ -210,18 +262,43 @@ async fn record_plan_approval(
             "Plan approval notification has no navigable target".to_string(),
         ));
     }
+    let plan_target_id = session
+        .plan_artifact_bundle()
+        .ok_or_else(|| AppError::Validation("Plan bundle is incomplete".to_string()))?
+        .action_target_id();
     state
         .notification_service()
         .record_result(InteractiveNotificationProducer::plan_approval(
             session.project_id.to_string(),
             session.id.as_str(),
-            artifact_id,
+            &plan_target_id,
             session.title.as_deref(),
             resolved.target,
         ))
         .await?;
     clear_deferred_marker(state, &session.id).await?;
     Ok(PlanApprovalNotificationDisposition::Recorded)
+}
+
+pub(crate) async fn resolve_plan_approval_notifications(
+    state: &AppState,
+    session_id: &IdeationSessionId,
+    bundle: &PlanArtifactBundle,
+) {
+    let plan_target_id = bundle.action_target_id();
+    state
+        .notification_service()
+        .resolve_workflow_notification(&plan_notification_key(session_id.as_str(), &plan_target_id))
+        .await;
+    if plan_target_id != bundle.overview_id.as_str() {
+        state
+            .notification_service()
+            .resolve_workflow_notification(&plan_notification_key(
+                session_id.as_str(),
+                bundle.overview_id.as_str(),
+            ))
+            .await;
+    }
 }
 
 pub(crate) async fn reconcile_plan_approval_on_publish(
@@ -232,6 +309,7 @@ pub(crate) async fn reconcile_plan_approval_on_publish(
     authority: Option<&PlanApprovalPublishAuthority>,
 ) {
     for session in sessions {
+        let prior_bundle = session.plan_artifact_bundle();
         if let Some(prior_artifact_id) = prior_artifact_id {
             state
                 .notification_service()
@@ -240,17 +318,30 @@ pub(crate) async fn reconcile_plan_approval_on_publish(
                     prior_artifact_id,
                 ))
                 .await;
+        } else if let Some(prior_bundle) = prior_bundle.as_ref() {
+            resolve_plan_approval_notifications(state, &session.id, prior_bundle).await;
         }
         let result = async {
-            if !session_is_notification_eligible(state, session).await? {
+            let current_session = state
+                .ideation_session_repo
+                .get_by_id(&session.id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session.id)))?;
+            let Some(bundle) = current_session.plan_artifact_bundle() else {
+                clear_deferred_marker(state, &session.id).await?;
+                return Ok(PlanApprovalNotificationDisposition::Skipped);
+            };
+            let overview_id = bundle.overview_id.as_str();
+            let plan_target_id = bundle.action_target_id();
+            if !session_is_notification_eligible(state, &current_session).await? {
                 clear_deferred_marker(state, &session.id).await?;
                 return Ok(PlanApprovalNotificationDisposition::Skipped);
             }
-            if should_defer_on_publish(state, session, artifact_id, authority).await {
-                set_deferred_marker(state, &session.id, artifact_id).await?;
+            if should_defer_on_publish(state, &current_session, &plan_target_id, authority).await {
+                set_deferred_marker(state, &session.id, overview_id, &plan_target_id).await?;
                 return Ok(PlanApprovalNotificationDisposition::Deferred);
             }
-            record_plan_approval(state, session, artifact_id).await
+            record_plan_approval(state, &current_session).await
         }
         .await;
         if let Err(error) = result {
@@ -263,7 +354,9 @@ pub async fn release_deferred_plan_approval(
     state: &AppState,
     session_id: &IdeationSessionId,
 ) -> AppResult<PlanApprovalNotificationDisposition> {
-    let Some(marker_artifact_id) = deferred_artifact_id(state, session_id).await? else {
+    let Some((_marker_artifact_id, marker_target_id)) =
+        deferred_plan_marker(state, session_id).await?
+    else {
         return Ok(PlanApprovalNotificationDisposition::Skipped);
     };
     let session = state
@@ -271,12 +364,16 @@ pub async fn release_deferred_plan_approval(
         .get_by_id(session_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-    if session.plan_artifact_id.as_ref().map(|id| id.as_str()) != Some(marker_artifact_id.as_str())
+    if session
+        .plan_artifact_bundle()
+        .map(|bundle| bundle.action_target_id())
+        .as_deref()
+        != Some(marker_target_id.as_str())
     {
         clear_deferred_marker(state, session_id).await?;
         return Ok(PlanApprovalNotificationDisposition::Skipped);
     }
-    record_plan_approval(state, &session, &marker_artifact_id).await
+    record_plan_approval(state, &session).await
 }
 
 pub async fn release_deferred_plan_approval_for_conversation(
@@ -330,7 +427,12 @@ pub async fn release_deferred_plan_approval_for_run(
     let Some(session) = state.ideation_session_repo.get_by_id(&session_id).await? else {
         return Ok(PlanApprovalNotificationDisposition::Skipped);
     };
-    if session.plan_artifact_id.as_ref().map(|id| id.as_str()) != run.action_target_id.as_deref() {
+    if session
+        .plan_artifact_bundle()
+        .map(|bundle| bundle.action_target_id())
+        .as_deref()
+        != run.action_target_id.as_deref()
+    {
         return Ok(PlanApprovalNotificationDisposition::Skipped);
     }
     release_deferred_plan_approval(state, &session_id).await

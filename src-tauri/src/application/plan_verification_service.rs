@@ -14,7 +14,7 @@ use crate::domain::services::{
 };
 use crate::error::{AppError, AppResult};
 
-const VERIFY_PLAN_PROMPT: &str = "Verify the current linked plan now. Re-read the linked draft and relevant repository evidence; challenge goal alignment, assumptions, integration coverage, state transitions, failure and rollback edges, proof obligations, and testing. Verify that the plan follows established project patterns and rules plus relevant industry best practices for the stack; reuses existing components and functionality where suitable; improves UI/UX without regressions when UI is affected; makes product sense; and remains valid against meaningful remote base branch drift that could obsolete or supersede it. If fresh remote evidence is unavailable, report that limitation instead of assuming no drift. Choose context-specific reasoning lenses or allowed general-purpose exploration delegates only when useful. Update the same linked plan if you find material gaps. When the resulting current draft is genuinely implementation-ready, call complete_plan_verification exactly once. Report what changed or why no material changes were needed. Do not approve or implement the plan.";
+const VERIFY_PLAN_PROMPT: &str = "Verify the current linked plan bundle now. Re-read both the Plan Overview and Implementation Blueprint plus relevant repository evidence; challenge goal alignment, assumptions, step self-containment, exact file/symbol grounding, integration coverage, state transitions, failure and rollback edges, proof obligations, and testing. Verify that both documents remain mutually consistent, follow established project patterns and rules plus relevant industry best practices for the stack, reuse existing components and functionality where suitable, improve UI/UX without regressions when UI is affected, make product sense, and remain valid against meaningful remote base branch drift that could obsolete or supersede them. If fresh remote evidence is unavailable, report that limitation instead of assuming no drift. Choose context-specific reasoning lenses or allowed general-purpose exploration delegates only when useful. Update either or both bundle members if you find material gaps. When the exact resulting bundle is genuinely implementation-ready, call complete_plan_verification exactly once. Report what changed or why no material changes were needed. Do not approve or implement the plan.";
 
 struct AdmissionMarkerGuard {
     admissions: std::sync::Arc<dashmap::DashMap<String, String>>,
@@ -255,7 +255,7 @@ fn exact_verified_status(session: &IdeationSession) -> Option<PlanVerificationSt
         .verified_plan_artifact_id
         .as_ref()
         .map(ToString::to_string);
-    if current.is_some() && current == verified {
+    if session.has_exact_plan_verification() {
         return Some(PlanVerificationStatus {
             session_id: session.id.as_str().to_string(),
             status: PlanVerificationStatusKind::Verified,
@@ -315,11 +315,12 @@ pub async fn get_plan_verification_status(
         .get_by_id(session_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-    let Some(artifact_id) = session.plan_artifact_id.as_ref() else {
+    let Some(bundle) = session.plan_artifact_bundle() else {
         return Ok(
             exact_verified_status(&session).unwrap_or_else(|| status_from_run(&session, None))
         );
     };
+    let action_target_id = bundle.action_target_id();
     let target = resolve_conversation_target(state, &session).await?;
     if let Some(conversation_id) = target.conversation_id.as_ref() {
         if let Some(active_run) = state
@@ -328,7 +329,7 @@ pub async fn get_plan_verification_status(
                 conversation_id,
                 AgentRunActionKind::VerifyPlan,
                 session.id.as_str(),
-                artifact_id.as_str(),
+                &action_target_id,
             )
             .await?
         {
@@ -340,7 +341,7 @@ pub async fn get_plan_verification_status(
         &target.queue_key,
         &session,
         session.id.as_str(),
-        artifact_id.as_str(),
+        &action_target_id,
     )
     .await?
     {
@@ -359,7 +360,7 @@ pub async fn get_plan_verification_status(
                 conversation_id,
                 AgentRunActionKind::VerifyPlan,
                 session.id.as_str(),
-                artifact_id.as_str(),
+                &action_target_id,
             )
             .await?
     } else {
@@ -388,9 +389,10 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         .get_by_id(session_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-    let Some(artifact_id) = session.plan_artifact_id.as_ref() else {
+    let Some(bundle) = session.plan_artifact_bundle() else {
         return Ok(PlanVerificationRequestOutcome::NoPlan);
     };
+    let action_target_id = bundle.action_target_id();
     let target = resolve_conversation_target(state, &session).await?;
     if let Some(conversation_id) = target.conversation_id.as_ref() {
         if state
@@ -399,7 +401,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
                 conversation_id,
                 AgentRunActionKind::VerifyPlan,
                 session.id.as_str(),
-                artifact_id.as_str(),
+                &action_target_id,
             )
             .await?
             .is_some()
@@ -412,7 +414,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         &target.queue_key,
         &session,
         session.id.as_str(),
-        artifact_id.as_str(),
+        &action_target_id,
     )
     .await?
     {
@@ -420,9 +422,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         return Ok(PlanVerificationRequestOutcome::AlreadyQueued);
     }
 
-    if session.verified_plan_artifact_id.as_ref() == Some(artifact_id)
-        && !source_allows_verified_retry(source)
-    {
+    if session.has_exact_plan_verification() && !source_allows_verified_retry(source) {
         state.plan_verification_admissions.remove(&admission_key);
         return Ok(PlanVerificationRequestOutcome::AlreadyVerified);
     }
@@ -430,15 +430,15 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
     if state
         .plan_verification_admissions
         .get(&admission_key)
-        .is_some_and(|target| target.value() == artifact_id.as_str())
+        .is_some_and(|target| target.value() == action_target_id.as_str())
     {
-        tracing::warn!(session_id = %session.id, artifact_id = %artifact_id, "Clearing stale in-memory plan verification admission marker");
+        tracing::warn!(session_id = %session.id, plan_target_id = %action_target_id, "Clearing stale in-memory plan verification admission marker");
         state.plan_verification_admissions.remove(&admission_key);
     }
 
     state
         .plan_verification_admissions
-        .insert(admission_key.clone(), artifact_id.as_str().to_string());
+        .insert(admission_key.clone(), action_target_id.clone());
     let _admission_marker_guard = AdmissionMarkerGuard {
         admissions: std::sync::Arc::clone(&state.plan_verification_admissions),
         key: admission_key.clone(),
@@ -450,7 +450,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
             VERIFY_PLAN_PROMPT,
             SendMessageOptions {
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
-                metadata: Some(action_metadata(session.id.as_str(), artifact_id.as_str())),
+                metadata: Some(action_metadata(session.id.as_str(), &action_target_id)),
                 conversation_id_override: target.conversation_id,
                 is_external_mcp: source == PlanVerificationRequestSource::External,
                 ..Default::default()
@@ -484,7 +484,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         &target.queue_key,
         &fresh_session,
         session.id.as_str(),
-        artifact_id.as_str(),
+        &action_target_id,
     )
     .await?;
     if !immediate_run.as_ref().is_some_and(|run| {
@@ -492,7 +492,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
             run,
             target.conversation_id.as_ref(),
             session.id.as_str(),
-            artifact_id.as_str(),
+            &action_target_id,
         )
     }) && !durable_queue
     {
@@ -651,13 +651,17 @@ pub async fn complete_plan_verification(
         .get_by_id(session_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-    let artifact_id = session
-        .plan_artifact_id
-        .as_ref()
-        .ok_or_else(|| AppError::Validation("Session has no linked plan".to_string()))?;
+    let bundle = session.plan_artifact_bundle().ok_or_else(|| {
+        AppError::Validation(
+            "Session does not have a complete plan overview and implementation blueprint"
+                .to_string(),
+        )
+    })?;
+    let artifact_id = bundle.overview_id.clone();
+    let action_target_id = bundle.action_target_id();
     let completed = state
         .ideation_session_repo
-        .complete_plan_verification(session_id, agent_run_id, artifact_id.as_str())
+        .complete_plan_verification(session_id, agent_run_id, &action_target_id)
         .await?;
     if completed {
         return Ok(PlanVerificationCompletion {
@@ -670,8 +674,8 @@ pub async fn complete_plan_verification(
         .get_by_id(session_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-    if current.plan_artifact_id.as_ref() == Some(artifact_id)
-        && current.verified_plan_artifact_id.as_ref() == Some(artifact_id)
+    if current.plan_artifact_id.as_ref() == Some(&artifact_id)
+        && current.has_exact_plan_verification()
         && current.verified_plan_agent_run_id.as_deref() == Some(agent_run_id)
     {
         return Ok(PlanVerificationCompletion {

@@ -233,6 +233,8 @@ describe("automationsApi", () => {
         reason: "judge already started",
       })
       .mockResolvedValueOnce(runResponse({ status: "cancelled" }))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
 
     await expect(automationsApi.triggerRunNow("automation-1")).resolves.toEqual({
@@ -256,6 +258,18 @@ describe("automationsApi", () => {
     ).resolves.toEqual(
       expect.objectContaining({ status: "cancelled", goalItemId: null }),
     );
+    await expect(
+      automationsApi.deleteRun({
+        id: "automation-1",
+        runId: "automation-run-1",
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      automationsApi.resumeRun({
+        id: "automation-1",
+        runId: "automation-run-1",
+      }),
+    ).resolves.toBeUndefined();
     await expect(automationsApi.delete("automation-1")).resolves.toBeUndefined();
 
     expect(invoke).toHaveBeenNthCalledWith(1, "trigger_automation_run_now", {
@@ -267,7 +281,13 @@ describe("automationsApi", () => {
     expect(invoke).toHaveBeenNthCalledWith(3, "cancel_automation_run", {
       input: { id: "automation-1", runId: "automation-run-1" },
     });
-    expect(invoke).toHaveBeenNthCalledWith(4, "delete_automation", {
+    expect(invoke).toHaveBeenNthCalledWith(4, "delete_automation_run", {
+      input: { id: "automation-1", runId: "automation-run-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, "resume_automation_run", {
+      input: { id: "automation-1", runId: "automation-run-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(6, "delete_automation", {
       input: { id: "automation-1" },
     });
   });

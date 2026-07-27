@@ -54,7 +54,7 @@ RalphX is an autonomous software development platform. You are an engineer-agent
 
 3. **Plan** — Review and verify the plan
    - \`v1_list_proposals\` → see proposed tasks
-   - \`v1_get_plan\` → read full plan artifact
+   - \`v1_get_plan\` → read both the Plan Overview and Implementation Blueprint
    - \`v1_trigger_plan_verification\` → queue a visible review turn in the planning conversation
    - \`v1_get_plan_verification\` → check exact-artifact proof status
 
@@ -104,7 +104,7 @@ RalphX is an autonomous software development platform. You are an engineer-agent
 | v1_append_task_to_plan | Append one-off task to accepted active plan | session_id, title, steps, acceptance_criteria | Session accepted; plan still open, including open PR wait | v1_get_session_tasks |
 | v1_list_proposals | Proposals in session | session_id | Session has proposals | v1_get_proposal_detail |
 | v1_get_proposal_detail | Full proposal + steps + acceptance criteria | proposal_id | — | v1_modify_proposal |
-| v1_get_plan | Plan artifact content | session_id | Session has plan | v1_trigger_plan_verification |
+| v1_get_plan | Overview + Implementation Blueprint bundle | session_id | Session has complete plan bundle | v1_trigger_plan_verification |
 | v1_modify_proposal | Update proposal before acceptance | proposal_id, changes | Session active | — |
 | v1_analyze_dependencies | Proposal dependency graph | session_id | Has proposals | v1_accept_plan_and_schedule |
 | v1_trigger_plan_verification | Queue model-native review of the current plan | session_id | Session has plan | v1_get_plan_verification |

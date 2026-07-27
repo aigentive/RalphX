@@ -1,9 +1,16 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps, ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   chatApi,
@@ -23,6 +30,7 @@ import type { AgentConversation } from "./agentConversations";
 import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import type { ComposerRuntimeSpeedField } from "./composer/runtime/runtimeSelectorTypes";
 
 const {
   getSessionPlanMock,
@@ -646,6 +654,7 @@ vi.mock("./AgentComposerSurface", () => ({
     dataTestId,
     personaControl,
     runtimeDefault,
+    speed,
   }: {
     provider: {
       value: string;
@@ -691,11 +700,15 @@ vi.mock("./AgentComposerSurface", () => ({
       disabled?: boolean;
       onReset: () => Promise<unknown> | void;
     };
+    speed?: ComposerRuntimeSpeedField;
   }) => (
     <div data-testid={dataTestId}>
       <div data-testid="workspace-provider-value">{provider.value}</div>
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
+      {speed ? (
+        <div data-testid={speed.testId}>{speed.value}</div>
+      ) : null}
       <div data-testid="workspace-helper-enabled">{String(showHelperText !== false)}</div>
       <div data-testid="workspace-composer-readonly">{String(Boolean(isReadOnly))}</div>
       <div data-testid="workspace-composer-disabled-reason">
@@ -1073,6 +1086,20 @@ function planArtifact(status: "draft" | "approved" = "draft") {
     },
     derivedFrom: [],
     bucketId: "prd-library",
+    planContractVersion: 2,
+    blueprint: {
+      id: "blueprint-1",
+      type: "specification",
+      name: "Implementation Blueprint",
+      content: { type: "inline", text: "# Blueprint" },
+      metadata: {
+        createdAt: "2026-05-23T05:00:00Z",
+        createdBy: "ralphx-ideation",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    },
     planApproval:
       status === "draft"
         ? { status: "draft" }
@@ -1115,6 +1142,7 @@ function renderPanel(
     chatFocusOptions: [],
     hasAttachedPlanArtifact: false,
     hasAutoOpenArtifacts: false,
+    focusedWorkspaceReviewServiceTier: null,
     normalizedActiveRuntime: {
       provider: "claude",
       modelId: "opus",
@@ -1192,6 +1220,10 @@ function setPlanArtifactVisible(conversationId = "conversation-1") {
 }
 
 describe("AgentsActiveConversationPanel", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(invoke).mockResolvedValue(undefined);
@@ -2807,6 +2839,34 @@ describe("AgentsActiveConversationPanel", () => {
     expect(panel).toHaveAttribute("data-send-codex-fast-mode", "false");
   });
 
+  it("uses durable focused Review speed ahead of the client speed projection", () => {
+    useAgentSessionStore.getState().setServiceTierForConversation(
+      "review-conversation-1",
+      "standard",
+    );
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        providerHarness: "codex",
+        serviceTier: "standard",
+      },
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      focusedWorkspaceReviewServiceTier: "fast",
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+    });
+
+    expect(screen.getByTestId("agents-conversation-speed")).toHaveTextContent(
+      "fast",
+    );
+  });
+
   it("uses the selectable workspace runtime for chat send options", () => {
     renderPanel({
       activeConversation: {
@@ -3219,6 +3279,8 @@ describe("AgentsActiveConversationPanel", () => {
       expect(approvePlanArtifactMock).toHaveBeenCalledWith({
         sessionId: "planning-session-1",
         artifactId: "artifact-1",
+        blueprintArtifactId: "blueprint-1",
+        blueprintArtifactVersion: 1,
       }),
     );
   });
@@ -3958,21 +4020,23 @@ describe("AgentsActiveConversationPanel", () => {
       "plan",
       planWorkspace,
     );
+    expect(onConversationModeSwitched).toHaveBeenCalledTimes(1);
     await waitFor(() =>
-      expect(sendAgentMessageMock).toHaveBeenCalledWith(
-        "project",
-        "project-1",
-        expect.stringContaining(
-          "Planning focus: The CLI surface needs planning before implementation.",
-        ),
-        undefined,
-        expect.objectContaining({
-          conversationId: "conversation-1",
-          providerHarness: "claude",
-          modelId: "opus",
-          logicalEffort: "high",
-        }),
+      expect(sendAgentMessageMock).toHaveBeenCalledTimes(1),
+    );
+    expect(sendAgentMessageMock).toHaveBeenCalledWith(
+      "project",
+      "project-1",
+      expect.stringContaining(
+        "Planning focus: The CLI surface needs planning before implementation.",
       ),
+      undefined,
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        providerHarness: "claude",
+        modelId: "opus",
+        logicalEffort: "high",
+      }),
     );
     expect(onAgentUserMessageSent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3981,8 +4045,8 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
-  it("does not duplicate the Plan-mode switch when the backend handled the accepted proposal", async () => {
-    const user = userEvent.setup();
+  it("does not switch or continue a backend-handled plan-mode proposal after retries", async () => {
+    vi.useFakeTimers();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "edit" },
@@ -3990,10 +4054,199 @@ describe("AgentsActiveConversationPanel", () => {
       activeWorkspace: { ...workspace(), mode: "edit" },
     });
 
-    await user.click(screen.getByTestId("accept-backend-handled-plan-mode-proposal"));
+    fireEvent.click(
+      screen.getByTestId("accept-backend-handled-plan-mode-proposal"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    emitEvent("agent:run_completed", {
+      conversation_id: "conversation-1",
+      context_type: "project",
+      context_id: "conversation-1",
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(150);
+      await Promise.resolve();
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+    });
 
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("continues once without switching when an unhandled proposal is cached in Plan mode", async () => {
+    const onConversationModeSwitched = vi.fn();
+
+    const { queryClient } = renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+      onConversationModeSwitched,
+    });
+    queryClient.setQueryData(agentWorkspaceKeys.workspace("conversation-1"), {
+      ...workspace(),
+      mode: "plan",
+    });
+
+    fireEvent.click(screen.getByTestId("accept-plan-mode-proposal"));
+
+    await waitFor(() =>
+      expect(sendAgentMessageMock).toHaveBeenCalledTimes(1),
+    );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(onConversationModeSwitched).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses cached Plan state when a deferred proposal retry runs", async () => {
+    vi.useFakeTimers();
+    const planWorkspace = { ...workspace(), mode: "plan" as const };
+    const onConversationModeSwitched = vi.fn();
+    switchAgentConversationModeMock.mockRejectedValueOnce(
+      new Error("Cannot change mode while the agent is running"),
+    );
+
+    const { queryClient } = renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+      onConversationModeSwitched,
+    });
+
+    fireEvent.click(screen.getByTestId("accept-plan-mode-proposal"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
+
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspace("conversation-1"),
+      planWorkspace,
+    );
+    emitEvent("agent:run_completed", {
+      conversation_id: "conversation-1",
+      context_type: "project",
+      context_id: "conversation-1",
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(150);
+      await Promise.resolve();
+    });
+
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "plan",
+      planWorkspace,
+    );
+    expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+      await Promise.resolve();
+    });
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one retry attempt when the event and fallback timers overlap", async () => {
+    vi.useFakeTimers();
+    const planWorkspace = { ...workspace(), mode: "plan" as const };
+    const onConversationModeSwitched = vi.fn();
+    const retry = deferred<{ workspace: AgentConversationWorkspace }>();
+    switchAgentConversationModeMock
+      .mockRejectedValueOnce(
+        new Error("Cannot change mode while the agent is running"),
+      )
+      .mockReturnValueOnce(retry.promise);
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+      onConversationModeSwitched,
+    });
+
+    fireEvent.click(screen.getByTestId("accept-plan-mode-proposal"));
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => {
+      emitEvent("agent:run_completed", {
+        conversation_id: "conversation-1",
+        context_type: "project",
+        context_id: "conversation-1",
+      });
+      vi.advanceTimersByTime(150);
+    });
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      retry.resolve({ workspace: planWorkspace });
+      await retry.promise;
+      await Promise.resolve();
+    });
+
+    expect(onConversationModeSwitched).toHaveBeenCalledTimes(1);
+    expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not continue again when a completed-run event replays after a successful retry", async () => {
+    vi.useFakeTimers();
+    const planWorkspace = { ...workspace(), mode: "plan" as const };
+    switchAgentConversationModeMock
+      .mockRejectedValueOnce(
+        new Error("Cannot change mode while the agent is running"),
+      )
+      .mockResolvedValueOnce({ workspace: planWorkspace });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeWorkspace: { ...workspace(), mode: "edit" },
+    });
+
+    fireEvent.click(screen.getByTestId("accept-plan-mode-proposal"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => {
+      emitEvent("agent:run_completed", {
+        conversation_id: "conversation-1",
+        context_type: "project",
+        context_id: "conversation-1",
+      });
+      vi.advanceTimersByTime(150);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emitEvent("agent:run_completed", {
+        conversation_id: "conversation-1",
+        context_type: "project",
+        context_id: "conversation-1",
+      });
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(2);
+    expect(sendAgentMessageMock).toHaveBeenCalledTimes(1);
   });
 
   it("retries the Plan-mode proposal switch after the active agent run completes", async () => {

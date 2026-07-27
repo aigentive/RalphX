@@ -4,13 +4,14 @@
 // No real `gh` or `git` invocations.
 
 use async_trait::async_trait;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    GithubConnectionStatus, GithubServiceTrait, PrBranchMatch, PrDetail, PrDiffAnnotations,
-    PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus,
-    PrSubmittedReview, PrSyncState,
+    validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrBranchMatch,
+    PrDetail, PrDiffAnnotations, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent,
+    PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -23,6 +24,7 @@ pub struct MockGithubState {
     pub create_draft_pr_result: Option<AppResult<(i64, String)>>,
     pub mark_pr_ready_result: Option<AppResult<()>>,
     pub update_pr_details_result: Option<AppResult<()>>,
+    pub patch_pr_metadata_result: Option<AppResult<()>>,
     pub update_pr_base_result: Option<AppResult<()>>,
     pub check_pr_status_result: Option<AppResult<PrStatus>>,
     pub check_pr_sync_state_result: Option<AppResult<PrSyncState>>,
@@ -31,6 +33,7 @@ pub struct MockGithubState {
     pub fetch_pr_diff_annotations_result: Option<AppResult<PrDiffAnnotations>>,
     pub fetch_pr_diff_annotations_delay_ms: u64,
     pub fetch_pr_detail_result: Option<AppResult<PrDetail>>,
+    pub fetch_pr_detail_responses: VecDeque<AppResult<PrDetail>>,
     pub fetch_pr_review_thread_result: Option<AppResult<PrReviewThread>>,
     pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
@@ -45,6 +48,7 @@ pub struct MockGithubState {
     pub fetch_remote_result: Option<AppResult<()>>,
     pub get_pr_diff_patch_result: Option<AppResult<String>>,
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
+    pub find_pr_by_head_branch_responses: VecDeque<AppResult<Option<(i64, String)>>>,
     pub search_pull_requests_result: Option<AppResult<Vec<PrSearchResult>>>,
     pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
     pub list_pull_request_branch_matches_result: Option<AppResult<Vec<PrBranchMatch>>>,
@@ -55,6 +59,7 @@ pub struct MockGithubState {
     pub create_draft_pr_calls: u32,
     pub mark_pr_ready_calls: u32,
     pub update_pr_details_calls: u32,
+    pub patch_pr_metadata_calls: u32,
     pub update_pr_base_calls: u32,
     pub check_pr_status_calls: u32,
     pub check_pr_sync_state_calls: u32,
@@ -87,6 +92,8 @@ pub struct MockGithubState {
     pub last_mark_pr_ready_number: Option<i64>,
     pub last_update_pr_details_args: Option<(i64, String, String)>,
     pub last_update_pr_details_body: Option<String>,
+    pub last_patch_pr_metadata_args: Option<(i64, Option<String>, Option<String>)>,
+    pub last_patch_pr_metadata_body: Option<String>,
     pub last_update_pr_base_args: Option<(i64, String)>,
     pub last_check_pr_status_number: Option<i64>,
     pub last_check_pr_sync_state_number: Option<i64>,
@@ -193,6 +200,12 @@ impl MockGithubService {
         self.state().fetch_pr_detail_result = Some(Ok(detail));
     }
 
+    /// Queue exact PR detail responses for authority drift and recovery tests.
+    #[allow(dead_code)]
+    pub fn queue_pr_detail(&self, result: AppResult<PrDetail>) {
+        self.state().fetch_pr_detail_responses.push_back(result);
+    }
+
     /// Shorthand: configure fetch_pr_detail to fail with the given message.
     #[allow(dead_code)]
     pub fn will_fail_pr_detail(&self, msg: impl Into<String>) {
@@ -234,6 +247,14 @@ impl MockGithubService {
     #[allow(dead_code)]
     pub fn set_find_pr_by_head_branch(&self, result: AppResult<Option<(i64, String)>>) {
         self.state().find_pr_by_head_branch_result = Some(result);
+    }
+
+    /// Queue exact head-branch lookup responses for retry and duplicate tests.
+    #[allow(dead_code)]
+    pub fn queue_find_pr_by_head_branch(&self, result: AppResult<Option<(i64, String)>>) {
+        self.state()
+            .find_pr_by_head_branch_responses
+            .push_back(result);
     }
 
     /// Shorthand: configure pull request search to return the given results.
@@ -343,6 +364,26 @@ impl GithubServiceTrait for MockGithubService {
         s.update_pr_details_result.take().unwrap_or(Ok(()))
     }
 
+    async fn patch_pr_metadata(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        title: Option<&str>,
+        body_file: Option<&Path>,
+    ) -> AppResult<()> {
+        validate_pr_metadata_patch(title, body_file)?;
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.patch_pr_metadata_calls += 1;
+        s.last_patch_pr_metadata_args = Some((
+            pr_number,
+            title.map(str::to_string),
+            body_file.map(|path| path.to_string_lossy().into_owned()),
+        ));
+        s.last_patch_pr_metadata_body =
+            body_file.and_then(|path| std::fs::read_to_string(path).ok());
+        s.patch_pr_metadata_result.take().unwrap_or(Ok(()))
+    }
+
     async fn update_pr_base(
         &self,
         _working_dir: &Path,
@@ -441,11 +482,14 @@ impl GithubServiceTrait for MockGithubService {
         let mut s = self.state.lock().expect("lock poisoned");
         s.fetch_pr_detail_calls += 1;
         s.last_fetch_pr_detail_number = Some(pr_number);
-        s.fetch_pr_detail_result.take().unwrap_or_else(|| {
-            Err(AppError::Infrastructure(
-                "MockGithubService::fetch_pr_detail not configured".to_string(),
-            ))
-        })
+        s.fetch_pr_detail_responses
+            .pop_front()
+            .or_else(|| s.fetch_pr_detail_result.take())
+            .unwrap_or_else(|| {
+                Err(AppError::Infrastructure(
+                    "MockGithubService::fetch_pr_detail not configured".to_string(),
+                ))
+            })
     }
 
     async fn fetch_pr_review_thread(
@@ -585,7 +629,10 @@ impl GithubServiceTrait for MockGithubService {
         let mut s = self.state.lock().expect("lock poisoned");
         s.find_pr_by_head_branch_calls += 1;
         s.last_find_pr_by_head_branch_name = Some(head.to_string());
-        s.find_pr_by_head_branch_result.take().unwrap_or(Ok(None))
+        s.find_pr_by_head_branch_responses
+            .pop_front()
+            .or_else(|| s.find_pr_by_head_branch_result.take())
+            .unwrap_or(Ok(None))
     }
 
     async fn search_pull_requests(

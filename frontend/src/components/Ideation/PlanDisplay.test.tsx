@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PlanDisplay, VersionedArtifactDisplay } from "./PlanDisplay";
 import type { Artifact } from "@/types/artifact";
@@ -527,7 +534,7 @@ describe("PlanDisplay", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("calls the action with the selected historical version", async () => {
+    it("hides the action for a selected historical version", async () => {
       const user = userEvent.setup();
       const onStartNewConversationWithPlan = vi.fn();
       const multiVersionPlan: Artifact = {
@@ -548,6 +555,7 @@ describe("PlanDisplay", () => {
         <PlanDisplay
           plan={multiVersionPlan}
           onStartNewConversationWithPlan={onStartNewConversationWithPlan}
+          disableHistoricalNewConversation
         />,
       );
 
@@ -560,13 +568,10 @@ describe("PlanDisplay", () => {
       });
 
       await user.click(screen.getByLabelText("Plan actions"));
-      await user.click(screen.getByText("New Conversation"));
-
-      expect(onStartNewConversationWithPlan).toHaveBeenCalledWith({
-        artifactId: multiVersionPlan.id,
-        title: multiVersionPlan.name,
-        version: 1,
-      });
+      expect(
+        screen.queryByRole("menuitem", { name: /new conversation/i }),
+      ).not.toBeInTheDocument();
+      expect(onStartNewConversationWithPlan).not.toHaveBeenCalled();
     });
   });
 
@@ -703,7 +708,7 @@ describe("PlanDisplay", () => {
       expect(document.querySelector("[data-artifact-selectable-region]")).toBeNull();
     });
 
-    it("renders explicit Overview and Proposals controls after the approved badge", () => {
+    it("renders Overview and Blueprint tabs plus conditional Proposals after approval", () => {
       const onBodyModeChange = vi.fn();
       render(
         <PlanDisplay
@@ -711,31 +716,42 @@ describe("PlanDisplay", () => {
           chromeless={true}
           isApproved={true}
           linkedProposalsCount={2}
-          bodyMode="plan"
+          bodyMode="overview"
           onBodyModeChange={onBodyModeChange}
         />,
       );
 
       const approvedBadge = screen.getByText("Plan Approved");
-      const overviewButton = screen.getByRole("button", {
+      const overviewButton = screen.getByRole("tab", {
         name: /Overview/i,
       });
-      const proposalsButton = screen.getByRole("button", {
-        name: /2 Proposals/i,
+      const blueprintButton = screen.getByRole("tab", {
+        name: /Blueprint/i,
+      });
+      const proposalsButton = screen.getByRole("tab", {
+        name: /Proposals \(2\)/i,
       });
       expect(approvedBadge.compareDocumentPosition(overviewButton)).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
-      expect(overviewButton).toHaveAttribute("aria-pressed", "true");
-      expect(proposalsButton).toHaveAttribute("aria-pressed", "false");
+      expect(overviewButton).toHaveAttribute("aria-selected", "true");
+      expect(blueprintButton).toHaveAttribute("aria-selected", "false");
+      expect(proposalsButton).toHaveAttribute("aria-selected", "false");
+      const overviewPanel = document.getElementById(
+        overviewButton.getAttribute("aria-controls")!,
+      );
+      expect(overviewPanel).toHaveAttribute("role", "tabpanel");
+      expect(overviewPanel).toBeVisible();
+      expect(
+        within(overviewPanel!).getByText(
+          "Implement JWT-based authentication system.",
+        ),
+      ).toBeVisible();
 
+      fireEvent.mouseDown(proposalsButton);
       fireEvent.click(proposalsButton);
-      fireEvent.click(proposalsButton);
-      fireEvent.click(overviewButton);
 
-      expect(onBodyModeChange).toHaveBeenNthCalledWith(1, "proposals");
-      expect(onBodyModeChange).toHaveBeenNthCalledWith(2, "proposals");
-      expect(onBodyModeChange).toHaveBeenNthCalledWith(3, "plan");
+      expect(onBodyModeChange).toHaveBeenCalledWith("proposals");
     });
 
     it("renders Create Proposals in chromeless mode and dispatches handler", () => {

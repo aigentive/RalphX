@@ -12,7 +12,9 @@ use tracing::info;
 
 use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
+    InteractiveProcessKey, InteractiveProcessRegistry,
+    InteractiveProcessRetireAfterTurnDisposition, InteractiveProcessToken,
+    InteractiveProcessTurnCompleteDisposition,
 };
 use crate::application::question_state::QuestionState;
 use crate::domain::agents::{
@@ -252,6 +254,7 @@ const COMPLETION_TOOL_NAMES: &[&str] = &[
     "mcp__ralphx__complete_review",
     "mcp__ralphx__complete_merge",
     "mcp__ralphx__complete_agent_workspace_repair",
+    "mcp__ralphx__complete_workspace_review_run",
     "mcp__ralphx__finalize_proposals",
 ];
 
@@ -270,6 +273,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -281,6 +285,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -1031,6 +1036,10 @@ pub struct StreamOutcome {
     /// True when the process exited while idle between interactive turns.
     /// Suppresses queue processing and run_completed emission is forced.
     pub silent_interactive_exit: bool,
+    /// The stream exited because its exact runtime was retired for a backend-owned
+    /// mode handoff. This is deliberately distinct from a user cancellation: the
+    /// background owner must still drain the durable replacement queue.
+    pub mode_handoff_exit: bool,
 }
 
 impl StreamOutcome {
@@ -1116,7 +1125,7 @@ impl CompletionSignalTracker {
     }
 }
 
-fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
+pub(super) fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
     let Some(result) = result else {
         return true;
     };
@@ -1327,6 +1336,7 @@ pub async fn process_stream_background<R: Runtime>(
     // Set to true when an interactive process is killed while idle between
     // turns. Suppresses post-loop error returns so the exit is silent.
     let mut silent_interactive_exit: bool = false;
+    let mut mode_handoff_exit: bool = false;
     // Track whether we've already persisted session_id to the DB (only need once)
     let mut session_id_persisted: bool = false;
 
@@ -1335,6 +1345,29 @@ pub async fn process_stream_background<R: Runtime>(
         let line = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
+                let mode_handoff_armed = if let (Some(registry), Some(key), Some(token), Some(run_id)) = (
+                    interactive_process_registry.as_ref(),
+                    interactive_process_key.as_ref(),
+                    interactive_process_token,
+                    agent_run_id.as_deref(),
+                ) {
+                    is_armed_mode_handoff_disposition(
+                        registry.retire_after_turn_disposition_if_owner(key, token, run_id).await,
+                    )
+                } else {
+                    false
+                };
+                if mode_handoff_armed {
+                    tracing::info!(
+                        conversation_id = %conversation_id_str,
+                        lines_seen,
+                        "Stream cancellation is an exact mode-handoff retirement"
+                    );
+                    let _ = child.kill().await;
+                    silent_interactive_exit = true;
+                    mode_handoff_exit = true;
+                    break;
+                }
                 if between_interactive_turns {
                     tracing::info!(
                         conversation_id = %conversation_id_str,
@@ -2325,6 +2358,35 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
 
+                        let retire_after_turn =
+                            if let (Some(registry), Some(key), Some(token), Some(run_id)) = (
+                                interactive_process_registry.as_ref(),
+                                interactive_process_key.as_ref(),
+                                interactive_process_token,
+                                agent_run_id.as_deref(),
+                            ) {
+                                matches!(
+                                    registry.complete_turn_if_owner(key, token, run_id).await,
+                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+                                )
+                            } else {
+                                false
+                            };
+
+                        if retire_after_turn {
+                            tracing::info!(
+                                conversation_id = %conversation_id_str,
+                                "TurnComplete retired exact runtime for mode handoff"
+                            );
+                            // The normal guarded completion and turn_completed event above
+                            // intentionally remain observable before the handoff exits.
+                            between_interactive_turns = true;
+                            silent_interactive_exit = true;
+                            mode_handoff_exit = true;
+                            let _ = child.start_kill();
+                            break;
+                        }
+
                         // Mark that we're now between interactive turns —
                         // the timeout handler should not kill the process.
                         between_interactive_turns = true;
@@ -2370,6 +2432,10 @@ pub async fn process_stream_background<R: Runtime>(
                             cache_read_tokens: None,
                             estimated_usd: None,
                             text_output: None,
+                            started_at: None,
+                            completed_at: None,
+                            timestamp_provenance: None,
+                            seq: Some(stream_seq),
                         };
                         streaming_state_cache
                             .add_task(&conversation_id_str, cached_task)
@@ -2400,6 +2466,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2459,6 +2528,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     input_tokens: None,
                                     output_tokens: None,
                                     cache_creation_tokens: None,
@@ -3002,6 +3074,7 @@ pub async fn process_stream_background<R: Runtime>(
         execution_slot_held,
         completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit,
+        mode_handoff_exit,
     };
 
     // Final flush of accumulated content so post-loop error returns don't lose data
@@ -3190,6 +3263,16 @@ pub async fn process_stream_background<R: Runtime>(
     }
 
     Ok(outcome)
+}
+
+pub(super) fn is_armed_mode_handoff_disposition(
+    disposition: InteractiveProcessRetireAfterTurnDisposition,
+) -> bool {
+    matches!(
+        disposition,
+        InteractiveProcessRetireAfterTurnDisposition::Active { is_armed: true }
+            | InteractiveProcessRetireAfterTurnDisposition::Idle { is_armed: true }
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3781,6 +3864,7 @@ async fn process_codex_stream_background<R: Runtime>(
         execution_slot_held: true,
         completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
 
     flush_content_before_error(

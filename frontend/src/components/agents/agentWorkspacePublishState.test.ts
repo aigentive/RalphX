@@ -11,14 +11,30 @@ import {
   classifyAgentWorkspacePublishTerminalEvent,
   getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
+  getAgentWorkspaceDescriptionFailurePresentation,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  isAgentWorkspacePublishActive,
   isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+
+describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
+  it("distinguishes an unopened PR from an existing linked target", () => {
+    expect(getAgentWorkspaceDescriptionFailurePresentation(null).summary).toContain(
+      "no pull request was opened",
+    );
+
+    const linked = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
+    expect(linked.summary).toContain("metadata step for PR #888");
+    expect(linked.summary).toContain("did not apply an unsafe replacement body");
+    expect(linked.summary).not.toContain("no pull request was opened");
+    expect(linked.summary).not.toContain("branch was unchanged");
+  });
+});
 
 describe("getAgentWorkspaceReviewActionBlocker", () => {
   it("blocks Review actions while an authoritative repair is active", () => {
@@ -138,6 +154,56 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("isAgentWorkspacePublishActive", () => {
+  it.each(["checking", "committing", "refreshing", "describing", "pushing"])(
+    "treats %s as an active publish status",
+    (publicationPushStatus) => {
+      expect(
+        isAgentWorkspacePublishActive(workspace({ publicationPushStatus })),
+      ).toBe(true);
+    },
+  );
+
+  it("normalizes casing and whitespace for active publish statuses", () => {
+    expect(
+      isAgentWorkspacePublishActive(
+        workspace({ publicationPushStatus: "  PuShInG  " }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    null,
+    "pending",
+    "pushed",
+    "published",
+    "refreshed",
+    "failed",
+    "description_failed",
+    "needs_agent",
+    "future_status",
+  ])("does not treat %s as active publishing", (publicationPushStatus) => {
+    expect(
+      isAgentWorkspacePublishActive(workspace({ publicationPushStatus })),
+    ).toBe(false);
+  });
+
+  it.each(["merged", "closed"])(
+    "keeps terminal %s pull requests out of the active publish lock",
+    (publicationPrStatus) => {
+      expect(
+        isAgentWorkspacePublishActive(
+          workspace({ publicationPrStatus, publicationPushStatus: "pushing" }),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("handles a missing workspace", () => {
+    expect(isAgentWorkspacePublishActive(null)).toBe(false);
+  });
+});
 
 describe("getPostBaselinePublicationEvents", () => {
   const startedAtMs = new Date("2026-04-23T09:00:00Z").getTime();

@@ -66,6 +66,16 @@ const mockReviewSettings = {
   run_task_validations: true,
 };
 
+let mockUpdateChannel: "stable" | "nightly" = "stable";
+
+type MockUpdateChannelError = "read" | "write";
+
+function getMockUpdateChannelError(): MockUpdateChannelError | undefined {
+  return (
+    window as Window & { __mockUpdateChannelError?: MockUpdateChannelError }
+  ).__mockUpdateChannelError;
+}
+
 const mockExternalMcpConfig = {
   enabled: true,
   port: 3848,
@@ -332,6 +342,9 @@ const mockAgentProviderSettings = {
         "sonnet",
         "claude-sonnet-4-6",
         "opus",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
         "haiku",
         "fable",
         "claude-sonnet-5",
@@ -455,6 +468,45 @@ const mockAgentModels = [
     menuLabel: "Claude Sonnet 4.6",
     description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
     supportedEfforts: ["low", "medium", "high", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    menuLabel: "Claude Opus 4.7",
+    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    menuLabel: "Claude Opus 4.8",
+    description: "Exact Claude Opus 4.8 model id; requires Claude Code 2.1.154 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-5",
+    label: "Claude Opus 5",
+    menuLabel: "Claude Opus 5",
+    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
     source: "built_in",
     enabled: true,
@@ -1289,9 +1341,7 @@ const commandHandlers: Record<
     return {
       activityPage: true,
       extensibilityPage: true,
-      ideationPage: false,
       automationsPage: true,
-      battleMode: true,
       atlassianOauth: false,
       ticketingDashboard: false,
       ...overrides,
@@ -2153,7 +2203,18 @@ const commandHandlers: Record<
     return true;
   },
   resume_deferred_git_startup: async () => true,
-  update_github_pr_enabled: async () => null,
+  update_github_pr_enabled: async (args) => {
+    const projectId = args.projectId as string;
+    const project = getStore().projects.get(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    getStore().projects.set(projectId, {
+      ...project,
+      githubPrEnabled: args.enabled === true,
+    });
+    return null;
+  },
 
   // Plan commands
   get_active_plan: async (args) =>
@@ -3157,6 +3218,35 @@ const commandHandlers: Record<
     };
   },
   get_review_settings: async () => ({ ...mockReviewSettings }),
+  get_update_channel: async () => {
+    if (getMockUpdateChannelError() === "read") {
+      throw new Error("Mock update channel read failure");
+    }
+    return mockUpdateChannel;
+  },
+  set_update_channel: async (args) => {
+    if (getMockUpdateChannelError() === "write") {
+      throw new Error("Mock update channel write failure");
+    }
+    const updateChannel = args.updateChannel;
+    if (updateChannel === "stable" || updateChannel === "nightly") {
+      mockUpdateChannel = updateChannel;
+    }
+    return mockUpdateChannel;
+  },
+  list_release_notes_versions: async () => ["0.76.0", "0.75.0", "0.74.0"],
+  get_release_notes_for_version: async (args) => ({
+    version: String(args.version),
+    body: `## RalphX ${String(args.version)}\n\n- Release history improvements\n- Faster agent workflows`,
+    source: "development_checkout",
+  }),
+  get_current_release_notes: async () => ({
+    version: "0.76.0",
+    body: null,
+    source: "development_checkout",
+  }),
+  get_last_seen_release_notes_version: async () => "0.76.0",
+  mark_release_notes_seen: async () => undefined,
   update_review_settings: async (args) => {
     const input = args.input as {
       requireHumanReview?: boolean;
@@ -3263,6 +3353,47 @@ const commandHandlers: Record<
   },
   // Health check
   health_check: async () => ({ status: "ok" }),
+  get_startup_status: async () => ({
+    boot_id: "web-mode-boot",
+    attempt_id: 1,
+    stage: "ready",
+    started_at: new Date().toISOString(),
+    stage_started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    app_state_ready: true,
+    runtime_ready: true,
+    background_complete: true,
+    retry_allowed: false,
+    progress: null,
+    message_code: "ready",
+    failure_code: null,
+    diagnostic_summary: null,
+  }),
+  retry_startup: async () => ({
+    boot_id: "web-mode-boot",
+    attempt_id: 2,
+    stage: "ready",
+    started_at: new Date().toISOString(),
+    stage_started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    app_state_ready: true,
+    runtime_ready: true,
+    background_complete: true,
+    retry_allowed: false,
+    progress: null,
+    message_code: "ready",
+    failure_code: null,
+    diagnostic_summary: null,
+  }),
+  report_startup_frontend_milestone: async () => null,
+  open_startup_logs: async () => null,
+  get_startup_diagnostics: async () => ({
+    attempt_id: 1,
+    stage: "ready",
+    message_code: "ready",
+    failure_code: null,
+    can_retry: false,
+  }),
 };
 
 function mockAgentTerminalSnapshot(

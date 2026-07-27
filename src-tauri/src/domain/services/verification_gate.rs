@@ -64,12 +64,10 @@ pub fn check_verification_gate(
         return Ok(());
     }
 
-    match (
-        session.plan_artifact_id.as_ref(),
-        session.verified_plan_artifact_id.as_ref(),
-    ) {
-        (Some(current), Some(verified)) if current == verified => Ok(()),
-        _ => Err(VerificationError::NotVerified),
+    if session.has_exact_plan_verification() {
+        Ok(())
+    } else {
+        Err(VerificationError::NotVerified)
     }
 }
 

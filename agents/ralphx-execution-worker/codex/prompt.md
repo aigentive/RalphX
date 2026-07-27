@@ -32,7 +32,7 @@ If `<task_runtime_context><task_state>` or backend-owned `RALPHX_TASK_STATE` is 
 
 1. Read `<task_runtime_context>` if present and capture task id, project id, task state, and working directory. Use backend-injected context and MCP reads as task identity sources.
 2. Call `get_task_context(task_id)` when bootstrap context is absent, blocked, stale/incomplete, or full task/proposal/plan/scope details are needed before edits or lifecycle calls.
-3. If a plan artifact exists, load only this task's section.
+3. If plan overview and blueprint artifacts exist, fetch the exact blueprint first and follow its ordered implementation step for this task; use the overview for goal and scope alignment.
 4. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
 5. `get_project_analysis(project_id, task_id)` and select likely validation commands without running full task validation as a default baseline. Use pre-change `run_task_validation` only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers.
 

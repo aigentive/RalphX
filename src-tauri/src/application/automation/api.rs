@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::application::automation::service::{
-    AutomationDetail, AutomationScheduleOutcome, AutomationService,
+    AutomationDetail, AutomationScheduleOutcome, AutomationService, LOCAL_BRANCH_BASE_REF_KIND,
 };
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService, NoopAutomationEventEmitter,
@@ -19,7 +19,7 @@ use super::decomposition_verifier::{
     parse_authoring_state, AutomationAuthoringState, AutomationDecompositionVerificationStatus,
 };
 use super::plan_gate::{
-    current_plan_artifact_id_for_workspace, matching_plan_approval_for_workspace,
+    current_plan_artifact_ids_for_workspace, matching_plan_approval_for_workspace,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +39,8 @@ pub struct AutomationResponse {
     pub base_ref_kind: String,
     pub base_ref: String,
     pub base_display_name: Option<String>,
+    pub base_target_ref: Option<String>,
+    pub base_target_display_name: Option<String>,
     pub base_source_pull_request_json: Option<String>,
     pub goal_items_json: Option<String>,
     pub chain_mode: String,
@@ -71,6 +73,9 @@ pub struct AutomationRunResponse {
     pub plan_revision_pending: bool,
     pub plan_phase: bool,
     pub plan_artifact_id: Option<String>,
+    pub plan_blueprint_artifact_id: Option<String>,
+    pub parked_plan_artifact_id: Option<String>,
+    pub parked_plan_blueprint_artifact_id: Option<String>,
     pub plan_approved_by: Option<String>,
     pub plan_approved_artifact_version: Option<u32>,
     pub plan_approved_at: Option<String>,
@@ -187,11 +192,30 @@ pub async fn automation_detail_response_for_state(
     detail: AutomationDetail,
     state: &AppState,
 ) -> crate::error::AppResult<AutomationDetailResponse> {
+    let setup_conversation_id = (detail.automation.base_ref_kind == LOCAL_BRANCH_BASE_REF_KIND)
+        .then(|| detail.automation.setup_conversation_id.clone())
+        .flatten();
     let usage = automation_usage_for_runs(&detail.runs, state).await?;
     let pipeline = automation_pipeline_progress_for_state(&detail, state).await?;
     let runs = automation_run_responses_for_state(detail.runs, state).await?;
+    let mut automation = AutomationResponse::from(detail.automation);
+    if let Some(setup_conversation_id) = setup_conversation_id {
+        if let Some(workspace) = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&setup_conversation_id)
+            .await?
+        {
+            let base_target_ref = workspace.base_ref;
+            if !base_target_ref.trim().is_empty() && base_target_ref != automation.base_ref {
+                automation.base_target_display_name = workspace
+                    .base_display_name
+                    .or_else(|| Some(base_target_ref.clone()));
+                automation.base_target_ref = Some(base_target_ref);
+            }
+        }
+    }
     Ok(AutomationDetailResponse {
-        automation: AutomationResponse::from(detail.automation),
+        automation,
         runs,
         usage,
         pipeline,
@@ -313,6 +337,7 @@ async fn automation_usage_for_runs(
 struct AutomationRunPlanReadModel {
     plan_phase: bool,
     plan_artifact_id: Option<String>,
+    plan_blueprint_artifact_id: Option<String>,
     plan_approved_by: Option<String>,
     plan_approved_artifact_version: Option<u32>,
     plan_approved_at: Option<String>,
@@ -344,9 +369,11 @@ async fn automation_run_plan_read_model_for_state(
     state: &AppState,
 ) -> crate::error::AppResult<AutomationRunPlanReadModel> {
     let parked_plan_artifact_id = run.plan_last_parked_artifact_id.clone();
+    let parked_plan_blueprint_artifact_id = run.plan_last_parked_blueprint_artifact_id.clone();
     let Some(conversation_id) = run.conversation_id.as_ref() else {
         return Ok(AutomationRunPlanReadModel {
             plan_artifact_id: parked_plan_artifact_id,
+            plan_blueprint_artifact_id: parked_plan_blueprint_artifact_id,
             ..AutomationRunPlanReadModel::default()
         });
     };
@@ -357,15 +384,21 @@ async fn automation_run_plan_read_model_for_state(
     else {
         return Ok(AutomationRunPlanReadModel {
             plan_artifact_id: parked_plan_artifact_id,
+            plan_blueprint_artifact_id: parked_plan_blueprint_artifact_id,
             ..AutomationRunPlanReadModel::default()
         });
     };
 
     let open = is_open_automation_run(run.status, run.judge_state);
-    let plan_artifact_id =
-        current_plan_artifact_id_for_workspace(&state.ideation_session_repo, &workspace)
-            .await?
-            .or(parked_plan_artifact_id);
+    let current_plan_artifacts =
+        current_plan_artifact_ids_for_workspace(&state.ideation_session_repo, &workspace).await?;
+    let plan_artifact_id = current_plan_artifacts
+        .as_ref()
+        .map(|artifacts| artifacts.overview_id.clone())
+        .or(parked_plan_artifact_id);
+    let plan_blueprint_artifact_id = current_plan_artifacts
+        .and_then(|artifacts| artifacts.blueprint_id)
+        .or(parked_plan_blueprint_artifact_id);
     let approval = if open {
         matching_plan_approval_for_workspace(
             &state.ideation_session_repo,
@@ -380,6 +413,7 @@ async fn automation_run_plan_read_model_for_state(
     Ok(AutomationRunPlanReadModel {
         plan_phase: open && workspace.mode == AgentConversationWorkspaceMode::Plan,
         plan_artifact_id,
+        plan_blueprint_artifact_id,
         plan_approved_by: approval
             .as_ref()
             .map(|approval| approval.approved_by.clone()),
@@ -411,6 +445,8 @@ impl From<Automation> for AutomationResponse {
             base_ref_kind: automation.base_ref_kind,
             base_ref: automation.base_ref,
             base_display_name: automation.base_display_name,
+            base_target_ref: None,
+            base_target_display_name: None,
             base_source_pull_request_json: automation.base_source_pull_request_json,
             goal_items_json: automation.goal_items_json,
             chain_mode: automation.chain_mode,
@@ -449,6 +485,9 @@ impl From<AutomationRun> for AutomationRunResponse {
             plan_revision_pending: run.plan_pending_instructions.is_some(),
             plan_phase: false,
             plan_artifact_id: None,
+            plan_blueprint_artifact_id: None,
+            parked_plan_artifact_id: run.plan_last_parked_artifact_id.clone(),
+            parked_plan_blueprint_artifact_id: run.plan_last_parked_blueprint_artifact_id.clone(),
             plan_approved_by: None,
             plan_approved_artifact_version: None,
             plan_approved_at: None,
@@ -487,6 +526,7 @@ impl AutomationRunResponse {
         let mut response = Self::from(run);
         response.plan_phase = plan.plan_phase;
         response.plan_artifact_id = plan.plan_artifact_id;
+        response.plan_blueprint_artifact_id = plan.plan_blueprint_artifact_id;
         response.plan_approved_by = plan.plan_approved_by;
         response.plan_approved_artifact_version = plan.plan_approved_artifact_version;
         response.plan_approved_at = plan.plan_approved_at;

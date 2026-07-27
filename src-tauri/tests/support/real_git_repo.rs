@@ -14,6 +14,25 @@ impl RealGitRepo {
     pub fn path_string(&self) -> String {
         self.dir.path().to_string_lossy().to_string()
     }
+
+    #[allow(dead_code)]
+    pub fn configure_github_origin(&self) {
+        let output = std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:ralphx/test-repository.git",
+            ])
+            .current_dir(self.path())
+            .output()
+            .expect("configure GitHub origin");
+        assert!(
+            output.status.success(),
+            "configure GitHub origin failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 pub fn setup_real_git_repo() -> RealGitRepo {

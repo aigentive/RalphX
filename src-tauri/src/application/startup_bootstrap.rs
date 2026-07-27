@@ -1,10 +1,20 @@
 use tracing::{info, warn};
-use tracing_subscriber::{EnvFilter, Registry, fmt, prelude::*};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 
 use crate::utils::redacting_writer::RedactingMakeWriter;
 
-pub(crate) fn initialize_process_bootstrap(
-) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+pub(crate) fn create_file_log(
+    log_dir: &std::path::Path,
+    log_filename: &str,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    std::fs::create_dir_all(log_dir)?;
+    let log_path = log_dir.join(log_filename);
+    let log_file = std::fs::File::create(&log_path)?;
+    Ok((log_path, log_file))
+}
+
+pub(crate) fn initialize_process_bootstrap() -> Option<tracing_appender::non_blocking::WorkerGuard>
+{
     if std::env::var_os("RUST_MIN_STACK").is_none() {
         std::env::set_var("RUST_MIN_STACK", "8388608");
     }
@@ -16,25 +26,31 @@ pub(crate) fn initialize_process_bootstrap(
 
     let (log_guard, file_layer) = if file_logging_enabled {
         let log_dir = crate::utils::runtime_log_paths::app_log_dir();
-        std::fs::create_dir_all(&log_dir).expect("Failed to create log directory");
-
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         let log_filename = format!("ralphx_{timestamp}.log");
-        let log_file = std::fs::File::create(log_dir.join(&log_filename))
-            .expect("Failed to create log file");
+        match create_file_log(&log_dir, &log_filename) {
+            Ok((log_path, log_file)) => {
+                let (non_blocking_writer, guard) = tracing_appender::non_blocking(log_file);
+                let layer = fmt::layer()
+                    .with_writer(RedactingMakeWriter::new(non_blocking_writer))
+                    .with_ansi(false);
 
-        let (non_blocking_writer, guard) = tracing_appender::non_blocking(log_file);
-        let layer = fmt::layer()
-            .with_writer(RedactingMakeWriter::new(non_blocking_writer))
-            .with_ansi(false);
-
-        eprintln!("File logging: {}", log_dir.join(&log_filename).display());
-        (Some(guard), Some(layer))
+                eprintln!("File logging: {}", log_path.display());
+                (Some(guard), Some(layer))
+            }
+            Err(error) => {
+                eprintln!(
+                    "File logging unavailable; continuing with stderr logging: {}",
+                    error
+                );
+                (None, None)
+            }
+        }
     } else {
         (None, None)
     };
 
-    let console_layer = fmt::layer().with_writer(RedactingMakeWriter::new(std::io::stdout));
+    let console_layer = fmt::layer().with_writer(RedactingMakeWriter::new(std::io::stderr));
 
     Registry::default()
         .with(env_filter)

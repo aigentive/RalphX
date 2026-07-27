@@ -26,8 +26,12 @@ pub mod sqlite_agent_workflow_repo;
 mod sqlite_agent_workflow_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
+#[cfg(test)]
+mod sqlite_agent_task_assignment_repo_tests;
 pub mod sqlite_api_key_repo;
 pub mod sqlite_app_state_repo;
+#[cfg(test)]
+mod sqlite_app_state_repo_tests;
 pub mod sqlite_artifact_bucket_repo;
 pub mod sqlite_artifact_flow_repo;
 pub mod sqlite_artifact_repo;

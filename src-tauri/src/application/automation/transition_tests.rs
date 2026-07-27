@@ -106,6 +106,7 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Run prompt".to_string(),
@@ -348,6 +349,85 @@ async fn transition_service_emits_only_when_run_status_cas_wins() {
             run_id: run.id,
         }]
     );
+}
+
+#[tokio::test]
+async fn reopen_run_corrective_is_the_only_agent_failed_to_running_seam() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        emitter.clone(),
+        notification_service(),
+    );
+    let mut failed = run(
+        "run-reopen-corrective",
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    failed.finished_at = Some(Utc::now());
+    failed.error_code = Some("agent_failed".to_string());
+    failed.error_detail = Some("interrupted".to_string());
+    run_repo.create_run(failed.clone()).await.unwrap();
+
+    let normal_error = service
+        .transition_run_status(
+            &failed.id,
+            AutomationRunStatus::AgentFailed,
+            AutomationRunStatus::Running,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(normal_error, AppError::InvalidTransition { .. }));
+    assert!(emitter.events().is_empty());
+
+    let corrective_misuse = service
+        .reopen_run_corrective(&failed.id, AutomationRunStatus::Completed)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        corrective_misuse,
+        AppError::InvalidTransition { .. }
+    ));
+    assert_eq!(
+        run_repo
+            .get_by_id(&failed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationRunStatus::AgentFailed
+    );
+    assert!(emitter.events().is_empty());
+
+    assert!(service
+        .reopen_run_corrective(&failed.id, AutomationRunStatus::AgentFailed)
+        .await
+        .unwrap());
+    let reopened = run_repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(reopened.status, AutomationRunStatus::Running);
+    assert!(reopened.error_code.is_none());
+    assert!(reopened.error_detail.is_none());
+    assert!(reopened.agent_phase_started_at.is_some());
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: failed.automation_id,
+            run_id: failed.id.clone(),
+        }]
+    );
+
+    assert!(!service
+        .reopen_run_corrective(&failed.id, AutomationRunStatus::AgentFailed)
+        .await
+        .unwrap());
+    assert_eq!(emitter.events().len(), 1);
 }
 
 #[tokio::test]

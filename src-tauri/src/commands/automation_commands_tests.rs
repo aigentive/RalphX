@@ -4,9 +4,10 @@ use serde_json::json;
 use std::process::Command;
 
 use super::automation_commands::{
-    automation_service, create_automation_draft_for_state, parse_automation_id,
-    parse_automation_run_id, parse_project_id, trigger_automation_run_now_for_state, trim_optional,
-    AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationSettingsInput,
+    automation_service, create_automation_draft_for_state, delete_automation_run,
+    parse_automation_id, parse_automation_run_id, parse_project_id, resume_automation_run,
+    trigger_automation_run_now_for_state, trim_optional, AutomationRunScopedInput,
+    CreateAutomationDraftInput, UpdateAutomationSettingsInput,
 };
 use crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput;
 use crate::application::automation::api::{
@@ -27,6 +28,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{PlanArtifactApproval, PlanArtifactApprovalRepository};
 use crate::error::AppError;
+use tauri::Manager;
 
 struct FailingPlanApprovalRepository;
 
@@ -103,6 +105,7 @@ fn automation_run(automation_id: &AutomationId) -> AutomationRun {
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Run 1 prompt".to_string(),
@@ -197,6 +200,8 @@ async fn link_run_to_plan_session(
     let mut session = IdeationSession::new(automation.project_id.clone());
     session.id = session_id.clone();
     session.plan_artifact_id = artifact_id.map(ArtifactId::from_string);
+    session.plan_blueprint_artifact_id =
+        artifact_id.map(|artifact_id| ArtifactId::from_string(format!("{artifact_id}-blueprint")));
     state.ideation_session_repo.create(session).await.unwrap();
 
     let mut workspace = AgentConversationWorkspace::new(
@@ -229,6 +234,7 @@ async fn insert_plan_approval(
 ) {
     let session_id = session_id.as_str().to_string();
     let artifact_id = artifact_id.to_string();
+    let blueprint_artifact_id = format!("{artifact_id}-blueprint");
     let approved_at = approved_at.to_string();
     let approved_by = approved_by.to_string();
     state
@@ -236,9 +242,18 @@ async fn insert_plan_approval(
         .run(move |conn| {
             conn.execute(
                 "INSERT INTO plan_artifact_approvals (
-                    session_id, artifact_id, artifact_version, status, approved_at, approved_by
-                 ) VALUES (?1, ?2, ?3, 'approved', ?4, ?5)",
-                rusqlite::params![session_id, artifact_id, version, approved_at, approved_by],
+                    session_id, artifact_id, artifact_version,
+                    blueprint_artifact_id, blueprint_artifact_version,
+                    status, approved_at, approved_by
+                 ) VALUES (?1, ?2, ?3, ?4, ?3, 'approved', ?5, ?6)",
+                rusqlite::params![
+                    session_id,
+                    artifact_id,
+                    version,
+                    blueprint_artifact_id,
+                    approved_at,
+                    approved_by
+                ],
             )
             .map(|_| ())
             .map_err(AppError::from)
@@ -309,6 +324,8 @@ fn automation_response_serializes_with_api_layer_snake_case() {
 
     assert_eq!(value["project_id"], "project-1");
     assert_eq!(value["max_runs"], 25);
+    assert!(value["base_target_ref"].is_null());
+    assert!(value["base_target_display_name"].is_null());
     assert!(value.get("projectId").is_none());
     assert!(value.get("maxRuns").is_none());
 }
@@ -405,6 +422,80 @@ async fn automation_detail_response_aggregates_usage_from_run_conversations() {
     assert_eq!(response.usage.cache_creation_tokens, 7);
     assert_eq!(response.usage.cache_read_tokens, 9);
     assert_eq!(response.usage.estimated_usd, Some(0.06));
+}
+
+#[tokio::test]
+async fn automation_detail_response_exposes_integration_fork_point_only_for_local_branch() {
+    let state = AppState::new_test();
+    let setup_conversation_id = ChatConversationId::from_string("automation-setup");
+    let setup_workspace = AgentConversationWorkspace::new(
+        setup_conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/ralphx/automation-abc".to_string(),
+        "/tmp/ralphx-automation-abc".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(setup_workspace)
+        .await
+        .unwrap();
+
+    let mut integration_automation = automation();
+    integration_automation.setup_conversation_id = Some(setup_conversation_id.clone());
+    integration_automation.base_ref_kind = "local_branch".to_string();
+    integration_automation.base_ref = "ralphx/ralphx/automation-abc".to_string();
+    let integration_response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation: integration_automation,
+            runs: Vec::new(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        integration_response.automation.base_target_ref.as_deref(),
+        Some("main")
+    );
+    assert_eq!(
+        integration_response
+            .automation
+            .base_target_display_name
+            .as_deref(),
+        Some("Project default (main)")
+    );
+    assert_ne!(
+        integration_response.automation.base_target_ref.as_deref(),
+        Some("ralphx/ralphx/automation-abc")
+    );
+
+    let mut project_default_automation = automation();
+    project_default_automation.setup_conversation_id = Some(setup_conversation_id);
+    project_default_automation.base_ref = "main".to_string();
+    let project_default_response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation: project_default_automation,
+            runs: Vec::new(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    assert!(project_default_response
+        .automation
+        .base_target_ref
+        .is_none());
+    assert!(project_default_response
+        .automation
+        .base_target_display_name
+        .is_none());
 }
 
 #[tokio::test]
@@ -1076,5 +1167,119 @@ async fn run_now_command_applies_stored_verdict_without_deferred_placeholder() {
     assert_eq!(
         runs[1].run_prompt,
         "Implement the next automation item with focused tests and publish the follow-up PR."
+    );
+}
+
+#[tokio::test]
+async fn delete_automation_run_command_deletes_valid_target_and_rejects_empty_run_id() {
+    let state = AppState::new_test();
+    let mut stopped = automation();
+    stopped.status = AutomationStatus::Stopped;
+    let mut failed = automation_run(&stopped.id);
+    failed.status = AutomationRunStatus::AgentFailed;
+    failed.judge_state = AutomationJudgeState::Done;
+    failed.conversation_id = None;
+    failed.branch_name = None;
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    state
+        .automation_run_repo
+        .create_run(failed.clone())
+        .await
+        .unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let empty_error = delete_automation_run(
+        AutomationRunScopedInput {
+            id: stopped.id.to_string(),
+            run_id: "   ".to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(empty_error, "automation run id is required");
+    assert!(app
+        .state::<AppState>()
+        .automation_run_repo
+        .get_by_id(&failed.id)
+        .await
+        .unwrap()
+        .is_some());
+
+    delete_automation_run(
+        AutomationRunScopedInput {
+            id: format!("  {}  ", stopped.id),
+            run_id: format!("  {}  ", failed.id),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("command should delegate valid run deletion");
+
+    assert!(app
+        .state::<AppState>()
+        .automation_run_repo
+        .get_by_id(&failed.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(app
+        .state::<AppState>()
+        .automation_repo
+        .get_by_id(&stopped.id)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn resume_automation_run_command_maps_reopen_rejection_without_mutating_state() {
+    let state = AppState::new_test();
+    let mut paused = automation();
+    paused.status = AutomationStatus::Paused;
+    paused.paused_reason_code = Some("user_paused".to_string());
+    let completed = automation_run(&paused.id);
+    state.automation_repo.create(paused.clone()).await.unwrap();
+    state
+        .automation_run_repo
+        .create_run(completed.clone())
+        .await
+        .unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let error = resume_automation_run(
+        AutomationRunScopedInput {
+            id: paused.id.to_string(),
+            run_id: completed.id.to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("only a failed run can be resumed"));
+    assert_eq!(
+        app.state::<AppState>()
+            .automation_run_repo
+            .get_by_id(&completed.id)
+            .await
+            .unwrap(),
+        Some(completed)
+    );
+    assert_eq!(
+        app.state::<AppState>()
+            .automation_repo
+            .get_by_id(&paused.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Paused
     );
 }

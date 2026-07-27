@@ -2,7 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
 import type { AgentConversationWorkspace } from "@/api/chat";
+import type { ManualServiceTier } from "@/api/manual-role-defaults.types";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
+import {
+  getProjectWorkspacePublishMode,
+  type Project,
+} from "@/types/project";
 
 import type { AgentConversation } from "./agentConversations";
 import {
@@ -18,6 +23,7 @@ import {
 import {
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceTerminalPublicationLabel,
+  hasPublishedWorkspacePr,
   isAgentWorkspacePublishCurrent,
 } from "./agentWorkspacePublishState";
 import {
@@ -31,10 +37,12 @@ import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
   activeConversation: AgentConversation | null;
+  activeProject?: Project | null;
   focusedWorkspaceReviewConversation?: AgentConversation | null;
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
   modelRegistry: AgentModelRegistry;
   focusedWorkspaceReviewConversationId?: string | null;
+  focusedWorkspaceReviewRuntimeHint?: AgentRuntimeSelection | null;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
   workspaceReviewerRuntime: AgentRuntimeSelection | null;
@@ -42,8 +50,10 @@ interface UseAgentsWorkspaceModelArgs {
 
 export function useAgentsWorkspaceModel({
   activeConversation,
+  activeProject = null,
   focusedWorkspaceReviewConversation = null,
   focusedWorkspaceReviewConversationId = null,
+  focusedWorkspaceReviewRuntimeHint = null,
   optimisticWorkspacesByConversationId,
   modelRegistry,
   runtimeByConversationId,
@@ -75,17 +85,26 @@ export function useAgentsWorkspaceModel({
   const activeRuntime = focusedWorkspaceReviewConversationId
     ? runtimeForWorkspaceReviewFocus(
         workspaceRuntime,
-        runtimeByConversationId[focusedWorkspaceReviewConversationId] ??
-          runtimeFromConversation(focusedWorkspaceReviewConversation),
+        runtimeFromConversation(focusedWorkspaceReviewConversation) ??
+          runtimeByConversationId[focusedWorkspaceReviewConversationId] ??
+          null,
         workspaceReviewerRuntime,
+        focusedWorkspaceReviewRuntimeHint,
       )
     : workspaceRuntime;
+  const focusedWorkspaceReviewServiceTier = serviceTierFromConversation(
+    focusedWorkspaceReviewConversation,
+  );
   const normalizedActiveRuntime = normalizeRuntimeForPersistence(
     activeRuntime,
     modelRegistry,
   );
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
+  const workspacePublishMode = getProjectWorkspacePublishMode(
+    activeProject,
+    hasPublishedWorkspacePr(activeWorkspace),
+  );
   const canInspectActiveWorkspaceFreshness =
     canInspectAgentWorkspaceFreshness(activeWorkspace);
   const activeWorkspaceFreshnessQuery = useQuery({
@@ -106,6 +125,8 @@ export function useAgentsWorkspaceModel({
   const activeWorkspaceFreshness = activeWorkspaceFreshnessQuery.data;
   const publishShortcutLabel = terminalPublicationLabel
     ? terminalPublicationLabel
+    : workspacePublishMode.kind === "unavailable"
+      ? "Repository setup required"
     : activeWorkspaceFreshness?.baseStatus === "blocked"
       ? "Base unavailable"
       : activeWorkspaceFreshness?.isBaseAhead
@@ -117,7 +138,9 @@ export function useAgentsWorkspaceModel({
           }`
         : isPublishShortcutCurrent
           ? "Published"
-          : "Commit & Publish";
+          : workspacePublishMode.kind === "localCommit"
+            ? "Commit locally"
+            : "Commit & Publish";
   const activeConversationModeLocked = activeConversation
     ? isConversationModeLocked(activeConversation, activeWorkspace)
     : false;
@@ -134,9 +157,24 @@ export function useAgentsWorkspaceModel({
     activeConversationModeLocked,
     activeWorkspace,
     activeWorkspaceFreshness,
+    focusedWorkspaceReviewServiceTier,
     normalizedActiveRuntime,
     publishShortcutLabel,
     terminalArchivedReason,
     terminalUnavailableReason,
   };
+}
+
+function serviceTierFromConversation(
+  conversation: AgentConversation | null,
+): ManualServiceTier | null {
+  const serviceTier = conversation?.serviceTier?.trim().toLowerCase();
+  if (
+    serviceTier === "provider_default" ||
+    serviceTier === "standard" ||
+    serviceTier === "fast"
+  ) {
+    return serviceTier;
+  }
+  return null;
 }

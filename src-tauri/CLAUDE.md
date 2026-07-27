@@ -87,6 +87,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 
 | Pattern | Rule |
 |---|---|
+| Backend-owned Startup Gate | `StartupCoordinator` is the sole readiness writer: window first → AppState registration → listener + safety barrier → interactive shell → owned finite recovery settlement; timers/localStorage/recurring loops never authorize readiness |
 | Reuse before invent (NON-NEGOTIABLE) | New behavior extends the seam that owns the domain — transitions → `TaskTransitionService`, publish/review gates → `agent_workspace_review*`, events → `AppState.events`, spawns → `provider_onboarding_gate` + `harness_runtime_registry`, git primitives → `git_service/`, queueing → `chat_service_queue` + durable repo, recovery → the domain's dedicated recovery module. ❌ New parallel services/engines/managers for owned concerns |
 | Validated task transitions | Normal workflow status changes use validated `TaskTransitionService::transition_task*`; corrective/recovery-only jumps use `transition_task_corrective()` / `apply_corrective_transition()`; raw `internal_status` writes are limited to canonical engine/bootstrap paths |
 | Shared scope drift logic | Review/merge scope matching and out-of-scope blocker fingerprints should live in `ralphx-domain::review::scope_drift`; root crate code should only handle repo/git wiring |
@@ -140,6 +141,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Execution defaults seeding | `execution_defaults` in `config/ralphx.yaml` may seed only pristine/default execution-settings rows at bootstrap; once DB rows diverge, live DB/UI values are authoritative |
 | Execution halt mode contract | Execution status/events must expose persisted halt mode (`running`/`paused`/`stopped`); don't collapse `stopped` into `isPaused` and accidentally re-enable resume UI |
 | Artifacts test quiesce | `artifacts_handlers` plan-mutation tests that create a plan first must quiesce auto-verify (reset parent + archive/unregister verification children) unless the test is explicitly asserting freeze/bypass behavior |
+| Plan bundle authority | `plan_artifact_id` remains the Overview compatibility anchor; v2 plan actions derive authority from the exact Overview + `plan_blueprint_artifact_id` pair and fail closed when either member is missing |
 | SQLite write transactions | `DbConnection::run_transaction()` uses `BEGIN IMMEDIATE`; keep read-then-write sync-helper flows inside it to avoid WAL upgrade failures surfaced as `database is locked` |
 | Tokio spawn | `tokio::spawn` → async fn ONLY. Sync code → `std::thread::spawn` \| `tauri::async_runtime::spawn`. See `.claude/rules/tokio-runtime-safety.md` |
 | Rust std API stability | Avoid unstable std APIs in production code (e.g., `is_multiple_of`) — use stable equivalents (e.g., `%`). See `.claude/rules/rust-stable-apis.md` |
@@ -155,7 +157,7 @@ New migration: `python3 scripts/new_sqlite_migration.py <description>` → `vYYY
 ## Commands
 Local agents: focused commands only; ❌ `cargo check` (hangs) | ❌ broad/full suites | ❌ `--nocapture`
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib           # pinpoint lib tests
+cargo test --manifest-path src-tauri/Cargo.toml --features test-utils <filter> --lib           # pinpoint lib tests
 cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'  # targeted integration suites
 python3 scripts/check-layering.py                                        # only for layer/import/module-boundary changes
 rustfmt --edition 2021 --check <touched-leaf.rs>                         # touched leaves only

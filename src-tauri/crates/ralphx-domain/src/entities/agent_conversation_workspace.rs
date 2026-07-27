@@ -545,6 +545,9 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_artifact_id: Option<ArtifactId>,
     pub review_artifact_version: Option<u32>,
     pub review_artifact_updated_at: Option<DateTime<Utc>>,
+    pub review_requested_changes_artifact_id: Option<ArtifactId>,
+    pub review_requested_changes_artifact_version: Option<u32>,
+    pub review_requested_changes_artifact_updated_at: Option<DateTime<Utc>>,
     pub review_gate_bypassed_at: Option<DateTime<Utc>>,
     pub review_gate_bypassed_target_scope: Option<AgentWorkspaceReviewTargetScope>,
     pub review_gate_bypassed_diff_fingerprint: Option<String>,
@@ -563,6 +566,7 @@ pub struct AgentWorkspaceReviewMonitor {
     pub workspace_head_sha: Option<String>,
     pub current_diff_fingerprint: Option<String>,
     pub previous_version_id: Option<ArtifactId>,
+    pub review_requested_changes_previous_version_id: Option<ArtifactId>,
     pub review_blocking_summary: Option<String>,
     pub review_blocking_fingerprint: Option<String>,
     pub review_fixer_run_id: Option<String>,
@@ -592,6 +596,9 @@ impl AgentWorkspaceReviewMonitor {
             review_artifact_id: None,
             review_artifact_version: None,
             review_artifact_updated_at: None,
+            review_requested_changes_artifact_id: None,
+            review_requested_changes_artifact_version: None,
+            review_requested_changes_artifact_updated_at: None,
             review_gate_bypassed_at: None,
             review_gate_bypassed_target_scope: None,
             review_gate_bypassed_diff_fingerprint: None,
@@ -610,6 +617,7 @@ impl AgentWorkspaceReviewMonitor {
             workspace_head_sha: None,
             current_diff_fingerprint: None,
             previous_version_id: None,
+            review_requested_changes_previous_version_id: None,
             review_blocking_summary: None,
             review_blocking_fingerprint: None,
             review_fixer_run_id: None,
@@ -626,6 +634,13 @@ impl AgentWorkspaceReviewMonitor {
 }
 
 impl AgentWorkspaceReviewMonitor {
+    pub fn has_review_artifact_pair(&self) -> bool {
+        self.review_artifact_id.is_some()
+            && self.review_artifact_version.is_some()
+            && self.review_requested_changes_artifact_id.is_some()
+            && self.review_requested_changes_artifact_version.is_some()
+    }
+
     pub fn is_current_for_target(
         &self,
         target_scope: AgentWorkspaceReviewTargetScope,
@@ -654,7 +669,7 @@ impl AgentWorkspaceReviewMonitor {
     ) -> bool {
         self.review_outcome == AgentWorkspaceReviewOutcome::Passed
             && self.is_current_for_target(target_scope, head_sha, diff_fingerprint)
-            && self.review_artifact_id.is_some()
+            && self.has_review_artifact_pair()
     }
 
     pub fn has_current_review_bypass_for_target(
@@ -670,8 +685,7 @@ impl AgentWorkspaceReviewMonitor {
             && self.review_gate_bypassed_diff_fingerprint.as_deref() == Some(diff_fingerprint)
             && self.review_gate_bypassed_artifact_id == self.review_artifact_id
             && self.review_gate_bypassed_artifact_version == self.review_artifact_version
-            && self.review_artifact_id.is_some()
-            && self.review_artifact_version.is_some()
+            && self.has_review_artifact_pair()
             && self.is_current_for_target(target_scope, head_sha, diff_fingerprint)
     }
 
@@ -708,6 +722,8 @@ pub struct AgentWorkspaceReviewFixerSnapshot {
     pub diff_fingerprint: String,
     pub artifact_id: ArtifactId,
     pub artifact_version: u32,
+    pub requested_changes_artifact_id: ArtifactId,
+    pub requested_changes_artifact_version: u32,
     pub blocking_fingerprint: String,
 }
 
@@ -731,6 +747,13 @@ impl AgentWorkspaceReviewFixerSnapshot {
         let artifact_version = monitor
             .review_artifact_version
             .filter(|version| *version > 0)?;
+        let requested_changes_artifact_id = monitor
+            .review_requested_changes_artifact_id
+            .clone()
+            .filter(|value| !value.as_str().trim().is_empty())?;
+        let requested_changes_artifact_version = monitor
+            .review_requested_changes_artifact_version
+            .filter(|version| *version > 0)?;
         let blocking_fingerprint = monitor
             .review_blocking_fingerprint
             .clone()
@@ -740,6 +763,8 @@ impl AgentWorkspaceReviewFixerSnapshot {
             diff_fingerprint,
             artifact_id,
             artifact_version,
+            requested_changes_artifact_id,
+            requested_changes_artifact_version,
             blocking_fingerprint,
         })
     }
@@ -1014,6 +1039,14 @@ pub fn is_open_pr(publication_pr_number: Option<i64>, publication_pr_status: Opt
 
 pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {
     matches!(status, None | Some("pushed" | "refreshed"))
+}
+
+/// Whether a workspace publication workflow is actively mutating its branch.
+pub fn is_publication_push_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
 }
 
 pub const DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD: &str = "squash";
@@ -1580,92 +1613,6 @@ mod enum_roundtrip_tests {
             );
         }
         assert!(AgentWorkspacePrReviewActionStatus::from_str("bogus").is_err());
-    }
-}
-
-#[cfg(test)]
-mod workspace_review_monitor_tests {
-    use super::{
-        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-        AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, ProjectId,
-    };
-
-    #[test]
-    fn workspace_review_monitor_defaults_and_currentness_are_explicit() {
-        let conversation_id = ChatConversationId::from_string("review-monitor-conversation");
-        let project_id = ProjectId::from_string("project-1".to_string());
-        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project_id);
-
-        assert_eq!(monitor.conversation_id, conversation_id);
-        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);
-        assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::None);
-        assert_eq!(
-            monitor.review_gate_status,
-            AgentWorkspaceReviewGateStatus::NotRequired
-        );
-        assert!(monitor.current_target_scope.is_none());
-        assert!(monitor.review_conversation_id.is_none());
-        assert!(monitor.review_artifact_id.is_none());
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-
-        monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
-        monitor.reviewed_head_sha = Some("head".to_string());
-        monitor.reviewed_diff_fingerprint = Some("fingerprint".to_string());
-        monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-1"));
-
-        assert!(monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.has_current_passing_review_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
-        assert!(monitor.has_current_passing_review_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("different-head"),
-            "fingerprint"
-        ));
-        assert!(monitor.has_current_passing_review_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("different-head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::SelectedSource,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "different-fingerprint"
-        ));
-
-        monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
-        assert!(monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::SelectedSource,
-            Some("head"),
-            "fingerprint"
-        ));
-        assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::SelectedSource,
-            Some("different-head"),
-            "fingerprint"
-        ));
     }
 }
 

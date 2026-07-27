@@ -5,7 +5,7 @@ pub(crate) use crate::application::agent_task_pipeline_service::validate_complet
 use crate::application::{
     agent_task_pipeline_service::{
         activate_agent_task_pipeline as activate_agent_task_pipeline_service,
-        validate_supervised_task_pipeline,
+        validate_direct_implementation_authority_sync, validate_supervised_task_pipeline,
     },
     AppState,
 };
@@ -24,6 +24,7 @@ use crate::domain::entities::{
     ArtifactMetadata, ArtifactRelation, ArtifactType, ChatContextType, ChatConversationId,
     IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus,
 };
+use crate::domain::services::ComposerArtifactReference;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::{
     SqliteArtifactRepository as ArtifactRepo, SqliteIdeationSessionRepository as SessionRepo,
@@ -58,6 +59,21 @@ pub struct ActivateAgentTaskPipelineInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ActivateAgentPlanDirectImplementationInput {
+    pub conversation_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub retry: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivateAgentPlanDirectImplementationResponse {
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub artifact_references: Vec<ComposerArtifactReference>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartAgentTaskPipelineInput {
     pub conversation_id: String,
     pub session_id: String,
@@ -71,6 +87,7 @@ pub struct AgentConversationPlanSeedResponse {
     pub workspace: AgentConversationWorkspaceResponse,
     pub session_id: String,
     pub artifact: AgentPlanArtifactResponse,
+    pub blueprint_artifact: Option<AgentPlanArtifactResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,10 +144,26 @@ impl From<Artifact> for AgentPlanArtifactResponse {
 }
 
 #[derive(Debug, Clone)]
-struct PlanSeed {
+struct PlanDocumentSeed {
     title: String,
     content: String,
     source_artifact_id: Option<ArtifactId>,
+}
+
+#[derive(Debug, Clone)]
+struct PlanSeed {
+    overview: PlanDocumentSeed,
+    blueprint: Option<PlanDocumentSeed>,
+}
+
+struct ResolvedSourcePlan {
+    overview: Artifact,
+    blueprint: Option<Artifact>,
+}
+
+struct CreatedPlanSeed {
+    overview: Artifact,
+    blueprint: Option<Artifact>,
 }
 
 #[tauri::command]
@@ -155,6 +188,14 @@ pub async fn activate_agent_task_pipeline(
     state: State<'_, AppState>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     activate_agent_task_pipeline_for_state(input, state.inner()).await
+}
+
+#[tauri::command]
+pub async fn activate_agent_plan_direct_implementation(
+    input: ActivateAgentPlanDirectImplementationInput,
+    state: State<'_, AppState>,
+) -> Result<ActivateAgentPlanDirectImplementationResponse, String> {
+    activate_agent_plan_direct_implementation_for_state(input, state.inner()).await
 }
 
 #[tauri::command]
@@ -235,6 +276,109 @@ pub(crate) async fn activate_agent_task_pipeline_for_state(
 }
 
 #[doc(hidden)]
+pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
+    input: ActivateAgentPlanDirectImplementationInput,
+    state: &AppState,
+) -> Result<ActivateAgentPlanDirectImplementationResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
+    let tx_conversation_id = input.conversation_id;
+    let tx_session_id = input.session_id;
+    let response_session_id = tx_session_id.clone();
+    let retry = input.retry;
+    let approved_bundle = state
+        .db
+        .run_transaction(move |conn| {
+            let approved_bundle = validate_direct_implementation_authority_sync(
+                conn,
+                &tx_conversation_id,
+                &tx_session_id,
+                retry,
+            )?;
+            if retry {
+                let conversation_is_edit = conn.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM chat_conversations
+                        WHERE id = ?1 AND agent_mode = 'edit'
+                     )",
+                    [&tx_conversation_id],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !conversation_is_edit {
+                    return Err(AppError::Conflict(
+                        "Direct implementation retry is not in Edit mode".to_string(),
+                    ));
+                }
+                return Ok(approved_bundle);
+            }
+            let now = chrono::Utc::now().to_rfc3339();
+            let workspace_updated = conn.execute(
+                "UPDATE agent_conversation_workspaces
+                 SET mode = 'edit', updated_at = ?2
+                 WHERE conversation_id = ?1 AND mode = 'plan'
+                   AND linked_ideation_session_id = ?3",
+                rusqlite::params![tx_conversation_id, now, tx_session_id],
+            )?;
+            let conversation_updated = conn.execute(
+                "UPDATE chat_conversations
+                 SET agent_mode = 'edit', updated_at = ?2
+                 WHERE id = ?1 AND agent_mode = 'plan'",
+                rusqlite::params![tx_conversation_id, now],
+            )?;
+            if workspace_updated != 1 || conversation_updated != 1 {
+                return Err(AppError::Conflict(
+                    "Plan changed before direct implementation activation".to_string(),
+                ));
+            }
+            Ok(approved_bundle)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Activated Edit workspace was not found".to_string())?;
+    let workspace = agent_workspace_response_for_state(state, workspace).await?;
+    let mut artifact_references = vec![approved_plan_composer_reference(
+        approved_bundle.overview,
+        &response_session_id,
+        "Plan Overview",
+    )];
+    if let Some(blueprint) = approved_bundle.blueprint {
+        artifact_references.push(approved_plan_composer_reference(
+            blueprint,
+            &response_session_id,
+            "Implementation Blueprint",
+        ));
+    }
+    Ok(ActivateAgentPlanDirectImplementationResponse {
+        workspace,
+        artifact_references,
+    })
+}
+
+fn approved_plan_composer_reference(
+    artifact: Artifact,
+    session_id: &str,
+    fallback_title: &str,
+) -> ComposerArtifactReference {
+    ComposerArtifactReference {
+        artifact_id: artifact.id.as_str().to_string(),
+        kind: "plan".to_string(),
+        title: Some(if artifact.name.trim().is_empty() {
+            fallback_title.to_string()
+        } else {
+            artifact.name
+        }),
+        session_id: Some(session_id.to_string()),
+        version: Some(artifact.metadata.version),
+        status: Some("approved".to_string()),
+    }
+}
+
+#[doc(hidden)]
 pub(crate) async fn copy_agent_conversation_plan_for_state(
     input: CopyAgentConversationPlanInput,
     state: &AppState,
@@ -245,7 +389,7 @@ pub(crate) async fn copy_agent_conversation_plan_for_state(
 
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_project_id = project_id_for_target_conversation(state, &conversation_id).await?;
-    let source_artifact = resolve_source_plan_artifact(
+    let source = resolve_source_plan_artifacts(
         state,
         &target_project_id,
         &input.source_session_id,
@@ -253,14 +397,17 @@ pub(crate) async fn copy_agent_conversation_plan_for_state(
         input.source_version,
     )
     .await?;
-    let (title, content, source_artifact_id) = inline_plan_seed_from_source(source_artifact)?;
+    let overview = inline_plan_seed_from_source(source.overview)?;
+    let blueprint = source
+        .blueprint
+        .map(inline_plan_seed_from_source)
+        .transpose()?;
 
     seed_agent_conversation_plan(
         conversation_id,
         PlanSeed {
-            title,
-            content,
-            source_artifact_id: Some(source_artifact_id),
+            overview,
+            blueprint,
         },
         state,
     )
@@ -284,9 +431,12 @@ pub(crate) async fn import_agent_conversation_plan_for_state(
     seed_agent_conversation_plan(
         ChatConversationId::from_string(input.conversation_id),
         PlanSeed {
-            title,
-            content,
-            source_artifact_id: None,
+            overview: PlanDocumentSeed {
+                title,
+                content,
+                source_artifact_id: None,
+            },
+            blueprint: None,
         },
         state,
     )
@@ -311,13 +461,13 @@ async fn project_id_for_target_conversation(
     ))
 }
 
-async fn resolve_source_plan_artifact(
+async fn resolve_source_plan_artifacts(
     state: &AppState,
     target_project_id: &crate::domain::entities::ProjectId,
     source_session_id: &str,
     source_artifact_id: &str,
     source_version: u32,
-) -> Result<Artifact, String> {
+) -> Result<ResolvedSourcePlan, String> {
     let source_session_id = IdeationSessionId::from_string(source_session_id.to_string());
     let source_session = state
         .ideation_session_repo
@@ -369,12 +519,43 @@ async fn resolve_source_plan_artifact(
         return Err("Source plan version is archived".to_string());
     }
 
-    Ok(source_artifact)
+    let blueprint = if source_session.plan_contract_version >= 2 {
+        let bundle = source_session
+            .plan_artifact_bundle()
+            .ok_or_else(|| "Source session has an incomplete v2 plan bundle".to_string())?;
+        if source_artifact.id != bundle.overview_id {
+            return Err(
+                "Historical v2 plan copies require selecting the current Overview and Blueprint pair"
+                    .to_string(),
+            );
+        }
+        let blueprint_id = bundle
+            .blueprint_id
+            .ok_or_else(|| "Source session has an incomplete v2 plan bundle".to_string())?;
+        let blueprint = state
+            .artifact_repo
+            .get_by_id(&blueprint_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Source plan blueprint not found: {}", blueprint_id.as_str()))?;
+        if blueprint.artifact_type != ArtifactType::Specification {
+            return Err("Source blueprint is not a plan specification".to_string());
+        }
+        if blueprint.archived_at.is_some() {
+            return Err("Source blueprint is archived".to_string());
+        }
+        Some(blueprint)
+    } else {
+        None
+    };
+
+    Ok(ResolvedSourcePlan {
+        overview: source_artifact,
+        blueprint,
+    })
 }
 
-fn inline_plan_seed_from_source(
-    source_artifact: Artifact,
-) -> Result<(String, String, ArtifactId), String> {
+fn inline_plan_seed_from_source(source_artifact: Artifact) -> Result<PlanDocumentSeed, String> {
     let content = match source_artifact.content {
         ArtifactContent::Inline { text } => text,
         ArtifactContent::File { .. } => {
@@ -383,7 +564,11 @@ fn inline_plan_seed_from_source(
             )
         }
     };
-    Ok((source_artifact.name, content, source_artifact.id))
+    Ok(PlanDocumentSeed {
+        title: source_artifact.name,
+        content,
+        source_artifact_id: Some(source_artifact.id),
+    })
 }
 
 async fn seed_agent_conversation_plan(
@@ -427,15 +612,22 @@ async fn seed_agent_conversation_plan(
 
     let created = create_or_version_target_plan(state, target_session_id.clone(), seed).await?;
     let workspace_response = agent_workspace_response_for_state(state, workspace).await?;
-    let mut artifact_response = AgentPlanArtifactResponse::from(created);
+    let mut artifact_response = AgentPlanArtifactResponse::from(created.overview);
     artifact_response.session_id = Some(target_session_id.clone());
     artifact_response.plan_approval_status = Some("draft".to_string());
+    let blueprint_artifact = created.blueprint.map(|artifact| {
+        let mut response = AgentPlanArtifactResponse::from(artifact);
+        response.session_id = Some(target_session_id.clone());
+        response.plan_approval_status = Some("draft".to_string());
+        response
+    });
 
     Ok(AgentConversationPlanSeedResponse {
         conversation: switch_response.conversation,
         workspace: workspace_response,
         session_id: target_session_id,
         artifact: artifact_response,
+        blueprint_artifact,
     })
 }
 
@@ -443,7 +635,7 @@ async fn create_or_version_target_plan(
     state: &AppState,
     target_session_id: String,
     seed: PlanSeed,
-) -> Result<Artifact, String> {
+) -> Result<CreatedPlanSeed, String> {
     state
         .db
         .run_transaction(move |conn| {
@@ -457,7 +649,7 @@ fn create_or_version_target_plan_sync(
     conn: &rusqlite::Connection,
     target_session_id: &str,
     seed: PlanSeed,
-) -> AppResult<Artifact> {
+) -> AppResult<CreatedPlanSeed> {
     let session = SessionRepo::get_by_id_sync(conn, target_session_id)?.ok_or_else(|| {
         AppError::NotFound(format!("Planning session not found: {target_session_id}"))
     })?;
@@ -468,23 +660,105 @@ fn create_or_version_target_plan_sync(
         ));
     }
 
-    let previous_artifact = match session.plan_artifact_id.as_ref() {
+    let previous_overview = match session.plan_artifact_id.as_ref() {
         Some(plan_id) => {
             let latest_id = ArtifactRepo::resolve_latest_sync(conn, plan_id.as_str())?;
             ArtifactRepo::get_by_id_sync(conn, &latest_id)?
         }
         None => None,
     };
+    let previous_blueprint = match session.plan_blueprint_artifact_id.as_ref() {
+        Some(blueprint_id) => {
+            let latest_id = ArtifactRepo::resolve_latest_sync(conn, blueprint_id.as_str())?;
+            ArtifactRepo::get_by_id_sync(conn, &latest_id)?
+        }
+        None => None,
+    };
 
-    let source_artifact_id = seed.source_artifact_id;
-    let derived_from = source_artifact_id
+    let overview = create_plan_seed_document_sync(conn, seed.overview, previous_overview.as_ref())?;
+    let blueprint = seed
+        .blueprint
+        .map(|blueprint_seed| {
+            create_plan_seed_document_sync(conn, blueprint_seed, previous_blueprint.as_ref())
+        })
+        .transpose()?;
+
+    if let (Some(previous_overview), Some(previous_blueprint)) =
+        (previous_overview.as_ref(), previous_blueprint.as_ref())
+    {
+        conn.execute(
+            "DELETE FROM artifact_relations
+             WHERE relation_type = 'related_to'
+               AND ((from_artifact_id = ?1 AND to_artifact_id = ?2)
+                 OR (from_artifact_id = ?2 AND to_artifact_id = ?1))",
+            rusqlite::params![
+                previous_overview.id.as_str(),
+                previous_blueprint.id.as_str(),
+            ],
+        )?;
+    }
+
+    if let Some(blueprint) = blueprint.as_ref() {
+        SessionRepo::update_plan_bundle_sync(
+            conn,
+            target_session_id,
+            overview.id.as_str(),
+            blueprint.id.as_str(),
+            overview.metadata.version as i32,
+            blueprint.metadata.version as i32,
+        )?;
+        ArtifactRepo::add_relation_sync(
+            conn,
+            ArtifactRelation::related_to(overview.id.clone(), blueprint.id.clone()),
+        )?;
+    } else {
+        SessionRepo::update_plan_artifact_id_sync(
+            conn,
+            target_session_id,
+            Some(overview.id.as_str()),
+        )?;
+        let changed = conn.execute(
+            "UPDATE ideation_sessions
+             SET plan_blueprint_artifact_id = NULL,
+                 plan_contract_version = 2,
+                 plan_version_last_read = ?2,
+                 blueprint_version_last_read = NULL,
+                 verified_plan_artifact_id = NULL,
+                 verified_plan_blueprint_artifact_id = NULL,
+                 updated_at = ?3
+             WHERE id = ?1",
+            rusqlite::params![
+                target_session_id,
+                i64::from(overview.metadata.version),
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound(format!(
+                "Planning session not found: {target_session_id}"
+            )));
+        }
+    }
+
+    Ok(CreatedPlanSeed {
+        overview,
+        blueprint,
+    })
+}
+
+fn create_plan_seed_document_sync(
+    conn: &rusqlite::Connection,
+    seed: PlanDocumentSeed,
+    previous_artifact: Option<&Artifact>,
+) -> AppResult<Artifact> {
+    let version = previous_artifact
+        .map(|artifact| artifact.metadata.version + 1)
+        .unwrap_or(1);
+    let derived_from = seed
+        .source_artifact_id
         .as_ref()
         .map(|id| vec![id.clone()])
         .unwrap_or_default();
-    let version = previous_artifact
-        .as_ref()
-        .map(|artifact| artifact.metadata.version + 1)
-        .unwrap_or(1);
     let new_artifact = Artifact {
         id: ArtifactId::new(),
         artifact_type: ArtifactType::Specification,
@@ -495,31 +769,16 @@ fn create_or_version_target_plan_sync(
         bucket_id: Some(ArtifactBucketId::from_string(PLAN_BUCKET_ID)),
         archived_at: None,
     };
-
     let created = if let Some(previous) = previous_artifact {
         ArtifactRepo::create_with_previous_version_sync(conn, new_artifact, previous.id.as_str())?
     } else {
         ArtifactRepo::create_sync(conn, new_artifact)?
     };
 
-    SessionRepo::update_plan_artifact_id_sync(conn, target_session_id, Some(created.id.as_str()))?;
-    SessionRepo::update_plan_version_last_read_sync(
-        conn,
-        target_session_id,
-        created.metadata.version as i32,
-    )?;
-
-    if let Some(source_id) = source_artifact_id {
-        let relation = ArtifactRelation::derived_from(created.id.clone(), source_id);
-        conn.execute(
-            "INSERT INTO artifact_relations (id, from_artifact_id, to_artifact_id, relation_type)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                relation.id.as_str(),
-                relation.from_artifact_id.as_str(),
-                relation.to_artifact_id.as_str(),
-                relation.relation_type.as_str(),
-            ],
+    if let Some(source_id) = seed.source_artifact_id {
+        ArtifactRepo::add_relation_sync(
+            conn,
+            ArtifactRelation::derived_from(created.id.clone(), source_id),
         )?;
     }
 

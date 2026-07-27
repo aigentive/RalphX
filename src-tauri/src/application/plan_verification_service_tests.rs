@@ -101,22 +101,23 @@ fn only_manual_requests_may_retry_exact_verified_artifacts() {
 }
 
 async fn session_with_plan(state: &AppState) -> IdeationSession {
-    let session = state
-        .ideation_session_repo
-        .create(IdeationSession::new(ProjectId::new()))
-        .await
-        .expect("session should be created");
+    let mut session = IdeationSession::new(ProjectId::new());
+    session.plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.plan_blueprint_artifact_id = Some(ArtifactId::from_string("plan-current-blueprint"));
+    session.plan_contract_version = 2;
+
     state
         .ideation_session_repo
-        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .create(session)
         .await
-        .expect("plan should be linked");
-    state
-        .ideation_session_repo
-        .get_by_id(&session.id)
-        .await
-        .expect("session read should succeed")
-        .expect("session should exist")
+        .expect("session should be created")
+}
+
+fn plan_bundle_action_target(session: &IdeationSession) -> String {
+    session
+        .plan_artifact_bundle()
+        .expect("v2 plan fixture should include both artifacts")
+        .action_target_id()
 }
 
 async fn completed_plan_workspace_run(
@@ -124,16 +125,11 @@ async fn completed_plan_workspace_run(
     action_kind: Option<AgentRunActionKind>,
 ) -> (IdeationSession, ChatConversation, AgentRun) {
     let project_id = ProjectId::new();
-    let session = state
-        .ideation_session_repo
-        .create(IdeationSession::new(project_id.clone()))
-        .await
-        .unwrap();
-    state
-        .ideation_session_repo
-        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
-        .await
-        .unwrap();
+    let mut session = IdeationSession::new(project_id.clone());
+    session.plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.plan_blueprint_artifact_id = Some(ArtifactId::from_string("plan-current-blueprint"));
+    session.plan_contract_version = 2;
+    let session = state.ideation_session_repo.create(session).await.unwrap();
     let conversation = state
         .chat_conversation_repo
         .create(ChatConversation::new_project(project_id.clone()))
@@ -219,7 +215,7 @@ async fn acceptance_queues_required_automatic_verification_and_remains_blocked()
         .expect("verification action should receive its review contract");
     for required_lens in [
         "industry best practices",
-        "reuses existing components",
+        "reuse existing components",
         "UI/UX",
         "product sense",
         "remote base branch drift",
@@ -269,6 +265,8 @@ async fn exact_current_proof_allows_acceptance_without_another_turn() {
     let state = AppState::new_test();
     let mut session = session_with_plan(&state).await;
     session.verified_plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.verified_plan_blueprint_artifact_id =
+        Some(ArtifactId::from_string("plan-current-blueprint"));
     let chat = mock_chat(&state);
 
     ensure_plan_verification_for_acceptance(&state, &chat, &session, &policy(true, true))
@@ -304,13 +302,14 @@ async fn verification_status_reports_no_plan_and_exact_proof_without_run_inferen
     assert_eq!(status.status, PlanVerificationStatusKind::Unverified);
     assert!(!status.in_progress);
 
+    let plan_target = plan_bundle_action_target(&unverified);
     state.message_queue.queue_with_overrides(
         crate::domain::entities::ChatContextType::Ideation,
         unverified.id.as_str(),
         "Verify plan".to_string(),
         Some(format!(
-            r#"{{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"{}","ralphx_action_target_id":"plan-current"}}"#,
-            unverified.id
+            r#"{{"ralphx_action_kind":"verify_plan","ralphx_action_context_id":"{}","ralphx_action_target_id":"{}"}}"#,
+            unverified.id, plan_target
         )),
         None,
         None,
@@ -323,7 +322,11 @@ async fn verification_status_reports_no_plan_and_exact_proof_without_run_inferen
 
     let mut verified = IdeationSession::new(ProjectId::new());
     verified.plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    verified.plan_blueprint_artifact_id = Some(ArtifactId::from_string("plan-current-blueprint"));
+    verified.plan_contract_version = 2;
     verified.verified_plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    verified.verified_plan_blueprint_artifact_id =
+        Some(ArtifactId::from_string("plan-current-blueprint"));
     let verified = state.ideation_session_repo.create(verified).await.unwrap();
 
     let status = get_plan_verification_status(&state, &verified.id)
@@ -347,7 +350,7 @@ async fn verification_status_prefers_active_owner_action() {
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
-    verifier.action_target_id = Some("plan-current".to_string());
+    verifier.action_target_id = Some(plan_bundle_action_target(&session));
     state.agent_run_repo.create(verifier).await.unwrap();
 
     let status = get_plan_verification_status(&state, &session.id)
@@ -460,9 +463,10 @@ async fn nominal_send_without_typed_run_or_durable_queue_fails_closed() {
 async fn stale_admission_marker_is_not_reported_as_durable_queue_success() {
     let state = AppState::new_test();
     let session = session_with_plan(&state).await;
-    state
-        .plan_verification_admissions
-        .insert(session.id.as_str().to_string(), "plan-current".to_string());
+    state.plan_verification_admissions.insert(
+        session.id.as_str().to_string(),
+        plan_bundle_action_target(&session),
+    );
     let chat = mock_chat(&state);
 
     let outcome = request_plan_verification(
@@ -518,7 +522,11 @@ async fn manual_reverification_preserves_exact_proof_while_automatic_is_idempote
     let state = AppState::new_test();
     let mut session = IdeationSession::new(ProjectId::new());
     session.plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.plan_blueprint_artifact_id = Some(ArtifactId::from_string("plan-current-blueprint"));
+    session.plan_contract_version = 2;
     session.verified_plan_artifact_id = Some(ArtifactId::from_string("plan-current"));
+    session.verified_plan_blueprint_artifact_id =
+        Some(ArtifactId::from_string("plan-current-blueprint"));
     let session = state.ideation_session_repo.create(session).await.unwrap();
 
     let automatic = request_plan_verification(
@@ -727,7 +735,7 @@ async fn detached_verification_actions_cannot_poison_owner_status_or_admission()
     let mut detached_failed = AgentRun::new(detached_conversation.id);
     detached_failed.action_kind = Some(AgentRunActionKind::VerifyPlan);
     detached_failed.action_context_id = Some(session.id.as_str().to_string());
-    detached_failed.action_target_id = Some("plan-current".to_string());
+    detached_failed.action_target_id = Some(plan_bundle_action_target(&session));
     let detached_failed = state.agent_run_repo.create(detached_failed).await.unwrap();
     state
         .agent_run_repo
@@ -744,7 +752,7 @@ async fn detached_verification_actions_cannot_poison_owner_status_or_admission()
     let mut detached_running = AgentRun::new(detached_conversation.id);
     detached_running.action_kind = Some(AgentRunActionKind::VerifyPlan);
     detached_running.action_context_id = Some(session.id.as_str().to_string());
-    detached_running.action_target_id = Some("plan-current".to_string());
+    detached_running.action_target_id = Some(plan_bundle_action_target(&session));
     state.agent_run_repo.create(detached_running).await.unwrap();
     let chat = mock_chat(&state);
 

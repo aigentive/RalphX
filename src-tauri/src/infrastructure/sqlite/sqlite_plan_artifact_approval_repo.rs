@@ -26,7 +26,9 @@ impl PlanArtifactApprovalRepository for SqlitePlanArtifactApprovalRepository {
         self.db
             .run(move |conn| {
                 conn.query_row(
-                    "SELECT session_id, artifact_id, artifact_version, approved_at, approved_by
+                    "SELECT session_id, artifact_id, artifact_version,
+                            blueprint_artifact_id, blueprint_artifact_version,
+                            approved_at, approved_by
                      FROM plan_artifact_approvals
                      WHERE session_id = ?1 AND status = 'approved'",
                     [session_id_value],
@@ -40,8 +42,19 @@ impl PlanArtifactApprovalRepository for SqlitePlanArtifactApprovalRepository {
                             session_id: IdeationSessionId::from_string(session_id_raw),
                             artifact_id: ArtifactId::from_string(artifact_id_raw),
                             artifact_version,
-                            approved_at: row.get(3)?,
-                            approved_by: row.get(4)?,
+                            blueprint_artifact_id: row
+                                .get::<_, Option<String>>(3)?
+                                .map(ArtifactId::from_string),
+                            blueprint_artifact_version: row
+                                .get::<_, Option<i64>>(4)?
+                                .map(|value| {
+                                    u32::try_from(value).map_err(|_| {
+                                        rusqlite::Error::IntegralValueOutOfRange(4, value)
+                                    })
+                                })
+                                .transpose()?,
+                            approved_at: row.get(5)?,
+                            approved_by: row.get(6)?,
                         })
                     },
                 )

@@ -2,14 +2,15 @@ use super::MemoryAgentConversationWorkspaceRepository;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
+    ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -35,6 +36,71 @@ fn pr_review_action(
 }
 
 #[tokio::test]
+async fn pr_metadata_decisions_round_trip_legacy_and_clear() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-pr-metadata");
+    let cases = [
+        AgentWorkspacePrMetadataDecision::Preserve,
+        AgentWorkspacePrMetadataDecision::patch(Some("title".to_string()), None).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(None, Some("body".to_string())).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(
+            Some("title".to_string()),
+            Some("body".to_string()),
+        )
+        .unwrap(),
+    ];
+    for decision in cases {
+        repo.save_pr_metadata_decision(&conversation_id, decision.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_pr_metadata_decision(&conversation_id)
+                .await
+                .unwrap(),
+            Some(decision)
+        );
+    }
+
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    repo.save_pr_description(
+        &conversation_id,
+        AgentWorkspacePrDescription::new(
+            Some("legacy title".to_string()),
+            "legacy body".to_string(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        Some(AgentWorkspacePrMetadataDecision::Patch {
+            title: Some("legacy title".to_string()),
+            body_markdown: Some("legacy body".to_string()),
+        })
+    );
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("conversation-fixer-claim");
@@ -52,6 +118,8 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(4);
+    monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
+    monitor.review_requested_changes_artifact_version = Some(4);
     monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
     repo.upsert_workspace_review_monitor(monitor)
         .await
@@ -59,6 +127,8 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     let snapshot = AgentWorkspaceReviewFixerSnapshot {
         target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
         diff_fingerprint: "diff-claim".to_string(),
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
         artifact_id,
         artifact_version: 4,
         blocking_fingerprint: "blocker-claim".to_string(),
@@ -101,6 +171,8 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
         diff_fingerprint: "diff-old".to_string(),
         artifact_id: artifact_id.clone(),
         artifact_version: 4,
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
         blocking_fingerprint: "blocker-old".to_string(),
     };
     let mut monitor = AgentWorkspaceReviewMonitor::new(
@@ -116,6 +188,10 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
     monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
     monitor.review_artifact_id = Some(artifact_id);
     monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_requested_changes_artifact_id =
+        Some(snapshot.requested_changes_artifact_id.clone());
+    monitor.review_requested_changes_artifact_version =
+        Some(snapshot.requested_changes_artifact_version);
     monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     let mut claimed = repo
@@ -860,6 +936,9 @@ async fn approve_workspace_review_anyway_is_exact_and_single_use() {
     monitor.reviewed_diff_fingerprint = Some("diff-1".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(2);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("changes-review-bypass"));
+    monitor.review_requested_changes_artifact_version = Some(2);
     repo.upsert_workspace_review_monitor(monitor)
         .await
         .expect("insert blocking monitor");
@@ -2268,6 +2347,12 @@ mod tests {
         review_handoff.publication_push_status = Some("refreshed".to_string());
         review_handoff.pr_supervision_status = Some("reviewing".to_string());
         review_handoff.pr_autofix_enabled = true;
+        let mut stranded_fix = candidate_workspace("stranded-fix");
+        stranded_fix.publication_pr_number = Some(47);
+        stranded_fix.publication_pr_status = Some("open".to_string());
+        stranded_fix.publication_push_status = Some("refreshed".to_string());
+        stranded_fix.pr_supervision_status = Some("fixing".to_string());
+        stranded_fix.pr_autofix_enabled = true;
 
         for workspace in [
             first.clone(),
@@ -2276,6 +2361,7 @@ mod tests {
             needs_agent,
             terminal,
             review_handoff.clone(),
+            stranded_fix.clone(),
         ] {
             repo.create_or_update(workspace).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -2286,7 +2372,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].conversation_id, review_handoff.conversation_id);
+        assert_eq!(limited[0].conversation_id, stranded_fix.conversation_id);
 
         let all = repo
             .list_active_direct_pr_supervision_recovery_candidates(10)
@@ -2297,6 +2383,7 @@ mod tests {
                 .map(|workspace| workspace.conversation_id)
                 .collect::<Vec<_>>(),
             vec![
+                stranded_fix.conversation_id,
                 review_handoff.conversation_id,
                 second.conversation_id,
                 first.conversation_id

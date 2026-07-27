@@ -275,7 +275,8 @@ export function registerTools(
       },
       {
         name: "v1_get_plan",
-        description: "Get plan artifact content for an ideation session",
+        description:
+          "Get the current plan bundle for an ideation session, including the overview compatibility anchor, detailed implementation blueprint, and exact pair target",
         inputSchema: {
           type: "object" as const,
           properties: {

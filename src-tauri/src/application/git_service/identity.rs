@@ -4,6 +4,19 @@ use crate::error::{AppError, AppResult};
 use std::path::Path;
 
 impl GitService {
+    /// Verify that Git can resolve an author identity before any staging mutation.
+    pub async fn ensure_commit_identity(repo: &Path) -> AppResult<()> {
+        let output = git_cmd::run(&["var", "GIT_AUTHOR_IDENT"], repo).await?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(AppError::GitOperation(format!(
+            "Git commit identity is not configured: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+
     pub async fn resolve_ref_sha(repo: &Path, reference: &str) -> AppResult<String> {
         let output = git_cmd::run(&["rev-parse", "--verify", reference], repo).await?;
         if !output.status.success() {

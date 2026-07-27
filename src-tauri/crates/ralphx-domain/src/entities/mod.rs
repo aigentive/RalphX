@@ -6,8 +6,16 @@ pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
 #[cfg(test)]
 mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_review_monitor_tests;
+pub mod agent_workspace_pr_metadata;
+#[cfg(test)]
+mod agent_workspace_pr_metadata_tests;
 pub mod agent_run;
 pub mod agent_task;
+pub mod agent_task_assignment;
+#[cfg(test)]
+mod agent_task_assignment_tests;
 pub mod agent_workflow_protocol;
 #[cfg(test)]
 mod agent_workflow_protocol_tests;
@@ -87,7 +95,8 @@ pub use agent_conversation_linear_issue::{
     AgentConversationLinearIssueLink, AgentConversationLinearRefreshStatus,
 };
 pub use agent_conversation_workspace::{
-    is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+    is_open_pr, is_pr_status_pollable_push_status, is_publication_push_active,
+    is_terminal_publication_pr_status,
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
@@ -104,6 +113,7 @@ pub use agent_conversation_workspace::{
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
+pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;
 pub use agent_run::{
     AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
     InterruptedConversation,
@@ -112,6 +122,11 @@ pub use agent_task::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
     AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
     AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
+};
+pub use agent_task_assignment::{
+    AgentTaskAssignment, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
+    AgentTaskAssignmentSettlement, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
+    AgentTaskAssignmentView,
 };
 pub use api_key::{
     ApiKey, AuditLogEntry, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX,

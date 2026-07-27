@@ -200,7 +200,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "write_workspace_review_artifact",
     description:
-      "Create a new version of the durable Markdown Review artifact for the current agent workspace review target. " +
+      "Create new versions of the durable Workspace Review Overview and Requested Changes artifacts for the current target. " +
       "Call this after reviewing the selected_source or workspace_delta review packet and any targeted read-only follow-up.",
     inputSchema: {
       type: "object",
@@ -217,7 +217,17 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         },
         content: {
           type: "string",
-          description: "Full Markdown content for the durable Review tab artifact.",
+          description: "Full Markdown content for the durable Overview artifact.",
+        },
+        requested_changes_title: {
+          type: "string",
+          description:
+            "Optional Requested Changes artifact title. Usually omit it; RalphX derives it from the Overview title.",
+        },
+        requested_changes_content: {
+          type: "string",
+          description:
+            "Full Markdown repair blueprint. For blocking reviews, provide ordered, codebase-grounded implementation steps with exact files/symbols, behavior, failure edges, and focused validation. For clean reviews, state that no changes are requested.",
         },
         target_scope: {
           type: "string",
@@ -233,7 +243,13 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           description: "Target diff fingerprint from get_workspace_review_context.",
         },
       },
-      required: ["content", "target_scope", "head_sha", "diff_fingerprint"],
+      required: [
+        "content",
+        "requested_changes_content",
+        "target_scope",
+        "head_sha",
+        "diff_fingerprint",
+      ],
     },
   },
   {
@@ -565,8 +581,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "submit_agent_workspace_pr_description",
     description:
-      "Submit the completed pull request title/body for an agent workspace publish. " +
-      "Call this exactly once after writing a reviewer-focused body that follows the supplied pull request template.",
+      "Submit a preserve-or-patch decision for an agent workspace pull request's metadata.",
     inputSchema: {
       type: "object",
       properties: {
@@ -576,14 +591,20 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         },
         title: {
           type: "string",
-          description: "Optional pull request title. Omit unless the prompt context supports a better title.",
+          description: "Optional improved pull request title; only valid for a patch decision.",
         },
         body_markdown: {
           type: "string",
-          description: "Complete Markdown pull request body following the supplied template",
+          description:
+            "Optional reviewer-focused editable Markdown body; valid only for a new PR or when the existing PR prompt marks the editable body patch_allowed=true. Exclude RalphX-managed Plan/signature content and every preserved trailing integration block.",
+        },
+        decision: {
+          type: "string",
+          enum: ["preserve", "patch"],
+          description: "Preserve existing metadata, or patch one or both fields.",
         },
       },
-      required: ["conversation_id", "body_markdown"],
+      required: ["conversation_id", "decision"],
     },
   },
 ];
@@ -645,7 +666,7 @@ export async function callAgentWorkspaceTool(
     case "read_agent_workspace_pr_comment":
       return callReadAgentWorkspacePrCommentTool(callTauriGet, args);
     case "complete_agent_workspace_pr_fix":
-      return callCompleteAgentWorkspacePrFixTool(callTauri, args);
+      return callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext);
     case "complete_agent_workspace_repair":
       return callCompleteAgentWorkspaceRepairTool(callTauri, args);
     case "submit_agent_workspace_pr_description":
@@ -745,6 +766,7 @@ export async function callUpdateAgentWorkspaceFromBaseTool(
     base_ref_kind,
     base_ref,
     base_display_name,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 
@@ -876,6 +898,8 @@ export async function callWriteWorkspaceReviewArtifactTool(
   const artifactArgs = (args && typeof args === "object" ? args : {}) as {
     title?: string;
     content?: string;
+    requested_changes_title?: string;
+    requested_changes_content?: string;
     target_scope?: string;
     head_sha?: string;
     diff_fingerprint?: string;
@@ -883,6 +907,8 @@ export async function callWriteWorkspaceReviewArtifactTool(
   return callTauri(`agent-workspaces/${conversation_id}/workspace-review-artifact`, {
     title: artifactArgs.title,
     content: artifactArgs.content,
+    requested_changes_title: artifactArgs.requested_changes_title,
+    requested_changes_content: artifactArgs.requested_changes_content,
     target_scope: artifactArgs.target_scope,
     head_sha: artifactArgs.head_sha,
     diff_fingerprint: artifactArgs.diff_fingerprint,
@@ -1031,7 +1057,8 @@ export async function callReadAgentWorkspacePrCommentTool(
 
 export async function callCompleteAgentWorkspacePrFixTool(
   callTauri: TauriPost,
-  args: unknown
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
   const { conversation_id, summary, blocker, fix_commit_sha } = args as {
     conversation_id: string;
@@ -1044,6 +1071,7 @@ export async function callCompleteAgentWorkspacePrFixTool(
     summary,
     blocker,
     fix_commit_sha,
+    created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }
 
@@ -1077,13 +1105,15 @@ export async function callSubmitAgentWorkspacePrDescriptionTool(
   callTauri: TauriPost,
   args: unknown
 ): Promise<unknown> {
-  const { conversation_id, title, body_markdown } = args as {
+  const { conversation_id, decision, title, body_markdown } = args as {
     conversation_id: string;
+    decision: "preserve" | "patch";
     title?: string;
-    body_markdown: string;
+    body_markdown?: string;
   };
 
   return callTauri(`agent-workspaces/${conversation_id}/pr-description`, {
+    decision,
     title,
     body_markdown,
   });

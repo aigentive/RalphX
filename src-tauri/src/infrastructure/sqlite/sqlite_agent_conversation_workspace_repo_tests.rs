@@ -3,13 +3,13 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
-    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -55,11 +55,15 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(4);
+    monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
+    monitor.review_requested_changes_artifact_version = Some(4);
     monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     let snapshot = AgentWorkspaceReviewFixerSnapshot {
         target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
         diff_fingerprint: "diff-claim".to_string(),
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
         artifact_id,
         artifact_version: 4,
         blocking_fingerprint: "blocker-claim".to_string(),
@@ -103,6 +107,8 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
         diff_fingerprint: "diff-old".to_string(),
         artifact_id: artifact_id.clone(),
         artifact_version: 4,
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
         blocking_fingerprint: "blocker-old".to_string(),
     };
     let mut monitor = AgentWorkspaceReviewMonitor::new(
@@ -118,6 +124,10 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
     monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
     monitor.review_artifact_id = Some(artifact_id);
     monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_requested_changes_artifact_id =
+        Some(snapshot.requested_changes_artifact_id.clone());
+    monitor.review_requested_changes_artifact_version =
+        Some(snapshot.requested_changes_artifact_version);
     monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     let mut claimed = repo
@@ -1100,6 +1110,76 @@ async fn pr_description_round_trips_and_clears() {
 }
 
 #[tokio::test]
+async fn pr_metadata_decisions_decode_legacy_reject_invalid_and_clear() {
+    let (db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let cases = [
+        AgentWorkspacePrMetadataDecision::Preserve,
+        AgentWorkspacePrMetadataDecision::patch(Some("title".to_string()), None).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(None, Some("body".to_string())).unwrap(),
+        AgentWorkspacePrMetadataDecision::patch(
+            Some("title".to_string()),
+            Some("body".to_string()),
+        )
+        .unwrap(),
+    ];
+    for decision in cases {
+        repo.save_pr_metadata_decision(&conversation_id, decision.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_pr_metadata_decision(&conversation_id)
+                .await
+                .unwrap(),
+            Some(decision)
+        );
+    }
+
+    let id = conversation_id.as_str().to_string();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_conversation_workspaces SET publication_pr_metadata_decision = NULL, publication_pr_title = 'legacy title', publication_pr_body = 'legacy body' WHERE conversation_id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        Some(AgentWorkspacePrMetadataDecision::Patch {
+            title: Some("legacy title".to_string()),
+            body_markdown: Some("legacy body".to_string()),
+        })
+    );
+
+    let id = conversation_id.as_str().to_string();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_conversation_workspaces SET publication_pr_metadata_decision = 'invalid' WHERE conversation_id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+    });
+    assert!(repo
+        .get_pr_metadata_decision(&conversation_id)
+        .await
+        .is_err());
+
+    repo.clear_pr_metadata_decision(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_pr_metadata_decision(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))
@@ -1320,6 +1400,9 @@ async fn workspace_review_approval_cas_and_audit_event_commit_exactly_once() {
     monitor.reviewed_diff_fingerprint = Some("diff-current".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(3);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("requested-changes-bypass"));
+    monitor.review_requested_changes_artifact_version = Some(1);
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
 
     let stale_snapshot = AgentWorkspaceReviewApprovalSnapshot {
@@ -3305,6 +3388,16 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
     handoff.pr_autofix_enabled = true;
     repo.create_or_update(handoff).await.unwrap();
 
+    let stranded_id = ChatConversationId::from_string("45454545-4545-4545-4545-454545454545");
+    seed_conversation(&db, &stranded_id);
+    let mut stranded = make_workspace(stranded_id.clone());
+    stranded.publication_pr_number = Some(88);
+    stranded.publication_pr_status = Some("open".to_string());
+    stranded.publication_push_status = Some("refreshed".to_string());
+    stranded.pr_supervision_status = Some("fixing".to_string());
+    stranded.pr_autofix_enabled = true;
+    repo.create_or_update(stranded).await.unwrap();
+
     let closed_id = ChatConversationId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     seed_conversation(&db, &closed_id);
     let mut closed = make_workspace(closed_id);
@@ -3320,13 +3413,16 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
         .await
         .unwrap();
 
-    assert_eq!(workspaces.len(), 2);
+    assert_eq!(workspaces.len(), 3);
     assert!(workspaces
         .iter()
         .any(|workspace| workspace.conversation_id == candidate.conversation_id));
     assert!(workspaces
         .iter()
         .any(|workspace| workspace.conversation_id == handoff_id));
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == stranded_id));
 
     let limited = repo
         .list_active_direct_pr_supervision_recovery_candidates(0)

@@ -812,7 +812,7 @@ impl ResolvedChatHarnessCli {
                             session_id,
                             request.project_id,
                             request.filesystem_read_roots,
-                            project_mcp_parent_conversation_id(request.conversation),
+                            mcp_lineage_parent_conversation_id(request.conversation),
                             request.artifact_repo,
                             request.ideation_session_repo,
                             request.delegated_session_repo,
@@ -2648,17 +2648,23 @@ fn escape_xml_text(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-pub(super) fn project_mcp_parent_conversation_id(
+pub(super) fn mcp_lineage_parent_conversation_id(
     conversation: &ChatConversation,
 ) -> Option<String> {
-    if conversation.context_type != ChatContextType::Project {
-        return None;
+    match conversation.context_type {
+        ChatContextType::Project => conversation
+            .parent_conversation_id
+            .clone()
+            .or_else(|| Some(conversation.id.as_str())),
+        ChatContextType::Delegation => conversation.parent_conversation_id.clone(),
+        ChatContextType::Standalone
+        | ChatContextType::Task
+        | ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate
+        | ChatContextType::Ideation => None,
     }
-
-    conversation
-        .parent_conversation_id
-        .clone()
-        .or_else(|| Some(conversation.id.as_str()))
 }
 
 /// Create a spawnable Claude CLI command.
@@ -2910,7 +2916,7 @@ async fn build_command_from_resolved_settings(
         project_id,
         filesystem_read_roots,
         None,
-        project_mcp_parent_conversation_id(conversation),
+        mcp_lineage_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
     let mut spawnable = build_claude_spawnable_command(
@@ -3201,7 +3207,7 @@ pub async fn build_codex_command(
         project_id,
         filesystem_read_roots,
         None,
-        project_mcp_parent_conversation_id(conversation),
+        mcp_lineage_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
     let config_overrides = build_codex_mcp_overrides_for_profile(
@@ -3869,7 +3875,7 @@ pub async fn build_interactive_command(
         project_id,
         filesystem_read_roots,
         None,
-        project_mcp_parent_conversation_id(conversation),
+        mcp_lineage_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
     log_claude_launch_plan_phase(

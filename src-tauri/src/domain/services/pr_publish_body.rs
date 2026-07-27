@@ -27,14 +27,68 @@ pub(super) fn finalize_agent_workspace_pr_body(
 ) -> String {
     match plan_markdown {
         Some(plan) if !plan.trim().is_empty() => {
-            let prefix = format!("{}\n\n", body.trim_end());
-            let suffix = format!("\n\n</details>\n\n{RALPHX_GENERATED_FOOTER}");
+            let editable_prefix = body.trim_end();
+            let managed_prefix = format!("\n\n{RALPHX_MANAGED_PR_BODY_START}\n");
+            let suffix = format!(
+                "\n\n</details>\n\n{RALPHX_GENERATED_FOOTER}\n{RALPHX_MANAGED_PR_BODY_END}"
+            );
             let plan_header = "<details>\n<summary>View full plan</summary>\n\n";
-            let full_prefix = format!("{prefix}{plan_header}");
-            fit_plan_markdown_to_pr_body(&full_prefix, plan.trim(), &suffix)
+            let full_body = format!(
+                "{editable_prefix}{managed_prefix}{plan_header}{}{suffix}",
+                plan.trim()
+            );
+            if char_count(&full_body) <= GITHUB_PR_BODY_SOFT_LIMIT_CHARS {
+                return full_body;
+            }
+            let fixed_chars = char_count(&managed_prefix)
+                + char_count(plan_header)
+                + char_count(&suffix)
+                + char_count(PR_BODY_TRUNCATION_NOTICE);
+            let available_content_chars =
+                GITHUB_PR_BODY_SOFT_LIMIT_CHARS.saturating_sub(fixed_chars);
+            let editable = truncate_chars(editable_prefix, available_content_chars);
+            let remaining_plan_chars =
+                available_content_chars.saturating_sub(char_count(editable.trim_end()));
+            let truncated_plan = truncate_chars(plan.trim(), remaining_plan_chars);
+            format!(
+                "{}{managed_prefix}{plan_header}{}{PR_BODY_TRUNCATION_NOTICE}{suffix}",
+                editable.trim_end(),
+                truncated_plan.trim_end()
+            )
         }
-        _ => append_ralphx_generated_footer(body),
+        _ => {
+            let preserved_suffix = format!(
+                "\n\n{RALPHX_MANAGED_PR_BODY_START}\n{RALPHX_GENERATED_FOOTER}\n\
+                 {RALPHX_MANAGED_PR_BODY_END}"
+            );
+            let editable_prefix = body
+                .trim_end()
+                .strip_suffix(RALPHX_GENERATED_FOOTER)
+                .map(str::trim_end)
+                .unwrap_or(body);
+            recompose_agent_workspace_pr_body_with_preserved_suffix(
+                editable_prefix,
+                &preserved_suffix,
+            )
+            .unwrap_or(preserved_suffix)
+        }
     }
+}
+
+pub(super) fn recompose_agent_workspace_pr_body_with_preserved_suffix(
+    editable_prefix: &str,
+    preserved_suffix: &str,
+) -> AppResult<String> {
+    let editable_prefix = fit_editable_prefix_for_preserved_suffix(
+        editable_prefix,
+        preserved_suffix,
+    )
+    .ok_or_else(|| {
+        AppError::Validation(
+            "the preserved PR body suffix leaves no room for an editable description".to_string(),
+        )
+    })?;
+    Ok(format!("{editable_prefix}{preserved_suffix}"))
 }
 
 fn char_count(text: &str) -> usize {

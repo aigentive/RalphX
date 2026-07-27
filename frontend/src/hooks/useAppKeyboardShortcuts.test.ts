@@ -63,7 +63,7 @@ describe("useAppKeyboardShortcuts", () => {
 
   it("⌘2 is a no-op when the Automations page is disabled", () => {
     const setCurrentView = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, ideationPage: true, automationsPage: false, battleMode: true, atlassianOauth: false };
+    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, automationsPage: false, atlassianOauth: false };
 
     renderHook(() =>
       useAppKeyboardShortcuts(makeProps({ currentView: "agents", setCurrentView, featureFlags: flags }))
@@ -77,7 +77,7 @@ describe("useAppKeyboardShortcuts", () => {
     const setCurrentView = vi.fn();
 
     renderHook(() =>
-      useAppKeyboardShortcuts(makeProps({ currentView: "graph", setCurrentView }))
+      useAppKeyboardShortcuts(makeProps({ currentView: "agents", setCurrentView }))
     );
 
     fireKeyDown("k");

@@ -121,6 +121,8 @@ export function transformProposal(raw: z.infer<typeof TaskProposalResponseSchema
     createdTaskId: raw.created_task_id,
     planArtifactId: raw.plan_artifact_id,
     planVersionAtCreation: raw.plan_version_at_creation,
+    blueprintArtifactId: raw.blueprint_artifact_id ?? null,
+    blueprintVersionAtCreation: raw.blueprint_version_at_creation ?? null,
     sortOrder: raw.sort_order,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,

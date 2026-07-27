@@ -15,6 +15,7 @@ export {
   isAutomationRunComposerReadOnly,
   latestRunHoldsGoalAuthority,
   latestRun,
+  runTimelineHighlight,
 } from "./automationRunView";
 
-export type { AutomationRunStatusTone } from "./automationRunView";
+export type { AutomationRunStatusTone, RunTimelineHighlight } from "./automationRunView";

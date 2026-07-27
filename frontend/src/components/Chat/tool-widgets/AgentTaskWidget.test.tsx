@@ -218,4 +218,71 @@ describe("AgentTaskWidget", () => {
       "Claim agent task #9",
     );
   });
+
+  it.each([
+    {
+      toolName: "mcp__ralphx_internal__get_delegate_assignment",
+      assignmentState: "active",
+      expectedTitle: "Assigned work #4 Inspect recovery",
+      expectedState: "in progress",
+    },
+    {
+      toolName: "mcp__ralphx_internal__complete_delegate_assignment",
+      assignmentState: "completion_requested",
+      expectedTitle: "Completion requested #4 Inspect recovery",
+      expectedState: "completion requested",
+    },
+    {
+      toolName: "mcp__ralphx_internal__release_delegate_assignment",
+      assignmentState: "release_requested",
+      expectedTitle: "Release requested #4 Inspect recovery",
+      expectedState: "release requested",
+    },
+    {
+      toolName: "mcp__ralphx_internal__get_delegate_assignment",
+      assignmentState: "released",
+      expectedTitle: "Assigned work #4 Inspect recovery",
+      expectedState: "released",
+    },
+    {
+      toolName: "mcp__ralphx_internal__get_delegate_assignment",
+      assignmentState: "failed",
+      expectedTitle: "Assigned work #4 Inspect recovery",
+      expectedState: "failed",
+    },
+    {
+      toolName: "mcp__ralphx_internal__get_delegate_assignment",
+      assignmentState: "cancelled",
+      expectedTitle: "Assigned work #4 Inspect recovery",
+      expectedState: "cancelled",
+    },
+  ])(
+    "renders assignment lifecycle result for $toolName",
+    ({ toolName, assignmentState, expectedTitle, expectedState }) => {
+      render(
+        <AgentTaskWidget
+          toolCall={makeToolCall({
+            name: toolName,
+            result: {
+              success: true,
+              assignment: {
+                task_number: 4,
+                title: "Inspect recovery",
+                details: "Verify the exact attempt.",
+                task_state: "active",
+                assignment_state: assignmentState,
+                delegate_agent_name: "ralphx-general-explorer",
+                caller_scope_type: "conversation",
+              },
+            },
+          })}
+        />,
+      );
+
+      expect(screen.getByText(expectedTitle)).toBeInTheDocument();
+      expect(screen.getByText(expectedState)).toBeInTheDocument();
+      expect(screen.getByText("ralphx-general-explorer")).toBeInTheDocument();
+      expect(screen.getByText("Verify the exact attempt.")).toBeInTheDocument();
+    },
+  );
 });

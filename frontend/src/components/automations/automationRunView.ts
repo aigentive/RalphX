@@ -13,6 +13,27 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   agent_failed: "Agent run failed",
 };
 
+export const PAUSED_REASON_LABELS: Record<string, string> = {
+  judge_stopped_unmet: "Judge stopped — goal unmet",
+  workspace_review_blocked: "Workspace review blocked",
+  max_consecutive_failures: "Too many consecutive failures",
+  max_runs_exhausted: "Maximum runs reached",
+  plan_revision_exhausted: "Plan revision limit reached",
+  judge_failed: "Judge failed",
+  plan_judge_failed: "Plan judge failed",
+};
+
+export function describePausedReason(code: string): string {
+  const knownLabel = PAUSED_REASON_LABELS[code];
+  if (knownLabel) {
+    return knownLabel;
+  }
+  const normalized = code.replace(/_/g, " ").trim();
+  return normalized
+    ? `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`
+    : "Paused";
+}
+
 const REAL_SIGNAL_TERMINAL_STATUS_SET = new Set<AutomationRun["status"]>([
   "merged",
   "pr_closed",
@@ -137,6 +158,24 @@ export function isAutomationRunCancellable(run: AutomationRun | null): run is Au
   return Boolean(run && OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status));
 }
 
+/** A run may be deleted from the timeline only when it is the latest run AND its
+ *  status is failed, running, or stopped. A `running` run is stopped-then-deleted
+ *  by the backend. Completed/published/merged/pending/provisioning/awaiting_plan_approval
+ *  are never deletable. Latest-ness is enforced by the caller and re-checked by the backend. */
+export function isAutomationRunDeletable(run: AutomationRun | null): run is AutomationRun {
+  return !!run && (
+    run.status === "agent_failed"
+    || run.status === "running"
+    || run.status === "cancelled"
+  );
+}
+
+/** A run may be resumed (reopened in place) only when it is the latest run AND
+ *  it failed. Latest-ness is enforced by the caller and re-checked by the backend. */
+export function isAutomationRunResumable(run: AutomationRun | null): run is AutomationRun {
+  return !!run && run.status === "agent_failed";
+}
+
 /**
  * Frontend mirror of backend `latest_run_holds_goal_authority`, intentionally
  * independent from `isOpenAutomationRun`.
@@ -202,10 +241,10 @@ export function getAutomationRunStatusTone(
   if (["published", "merged", "completed"].includes(run.status)) {
     return "success";
   }
-  if (["awaiting_plan_approval", "agent_failed", "pr_closed"].includes(run.status)) {
+  if (run.status === "awaiting_plan_approval") {
     return "warning";
   }
-  if (run.status === "cancelled") {
+  if (["agent_failed", "pr_closed"].includes(run.status)) {
     return "error";
   }
   return "neutral";
@@ -349,7 +388,7 @@ export function describeAutomationStage(
   }
   if (automation.status === "paused") {
     return automation.pausedReasonCode
-      ? `Paused: ${automation.pausedReasonCode}`
+      ? describePausedReason(automation.pausedReasonCode)
       : "Paused";
   }
   if (automation.status === "completed") {
@@ -438,6 +477,49 @@ export function describeRunFailure(run: AutomationRun | null): string | null {
     return "Agent run failed";
   }
   return "Judge failed";
+}
+
+export interface RunTimelineHighlight {
+  backgroundColor: string;
+  borderColor: string;
+  markerColor: string;
+}
+
+/**
+ * Per-status soft card treatment, shared by the Runs-timeline cards and the Agents
+ * automation panel's runs list so both surfaces read identically at a glance:
+ * merged = soft green, running/active = soft accent (orange), failed = soft darker
+ * surface with an error marker. Everything else stays neutral.
+ */
+export function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
+  if (run.status === "merged") {
+    return {
+      backgroundColor: "var(--status-success-muted)",
+      borderColor: "var(--status-success-border)",
+      markerColor: "var(--status-success, #3fbf7f)",
+    };
+  }
+  const isActive =
+    isOpenAutomationRun(run) && run.status !== "cancelled" && !describeRunFailure(run);
+  if (isActive) {
+    return {
+      backgroundColor: "var(--accent-muted)",
+      borderColor: "var(--accent-border)",
+      markerColor: "var(--accent-primary, #ff6a35)",
+    };
+  }
+  if (describeRunFailure(run)) {
+    return {
+      backgroundColor: "var(--bg-surface, #1c1c21)",
+      borderColor: "var(--border-default, #393940)",
+      markerColor: "var(--status-error, #d55e00)",
+    };
+  }
+  return {
+    backgroundColor: "var(--bg-elevated, #232329)",
+    borderColor: "var(--border-subtle, #2e2e36)",
+    markerColor: "var(--text-subtle, #6b6b73)",
+  };
 }
 
 export function describeAutomationRunPrState(run: AutomationRun | null): string {

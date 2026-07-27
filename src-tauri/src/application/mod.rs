@@ -30,9 +30,13 @@ mod mcp_policy_service_tests;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
+pub mod agent_task_assignment_recovery;
 pub(crate) mod agent_task_pipeline_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
+pub mod agent_workspace_local_commit;
+#[cfg(test)]
+mod agent_workspace_local_commit_tests;
 pub mod agent_workspace_continuation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 pub mod agent_workspace_external_pr_reconciliation;
@@ -76,6 +80,8 @@ pub mod app_paths;
 #[cfg(test)]
 mod app_paths_tests;
 pub mod app_setup;
+#[cfg(test)]
+mod app_setup_tests;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
@@ -163,6 +169,8 @@ pub mod plan_verification_service;
 mod plan_verification_service_tests;
 pub mod plan_ranking;
 pub(crate) mod plan_reference_import;
+#[cfg(test)]
+mod plan_reference_import_tests;
 pub mod pr_startup_recovery;
 pub mod priority_service;
 pub mod project_pr_template;
@@ -188,6 +196,8 @@ pub mod review_service;
 pub mod runtime_factory;
 pub mod runtime_wiring;
 pub mod server_boot;
+#[cfg(test)]
+mod server_boot_tests;
 pub mod services;
 pub mod session_export_service;
 pub(crate) mod session_namer_agent;
@@ -207,12 +217,17 @@ mod standalone_workspace_path_safety_tests;
 mod standalone_workspace_tests;
 pub mod startup_background;
 pub mod startup_bootstrap;
+#[cfg(test)]
+mod startup_bootstrap_tests;
 pub mod startup_cleanup;
 pub mod startup_git_auth_preflight;
 pub mod startup_jobs;
 pub mod startup_pipeline;
+#[cfg(test)]
+mod startup_pipeline_tests;
 pub mod startup_pipeline_launch;
 pub mod startup_runtime_builders;
+pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
@@ -479,6 +494,10 @@ mod session_namer_agent_tests;
 mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
+#[cfg(test)]
+mod startup_status_guard_tests;
+#[cfg(test)]
+mod startup_status_tests;
 #[cfg(test)]
 mod task_cleanup_service_tests;
 #[cfg(test)]

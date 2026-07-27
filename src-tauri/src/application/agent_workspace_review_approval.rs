@@ -1,7 +1,7 @@
 use chrono::Utc;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentWorkspaceReviewApprovalSnapshot,
+    is_publication_push_active, AgentConversationWorkspace, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome,
 };
@@ -21,7 +21,7 @@ pub async fn approve_agent_workspace_review_anyway(
     let workspace = load_current_workspace_review_eligible(state, workspace).await?;
     let workspace = &workspace;
 
-    if workspace_publish_is_active(workspace.publication_push_status.as_deref()) {
+    if is_publication_push_active(workspace.publication_push_status.as_deref()) {
         return Err(AppError::Conflict(
             "Workspace Review cannot be approved while Commit & Publish is running".to_string(),
         ));
@@ -56,7 +56,7 @@ pub async fn approve_agent_workspace_review_anyway(
         target.scope,
         target.head_sha.as_deref(),
         &target.diff_fingerprint,
-    ) && monitor.review_artifact_id.is_some();
+    ) && monitor.has_review_artifact_pair();
     let snapshot_matches = artifact_current
         && monitor.status == AgentWorkspaceReviewMonitorStatus::Ready
         && monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking
@@ -85,11 +85,4 @@ pub async fn approve_agent_workspace_review_anyway(
                     .to_string(),
             )
         })
-}
-
-fn workspace_publish_is_active(status: Option<&str>) -> bool {
-    matches!(
-        status,
-        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
-    )
 }

@@ -1,4 +1,9 @@
-export type AgentPublishSubTab = "changes" | "review";
+export type AgentPublishSubTab =
+  | "changes"
+  | "review"
+  | "checks"
+  | "history"
+  | "automation";
 
 export interface AgentPublishSubTabRequest {
   conversationId: string;

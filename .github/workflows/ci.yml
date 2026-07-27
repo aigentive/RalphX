@@ -46,6 +46,17 @@ jobs:
               - 'scripts/tests/test-coverage-rust-shards.sh'
               - 'scripts/build-prod-release.sh'
               - 'scripts/render-homebrew-cask.sh'
+              - 'scripts/reconcile-homebrew-cask.sh'
+              - 'scripts/render-updater-channel-manifests.sh'
+              - 'scripts/validate-release-promotion.sh'
+              - 'scripts/reconcile-stable-release-state.sh'
+              - 'scripts/reconcile-nightly-updater-pointers.sh'
+              - 'scripts/verify-public-updater-pointers.sh'
+              - 'scripts/tests/test-daily-release-notes-from-override.sh'
+              - 'scripts/tests/test-updater-channel-manifests.sh'
+              - 'scripts/tests/test-release-promotion.sh'
+              - 'scripts/tests/test-reconcile-homebrew-cask.sh'
+              - 'scripts/tests/test-stable-release-state.sh'
             plugins:
               - 'plugins/app/ralphx-external-mcp/**'
               - 'plugins/app/ralphx-mcp-server/**'
@@ -123,6 +134,17 @@ jobs:
           fi
 
           ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' "${yaml_files[@]}"
+          ACTIONLINT_VERSION="1.7.8"
+          ACTIONLINT_SHA256="be92c2652ab7b6d08425428797ceabeb16e31a781c07bc388456b4e592f3e36a"
+          actionlint_archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          actionlint_dir="$(mktemp -d)"
+          trap 'rm -rf "${actionlint_dir}"' EXIT
+          curl --fail --location --silent --show-error \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${actionlint_archive}" \
+            --output "${actionlint_dir}/${actionlint_archive}"
+          printf '%s  %s\n' "${ACTIONLINT_SHA256}" "${actionlint_dir}/${actionlint_archive}" | sha256sum --check --
+          tar -xzf "${actionlint_dir}/${actionlint_archive}" -C "${actionlint_dir}" actionlint
+          "${actionlint_dir}/actionlint"
 
       - name: Validate Rust full integration target scope
         shell: bash
@@ -142,6 +164,17 @@ jobs:
           set -euo pipefail
           bash -n scripts/build-prod-release.sh
           bash -n scripts/render-homebrew-cask.sh
+          bash -n scripts/reconcile-homebrew-cask.sh
+          bash -n scripts/render-updater-channel-manifests.sh
+          bash -n scripts/validate-release-promotion.sh
+          bash -n scripts/reconcile-stable-release-state.sh
+          bash -n scripts/reconcile-nightly-updater-pointers.sh
+          bash -n scripts/verify-public-updater-pointers.sh
+          bash scripts/tests/test-daily-release-notes-from-override.sh
+          bash scripts/tests/test-updater-channel-manifests.sh
+          bash scripts/tests/test-release-promotion.sh
+          bash scripts/tests/test-reconcile-homebrew-cask.sh
+          bash scripts/tests/test-stable-release-state.sh
 
   tauri-package-alignment:
     name: Tauri Package Alignment

@@ -281,6 +281,16 @@ impl AutomationTransitionService {
         }
     }
 
+    async fn post_successful_run_status_change(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+    ) {
+        self.resolve_departed_run_notification(id, from).await;
+        self.post_run_status_changed(id, to, None).await;
+    }
+
     async fn emit_run_updated_after_run_change(&self, id: &AutomationRunId) {
         match self.run_repo.get_by_id(id).await {
             Ok(Some(run)) => self.emit_run_updated(Some(run.automation_id), id),
@@ -339,8 +349,36 @@ impl AutomationTransitionService {
             .compare_and_swap_status(id, from, to, error_code, error_detail)
             .await?;
         if changed {
-            self.resolve_departed_run_notification(id, from).await;
-            self.post_run_status_changed(id, to, None).await;
+            self.post_successful_run_status_change(id, from, to).await;
+        }
+        Ok(changed)
+    }
+
+    /// Correctively reopen an agent-failed run without widening the normal transition graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-transition error unless the expected source is `AgentFailed`, or
+    /// propagates repository failures while claiming the corrective transition.
+    pub async fn reopen_run_corrective(
+        &self,
+        id: &AutomationRunId,
+        expected_from: AutomationRunStatus,
+    ) -> AppResult<bool> {
+        if expected_from != AutomationRunStatus::AgentFailed {
+            return Err(AppError::InvalidTransition {
+                from: expected_from.as_str().to_string(),
+                to: AutomationRunStatus::Running.as_str().to_string(),
+            });
+        }
+
+        let changed = self
+            .run_repo
+            .compare_and_swap_status(id, expected_from, AutomationRunStatus::Running, None, None)
+            .await?;
+        if changed {
+            self.post_successful_run_status_change(id, expected_from, AutomationRunStatus::Running)
+                .await;
         }
         Ok(changed)
     }
@@ -371,8 +409,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.resolve_departed_run_notification(id, from).await;
-            self.post_run_status_changed(id, to, None).await;
+            self.post_successful_run_status_change(id, from, to).await;
         }
         Ok(changed)
     }
@@ -405,8 +442,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.resolve_departed_run_notification(id, from).await;
-            self.post_run_status_changed(id, to, None).await;
+            self.post_successful_run_status_change(id, from, to).await;
         }
         Ok(changed)
     }
@@ -437,8 +473,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.resolve_departed_run_notification(id, from).await;
-            self.post_run_status_changed(id, to, None).await;
+            self.post_successful_run_status_change(id, from, to).await;
         }
         Ok(changed)
     }
@@ -523,6 +558,14 @@ impl AutomationTransitionService {
                 plan_judge_lease_expires_at,
             )
             .await?;
+        if changed {
+            self.emit_run_updated_after_run_change(id).await;
+        }
+        Ok(changed)
+    }
+
+    pub async fn clear_plan_judge_verdict(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let changed = self.run_repo.clear_plan_judge_verdict(id).await?;
         if changed {
             self.emit_run_updated_after_run_change(id).await;
         }

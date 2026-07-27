@@ -249,24 +249,35 @@ fn test_dead_process_killed_despite_short_idle() {
 
 #[test]
 fn test_completion_tool_detection_marks_tracker_and_bypasses_timeout() {
-    let mut tracker = CompletionSignalTracker::default();
+    for tool_name in [
+        "mcp__ralphx__execution_complete",
+        "mcp__ralphx__complete_workspace_review_run",
+    ] {
+        let mut tracker = CompletionSignalTracker::default();
 
-    if is_completion_tool_name("mcp__ralphx__execution_complete") {
-        tracker.mark_completion_called();
+        if is_completion_tool_name(tool_name) {
+            tracker.mark_completion_called();
+        }
+
+        assert!(tracker.was_called(), "{tool_name} should mark completion");
+        assert!(
+            tracker.is_in_grace_period(dur(30)),
+            "{tool_name} should be inside completion grace"
+        );
+        assert!(
+            !should_kill_on_timeout(
+                dur(601),
+                dur(1800),
+                false,
+                false,
+                false,
+                true,
+                false,
+                tracker.is_in_grace_period(dur(30)),
+            ),
+            "{tool_name} completion grace should bypass the timeout"
+        );
     }
-
-    assert!(tracker.was_called());
-    assert!(tracker.is_in_grace_period(dur(30)));
-    assert!(!should_kill_on_timeout(
-        dur(601),
-        dur(1800),
-        false,
-        false,
-        false,
-        true,
-        false,
-        tracker.is_in_grace_period(dur(30)),
-    ));
 }
 
 #[test]
@@ -462,6 +473,9 @@ fn test_payloads_serialize_with_seq() {
         effective_effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
         context_id: "task-1".to_string(),
@@ -497,6 +511,9 @@ fn test_payloads_serialize_with_seq() {
         effective_effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        started_at: None,
+        completed_at: None,
+        timestamp_provenance: None,
         input_tokens: None,
         output_tokens: None,
         cache_creation_tokens: None,
@@ -618,6 +635,7 @@ fn test_completion_tracker_recognizes_all_completion_tools() {
         "mcp__ralphx__execution_complete",
         "mcp__ralphx__complete_review",
         "mcp__ralphx__complete_merge",
+        "mcp__ralphx__complete_workspace_review_run",
         "mcp__ralphx__finalize_proposals",
     ] {
         let mut tracker = CompletionSignalTracker::default();
@@ -776,6 +794,7 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         execution_slot_held: false, // idle between turns at exit
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let has_output = outcome.has_meaningful_output();
     let skip_post_loop = outcome.turns_finalized > 0 && !has_output;
@@ -802,6 +821,7 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         execution_slot_held: true, // normal exit — slot still held
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let has_output = outcome_non_interactive.has_meaningful_output();
     let skip_post_loop = outcome_non_interactive.turns_finalized > 0 && !has_output;
@@ -836,6 +856,7 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         !idle_outcome.execution_slot_held,
@@ -856,6 +877,7 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         execution_slot_held: true,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         active_outcome.execution_slot_held,
@@ -923,6 +945,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let will_process_queue_normal = will_process_queue(&outcome_normal, false);
     assert!(
@@ -944,6 +967,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: true,
+        mode_handoff_exit: false,
     };
     let will_process_queue_silent = will_process_queue(&outcome_silent, true);
     assert!(
@@ -972,6 +996,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let will_process_queue_no_session = will_process_queue(&outcome_no_session, false);
     assert!(
@@ -1229,6 +1254,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: false, // slot released at TurnComplete
         completion_tool_called: false,
         silent_interactive_exit: true,
+        mode_handoff_exit: false,
     };
     assert!(
         idle_exit.silent_interactive_exit,
@@ -1253,6 +1279,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: true, // slot not yet released
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         !active_exit.silent_interactive_exit,
@@ -1275,6 +1302,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: true, // set in Ok(Err(e)) branch when between_interactive_turns
+        mode_handoff_exit: false,
     };
     assert!(
         crash_idle.silent_interactive_exit,

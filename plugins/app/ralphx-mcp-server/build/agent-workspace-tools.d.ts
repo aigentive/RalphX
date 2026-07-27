@@ -32,7 +32,7 @@ export declare function callProposePrReviewActionTool(callTauri: TauriPost, args
 export declare function callWritePrReviewArtifactTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callCompletePrReviewRunTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callReadAgentWorkspacePrCommentTool(callTauriGet: TauriGet, args: unknown): Promise<unknown>;
-export declare function callCompleteAgentWorkspacePrFixTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
+export declare function callCompleteAgentWorkspacePrFixTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callCompleteAgentWorkspaceRepairTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
 export declare function callSubmitAgentWorkspacePrDescriptionTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
 export {};

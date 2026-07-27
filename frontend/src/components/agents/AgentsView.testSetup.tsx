@@ -1,5 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import { vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -11,6 +11,7 @@ import type {
   SendAgentMessageResult,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { defaultIdeationSettings } from "@/types/ideation-config";
 import {
   DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
   useAgentSessionStore,
@@ -21,6 +22,7 @@ import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
 import { useAgentTerminalStore } from "./agentTerminalStore";
+import { useProjectStore } from "@/stores/projectStore";
 import type { AgentConversation } from "./agentConversations";
 import { AgentsView } from "./AgentsView";
 import {
@@ -41,11 +43,13 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   useAgentSidebarAutomationGroupIndexMock: vi.fn(),
   useAgentSidebarAutomationGroupMock: vi.fn(),
   useConversationMock: vi.fn(),
+  useConversationSummaryMock: vi.fn(),
   startAgentConversationMock: vi.fn(),
   createAutomationDraftMock: vi.fn(),
   finalizeAutomationMock: vi.fn(),
   triggerAutomationRunNowMock: vi.fn(),
   updateAutomationSetupMock: vi.fn(),
+  getPullRequestDetailMock: vi.fn(),
   getAgentConversationWorkspaceMock: vi.fn(),
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
@@ -54,6 +58,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listConversationsMock: vi.fn(),
   listAgentConversationWorkspacePublicationEventsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  commitAgentConversationWorkspaceLocallyMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
   setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
@@ -186,11 +191,13 @@ const {
   useAgentSidebarAutomationGroupIndexMock,
   useAgentSidebarAutomationGroupMock,
   useConversationMock,
+  useConversationSummaryMock,
   startAgentConversationMock,
   createAutomationDraftMock,
   finalizeAutomationMock,
   triggerAutomationRunNowMock,
   updateAutomationSetupMock,
+  getPullRequestDetailMock,
   getAgentConversationWorkspaceMock,
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
@@ -199,6 +206,7 @@ const {
   listConversationsMock,
   listAgentConversationWorkspacePublicationEventsMock,
   publishAgentConversationWorkspaceMock,
+  commitAgentConversationWorkspaceLocallyMock,
   updateWorkspaceFromBaseMock,
   setAgentConversationWorkspaceAutoPublishMock,
   setAgentConversationWorkspacePrSupervisionMock,
@@ -407,6 +415,17 @@ vi.mock("@tauri-apps/api/webview", () => ({
 vi.mock("@/hooks/useProjects", () => ({
   useProjects: () => useProjectsMock(),
 }));
+
+vi.mock("@/api/github", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/github")>();
+  return {
+    ...actual,
+    githubApi: {
+      ...actual.githubApi,
+      getPullRequestDetail: getPullRequestDetailMock,
+    },
+  };
+});
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
   useHarnessProviders: (options?: unknown) => useHarnessProvidersMock(options),
@@ -761,13 +780,8 @@ vi.mock("@/hooks/useChat", () => ({
     Boolean(conversationId?.startsWith("optimistic-conversation:")),
   invalidateConversationDataQueries: vi.fn(),
   useConversation: (conversationId: string | null) => useConversationMock(conversationId),
-  useConversationSummary: (conversationId: string | null) => {
-    const query = useConversationMock(conversationId);
-    return {
-      ...query,
-      data: query.data?.conversation ?? null,
-    };
-  },
+  useConversationSummary: (conversationId: string | null) =>
+    useConversationSummaryMock(conversationId),
   useConversationHistoryWindow: (conversationId: string | null) => {
     const query = useConversationMock(conversationId);
     return {
@@ -798,6 +812,8 @@ vi.mock("@/api/chat", () => ({
       listAgentConversationWorkspacePublicationEventsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    commitAgentConversationWorkspaceLocally: (...args: unknown[]) =>
+      commitAgentConversationWorkspaceLocallyMock(...args),
     updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
       updateWorkspaceFromBaseMock(...args),
     setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
@@ -1079,6 +1095,21 @@ vi.mock("./AgentsArtifactPane", async () => {
   const { AgentPublishPanel } = await vi.importActual<
     typeof import("./AgentsPublishPanel")
   >("./AgentsPublishPanel");
+  function ControlledPublishPanel(
+    props: ComponentProps<typeof AgentPublishPanel>,
+  ) {
+    const [activeSubTab, setActiveSubTab] = useState(props.activeSubTab);
+    useEffect(() => {
+      setActiveSubTab(props.activeSubTab);
+    }, [props.activeSubTab]);
+    return (
+      <AgentPublishPanel
+        {...props}
+        activeSubTab={activeSubTab}
+        onSubTabChange={setActiveSubTab}
+      />
+    );
+  }
   artifactPaneModuleLoadedMock();
   return {
     AgentsArtifactPane: ({
@@ -1090,11 +1121,11 @@ vi.mock("./AgentsArtifactPane", async () => {
       onClose,
       onFocusIdeationSessionForConversation,
       onFocusVerificationSession,
+      onFocusWorkspaceReview,
       onOpenAutomation,
       onPublishWorkspace,
       workspace,
       projectBaseBranch,
-      isPublishingWorkspace,
       publishAttempt,
     }: {
       conversation: AgentConversation | null;
@@ -1114,6 +1145,14 @@ vi.mock("./AgentsArtifactPane", async () => {
       onFocusVerificationSession?: (
         parentSessionId: string,
         childSessionId: string
+      ) => void;
+      onFocusWorkspaceReview?: (
+        conversationId: string,
+        runtimeHint?: {
+          provider: "codex";
+          modelId: "gpt-5.6-terra";
+          effort: "medium";
+        },
       ) => void;
       onOpenAutomation?: (automationId: string) => void;
       onPublishWorkspace?: (conversationId: string) => Promise<void>;
@@ -1140,17 +1179,12 @@ vi.mock("./AgentsArtifactPane", async () => {
             Close
           </button>
         ) : null}
-        <AgentPublishPanel
+        <ControlledPublishPanel
           workspace={workspace ?? null}
           conversationTitle={conversation?.title ?? null}
           projectBaseBranch={projectBaseBranch ?? null}
           onPublishWorkspace={onPublishWorkspace}
-          publishAttempt={
-            publishAttempt ??
-            (isPublishingWorkspace && workspace
-              ? { conversationId: workspace.conversationId, startedAtMs: Date.now() }
-              : null)
-          }
+          publishAttempt={publishAttempt ?? null}
           publishFocusRequest={publishFocusRequest ?? null}
           reviewContext={
             realPublishPanelState.reviewContext as AgentWorkspaceReviewContext | null
@@ -1210,6 +1244,21 @@ vi.mock("./AgentsArtifactPane", async () => {
             Focus verification
           </button>
         ) : null}
+        {onFocusWorkspaceReview ? (
+          <button
+            type="button"
+            data-testid="mock-focus-workspace-review-with-stale-runtime"
+            onClick={() =>
+              onFocusWorkspaceReview("review-conversation-1", {
+                provider: "codex",
+                modelId: "gpt-5.6-terra",
+                effort: "medium",
+              })
+            }
+          >
+            Focus workspace review with stale runtime
+          </button>
+        ) : null}
         {conversation && onPublishWorkspace ? (
           <button
             type="button"
@@ -1260,6 +1309,7 @@ export function mockSidebarBreakpoint({ isLarge, isMedium }: { isLarge: boolean;
 }
 
 export function mockAgentViewData(agentConversation: AgentConversation = conversation()) {
+  useProjectStore.getState().setProjects([project]);
   useProjectsMock.mockReturnValue({
     data: [project],
     isLoading: false,
@@ -1617,11 +1667,13 @@ export function setupAgentsViewTest() {
   useProjectsMock.mockReset();
   useHarnessProvidersMock.mockReset();
   useConversationMock.mockReset();
+  useConversationSummaryMock.mockReset();
   startAgentConversationMock.mockReset();
   createAutomationDraftMock.mockReset();
   finalizeAutomationMock.mockReset();
   triggerAutomationRunNowMock.mockReset();
   updateAutomationSetupMock.mockReset();
+  getPullRequestDetailMock.mockReset();
   getAgentConversationWorkspaceMock.mockReset();
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
@@ -1630,6 +1682,7 @@ export function setupAgentsViewTest() {
   listConversationsMock.mockReset();
   listAgentConversationWorkspacePublicationEventsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
+  commitAgentConversationWorkspaceLocallyMock.mockReset();
   updateWorkspaceFromBaseMock.mockReset();
   setAgentConversationWorkspaceAutoPublishMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
@@ -1696,6 +1749,8 @@ export function setupAgentsViewTest() {
   webviewOnDragDropEventMock.mockReset();
   webviewDragDropUnlistenMock.mockReset();
 
+  vi.mocked(ideationApi.settings.get).mockResolvedValue(defaultIdeationSettings);
+
   sendAgentMessageMock.mockResolvedValue({
     conversationId: "conversation-2",
     agentRunId: "run-2",
@@ -1703,6 +1758,29 @@ export function setupAgentsViewTest() {
     wasQueued: false,
     queuedAsPending: false,
     queuedMessageId: null,
+  });
+  getPullRequestDetailMock.mockResolvedValue({
+    state: "loaded",
+    origin: "ownedOutbound",
+    description: {
+      number: 42,
+      title: "Published pull request",
+      body: null,
+      author: "octocat",
+      createdAt: "2026-07-23T15:00:00Z",
+      url: "https://github.com/mock/project/pull/42",
+      state: "open",
+      isDraft: false,
+      headRefName: "ralphx/ralphx/agent-abcdef12",
+      baseRefName: "main",
+    },
+    checks: [],
+    reviewSummary: null,
+    issueComments: [],
+    reviewThread: [],
+    rxConversations: [],
+    linkedTickets: [],
+    sourcesUnavailable: [],
   });
   listAgentConversationIssuesMock.mockResolvedValue([]);
   getAgentConversationWorkspaceMock.mockResolvedValue(null);
@@ -2184,6 +2262,13 @@ export function setupAgentsViewTest() {
     rows: [],
   });
   getAgentConversationRuntimeStatusesMock.mockResolvedValue({});
+  useConversationSummaryMock.mockImplementation((conversationId: string | null) => {
+    const query = useConversationMock(conversationId);
+    return {
+      ...query,
+      data: query?.data?.conversation ?? null,
+    };
+  });
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined);
 

@@ -14,6 +14,8 @@ pub mod agent_profile_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
 pub(crate) mod agent_workspace_auto_publish;
+#[cfg(test)]
+mod agent_workspace_auto_publish_tests;
 pub(crate) mod agent_workspace_auto_review;
 #[cfg(test)]
 mod agent_workspace_auto_review_tests;
@@ -29,8 +31,8 @@ pub mod chat_responses;
 pub mod clickup_commands;
 #[cfg(test)]
 mod clickup_commands_tests;
-pub mod conversation_stats_commands;
 pub mod conversation_folder_reference_commands;
+pub mod conversation_stats_commands;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -85,6 +87,9 @@ pub mod review_commands_types;
 #[cfg(test)]
 mod review_commands_types_tests;
 pub mod review_helpers;
+pub mod startup_commands;
+#[cfg(test)]
+mod startup_commands_tests;
 pub mod task_commands;
 pub mod task_context_commands;
 pub mod task_step_commands;
@@ -93,6 +98,9 @@ pub mod test_data_commands;
 pub mod ticketing_commands;
 pub mod ui_commands;
 pub mod unified_chat_commands;
+pub mod update_channel_commands;
+#[cfg(test)]
+mod update_channel_commands_tests;
 pub mod validation_commands;
 pub mod workflow_commands;
 pub mod workspace_open_commands;
@@ -122,9 +130,11 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_plan_commands::{
-    activate_agent_task_pipeline, copy_agent_conversation_plan, import_agent_conversation_plan,
-    start_agent_task_pipeline, ActivateAgentTaskPipelineInput, AgentConversationPlanSeedResponse,
-    CopyAgentConversationPlanInput, ImportAgentConversationPlanInput, StartAgentTaskPipelineInput,
+    activate_agent_plan_direct_implementation, activate_agent_task_pipeline,
+    copy_agent_conversation_plan, import_agent_conversation_plan, start_agent_task_pipeline,
+    ActivateAgentPlanDirectImplementationInput, ActivateAgentTaskPipelineInput,
+    AgentConversationPlanSeedResponse, CopyAgentConversationPlanInput,
+    ImportAgentConversationPlanInput, StartAgentTaskPipelineInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -358,6 +368,7 @@ pub use unified_chat_commands::{
     list_agent_conversation_workspaces_by_project, list_agent_conversations,
     list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
     publish_agent_conversation_workspace, queue_agent_message,
+    commit_agent_conversation_workspace_locally,
     reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision, start_agent_conversation, stop_agent,
@@ -402,6 +413,7 @@ pub use repository_settings_commands::{
     get_repository_settings, update_repository_settings, RepositorySettingsResponse,
     UpdateRepositorySettingsInput,
 };
+pub use update_channel_commands::{get_update_channel, set_update_channel};
 // Git commands (Phase 66 - Per-task branch isolation)
 pub use git_commands::{
     change_project_git_mode, cleanup_task_branch, get_task_commits, get_task_diff_stats,

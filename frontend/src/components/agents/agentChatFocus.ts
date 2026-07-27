@@ -1,4 +1,5 @@
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
+import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 import type {
   AutomationJudgeState,
   AutomationRun,
@@ -8,7 +9,11 @@ import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 
 export type AgentsChatFocus =
   | { type: "workspace" }
-  | { type: "workspace_review"; conversationId: string }
+  | {
+      type: "workspace_review";
+      conversationId: string;
+      runtimeHint?: AgentRuntimeSelection;
+    }
   | { type: "ideation"; sessionId: string }
   | { type: "verification"; parentSessionId: string; childSessionId: string }
   | { type: "task_runtime"; taskId: string; contextType: AgentTaskRuntimeContextType }
@@ -18,6 +23,24 @@ export type AgentsChatFocus =
       runId: string;
       conversationId: string;
     };
+
+export function focusWorkspaceReview(
+  current: AgentsChatFocus,
+  conversationId: string,
+  runtimeHint?: AgentRuntimeSelection,
+): Extract<AgentsChatFocus, { type: "workspace_review" }> {
+  if (
+    current.type === "workspace_review" &&
+    current.conversationId === conversationId
+  ) {
+    return runtimeHint ? { ...current, runtimeHint } : current;
+  }
+  return {
+    type: "workspace_review",
+    conversationId,
+    ...(runtimeHint ? { runtimeHint } : {}),
+  };
+}
 
 export type AgentsChatFocusType = AgentsChatFocus["type"];
 export type AgentsChatFocusTone = "accent" | "warning";

@@ -31,6 +31,7 @@ fn sample_task_context() -> TaskContext {
             affected_paths: vec!["src-tauri/src/http_server/handlers/reviews".to_string()],
         }),
         plan_artifact: None,
+        blueprint_artifact: None,
         related_artifacts: Vec::new(),
         steps: Vec::new(),
         step_progress: None,
@@ -146,7 +147,10 @@ fn build_unrelated_drift_followup_draft_carries_prompt_and_fingerprint() {
     assert!(draft.prompt.contains("summary"));
     assert_eq!(
         draft.blocker_fingerprint,
-        compute_out_of_scope_blocker_fingerprint(&task_context.task.id, &task_context.out_of_scope_files)
+        compute_out_of_scope_blocker_fingerprint(
+            &task_context.task.id,
+            &task_context.out_of_scope_files
+        )
     );
 }
 

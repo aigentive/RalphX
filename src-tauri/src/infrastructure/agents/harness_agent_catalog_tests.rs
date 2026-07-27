@@ -1022,8 +1022,8 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         assert!(prompt.contains("<planning_session_id>"));
         assert!(prompt.contains("do not invent a session id"));
         assert!(prompt.contains("ask_user_question"));
-        assert!(prompt.contains("Create or update exactly one linked plan artifact"));
-        assert!(prompt.contains("Call `get_session_plan` before"));
+        assert!(prompt.contains("Create or update exactly one linked plan bundle"));
+        assert!(prompt.contains("Call `get_session_plan` first"));
         assert!(prompt.contains("clicks the Plan-mode UI action `Approve Plan`"));
         assert!(prompt.contains("approval is backend/UI-owned"));
         assert!(prompt.contains("Agent-owned unknowns are facts"));
@@ -1370,34 +1370,51 @@ fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
 }
 
 #[test]
-fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
+fn pr_describer_surfaces_share_preserve_or_patch_submit_contract() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-utility-pr-describer")
         .expect("expected canonical PR describer definition");
-    let prompt = load_harness_agent_prompt(
-        &root,
-        "ralphx-utility-pr-describer",
-        AgentPromptHarness::Codex,
-    )
-    .expect("expected PR describer Codex prompt");
-    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
 
     assert_eq!(
         definition.capabilities.mcp_tools,
         vec!["submit_agent_workspace_pr_description".to_string()]
     );
-    assert!(
-        prompt.contains("submit_agent_workspace_pr_description"),
-        "Codex PR describer prompt should expose the submit contract"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__"),
-        "Codex PR describer prompt should not use Claude-style MCP names"
-    );
-    assert!(
-        !prompt.contains("truncated"),
-        "Codex PR describer prompt should not tell helpers to expose bounded-context truncation"
-    );
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-utility-pr-describer", harness)
+            .expect("expected PR describer prompt");
+        assert!(
+            prompt.contains("submit_agent_workspace_pr_description"),
+            "PR describer {harness:?} prompt should expose the submit contract"
+        );
+        assert!(
+            prompt.contains("`decision: preserve`") && prompt.contains("`decision: patch`"),
+            "PR describer {harness:?} prompt should expose preserve and patch decisions"
+        );
+        assert!(
+            prompt.contains("untrusted evidence"),
+            "PR describer {harness:?} prompt should identify remote metadata as untrusted"
+        );
+        assert!(
+            prompt.contains("patch_allowed=\"true\"")
+                && prompt.contains("managed_suffix_preserved=\"true\"")
+                && prompt.contains("max_output_chars"),
+            "PR describer {harness:?} prompt should expose the editable-body capability contract"
+        );
+        assert!(
+            prompt.contains("never include or reconstruct"),
+            "PR describer {harness:?} prompt should exclude preserved managed content"
+        );
+        assert!(
+            !prompt.contains("mcp__ralphx__"),
+            "PR describer {harness:?} prompt should use surface-local tool names"
+        );
+        assert!(
+            !prompt.contains("truncated"),
+            "PR describer {harness:?} prompt should not tell helpers to expose bounded-context truncation"
+        );
+    }
+
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
     assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
 }
 
@@ -2151,6 +2168,21 @@ fn codex_spawn_capable_prompts_reference_explicit_delegation_tools() {
 #[test]
 fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents() {
     let root = project_root();
+    let required_coordinator_clauses = [
+        "### Delegated Implementation Coordination",
+        "otherwise do not direct mutation or validation",
+        "Retain the full objective, integration decisions, integrated review, and final verification",
+        "bounded, dependency-aware slices",
+        "outcome, exclusive writable files or modules, established seam, required behavior, prohibited scope, acceptance criteria, permitted validation, and dependencies",
+        "Exploration may cover owned files and immediate dependencies needed for safe implementation",
+        "disjoint mutation sets, including generated artifacts, and disjoint command resource sets",
+        "one serialized heavyweight-validation lane",
+        "behavioral tests and only permitted cheap or local checks",
+        "Directly verify suspected defects before a narrow, evidence-backed revision",
+        "review the integrated workspace and run final focused validation once after revisions settle",
+        "Do not publish unless the user requested it",
+        "Repository and profile rules remain authoritative for exact commands, cleanup, resource conflicts, and stricter permissions",
+    ];
 
     for agent_name in CODEX_DELEGATION_GUIDE_AGENTS {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
@@ -2159,6 +2191,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating codex prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_coordinator_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating codex prompt for {agent_name} should include coordinator clause: {clause}"
+            );
+        }
     }
 
     for agent_name in CLAUDE_DELEGATION_GUIDE_AGENTS {
@@ -2168,6 +2206,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating claude prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_coordinator_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating claude prompt for {agent_name} should include coordinator clause: {clause}"
+            );
+        }
     }
 
     let session_namer = load_harness_agent_prompt(
@@ -2179,6 +2223,10 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
     assert!(
         !session_namer.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
         "non-delegating codex prompt should not include the generated delegation appendix"
+    );
+    assert!(
+        !session_namer.contains("### Delegated Implementation Coordination"),
+        "non-delegating codex prompt should not include coordinator guidance"
     );
 }
 
@@ -2192,6 +2240,7 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
         "ralphx-ideation",
         "ralphx-execution-worker",
         "ralphx-execution-coder",
+        "ralphx-general-explorer",
         "ralphx-general-worker",
     ] {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
@@ -2294,6 +2343,11 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             "For two or more requested fixes, checks, audit items, or investigation streams"
         ),
         "Claude prompt should include the concrete multi-fix breakdown rule"
+    );
+    assert!(
+        claude_general_worker.contains("<delegate_assignment_contract>")
+            && claude_general_worker.contains("complete_delegate_assignment"),
+        "delegated-capable prompts should distinguish local ledgers from bound assignments"
     );
 
     let session_namer = load_harness_agent_prompt(

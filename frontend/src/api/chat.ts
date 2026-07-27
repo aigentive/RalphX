@@ -521,6 +521,10 @@ export interface ActiveStreamingTaskResponse {
   cache_read_tokens?: number;
   estimated_usd?: number;
   text_output?: string;
+  started_at?: string;
+  completed_at?: string;
+  timestamp_provenance?: "delegated_run" | "delegation_job";
+  seq?: number;
 }
 
 /**
@@ -542,7 +546,14 @@ const ConversationActiveStateResponseSchema = z.object({
   streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
     if (value == null || typeof value !== "object") return false;
     const record = value as Record<string, unknown>;
-    return typeof record.tool_use_id === "string" && typeof record.status === "string";
+    return typeof record.tool_use_id === "string"
+      && typeof record.status === "string"
+      && (record.started_at == null || typeof record.started_at === "string")
+      && (record.completed_at == null || typeof record.completed_at === "string")
+      && (record.timestamp_provenance == null
+        || record.timestamp_provenance === "delegated_run"
+        || record.timestamp_provenance === "delegation_job")
+      && (record.seq == null || (typeof record.seq === "number" && Number.isFinite(record.seq)));
   })).default([]),
   partial_text: z.string().default(""),
 });
@@ -1836,6 +1847,7 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
@@ -1864,6 +1876,7 @@ export const chatApi = {
   updateAgentConversationCoordinationMode,
   copyAgentConversationPlan,
   importAgentConversationPlan,
+  activateAgentPlanDirectImplementation,
   activateAgentTaskPipeline,
   startAgentTaskPipeline,
   sendAgentMessage,
@@ -2141,6 +2154,7 @@ export interface AgentConversationPlanSeedResult {
   workspace: AgentConversationWorkspace;
   sessionId: string;
   artifact: Artifact;
+  blueprintArtifact: Artifact | null;
 }
 
 export interface PublishAgentConversationWorkspaceResult {
@@ -2150,6 +2164,25 @@ export interface PublishAgentConversationWorkspaceResult {
   createdPr: boolean;
   prNumber: number | null;
   prUrl: string | null;
+}
+
+export interface CommitAgentConversationWorkspaceLocallyInput {
+  expectedHeadSha: string;
+  reviewArtifactId: string | null;
+  reviewArtifactVersion: number | null;
+  reviewedHeadSha: string | null;
+  reviewedDiffFingerprint: string | null;
+  attemptToken: string;
+}
+
+export interface CommitAgentConversationWorkspaceLocallyResult {
+  workspace: AgentConversationWorkspace;
+  outcome: "committed_local" | "already_committed" | "no_changes";
+  branchName: string;
+  previousHeadSha: string;
+  commitSha: string;
+  hadChanges: boolean;
+  attemptToken: string;
 }
 
 export interface PrecomputeAgentConversationWorkspacePrDescriptionResult {
@@ -2335,6 +2368,9 @@ export interface AgentWorkspaceReviewMonitor {
   reviewArtifactId: string | null;
   reviewArtifactVersion: number | null;
   reviewArtifactUpdatedAt: string | null;
+  reviewRequestedChangesArtifactId?: string | null;
+  reviewRequestedChangesArtifactVersion?: number | null;
+  reviewRequestedChangesArtifactUpdatedAt?: string | null;
   reviewGateBypassedAt: string | null;
   reviewGateBypassedTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewGateBypassedDiffFingerprint: string | null;
@@ -2353,6 +2389,7 @@ export interface AgentWorkspaceReviewMonitor {
   workspaceHeadSha: string | null;
   currentDiffFingerprint: string | null;
   previousVersionId: string | null;
+  reviewRequestedChangesPreviousVersionId?: string | null;
   reviewBlockingSummary: string | null;
   reviewBlockingFingerprint: string | null;
   reviewFixerRunId: string | null;
@@ -2748,6 +2785,21 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_artifact_id: z.string().nullable(),
   review_artifact_version: z.number().nullable(),
   review_artifact_updated_at: z.string().nullable(),
+  review_requested_changes_artifact_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
+  review_requested_changes_artifact_version: z
+    .number()
+    .nullable()
+    .optional()
+    .default(null),
+  review_requested_changes_artifact_updated_at: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   review_gate_bypassed_at: z.string().nullable().optional().default(null),
   review_gate_bypassed_target_scope: z
     .enum(["selected_source", "workspace_delta"])
@@ -2778,6 +2830,11 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   workspace_head_sha: z.string().nullable(),
   current_diff_fingerprint: z.string().nullable(),
   previous_version_id: z.string().nullable(),
+  review_requested_changes_previous_version_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   review_blocking_summary: z.string().nullable().optional().default(null),
   review_blocking_fingerprint: z.string().nullable().optional().default(null),
   review_fixer_run_id: z.string().nullable().optional().default(null),
@@ -2946,6 +3003,7 @@ const AgentConversationPlanSeedResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   session_id: z.string(),
   artifact: ArtifactResponseSchema,
+  blueprint_artifact: ArtifactResponseSchema.nullable().optional().default(null),
 });
 
 const PublishAgentConversationWorkspaceResponseSchema = z.object({
@@ -2955,6 +3013,15 @@ const PublishAgentConversationWorkspaceResponseSchema = z.object({
   created_pr: z.boolean(),
   pr_number: z.number().nullable(),
   pr_url: z.string().nullable(),
+});
+const CommitAgentConversationWorkspaceLocallyResponseSchema = z.object({
+  workspace: AgentConversationWorkspaceResponseSchema,
+  outcome: z.enum(["committed_local", "already_committed", "no_changes"]),
+  branch_name: z.string(),
+  previous_head_sha: z.string(),
+  commit_sha: z.string(),
+  had_changes: z.boolean(),
+  attempt_token: z.string(),
 });
 const PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema =
   z.object({
@@ -2995,6 +3062,9 @@ type RawAgentConversationPlanSeedResponse = z.infer<
 >;
 type RawPublishAgentConversationWorkspaceResponse = z.infer<
   typeof PublishAgentConversationWorkspaceResponseSchema
+>;
+type RawCommitAgentConversationWorkspaceLocallyResponse = z.infer<
+  typeof CommitAgentConversationWorkspaceLocallyResponseSchema
 >;
 type RawPrecomputeAgentConversationWorkspacePrDescriptionResponse = z.infer<
   typeof PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema
@@ -3105,6 +3175,20 @@ function transformAgentConversationWorkspace(
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformCommitAgentConversationWorkspaceLocallyResponse(
+  raw: RawCommitAgentConversationWorkspaceLocallyResponse,
+): CommitAgentConversationWorkspaceLocallyResult {
+  return {
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    outcome: raw.outcome,
+    branchName: raw.branch_name,
+    previousHeadSha: raw.previous_head_sha,
+    commitSha: raw.commit_sha,
+    hadChanges: raw.had_changes,
+    attemptToken: raw.attempt_token,
   };
 }
 
@@ -3247,6 +3331,9 @@ function transformAgentConversationPlanSeedResponse(
     workspace: transformAgentConversationWorkspace(raw.workspace),
     sessionId: raw.session_id,
     artifact: transformArtifactResponse(raw.artifact),
+    blueprintArtifact: raw.blueprint_artifact
+      ? transformArtifactResponse(raw.blueprint_artifact)
+      : null,
   };
 }
 
@@ -3414,6 +3501,12 @@ function transformAgentWorkspaceReviewMonitor(
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
+    reviewRequestedChangesArtifactId:
+      raw.review_requested_changes_artifact_id,
+    reviewRequestedChangesArtifactVersion:
+      raw.review_requested_changes_artifact_version,
+    reviewRequestedChangesArtifactUpdatedAt:
+      raw.review_requested_changes_artifact_updated_at,
     reviewGateBypassedAt: raw.review_gate_bypassed_at,
     reviewGateBypassedTargetScope: raw.review_gate_bypassed_target_scope,
     reviewGateBypassedDiffFingerprint:
@@ -3433,6 +3526,8 @@ function transformAgentWorkspaceReviewMonitor(
     workspaceHeadSha: raw.workspace_head_sha,
     currentDiffFingerprint: raw.current_diff_fingerprint,
     previousVersionId: raw.previous_version_id,
+    reviewRequestedChangesPreviousVersionId:
+      raw.review_requested_changes_previous_version_id,
     reviewBlockingSummary: raw.review_blocking_summary,
     reviewBlockingFingerprint: raw.review_blocking_fingerprint,
     reviewFixerRunId: raw.review_fixer_run_id,
@@ -4223,6 +4318,18 @@ export async function publishAgentConversationWorkspace(
   return transformPublishAgentConversationWorkspaceResponse(raw);
 }
 
+export async function commitAgentConversationWorkspaceLocally(
+  conversationId: string,
+  input: CommitAgentConversationWorkspaceLocallyInput,
+): Promise<CommitAgentConversationWorkspaceLocallyResult> {
+  const raw = await typedInvoke(
+    "commit_agent_conversation_workspace_locally",
+    { input: { conversationId, ...input } },
+    CommitAgentConversationWorkspaceLocallyResponseSchema,
+  );
+  return transformCommitAgentConversationWorkspaceLocallyResponse(raw);
+}
+
 export async function setAgentConversationWorkspacePrSupervision(
   conversationId: string,
   input: SetAgentConversationWorkspacePrSupervisionInput,
@@ -4420,6 +4527,51 @@ export async function activateAgentTaskPipeline(input: {
     AgentConversationWorkspaceResponseSchema,
   );
   return transformAgentConversationWorkspace(raw);
+}
+
+export async function activateAgentPlanDirectImplementation(input: {
+  conversationId: string;
+  sessionId: string;
+  retry: boolean;
+}): Promise<{
+  workspace: AgentConversationWorkspace;
+  artifactReferences: ComposerArtifactReference[];
+}> {
+  const responseSchema = z.object({
+    workspace: AgentConversationWorkspaceResponseSchema,
+    artifact_references: z.array(
+      z.object({
+        artifactId: z.string(),
+        kind: z.string(),
+        title: z.string().optional(),
+        sessionId: z.string().optional(),
+        version: z.number().int().positive().optional(),
+        status: z.string().optional(),
+      }),
+    ),
+  });
+  const raw = await typedInvoke(
+    "activate_agent_plan_direct_implementation",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        retry: input.retry,
+      },
+    },
+    responseSchema,
+  );
+  return {
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    artifactReferences: raw.artifact_references.map((reference) => ({
+      artifactId: reference.artifactId,
+      kind: reference.kind,
+      ...(reference.title ? { title: reference.title } : {}),
+      ...(reference.sessionId ? { sessionId: reference.sessionId } : {}),
+      ...(reference.version ? { version: reference.version } : {}),
+      ...(reference.status ? { status: reference.status } : {}),
+    })),
+  };
 }
 
 export async function startAgentTaskPipeline(input: {

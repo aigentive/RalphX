@@ -99,6 +99,10 @@ export const AutomationSchema = z.object({
   base_ref_kind: AutomationBaseRefKindSchema,
   base_ref: z.string(),
   base_display_name: z.string().nullable(),
+  // Final merge target (fork point, e.g. `main`) when the automation runs on its own
+  // integration branch; detail response only, so optional + nullable.
+  base_target_ref: z.string().nullable().optional(),
+  base_target_display_name: z.string().nullable().optional(),
   base_source_pull_request_json: z.string().nullable(),
   goal_items_json: z.string().nullable(),
   chain_mode: AutomationChainModeSchema,
@@ -126,6 +130,13 @@ export const AutomationRunSchema = z.object({
   plan_revision_pending: z.boolean(),
   plan_phase: z.boolean(),
   plan_artifact_id: z.string().nullable(),
+  plan_blueprint_artifact_id: z.string().nullable().optional().default(null),
+  parked_plan_artifact_id: z.string().nullable().optional().default(null),
+  parked_plan_blueprint_artifact_id: z
+    .string()
+    .nullable()
+    .optional()
+    .default(null),
   plan_approved_by: z.string().nullable(),
   plan_approved_artifact_version: z.number().int().positive().nullable(),
   plan_approved_at: z.string().nullable(),

@@ -5,9 +5,15 @@
  * warm orange accent for actions, and smooth animations.
  */
 
-import { useState, useCallback, useEffect, type ReactNode } from "react";
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useId,
+  type ReactNode,
+} from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus, GitPullRequestArrow } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -28,6 +34,14 @@ import { formatDateTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { ArtifactSelectableRegion } from "@/components/agents/artifact-selection/ArtifactSelectableRegion";
+import {
+  PlanBundleTabs,
+  type PlanBundleBodyMode,
+} from "./PlanBundleTabs";
+import {
+  planBundlePanelId,
+  planBundleTabId,
+} from "./planBundleTabIds";
 
 // ============================================================================
 // Types
@@ -39,7 +53,7 @@ export interface PlanDisplayConversationReference {
   version: number;
 }
 
-export type PlanDisplayBodyMode = "plan" | "proposals";
+export type PlanDisplayBodyMode = PlanBundleBodyMode;
 
 export interface PlanDisplayProps {
   plan: Artifact;
@@ -48,12 +62,15 @@ export interface PlanDisplayProps {
   linkedProposalsCount?: number;
   bodyMode?: PlanDisplayBodyMode;
   onBodyModeChange?: (mode: PlanDisplayBodyMode) => void;
+  bodyTabsIdPrefix?: string;
   hideBody?: boolean;
   onEdit?: () => void;
   onExport?: () => void;
   onStartNewConversationWithPlan?: (
     reference: PlanDisplayConversationReference,
   ) => void;
+  /** A v2 bundle cannot safely copy a historical overview without its paired blueprint. */
+  disableHistoricalNewConversation?: boolean;
   onApprove?: () => void;
   isApproving?: boolean;
   approveLabel?: string;
@@ -379,12 +396,14 @@ export function PlanDisplay({
   artifactLabel = "Plan",
   showApprove = false,
   linkedProposalsCount = 0,
-  bodyMode = "plan",
+  bodyMode = "overview",
   onBodyModeChange,
+  bodyTabsIdPrefix,
   hideBody = false,
   onEdit,
   onExport,
   onStartNewConversationWithPlan,
+  disableHistoricalNewConversation = false,
   onApprove,
   isApproving = false,
   approveLabel = "Approve Plan",
@@ -417,8 +436,10 @@ export function PlanDisplay({
   const showCreateProposals =
     onCreateProposals &&
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
-  const showProposalBodyToggle =
-    linkedProposalsCount > 0 && onBodyModeChange !== undefined;
+  const showPlanBodyTabs = onBodyModeChange !== undefined;
+  const generatedBodyTabsId = useId();
+  const resolvedBodyTabsIdPrefix =
+    bodyTabsIdPrefix ?? `plan-bundle-${generatedBodyTabsId.replace(/:/g, "")}`;
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
     !isPlanActionRecommendationPending &&
@@ -521,16 +542,7 @@ export function PlanDisplay({
   const renderedContent = preparedContent?.content ?? displayContent;
   const artifactPreamble = preparedContent?.preamble;
   const isViewingHistorical = selectedVersion !== plan.metadata.version;
-  const currentBodyMode = bodyMode ?? "plan";
-  const bodyModeButtonStyle = (isActive: boolean) => ({
-    color: isActive ? "var(--accent-primary)" : "var(--text-secondary)",
-    backgroundColor: isActive
-      ? withAlpha("var(--accent-primary)", 10)
-      : "transparent",
-    borderColor: isActive ? "var(--accent-border)" : "var(--border-subtle)",
-    borderStyle: "solid",
-    borderWidth: "1px",
-  });
+  const currentBodyMode = bodyMode ?? "overview";
 
   const handleBackToLatest = useCallback(() => {
     setSelectedVersion(plan.metadata.version);
@@ -601,11 +613,40 @@ export function PlanDisplay({
       !isViewingHistorical &&
       ((showApprove && !isApproved) ||
         isApproved ||
-        showProposalBodyToggle ||
+        showPlanBodyTabs ||
         onVerifyPlan ||
         showCreateProposals ||
         showImplementDirectly ||
         Boolean(artifactActions));
+    const body = isLoadingVersion ? (
+      <div className="flex items-center justify-center py-12">
+        <Loader2
+          className="w-6 h-6 animate-spin"
+          style={{ color: "var(--accent-primary)" }}
+        />
+      </div>
+    ) : renderedContent ? (
+      <ArtifactMarkdownBody
+        content={bodyAfterHeading ?? ""}
+        source={{
+          sourceKind: artifactLabel === "Review" ? "review" : "plan",
+          sourceId: plan.id,
+          sourceLabel: artifactLabel,
+          title: plan.name,
+          artifactId: plan.id,
+          version: selectedVersion,
+        }}
+        excerptSelectionEnabled={excerptSelectionEnabled}
+        className="text-[0.8125rem] leading-relaxed"
+      />
+    ) : (
+      <p
+        className="text-[0.8125rem] italic py-8 text-center"
+        style={{ color: "var(--text-muted)" }}
+      >
+        No content available
+      </p>
+    );
 
     return (
       <div data-testid="plan-display-chromeless" className="group">
@@ -722,7 +763,8 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
-                    {onStartNewConversationWithPlan && (
+                    {onStartNewConversationWithPlan &&
+                      (!disableHistoricalNewConversation || !isViewingHistorical) && (
                       <DropdownMenuItem
                         onClick={handleStartNewConversationWithPlan}
                         className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
@@ -797,36 +839,13 @@ export function PlanDisplay({
 
               {!isViewingHistorical && artifactActions}
 
-              {showProposalBodyToggle && (
-                <>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onBodyModeChange?.("plan")}
-                    aria-pressed={currentBodyMode === "plan"}
-                    data-testid="plan-overview-toggle"
-                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                    style={bodyModeButtonStyle(currentBodyMode === "plan")}
-                  >
-                    <FileText className="w-3 h-3" />
-                    Overview
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onBodyModeChange?.("proposals")}
-                    aria-pressed={currentBodyMode === "proposals"}
-                    data-testid="plan-proposals-toggle"
-                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                    style={bodyModeButtonStyle(currentBodyMode === "proposals")}
-                  >
-                    <GitPullRequestArrow className="w-3 h-3" />
-                    {linkedProposalsCount} Proposal
-                    {linkedProposalsCount !== 1 ? "s" : ""}
-                  </Button>
-                </>
+              {showPlanBodyTabs && (
+                <PlanBundleTabs
+                  idPrefix={resolvedBodyTabsIdPrefix}
+                  value={currentBodyMode}
+                  onValueChange={(mode) => onBodyModeChange?.(mode)}
+                  linkedProposalsCount={linkedProposalsCount}
+                />
               )}
 
               {onVerifyPlan && (
@@ -994,34 +1013,23 @@ export function PlanDisplay({
 
         {!isLoadingVersion && artifactPreamble}
 
-        {hideBody ? null : isLoadingVersion ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2
-              className="w-6 h-6 animate-spin"
-              style={{ color: "var(--accent-primary)" }}
-            />
-          </div>
-        ) : renderedContent ? (
-          <ArtifactMarkdownBody
-            content={bodyAfterHeading ?? ""}
-            source={{
-              sourceKind: artifactLabel === "Review" ? "review" : "plan",
-              sourceId: plan.id,
-              sourceLabel: artifactLabel,
-              title: plan.name,
-              artifactId: plan.id,
-              version: selectedVersion,
-            }}
-            excerptSelectionEnabled={excerptSelectionEnabled}
-            className="text-[0.8125rem] leading-relaxed"
-          />
-        ) : (
-          <p
-            className="text-[0.8125rem] italic py-8 text-center"
-            style={{ color: "var(--text-muted)" }}
+        {hideBody ? null : showPlanBodyTabs ? (
+          <div
+            id={planBundlePanelId(
+              resolvedBodyTabsIdPrefix,
+              currentBodyMode,
+            )}
+            role="tabpanel"
+            aria-labelledby={planBundleTabId(
+              resolvedBodyTabsIdPrefix,
+              currentBodyMode,
+            )}
+            tabIndex={0}
           >
-            No content available
-          </p>
+            {body}
+          </div>
+        ) : (
+          body
         )}
       </div>
     );
@@ -1331,7 +1339,8 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
-                    {onStartNewConversationWithPlan && (
+                    {onStartNewConversationWithPlan &&
+                      (!disableHistoricalNewConversation || !isViewingHistorical) && (
                       <DropdownMenuItem
                         onClick={handleStartNewConversationWithPlan}
                         className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"

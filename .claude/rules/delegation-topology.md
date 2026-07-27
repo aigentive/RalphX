@@ -24,5 +24,19 @@ paths:
 | Canonical read-only explorer | Agents that need bounded read-only investigation may delegate to `ralphx-general-explorer` when permitted. |
 | Canonical grants stay aligned | Delegating agents need `delegate_start` / `delegate_wait` / `delegate_cancel` in canonical `capabilities.mcp_tools`; runtime injection and MCP authorization derive from that metadata. |
 | Caller identity is transport-owned | MCP/server transport injects caller identity for delegation. Models should not be asked to invent or spoof it. |
+| Two ledgers, no mirrors | `delegate_start(task_ref)` atomically assigns the immediate caller’s exact task; generic task tools remain private to the delegated session and narrow assignment tools never enumerate the caller ledger. |
+| Read-only means filesystem | The general explorer may mutate its private coordination ledger and request assignment settlement; its shell/file-write restrictions remain unchanged. |
+| Backend settles authority | Assignment completion requires exact-run intent plus successful termination; failure, cancellation, release, implicit completion, and orphan recovery reopen the exact task. |
 | Native Team uses this topology | RX-native Team is a product surface over this provider-neutral delegation contract; removed vendor-specific Team semantics do not return here. |
 | Tool naming convention | Prompt prose uses bare tool names like `delegate_start`; config/frontmatter/allowlists use fully qualified MCP names only where that path requires qualification. |
+
+## Shared-Worktree Coordination
+
+| Rule | Detail |
+|---|---|
+| One worktree, immediate visibility | Delegates in one coordinated RalphX run see the same worktree immediately. |
+| Exclusive writable ownership | Each delegate owns disjoint writable paths, including generated outputs; parallel edits require disjoint source and generated-output ownership. |
+| One serialized Rust lane | Cargo, nextest, clippy, coverage, and every Rust build/test invocation are worktree-wide serialized work. |
+| One heavyweight validator | Exactly one designated validator owns heavyweight Rust validation and the required single post-Rust-test cleanup; implementation delegates do not duplicate either. |
+| Serialized package resources | Package-manager/build commands serialize per package or resource set; the owning validation lane produces committed build output such as MCP `dist` artifacts. |
+| Repository rules win | Repository rules remain authoritative for exact commands, cleanup, validation scope, and stricter constraints. |

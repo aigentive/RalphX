@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{path::Path, str::FromStr};
 
 use chrono::Utc;
 
@@ -6,15 +6,243 @@ use crate::application::agent_conversation_archive::archive_agent_conversation_f
 use crate::application::automation::api::{
     automation_service_for_state, automation_transition_service_for_state,
 };
-use crate::application::automation::transition::AutomationTransitionService;
+use crate::application::automation::transition::{
+    AutomationTransitionService, AUTOMATION_RUN_UPDATED_EVENT, AUTOMATION_UPDATED_EVENT,
+};
+use crate::application::git_service::GitService;
 use crate::application::AppState;
 use crate::domain::entities::{
-    ArtifactId, AutomationId, AutomationJudgeState, AutomationStatus, ChatConversation,
-    IdeationAnalysisBaseRefKind, IdeationSessionFlow,
+    ArtifactId, AutomationId, AutomationJudgeState, AutomationRunId, AutomationRunStatus,
+    AutomationStatus, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionFlow, Project,
 };
 use crate::domain::repositories::PlanArtifactApprovalRepository;
+use crate::domain::services::kill_worktree_processes_async;
+use crate::domain::state_machine::transition_handler::cleanup_helpers::remove_worktree_fast;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
+use crate::utils::path_safety::validate_absolute_non_root_path;
+
+pub(crate) async fn delete_automation_run_with_archive(
+    state: &AppState,
+    automation_id: &AutomationId,
+    run_id: &AutomationRunId,
+) -> AppResult<()> {
+    let automation = state
+        .automation_repo
+        .get_by_id(automation_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("automation {automation_id} not found")))?;
+    let mut run = state
+        .automation_run_repo
+        .list_for_automation(automation_id)
+        .await?
+        .into_iter()
+        .find(|run| run.id == *run_id)
+        .ok_or_else(|| AppError::NotFound(format!("automation run {run_id} not found")))?;
+    ensure_latest_run(state, automation_id, run_id).await?;
+    if run.judge_state == AutomationJudgeState::InProgress
+        && run
+            .judge_lease_expires_at
+            .is_some_and(|expires_at| expires_at > Utc::now())
+    {
+        return Err(AppError::Validation(
+            "judge is finalizing; retry shortly".to_string(),
+        ));
+    }
+    let service = automation_service_for_state(state);
+    if run.status == AutomationRunStatus::Running {
+        run = service.cancel_run(automation_id, run_id).await?;
+    }
+    if !matches!(
+        run.status,
+        AutomationRunStatus::AgentFailed | AutomationRunStatus::Cancelled
+    ) {
+        return Err(AppError::Conflict(format!(
+            "run status {} cannot be deleted",
+            run.status.as_str()
+        )));
+    }
+    ensure_latest_run(state, automation_id, run_id).await?;
+
+    let mut workspace_project = None;
+    if let Some(conversation_id) = run.conversation_id.as_ref() {
+        let conversation = state
+            .chat_conversation_repo
+            .get_by_id(conversation_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("conversation {conversation_id} not found"))
+            })?;
+        if conversation.automation_run_id.as_ref() != Some(run_id) {
+            return Err(AppError::Conflict(
+                "run conversation ownership changed before delete".to_string(),
+            ));
+        }
+        if let Some(workspace) = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?
+        {
+            let project = state
+                .project_repo
+                .get_by_id(&workspace.project_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("project {} not found", workspace.project_id))
+                })?;
+            workspace_project = Some((workspace, project));
+        }
+    }
+    let branch = workspace_project
+        .as_ref()
+        .map(|(workspace, _)| workspace.branch_name.trim())
+        .filter(|branch| !branch.is_empty())
+        .or_else(|| {
+            run.branch_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|branch| !branch.is_empty())
+        })
+        .map(str::to_string);
+    let branch_project: Option<Result<Project, String>> = match branch.as_ref() {
+        None => None,
+        Some(_) => match workspace_project.as_ref() {
+            Some((_, project)) => Some(Ok(project.clone())),
+            None => Some(
+                match state.project_repo.get_by_id(&automation.project_id).await {
+                    Ok(Some(project)) => Ok(project),
+                    Ok(None) => Err(format!("project {} was not found", automation.project_id)),
+                    Err(error) => Err(format!(
+                        "project {} lookup failed: {error}",
+                        automation.project_id
+                    )),
+                },
+            ),
+        },
+    };
+
+    if state
+        .automation_run_repo
+        .delete_run_if_deletable(automation_id, run_id)
+        .await?
+        != 1
+    {
+        return Err(AppError::Conflict(
+            "run is no longer the latest deletable run".to_string(),
+        ));
+    }
+
+    if let Some(conversation_id) = run.conversation_id.as_ref() {
+        if let Err(error) = archive_agent_conversation_for_state(conversation_id, state, true).await
+        {
+            tracing::warn!(
+                %error,
+                %conversation_id,
+                "delete_automation_run: conversation archive failed; continuing"
+            );
+        }
+    }
+    if let Some((workspace, project)) = workspace_project.as_ref() {
+        if !workspace.worktree_path.trim().is_empty() {
+            cleanup_run_worktree(
+                Path::new(&workspace.worktree_path),
+                Path::new(&project.working_directory),
+            )
+            .await;
+        }
+    }
+    if let (Some(branch), Some(project)) = (branch.as_deref(), branch_project) {
+        match project {
+            Ok(project) => cleanup_run_branches(state, &project, branch).await,
+            Err(reason) => {
+                tracing::warn!(
+                    branch,
+                    reason,
+                    "delete_automation_run: branch cleanup skipped because project could not be resolved"
+                );
+            }
+        };
+    }
+    service
+        .sync_goal_items_for_closed_run_without_successor(automation_id)
+        .await;
+    let automation_id = automation_id.as_str();
+    let run_id = run_id.as_str();
+    state.events.emit(
+        AUTOMATION_RUN_UPDATED_EVENT,
+        serde_json::json!({"automation_id": automation_id, "automationId": automation_id, "run_id": run_id, "runId": run_id}),
+    );
+    state.events.emit(
+        AUTOMATION_UPDATED_EVENT,
+        serde_json::json!({"automation_id": automation_id, "automationId": automation_id}),
+    );
+    Ok(())
+}
+
+async fn ensure_latest_run(
+    state: &AppState,
+    automation_id: &AutomationId,
+    run_id: &AutomationRunId,
+) -> AppResult<()> {
+    if state
+        .automation_run_repo
+        .latest_for_automation(automation_id)
+        .await?
+        .is_some_and(|run| run.id == *run_id)
+    {
+        return Ok(());
+    }
+    Err(AppError::Conflict(
+        "only the latest run can be deleted".to_string(),
+    ))
+}
+
+async fn cleanup_run_worktree(worktree: &Path, repo: &Path) {
+    let (Ok(worktree), Ok(repo)) = (
+        validate_absolute_non_root_path(worktree, "automation worktree"),
+        validate_absolute_non_root_path(repo, "automation project"),
+    ) else {
+        tracing::warn!("delete_automation_run: unsafe worktree path rejected");
+        return;
+    };
+    kill_worktree_processes_async(
+        &worktree,
+        git_runtime_config().worktree_lsof_timeout_secs,
+        true,
+    )
+    .await;
+    if let Err(error) = remove_worktree_fast(&worktree, &repo).await {
+        tracing::warn!(%error, "delete_automation_run: worktree cleanup failed; continuing");
+    }
+}
+
+async fn cleanup_run_branches(state: &AppState, project: &Project, branch: &str) {
+    if branch.eq_ignore_ascii_case(project.base_branch_or_default())
+        || branch.eq_ignore_ascii_case("main")
+        || branch.eq_ignore_ascii_case("master")
+    {
+        tracing::warn!(
+            branch,
+            base_branch = project.base_branch_or_default(),
+            "delete_automation_run: protected base branch cleanup skipped"
+        );
+        return;
+    }
+    let repo = Path::new(&project.working_directory);
+    let Ok(repo) = validate_absolute_non_root_path(repo, "automation project") else {
+        tracing::warn!(branch, "unsafe run-delete branch path; skipping");
+        return;
+    };
+    if let Err(error) = GitService::delete_branch(&repo, branch, true).await {
+        tracing::warn!(branch, %error, "delete_automation_run: local branch cleanup failed; continuing");
+    }
+    if let Some(github) = state.github_service.as_ref() {
+        if let Err(error) = github.delete_remote_branch(&repo, branch).await {
+            tracing::warn!(branch, %error, "delete_automation_run: remote branch cleanup failed; continuing");
+        }
+    }
+}
 
 /// Archive an automation's durable history and hard-delete its bookkeeping rows.
 ///
@@ -186,6 +414,15 @@ async fn cleanup_plan_gate_artifacts_for_run_conversations(
                 automation_id,
                 session_id.as_str(),
                 plan_artifact_id,
+            )
+            .await;
+        }
+        if let Some(plan_blueprint_artifact_id) = session.plan_blueprint_artifact_id.as_ref() {
+            archive_plan_artifact_chain(
+                state,
+                automation_id,
+                session_id.as_str(),
+                plan_blueprint_artifact_id,
             )
             .await;
         }

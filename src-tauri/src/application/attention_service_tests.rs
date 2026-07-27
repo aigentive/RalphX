@@ -641,6 +641,7 @@ fn automation_run(
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Run the automation".to_string(),
@@ -1047,6 +1048,9 @@ async fn attention_items_include_only_workspace_plans_awaiting_approval() {
         .plan_artifact_id(crate::domain::entities::ArtifactId::from_string(
             "eligible-plan",
         ))
+        .plan_blueprint_artifact_id(crate::domain::entities::ArtifactId::from_string(
+            "eligible-plan-blueprint",
+        ))
         .build();
     state
         .ideation_session_repo
@@ -1141,15 +1145,19 @@ async fn attention_items_exclude_current_plan_approvals_but_include_stale_approv
         .project_id(project.id.clone())
         .title("Current approved plan")
         .plan_artifact_id(current_artifact_id.clone())
+        .plan_blueprint_artifact_id(crate::domain::entities::ArtifactId::from_string(
+            "current-plan-blueprint",
+        ))
         .build();
     state
         .ideation_session_repo
         .create(current_approved.clone())
         .await
         .unwrap();
-    approval_repo.approve(
+    approval_repo.approve_bundle(
         current_approved.id.clone(),
         current_artifact_id,
+        crate::domain::entities::ArtifactId::from_string("current-plan-blueprint"),
         1,
         PlanApprovalActor::User,
     );
@@ -1160,6 +1168,9 @@ async fn attention_items_exclude_current_plan_approvals_but_include_stale_approv
         .project_id(project.id.clone())
         .title("Redrafted plan")
         .plan_artifact_id(current_redrafted_artifact_id)
+        .plan_blueprint_artifact_id(crate::domain::entities::ArtifactId::from_string(
+            "redrafted-current-plan-blueprint",
+        ))
         .build();
     state
         .ideation_session_repo

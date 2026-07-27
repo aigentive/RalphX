@@ -356,6 +356,8 @@ pub struct AutomationRun {
     pub plan_reminder_count: i64,
     pub plan_pending_instructions: Option<String>,
     pub plan_last_parked_artifact_id: Option<String>,
+    #[serde(default)]
+    pub plan_last_parked_blueprint_artifact_id: Option<String>,
     pub agent_phase_started_at: Option<DateTime<Utc>>,
     pub conversation_id: Option<ChatConversationId>,
     pub run_prompt: String,

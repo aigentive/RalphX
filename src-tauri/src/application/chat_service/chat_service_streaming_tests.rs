@@ -1,16 +1,20 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
     completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
-    is_user_attended_turn_completion, normalize_codex_cumulative_usage_for_persistence,
-    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
-    persist_message_text_timeline_item, persist_timeline_snapshot, persist_usage_capture_run_first,
-    process_codex_stream_background, process_exit_details, process_stream_background,
-    provider_session_ref_for_harness, record_agent_waiting_if_user_attended,
-    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
-    upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
+    is_completion_tool_name, is_user_attended_turn_completion,
+    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
+    persist_assistant_message_snapshot, persist_message_text_timeline_item,
+    persist_timeline_snapshot, persist_usage_capture_run_first, process_codex_stream_background,
+    process_exit_details, process_stream_background, provider_session_ref_for_harness,
+    record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
+    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
+    StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
+};
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
@@ -22,6 +26,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
 };
+use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
@@ -69,6 +74,32 @@ fn completion_tool_result_rejects_error_payloads() {
     assert!(!completion_tool_result_accepted(Some(
         &serde_json::json!({ "status": "failed" })
     )));
+}
+
+#[test]
+fn workspace_review_completion_tool_names_require_exact_supported_aliases() {
+    for tool_name in [
+        "mcp__ralphx__complete_workspace_review_run",
+        "ralphx::complete_workspace_review_run",
+        "ralphx:complete_workspace_review_run",
+    ] {
+        assert!(
+            is_completion_tool_name(tool_name),
+            "{tool_name} must classify as a completion tool"
+        );
+    }
+
+    for lookalike in [
+        "mcp__ralphx__complete_workspace_review",
+        "mcp__ralphx__complete_workspace_review_run_now",
+        "ralphx::complete_workspace_review_run_extra",
+        "ralphx:complete_workspace_review_runs",
+    ] {
+        assert!(
+            !is_completion_tool_name(lookalike),
+            "{lookalike} must not gain completion authority"
+        );
+    }
 }
 
 #[test]
@@ -424,9 +455,9 @@ async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::
     let mut command = Command::new("sh");
     command
         .arg("-c")
-        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; sleep 10")
+        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; exec sleep 10")
         .env("RALPHX_STREAM_LINE", line)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -493,6 +524,59 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
 }
 
 #[tokio::test]
+async fn claude_task_events_cache_lifecycle_defaults_and_stream_sequence() {
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-task","name":"Task","input":{"description":"Inspect cache","subagent_type":"Explore","model":"sonnet"}}]},"session_id":"sess-task"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-task","type":"tool_result","content":{"tool_use_result":{"agentId":"agent-1","totalDurationMs":100,"totalTokens":12,"totalToolUseCount":2}},"is_error":false}]}}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let cache = StreamingStateCache::new();
+
+    let outcome = process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        cache.clone(),
+        None,
+        None,
+        Some("stream-run-id".to_string()),
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert!(
+        outcome.is_ok(),
+        "task-only stream should finish cleanly: {outcome:?}"
+    );
+    let state = cache.get(&conversation_id.as_str()).await.unwrap();
+    let task = &state.streaming_tasks[0];
+    assert_eq!(task.status, "completed");
+    assert_eq!(task.seq, Some(0));
+    assert_eq!(task.started_at, None);
+    assert_eq!(task.completed_at, None);
+    assert_eq!(task.timestamp_provenance, None);
+    assert_eq!(task.total_tokens, Some(12));
+}
+
+#[tokio::test]
 async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout() {
     let child = spawn_interactive_jsonl_process_that_stays_alive(
         r#"{"type":"result","session_id":"sess-overloaded","is_error":true,"errors":["API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment."],"result":"API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment.","cost_usd":0.0}"#,
@@ -543,6 +627,91 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
             }
         ),
         "expected overloaded provider error, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for_eof() {
+    let mut child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"result","session_id":"sess-handoff","is_error":false,"result":"Handoff complete.","cost_usd":0.0}"#,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = "handoff-stream-context";
+    let run_id = "handoff-stream-run";
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    let interactive_registry = Arc::new(InteractiveProcessRegistry::new());
+    let token = interactive_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("handoff fixture stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(matches!(
+        interactive_registry
+            .arm_retire_after_turn_if_owner(&interactive_key, token, run_id)
+            .await,
+        crate::application::interactive_process_registry::InteractiveProcessRetireArmDisposition::AwaitingTurn
+    ));
+
+    let running_impl = Arc::new(MemoryRunningAgentRegistry::new());
+    running_impl
+        .register(
+            RunningAgentKey::new("project", context_id),
+            0,
+            conversation_id.as_str(),
+            run_id.to_string(),
+            None,
+            Some(CancellationToken::new()),
+        )
+        .await;
+    let running_registry: Arc<dyn RunningAgentRegistry> = running_impl;
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process_stream_background::<MockRuntime>(
+            child,
+            AgentHarnessKind::Claude,
+            ChatContextType::Project,
+            context_id,
+            &conversation_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            StreamingStateCache::new(),
+            Some(running_registry),
+            None,
+            Some(run_id.to_string()),
+            None,
+            None,
+            false,
+            false,
+            Some(interactive_registry.clone()),
+            Some(interactive_key.clone()),
+            Some(token),
+        ),
+    )
+    .await
+    .expect("TurnComplete mode handoff should not wait for process EOF")
+    .expect("mode handoff is a successful retirement, never a user cancellation");
+
+    assert!(outcome.mode_handoff_exit);
+    assert!(outcome.silent_interactive_exit);
+    assert!(
+        interactive_registry
+            .capture_owner(&interactive_key)
+            .await
+            .is_none(),
+        "TurnComplete must retire exactly the armed IPR owner"
     );
 }
 
@@ -619,6 +788,10 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
     assert_eq!(outcome.response_text, "Done.");
     assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
     assert_eq!(outcome.turns_finalized, 0);
+    assert!(
+        !outcome.mode_handoff_exit,
+        "Codex no-EOF completion remains a normal provider completion"
+    );
 }
 
 #[tokio::test]
@@ -1778,6 +1951,19 @@ async fn claude_stream_accepted_completion_tool_enters_grace_path() {
 }
 
 #[tokio::test]
+async fn claude_stream_accepted_workspace_review_completion_enters_grace_path() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__complete_workspace_review_run","input":{"outcome":"passed","summary":"Review passed"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":true},"is_error":false}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"Done","cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("accepted Workspace Review completion should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
 async fn claude_stream_accepted_completion_suppresses_late_agent_exit() {
     let outcome = run_claude_stream_lines(&[
         r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
@@ -1799,6 +1985,19 @@ async fn claude_stream_rejected_completion_remains_failed() {
     ])
     .await
     .expect_err("a rejected completion result must remain a failed run");
+
+    assert!(matches!(result, StreamError::AgentExit { .. }));
+}
+
+#[tokio::test]
+async fn claude_stream_rejected_workspace_review_completion_remains_failed() {
+    let result = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__complete_workspace_review_run","input":{"outcome":"passed","summary":"Review passed"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":false},"is_error":true}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["workspace_review_rejected"],"cost_usd":0.0}"#,
+    ])
+    .await
+    .expect_err("a rejected Workspace Review completion must not gain completion authority");
 
     assert!(matches!(result, StreamError::AgentExit { .. }));
 }

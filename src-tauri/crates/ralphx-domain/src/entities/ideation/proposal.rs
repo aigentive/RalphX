@@ -50,6 +50,10 @@ pub struct TaskProposal {
     pub plan_artifact_id: Option<ArtifactId>,
     /// Plan version when this proposal was created (for historical view)
     pub plan_version_at_creation: Option<u32>,
+    /// Exact implementation blueprint linked to this proposal.
+    pub blueprint_artifact_id: Option<ArtifactId>,
+    /// Blueprint version when this proposal was created.
+    pub blueprint_version_at_creation: Option<u32>,
     /// Sort order within the session
     pub sort_order: i32,
     /// When the proposal was created
@@ -100,6 +104,8 @@ impl TaskProposal {
             created_task_id: None,
             plan_artifact_id: None,
             plan_version_at_creation: None,
+            blueprint_artifact_id: None,
+            blueprint_version_at_creation: None,
             sort_order: 0,
             created_at: now,
             updated_at: now,
@@ -213,6 +219,13 @@ impl TaskProposal {
                 .get::<_, Option<String>>("plan_artifact_id")?
                 .map(ArtifactId::from_string),
             plan_version_at_creation: row.get::<_, Option<u32>>("plan_version_at_creation")?,
+            blueprint_artifact_id: row
+                .get::<_, Option<String>>("blueprint_artifact_id")
+                .unwrap_or(None)
+                .map(ArtifactId::from_string),
+            blueprint_version_at_creation: row
+                .get::<_, Option<u32>>("blueprint_version_at_creation")
+                .unwrap_or(None),
             sort_order: row.get("sort_order")?,
             created_at: parse_datetime_helper(row.get("created_at")?),
             updated_at: parse_datetime_helper(row.get("updated_at")?),

@@ -84,6 +84,10 @@ export interface Automation {
   baseRefKind: AutomationBaseRefKind;
   baseRef: string;
   baseDisplayName: string | null;
+  // Final merge target (fork point, e.g. `main`) when the automation runs on its own
+  // integration branch (`baseRef`); populated on the detail response only.
+  baseTargetRef?: string;
+  baseTargetDisplayName?: string;
   baseSourcePullRequestJson: string | null;
   goalItemsJson: string | null;
   chainMode: AutomationChainMode;
@@ -111,6 +115,9 @@ export interface AutomationRun {
   planRevisionPending: boolean;
   planPhase: boolean;
   planArtifactId: string | null;
+  planBlueprintArtifactId: string | null;
+  parkedPlanArtifactId: string | null;
+  parkedPlanBlueprintArtifactId: string | null;
   planApprovedBy: string | null;
   planApprovedArtifactVersion: number | null;
   planApprovedAt: string | null;

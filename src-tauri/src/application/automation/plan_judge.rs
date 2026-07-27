@@ -13,20 +13,28 @@ const AUTOMATION_PLAN_JUDGE_RETRY_INSTRUCTION: &str = "\n<retry_instruction trun
 const GOAL_MAX_BYTES: usize = 10 * 1024;
 const GOAL_ITEMS_MAX_BYTES: usize = 12 * 1024;
 const RUN_PROMPT_MAX_BYTES: usize = 8 * 1024;
-const PLAN_MAX_BYTES: usize = 28 * 1024;
+const PLAN_OVERVIEW_MAX_BYTES: usize = 12 * 1024;
+pub(crate) const PLAN_BLUEPRINT_MAX_BYTES: usize = 28 * 1024;
 const VERIFICATION_MAX_BYTES: usize = 8 * 1024;
 const PREVIOUS_VERDICT_MAX_BYTES: usize = 8 * 1024;
 const MIN_REVISION_INSTRUCTIONS_CHARS: usize = 40;
 
-const REQUIRED_PLAN_VERDICT_KEYS: &[&str] =
-    &["decision", "reason", "confidence", "evaluatedArtifactId"];
+const REQUIRED_PLAN_VERDICT_KEYS: &[&str] = &[
+    "decision",
+    "reason",
+    "confidence",
+    "evaluatedOverviewArtifactId",
+    "evaluatedBlueprintArtifactId",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildAutomationPlanJudgePromptInput<'a> {
     pub automation: &'a Automation,
     pub run: &'a AutomationRun,
-    pub evaluated_artifact_id: &'a str,
-    pub plan_content: &'a str,
+    pub evaluated_overview_artifact_id: &'a str,
+    pub overview_content: &'a str,
+    pub evaluated_blueprint_artifact_id: Option<&'a str>,
+    pub blueprint_content: Option<&'a str>,
     pub verification_context: Option<&'a AutomationPlanVerificationJudgeContext>,
     pub spec_attachments: &'a [AutomationJudgeAttachmentContext],
     pub previous_verdict_json: Option<&'a str>,
@@ -90,12 +98,15 @@ pub struct AutomationPlanJudgeVerdict {
     pub confidence: AutomationPlanJudgeConfidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision_instructions: Option<String>,
-    pub evaluated_artifact_id: String,
+    pub evaluated_overview_artifact_id: String,
+    pub evaluated_blueprint_artifact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutomationPlanJudgeValidationContext<'a> {
-    pub expected_artifact_id: Option<&'a str>,
+    pub expected_overview_artifact_id: Option<&'a str>,
+    pub expected_blueprint_artifact_id: Option<&'a str>,
+    pub blueprint_truncated: bool,
 }
 
 pub fn build_automation_plan_judge_prompt(
@@ -109,6 +120,42 @@ pub fn build_automation_plan_judge_prompt(
     }
 
     let mut remaining = AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES - output_contract.len();
+    let overview_original_chars = input.overview_content.chars().count().to_string();
+    let plan_overview = budgeted_xml_section(
+        "plan_overview",
+        input.overview_content,
+        PLAN_OVERVIEW_MAX_BYTES,
+        remaining,
+        &[
+            ("artifact_id", input.evaluated_overview_artifact_id),
+            ("original_chars", overview_original_chars.as_str()),
+        ],
+    );
+    remaining = remaining.saturating_sub(plan_overview.len());
+    let blueprint_original_chars = input
+        .blueprint_content
+        .map(|content| content.chars().count().to_string());
+    let plan_blueprint = match (
+        input.evaluated_blueprint_artifact_id,
+        input.blueprint_content,
+    ) {
+        (Some(artifact_id), Some(content)) => budgeted_xml_section(
+            "plan_blueprint",
+            content,
+            PLAN_BLUEPRINT_MAX_BYTES,
+            remaining,
+            &[
+                ("artifact_id", artifact_id),
+                (
+                    "original_chars",
+                    blueprint_original_chars.as_deref().unwrap_or("0"),
+                ),
+            ],
+        ),
+        _ => String::new(),
+    };
+    remaining = remaining.saturating_sub(plan_blueprint.len());
+
     let goal = budgeted_xml_section(
         "goal",
         input.automation.goal_prompt.trim(),
@@ -149,15 +196,6 @@ pub fn build_automation_plan_judge_prompt(
     );
     remaining = remaining.saturating_sub(run_prompt.len());
 
-    let plan = budgeted_xml_section(
-        "plan",
-        input.plan_content,
-        PLAN_MAX_BYTES,
-        remaining,
-        &[("artifact_id", input.evaluated_artifact_id)],
-    );
-    remaining = remaining.saturating_sub(plan.len());
-
     let verification = input
         .verification_context
         .map(|context| {
@@ -180,8 +218,9 @@ pub fn build_automation_plan_judge_prompt(
         &[],
     );
 
-    let prompt =
-        format!("{goal}{goal_items}{spec}{run_prompt}{plan}{verification}{previous_verdict}{output_contract}");
+    let prompt = format!(
+        "{goal}{goal_items}{spec}{run_prompt}{plan_overview}{plan_blueprint}{verification}{previous_verdict}{output_contract}"
+    );
     if prompt.len() > AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES {
         return Err(AppError::Validation(
             "automation plan judge prompt exceeded the 64KB argv-safe budget".to_string(),
@@ -226,23 +265,45 @@ pub fn validate_automation_plan_judge_verdict(
             "plan judge verdict reason is required".to_string(),
         ));
     }
-    verdict.evaluated_artifact_id = verdict.evaluated_artifact_id.trim().to_string();
-    if verdict.evaluated_artifact_id.is_empty() {
+    verdict.evaluated_overview_artifact_id =
+        verdict.evaluated_overview_artifact_id.trim().to_string();
+    if verdict.evaluated_overview_artifact_id.is_empty() {
         return Err(AppError::Validation(
-            "plan judge verdict evaluatedArtifactId is required".to_string(),
+            "plan judge verdict evaluatedOverviewArtifactId is required".to_string(),
         ));
     }
-    if let Some(expected) = context.expected_artifact_id {
-        if verdict.evaluated_artifact_id != expected {
+    verdict.evaluated_blueprint_artifact_id = verdict
+        .evaluated_blueprint_artifact_id
+        .map(|artifact_id| artifact_id.trim().to_string())
+        .filter(|artifact_id| !artifact_id.is_empty());
+    if let Some(expected) = context.expected_overview_artifact_id {
+        if verdict.evaluated_overview_artifact_id != expected {
             return Err(AppError::Validation(format!(
-                "plan judge verdict evaluatedArtifactId {} did not match prompt artifact id {}",
-                verdict.evaluated_artifact_id, expected
+                "plan judge verdict evaluatedOverviewArtifactId {} did not match prompt artifact id {}",
+                verdict.evaluated_overview_artifact_id, expected
+            )));
+        }
+        if verdict.evaluated_blueprint_artifact_id.as_deref()
+            != context.expected_blueprint_artifact_id
+        {
+            return Err(AppError::Validation(format!(
+                "plan judge verdict evaluatedBlueprintArtifactId {} did not match prompt artifact id {}",
+                verdict
+                    .evaluated_blueprint_artifact_id
+                    .as_deref()
+                    .unwrap_or("null"),
+                context.expected_blueprint_artifact_id.unwrap_or("null")
             )));
         }
     }
 
     match verdict.decision {
         AutomationPlanJudgeDecision::Approve => {
+            if context.blueprint_truncated {
+                return Err(AppError::Validation(
+                    "plan judge truncated Blueprint cannot be approved".to_string(),
+                ));
+            }
             if has_revision_instructions_key {
                 return Err(AppError::Validation(
                     "plan judge approve verdict must not include revisionInstructions".to_string(),
@@ -369,15 +430,17 @@ Return exactly one JSON object:
   "reason": "string, <= 1000 chars",
   "confidence": "low" | "medium" | "high",
   "revisionInstructions": "string, required and at least 40 chars iff decision is revise, absent on approve",
-  "evaluatedArtifactId": "the exact plan artifact id from the plan section"
+  "evaluatedOverviewArtifactId": "the exact artifact_id from plan_overview",
+  "evaluatedBlueprintArtifactId": "the exact artifact_id from plan_blueprint, or null for a legacy plan"
 }
 
 Rules:
-- Judge only the run plan against the automation goal, goal items, current phase, run prompt, advisory spec context, and advisory verification outcome.
+- Judge both the Plan Overview and Implementation Blueprint against the automation goal, goal items, current phase, run prompt, advisory spec context, and advisory verification outcome.
 - Verification gap findings inform the verdict but never mandate revise on their own; if verification is unavailable, proceed on the other evidence.
 - Choose approve only when the plan is aligned with the current phase, scoped, plausible, and ready for implementation.
 - Choose revise when the plan is missing required scope, recovery, validation, phase alignment, or feasibility detail.
-- `evaluatedArtifactId` must exactly match the `artifact_id` attribute on the plan section.
+- Never approve when the Blueprint section has `truncated="true"`; request a focused revision instead.
+- Both evaluated artifact ids must exactly match their corresponding plan section attributes.
 - Do not include markdown fences, prose, tool calls, or fields outside the JSON verdict.
 </output_contract>
 "#

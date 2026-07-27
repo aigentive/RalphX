@@ -59,6 +59,7 @@ import {
 } from "./question-handler.js";
 import {
   buildArtifactMutationTransportHeaders,
+  buildRuntimeIdentityTransportHeaders,
   hydrateRalphxRuntimeEnvFromCli,
   parseCliOptionFromArgs,
 } from "./runtime-context.js";
@@ -975,9 +976,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           caller_context_id: RALPHX_CONTEXT_ID,
         },
         {
-          headers: {
-            "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
-          },
+          headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
         },
       );
     } else if (name === "delegate_wait") {
@@ -993,17 +992,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         claim_agent_task: "agent_tasks/claim",
         complete_agent_task: "agent_tasks/complete",
       };
-      const endpoint = endpointByTool[name];
-      result = await callTauri(
-        endpoint,
-        withAgentTaskRuntimeContext(args as Record<string, unknown>, {
-          contextType: RALPHX_CONTEXT_TYPE,
-          contextId: RALPHX_CONTEXT_ID,
-          projectId: RALPHX_PROJECT_ID,
-          actorAgent: AGENT_TYPE,
-          parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
-        })
-      );
+      if (
+        name === "get_delegate_assignment" ||
+        name === "complete_delegate_assignment" ||
+        name === "release_delegate_assignment"
+      ) {
+        const assignmentEndpointByTool: Record<string, string> = {
+          get_delegate_assignment: "agent_tasks/delegate_assignment/get",
+          complete_delegate_assignment: "agent_tasks/delegate_assignment/complete",
+          release_delegate_assignment: "agent_tasks/delegate_assignment/release",
+        };
+        result = await callTauri(
+          assignmentEndpointByTool[name],
+          args as Record<string, unknown>,
+          {
+            headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+          },
+        );
+      } else {
+        const endpoint = endpointByTool[name];
+        result = await callTauri(
+          endpoint,
+          withAgentTaskRuntimeContext(args as Record<string, unknown>, {
+            contextType: RALPHX_CONTEXT_TYPE,
+            contextId: RALPHX_CONTEXT_ID,
+            projectId: RALPHX_PROJECT_ID,
+            actorAgent: AGENT_TYPE,
+            parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+          })
+        );
+      }
     } else if (name === "get_project_analysis") {
       // GET /api/projects/:project_id/analysis?task_id=
       const { project_id, task_id } = args as { project_id: string; task_id?: string };

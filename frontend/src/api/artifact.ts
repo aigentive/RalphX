@@ -16,7 +16,7 @@ import { backendApiUrl } from "@/api/backend";
 // Response Schemas (matching Rust backend serialization with snake_case)
 // ============================================================================
 
-export const ArtifactResponseSchema = z.object({
+const PlanBundleArtifactResponseSchema = z.object({
   id: z.string(),
   name: z.string(),
   artifact_type: z.string(),
@@ -29,10 +29,19 @@ export const ArtifactResponseSchema = z.object({
   task_id: z.string().nullable(),
   process_id: z.string().nullable(),
   derived_from: z.array(z.string()),
+  artifact_role: z.enum(["overview", "blueprint"]).nullable().optional(),
+});
+
+export const ArtifactResponseSchema = PlanBundleArtifactResponseSchema.extend({
   plan_approval_status: PlanApprovalStatusSchema.optional(),
   plan_approved_artifact_id: z.string().nullable().optional(),
   plan_approved_version: z.number().int().positive().nullable().optional(),
+  plan_approved_blueprint_artifact_id: z.string().nullable().optional(),
+  plan_approved_blueprint_version: z.number().int().positive().nullable().optional(),
   plan_approved_at: z.string().nullable().optional(),
+  blueprint_artifact: PlanBundleArtifactResponseSchema.nullable().optional(),
+  plan_contract_version: z.union([z.literal(1), z.literal(2)]).nullable().optional(),
+  plan_target_id: z.string().nullable().optional(),
 });
 
 export type ArtifactResponse = z.infer<typeof ArtifactResponseSchema>;
@@ -42,6 +51,8 @@ export const PlanComplexityAssessmentResponseSchema = z.object({
   session_id: z.string(),
   artifact_id: z.string(),
   artifact_version: z.number().int().positive(),
+  blueprint_artifact_id: z.string().nullable().optional(),
+  blueprint_artifact_version: z.number().int().positive().nullable().optional(),
   level: PlanComplexityLevelSchema,
   score: z.number().int().min(0).max(100),
   recommended_action: PlanComplexityRecommendedActionSchema,
@@ -76,6 +87,13 @@ export function transformArtifactResponse(raw: ArtifactResponse): Artifact {
         ...(raw.plan_approved_version != null && {
           approvedVersion: raw.plan_approved_version,
         }),
+        ...(raw.plan_approved_blueprint_artifact_id != null && {
+          approvedBlueprintArtifactId:
+            raw.plan_approved_blueprint_artifact_id,
+        }),
+        ...(raw.plan_approved_blueprint_version != null && {
+          approvedBlueprintVersion: raw.plan_approved_blueprint_version,
+        }),
         ...(raw.plan_approved_at != null && {
           approvedAt: raw.plan_approved_at,
         }),
@@ -97,6 +115,38 @@ export function transformArtifactResponse(raw: ArtifactResponse): Artifact {
     derivedFrom: raw.derived_from,
     bucketId: raw.bucket_id ?? undefined,
     ...(planApproval !== undefined && { planApproval }),
+    ...(raw.artifact_role != null && { artifactRole: raw.artifact_role }),
+    ...(raw.blueprint_artifact != null && {
+      blueprint: transformPlanBundleMember(raw.blueprint_artifact),
+    }),
+    ...(raw.plan_contract_version != null && {
+      planContractVersion: raw.plan_contract_version,
+    }),
+    ...(raw.plan_target_id != null && { planTargetId: raw.plan_target_id }),
+  };
+}
+
+function transformPlanBundleMember(
+  raw: z.infer<typeof PlanBundleArtifactResponseSchema>,
+): NonNullable<Artifact["blueprint"]> {
+  return {
+    id: raw.id,
+    type: raw.artifact_type as Artifact["type"],
+    name: raw.name,
+    content:
+      raw.content_type === "inline"
+        ? { type: "inline", text: raw.content }
+        : { type: "file", path: raw.content },
+    metadata: {
+      createdAt: raw.created_at,
+      createdBy: raw.created_by,
+      version: raw.version,
+      taskId: raw.task_id ?? undefined,
+      processId: raw.process_id ?? undefined,
+    },
+    derivedFrom: raw.derived_from,
+    bucketId: raw.bucket_id ?? undefined,
+    artifactRole: raw.artifact_role ?? undefined,
   };
 }
 
@@ -108,6 +158,8 @@ export function transformPlanComplexityAssessmentResponse(
     sessionId: raw.session_id,
     artifactId: raw.artifact_id,
     artifactVersion: raw.artifact_version,
+    blueprintArtifactId: raw.blueprint_artifact_id ?? undefined,
+    blueprintArtifactVersion: raw.blueprint_artifact_version ?? undefined,
     level: raw.level,
     score: raw.score,
     recommendedAction: raw.recommended_action,
@@ -191,9 +243,13 @@ export const artifactApi = {
   approvePlanArtifact: async ({
     sessionId,
     artifactId,
+    blueprintArtifactId,
+    blueprintArtifactVersion,
   }: {
     sessionId: string;
     artifactId?: string | undefined;
+    blueprintArtifactId?: string | undefined;
+    blueprintArtifactVersion?: number | undefined;
   }): Promise<Artifact> => {
     const response = await fetch(backendApiUrl("approve_plan_artifact"), {
       method: "POST",
@@ -201,6 +257,12 @@ export const artifactApi = {
       body: JSON.stringify({
         session_id: sessionId,
         ...(artifactId !== undefined && { artifact_id: artifactId }),
+        ...(blueprintArtifactId !== undefined && {
+          blueprint_artifact_id: blueprintArtifactId,
+        }),
+        ...(blueprintArtifactVersion !== undefined && {
+          blueprint_artifact_version: blueprintArtifactVersion,
+        }),
       }),
     });
     const artifact = await parseHttpArtifactResponse(response);

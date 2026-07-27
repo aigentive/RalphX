@@ -1125,6 +1125,7 @@ impl HttpWorkflowHost {
                 parent_tool_use_id: Some(stored.id.to_string()),
                 delegated_session_id: None,
                 child_session_id: None,
+                task_ref: None,
                 agent_name: agent_name.into(),
                 prompt: delegated_prompt,
                 title: payload
@@ -1138,6 +1139,7 @@ impl HttpWorkflowHost {
                 approval_policy: None,
                 sandbox_mode: None,
             },
+            Some(&self.conversation_id),
             Some(&authority.run_id),
         )
         .await

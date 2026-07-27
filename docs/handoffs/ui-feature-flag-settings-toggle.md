@@ -160,7 +160,7 @@ queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, merged);   // (A) nav + render
 useUiStore.getState().setFeatureFlags(merged);               // (B) redirect-away guard (uiStore.ts:951-962)
 ```
 - OFF→ON: nav item appears immediately (nav filter recomputes every render from source A — `LeftNavRail.tsx:122-124`).
-- ON→OFF while the user is ON the automations view: `setFeatureFlags` redirects to `DEFAULT_PROJECT_VIEW` (`agents`) in BOTH DEV and prod (`uiStore.ts:954-955`), avoiding stranding (the App.tsx redirect effect is prod-only, so relying on it alone would strand DEV users on a blank/placeholder view).
+- ON→OFF while the user is ON the automations view: `setFeatureFlags` redirects to `DEFAULT_APP_VIEW` (`agents`) in BOTH DEV and prod, avoiding stranding (the App.tsx redirect effect is prod-only, so relying on it alone would strand DEV users on a blank/placeholder view).
 - Do NOT update only one store — nav and redirect would split.
 
 ---
@@ -182,7 +182,7 @@ useUiStore.getState().setFeatureFlags(merged);               // (B) redirect-awa
 | Unknown flag in `set` input | Rejected by `UiOverridableFlag` enum deserialization → typed error (rule 5) |
 | Concurrent toggles | Singleton upsert, last-write-wins (acceptable for single user) |
 | Config default later changes | Baseline shifts; a NULL override still inherits; a non-NULL override still wins until cleared |
-| Other flags (battle_mode, etc.) | Not exposed in v1; adding one = new nullable column + enum variant + one more `ToggleSettingRow` |
+| Additional flags | Not exposed in v1; each future flag needs its own nullable column, enum variant, and `ToggleSettingRow` |
 
 ---
 

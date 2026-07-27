@@ -1224,6 +1224,10 @@ describe('agent workspace PR fix tools', () => {
     expect(tool?.inputSchema.properties).toHaveProperty('summary');
     expect(tool?.inputSchema.properties).toHaveProperty('blocker');
     expect(tool?.inputSchema.properties).toHaveProperty('fix_commit_sha');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('created_by_run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('agent_run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('run_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('orchestration_id');
     expect(tool?.inputSchema.properties).toMatchObject({
       fix_commit_sha: {
         description: expect.stringContaining('Required when blocker is absent'),
@@ -1254,14 +1258,25 @@ describe('agent workspace PR description tool', () => {
     expect(tool).toBeDefined();
   });
 
-  it('should require conversation and body fields', () => {
+  it('should require conversation and decision fields', () => {
     expect(tool?.inputSchema.type).toBe('object');
     expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
     expect(tool?.inputSchema.properties).toHaveProperty('title');
     expect(tool?.inputSchema.properties).toHaveProperty('body_markdown');
+    expect(tool?.inputSchema.properties).toHaveProperty('decision');
     expect(tool?.inputSchema.required).toEqual(
-      expect.arrayContaining(['conversation_id', 'body_markdown'])
+      expect.arrayContaining(['conversation_id', 'decision'])
     );
+  });
+
+  it('limits existing PR body patches to the supplied editable region', () => {
+    const bodyDescription = inputSchemaProperties(
+      'submit_agent_workspace_pr_description'
+    ).body_markdown?.description;
+
+    expect(bodyDescription).toContain('patch_allowed=true');
+    expect(bodyDescription).toContain('RalphX-managed Plan/signature');
+    expect(bodyDescription).toContain('trailing integration block');
   });
 
   it('routes PR description submissions to the agent workspace endpoint', async () => {
@@ -1270,6 +1285,7 @@ describe('agent workspace PR description tool', () => {
     await expect(
       callSubmitAgentWorkspacePrDescriptionTool(callTauri, {
         conversation_id: 'conversation-1',
+        decision: 'patch',
         title: 'Generated title',
         body_markdown: '## Summary\n\nGenerated body',
       })
@@ -1278,6 +1294,7 @@ describe('agent workspace PR description tool', () => {
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/pr-description', {
       title: 'Generated title',
       body_markdown: '## Summary\n\nGenerated body',
+      decision: 'patch',
     });
   });
 });
@@ -1400,6 +1417,7 @@ describe('agent workspace publish tool transport', () => {
       base_ref_kind: 'local_branch',
       base_ref: 'feature/base',
       base_display_name: 'feature/base',
+      created_by_run_id: undefined,
     });
   });
 
@@ -1410,7 +1428,10 @@ describe('agent workspace publish tool transport', () => {
       callUpdateAgentWorkspaceFromBaseTool(
         callTauri,
         { base_ref_kind: 'project_default' },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1420,6 +1441,7 @@ describe('agent workspace publish tool transport', () => {
         base_ref_kind: 'project_default',
         base_ref: undefined,
         base_display_name: undefined,
+        created_by_run_id: 'run-from-runtime',
       }
     );
   });
@@ -1651,6 +1673,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         {
           content: '## Summary\n\nLooks good.',
+          requested_changes_content: '## Result\n\nNo changes requested.',
           target_scope: 'workspace_delta',
           head_sha: 'abc123',
           diff_fingerprint: 'fingerprint-1',
@@ -1668,6 +1691,8 @@ describe('agent workspace publish tool transport', () => {
       {
         title: undefined,
         content: '## Summary\n\nLooks good.',
+        requested_changes_title: undefined,
+        requested_changes_content: '## Result\n\nNo changes requested.',
         target_scope: 'workspace_delta',
         head_sha: 'abc123',
         diff_fingerprint: 'fingerprint-1',
@@ -1769,6 +1794,19 @@ describe('agent workspace publish tool transport', () => {
       expect(schema.properties ?? {}).not.toHaveProperty('created_by_run_id');
       expect(schema.required ?? []).not.toContain('created_by_run_id');
     }
+  });
+
+  it('requires Overview and Requested Changes in one workspace Review write', () => {
+    const tool = AGENT_WORKSPACE_TOOLS.find(
+      (candidate) => candidate.name === 'write_workspace_review_artifact'
+    );
+    const schema = tool?.inputSchema as {
+      required?: string[];
+    };
+
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['content', 'requested_changes_content'])
+    );
   });
 
   it('routes proposed Review PR actions to the agent workspace endpoint', async () => {
@@ -1934,6 +1972,7 @@ describe('agent workspace publish tool transport', () => {
         callTauriGet,
         {
           content: '## Summary',
+          requested_changes_content: '## Result\n\nNo changes requested.',
           target_scope: 'selected_source',
           head_sha: 'head-sha',
           diff_fingerprint: 'fingerprint-1',
@@ -2008,6 +2047,8 @@ describe('agent workspace publish tool transport', () => {
       {
         title: undefined,
         content: '## Summary',
+        requested_changes_title: undefined,
+        requested_changes_content: '## Result\n\nNo changes requested.',
         target_scope: 'selected_source',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
@@ -2070,6 +2111,52 @@ describe('agent workspace publish tool transport', () => {
     });
   });
 
+  it('injects the runtime run identity for PR fix completion and preserves supersession responses', async () => {
+    const superseded = {
+      success: false,
+      code: 'superseded',
+      message: 'A newer PR fix completion superseded this request.',
+    };
+    const callTauri = vi.fn().mockResolvedValue(superseded);
+
+    await expect(
+      callCompleteAgentWorkspacePrFixTool(
+        callTauri,
+        {
+          conversation_id: 'conversation-1',
+          summary: 'Fixed failing tests',
+          fix_commit_sha: 'c'.repeat(40),
+          created_by_run_id: 'caller-controlled-run-id',
+        },
+        { agentRunId: 'run-from-runtime' }
+      )
+    ).resolves.toBe(superseded);
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Fixed failing tests',
+      blocker: undefined,
+      fix_commit_sha: 'c'.repeat(40),
+      created_by_run_id: 'run-from-runtime',
+    });
+  });
+
+  it('omits the hidden PR fix run identity when runtime context has no agent run', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await callCompleteAgentWorkspacePrFixTool(callTauri, {
+      conversation_id: 'conversation-1',
+      summary: 'Blocked on maintainer decision',
+      blocker: 'Needs maintainer decision',
+    });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Blocked on maintainer decision',
+      blocker: 'Needs maintainer decision',
+      fix_commit_sha: undefined,
+      created_by_run_id: undefined,
+    });
+  });
+
   it.each([
     [
       'get_agent_workspace_publish_status',
@@ -2091,6 +2178,7 @@ describe('agent workspace publish tool transport', () => {
         base_ref_kind: 'local_branch',
         base_ref: 'feature/base',
         base_display_name: 'feature/base',
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     ['publish_agent_workspace', 'post', 'agent-workspaces/conversation-1/publish', {}],
@@ -2130,6 +2218,8 @@ describe('agent workspace publish tool transport', () => {
       {
         title: 'Generated title',
         content: '## Summary\n\nGenerated body',
+        requested_changes_title: undefined,
+        requested_changes_content: '## Requested Changes\n\nGenerated blueprint',
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
@@ -2167,6 +2257,7 @@ describe('agent workspace publish tool transport', () => {
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
         fix_commit_sha: 'a'.repeat(40),
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     [
@@ -2209,6 +2300,7 @@ describe('agent workspace publish tool transport', () => {
         title: 'Generated title',
         body_markdown: '## Summary\n\nGenerated body',
         content: '## Summary\n\nGenerated body',
+        requested_changes_content: '## Requested Changes\n\nGenerated blueprint',
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
@@ -2278,7 +2370,7 @@ describe('delegation bridge tools', () => {
     }
   );
 
-  it('delegate_start should expose optional parent_session_id plus required agent_name and prompt', () => {
+  it('delegate_start should hide session selection and require only agent_name and prompt', () => {
     const tool = allTools.find((entry) => entry.name === 'delegate_start');
     expect(tool?.inputSchema.type).toBe('object');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_session_id');
@@ -2288,7 +2380,10 @@ describe('delegation bridge tools', () => {
     expect(tool?.inputSchema.properties).not.toHaveProperty('parent_agent_run_id');
     expect(tool?.inputSchema.properties).not.toHaveProperty('caller_agent_run_id');
     expect(tool?.inputSchema.properties).toHaveProperty('parent_tool_use_id');
-    expect(tool?.inputSchema.properties).toHaveProperty('delegated_session_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('delegated_session_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('child_session_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('task_ref');
+    expect(tool?.inputSchema.additionalProperties).toBe(false);
     expect(tool?.inputSchema.required).toEqual(
       expect.arrayContaining(['agent_name', 'prompt'])
     );
@@ -2373,6 +2468,9 @@ describe('agent task tools', () => {
     'update_agent_task',
     'claim_agent_task',
     'complete_agent_task',
+    'get_delegate_assignment',
+    'complete_delegate_assignment',
+    'release_delegate_assignment',
   ])('%s should exist in ALL_TOOLS', (toolName) => {
     expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
   });
@@ -2414,6 +2512,38 @@ describe('agent task tools', () => {
     expect(toolNames).toContain('create_agent_task');
     expect(toolNames).toContain('list_agent_tasks');
   });
+
+  it('delegate assignment schemas expose no orchestration identity fields', () => {
+    for (const toolName of [
+      'get_delegate_assignment',
+      'complete_delegate_assignment',
+      'release_delegate_assignment',
+    ]) {
+      const tool = allTools.find((entry) => entry.name === toolName);
+      expect(tool).toBeDefined();
+      for (const forbidden of [
+        'delegated_session_id',
+        'conversation_id',
+        'agent_run_id',
+        'assignment_id',
+        'task_list_id',
+      ]) {
+        expect(tool?.inputSchema.properties).not.toHaveProperty(forbidden);
+      }
+    }
+  });
+
+  it.each([GENERAL_EXPLORER, GENERAL_WORKER])(
+    '%s should expose delegate-local and narrow assignment lifecycles',
+    (agent) => {
+      expect(toolsByAgent()[agent]).toEqual(loadCanonicalMcpTools(agent));
+      expect(toolsByAgent()[agent]).toContain('create_agent_task');
+      expect(toolsByAgent()[agent]).toContain('complete_agent_task');
+      expect(toolsByAgent()[agent]).toContain('get_delegate_assignment');
+      expect(toolsByAgent()[agent]).toContain('complete_delegate_assignment');
+      expect(toolsByAgent()[agent]).toContain('release_delegate_assignment');
+    }
+  );
 });
 
 // ===========================================================================
