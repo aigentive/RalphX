@@ -490,7 +490,7 @@ async fn unreadable_metadata_receipt_readback_remains_nonterminal_and_generic_st
 }
 
 #[tokio::test]
-async fn generic_stale_recovery_never_overwrites_terminal_receipt_authority() {
+async fn generic_stale_recovery_recovers_transient_status_after_receipt_settles() {
     let mut state = AppState::new_test();
     let conversation_id = conversation_id(48);
     let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
@@ -524,18 +524,20 @@ async fn generic_stale_recovery_never_overwrites_terminal_receipt_authority() {
         )
         .await
         .expect("generic stale recovery"),
-        0
+        1
     );
     assert_eq!(github.state().fetch_pr_detail_calls, 0);
     assert_eq!(github.state().patch_pr_metadata_calls, 0);
-    assert_eq!(
-        state
-            .agent_conversation_workspace_repo
-            .list_publication_events(&conversation_id)
-            .await
-            .expect("load events"),
-        events_before
-    );
+    let events_after = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load events");
+    assert_eq!(events_after.len(), events_before.len() + 1);
+    assert!(events_after.iter().any(|event| {
+        event.step == STALE_TRANSIENT_RECOVERED_STEP
+            && event.classification.as_deref() == Some(STALE_TRANSIENT_CLASSIFICATION)
+    }));
     assert_eq!(
         state
             .agent_conversation_workspace_repo
@@ -545,7 +547,7 @@ async fn generic_stale_recovery_never_overwrites_terminal_receipt_authority() {
             .expect("workspace exists")
             .publication_push_status
             .as_deref(),
-        Some("describing")
+        Some("failed")
     );
 }
 
@@ -1482,7 +1484,7 @@ mod extracted_inline_tests {
     }
 
     #[tokio::test]
-    async fn recovers_all_four_stale_transient_statuses() {
+    async fn recovers_all_stale_transient_statuses_including_pushing() {
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
 
         for (id, status) in [
@@ -1490,6 +1492,7 @@ mod extracted_inline_tests {
             ("cccccccc-cccc-cccc-cccc-cccccccccc02", "checking"),
             ("cccccccc-cccc-cccc-cccc-cccccccccc03", "committing"),
             ("cccccccc-cccc-cccc-cccc-cccccccccc04", "describing"),
+            ("cccccccc-cccc-cccc-cccc-cccccccccc05", "pushing"),
         ] {
             let conv_id = ChatConversationId::from_string(id.to_string());
             let workspace = transient_workspace(conv_id, status);
@@ -1507,6 +1510,6 @@ mod extracted_inline_tests {
         .await
         .expect("recover transient statuses");
 
-        assert_eq!(recovered, 4);
+        assert_eq!(recovered, 5);
     }
 }

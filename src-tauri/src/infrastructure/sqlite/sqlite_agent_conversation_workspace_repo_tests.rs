@@ -4093,6 +4093,19 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
     repo.create_or_update(describing.clone()).await.unwrap();
     set_workspace_updated_at(&db, &describing.conversation_id, older);
 
+    let pushing_id = ChatConversationId::from_string("abababab-abab-abab-abab-abababababab");
+    seed_conversation(&db, &pushing_id);
+    let mut pushing = make_workspace(pushing_id);
+    pushing.publication_pr_number = Some(97);
+    pushing.publication_pr_status = Some("open".to_string());
+    pushing.publication_push_status = Some("pushing".to_string());
+    repo.create_or_update(pushing.clone()).await.unwrap();
+    set_workspace_updated_at(
+        &db,
+        &pushing.conversation_id,
+        chrono::Utc::now() - chrono::Duration::minutes(15),
+    );
+
     let recent_id = ChatConversationId::from_string("cccccccc-cccc-cccc-cccc-cccccccccccc");
     seed_conversation(&db, &recent_id);
     let mut recent = make_workspace(recent_id);
@@ -4139,7 +4152,11 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
             .into_iter()
             .map(|workspace| workspace.conversation_id)
             .collect::<Vec<_>>(),
-        vec![describing.conversation_id, refreshing.conversation_id]
+        vec![
+            describing.conversation_id,
+            pushing.conversation_id,
+            refreshing.conversation_id,
+        ]
     );
 }
 

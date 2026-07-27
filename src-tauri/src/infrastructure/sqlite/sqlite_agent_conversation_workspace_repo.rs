@@ -1492,7 +1492,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE status = 'active'
-                       AND publication_push_status IN ('refreshing', 'checking', 'committing', 'describing')
+                       AND publication_push_status IN ('refreshing', 'checking', 'committing', 'describing', 'pushing')
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
                        AND updated_at <= ?1
                      ORDER BY updated_at ASC",

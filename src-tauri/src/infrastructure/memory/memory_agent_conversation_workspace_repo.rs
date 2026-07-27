@@ -2790,7 +2790,11 @@ fn is_stale_transient_publish_status_workspace(
     workspace.status == AgentConversationWorkspaceStatus::Active
         && matches!(
             workspace.publication_push_status.as_deref(),
-            Some("refreshing") | Some("checking") | Some("committing") | Some("describing")
+            Some("refreshing")
+                | Some("checking")
+                | Some("committing")
+                | Some("describing")
+                | Some("pushing")
         )
         && !matches!(
             workspace.publication_pr_status.as_deref(),

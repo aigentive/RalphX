@@ -569,11 +569,11 @@ pub async fn recover_stale_transient_publish_statuses(
     let mut recovered = 0u32;
 
     for workspace in workspaces {
-        let receipt = match workspace_repo
+        match workspace_repo
             .get_publication_metadata_receipt(&workspace.conversation_id)
             .await
         {
-            Ok(receipt) => receipt,
+            Ok(_) => {}
             Err(_) => {
                 tracing::warn!(
                     conversation_id = workspace.conversation_id.as_str(),
@@ -581,12 +581,12 @@ pub async fn recover_stale_transient_publish_statuses(
                 );
                 continue;
             }
-        };
-        if workspace.publication_metadata_phase.is_some() || receipt.is_some() {
+        }
+        if has_nonterminal_publication_metadata_receipt(&workspace) {
             tracing::info!(
                 conversation_id = workspace.conversation_id.as_str(),
                 metadata_phase = ?workspace.publication_metadata_phase,
-                "Skipped stale transient publish recovery because metadata receipt authority exists"
+                "Skipped stale transient publish recovery because metadata receipt authority is nonterminal"
             );
             continue;
         }
