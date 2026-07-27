@@ -72,6 +72,17 @@ impl ExistingPrMetadataSnapshot {
         &self.authority_fingerprint
     }
 
+    pub(crate) fn receipt_evidence(&self) -> ExistingPrMetadataReceiptEvidence<'_> {
+        let body = self.body_projection();
+        ExistingPrMetadataReceiptEvidence {
+            target_pr_number: self.number,
+            authority_fingerprint: &self.authority_fingerprint,
+            title: &self.title,
+            editable_body: body.editable_body,
+            managed_suffix: body.preserved_suffix,
+        }
+    }
+
     fn body_projection(&self) -> ExistingPrBodyProjection<'_> {
         let decomposition =
             decompose_ralphx_managed_pr_body(self.body.as_deref().unwrap_or_default());
@@ -101,6 +112,15 @@ struct ExistingPrBodyProjection<'a> {
     max_output_chars: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExistingPrMetadataReceiptEvidence<'a> {
+    pub(crate) target_pr_number: i64,
+    pub(crate) authority_fingerprint: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) editable_body: &'a str,
+    pub(crate) managed_suffix: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedAgentWorkspacePrTarget {
     NewPr,
@@ -116,7 +136,7 @@ impl ResolvedAgentWorkspacePrTarget {
     }
 }
 
-fn existing_pr_authority_fingerprint(detail: &PrDetail) -> String {
+pub(crate) fn existing_pr_authority_fingerprint(detail: &PrDetail) -> String {
     fn append_field(output: &mut Vec<u8>, field: &[u8], value: Option<&str>) {
         output.extend_from_slice(&(field.len() as u64).to_be_bytes());
         output.extend_from_slice(field);

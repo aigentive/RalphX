@@ -55,6 +55,18 @@ pub struct AgentWorkspacePrPublisher<'a> {
     plan_markdown: Option<String>,
 }
 
+/// Exact existing-PR metadata patch prepared before its single remote mutation.
+///
+/// The body is the full recomposed GitHub value, including any preserved managed suffix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedExistingPrMetadataPatch {
+    pub target_pr_number: i64,
+    pub target_pr_url: Option<String>,
+    pub normalized_decision: AgentWorkspacePrMetadataDecision,
+    pub requested_title: Option<String>,
+    pub requested_body: Option<String>,
+}
+
 impl<'a> AgentWorkspacePrPublisher<'a> {
     pub fn new(github: &'a Arc<dyn GithubServiceTrait>) -> Self {
         Self {
@@ -192,8 +204,39 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         existing_body: Option<&str>,
         metadata_decision: &AgentWorkspacePrMetadataDecision,
     ) -> AppResult<AgentWorkspacePrPublishOutcome> {
-        match metadata_decision {
-            AgentWorkspacePrMetadataDecision::Preserve => {}
+        let prepared = self.prepare_existing_pr_metadata_patch(
+            conversation,
+            pr_number,
+            pr_url,
+            existing_body,
+            metadata_decision,
+        )?;
+        if prepared.has_requested_fields() {
+            self.mutate_prepared_existing_pr_metadata(working_dir, &prepared)
+                .await?;
+        }
+
+        Ok(AgentWorkspacePrPublishOutcome {
+            pr_number,
+            pr_url: pr_url
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("#{pr_number}")),
+            created_pr: false,
+            pr_status: "open",
+        })
+    }
+
+    /// Normalizes the requested fields and recomposes a complete body without remote I/O.
+    pub fn prepare_existing_pr_metadata_patch(
+        &self,
+        conversation: &ChatConversation,
+        pr_number: i64,
+        pr_url: Option<&str>,
+        existing_body: Option<&str>,
+        metadata_decision: &AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<PreparedExistingPrMetadataPatch> {
+        let (requested_title, requested_body) = match metadata_decision {
+            AgentWorkspacePrMetadataDecision::Preserve => (None, None),
             AgentWorkspacePrMetadataDecision::Patch {
                 title,
                 body_markdown,
@@ -207,10 +250,10 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                     }
                     title
                 });
-                let body_file = body_markdown
+                let body = body_markdown
                     .as_deref()
                     .map(|body| {
-                        let body = existing_body
+                        existing_body
                             .map(decompose_ralphx_managed_pr_body)
                             .and_then(|decomposition| decomposition.preserved_suffix)
                             .map(|preserved_suffix| {
@@ -221,29 +264,52 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                             })
                             .unwrap_or_else(|| {
                                 Ok(finalize_agent_workspace_pr_body(body, &self.plan_markdown))
-                            })?;
-                        write_agent_workspace_pr_body(&body)
+                            })
                     })
                     .transpose()?;
-                self.github
-                    .patch_pr_metadata(
-                        working_dir,
-                        pr_number,
-                        title.as_deref(),
-                        body_file.as_ref().map(NamedTempFile::path),
-                    )
-                    .await?;
+                (title, body)
             }
-        }
+        };
+        let normalized_decision = AgentWorkspacePrMetadataDecision::patch(
+            requested_title.clone(),
+            requested_body.as_deref().map(str::to_string),
+        )
+        .unwrap_or(AgentWorkspacePrMetadataDecision::Preserve);
 
-        Ok(AgentWorkspacePrPublishOutcome {
-            pr_number,
-            pr_url: pr_url
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("#{pr_number}")),
-            created_pr: false,
-            pr_status: "open",
+        Ok(PreparedExistingPrMetadataPatch {
+            target_pr_number: pr_number,
+            target_pr_url: pr_url.map(str::to_string),
+            normalized_decision,
+            requested_title,
+            requested_body,
         })
+    }
+
+    /// Performs the only GitHub metadata mutation for a prepared patch.
+    pub async fn mutate_prepared_existing_pr_metadata(
+        &self,
+        working_dir: &Path,
+        prepared: &PreparedExistingPrMetadataPatch,
+    ) -> AppResult<()> {
+        let body_file = prepared
+            .requested_body
+            .as_deref()
+            .map(write_agent_workspace_pr_body)
+            .transpose()?;
+        self.github
+            .patch_pr_metadata(
+                working_dir,
+                prepared.target_pr_number,
+                prepared.requested_title.as_deref(),
+                body_file.as_ref().map(NamedTempFile::path),
+            )
+            .await
+    }
+}
+
+impl PreparedExistingPrMetadataPatch {
+    pub fn has_requested_fields(&self) -> bool {
+        self.requested_title.is_some() || self.requested_body.is_some()
     }
 }
 

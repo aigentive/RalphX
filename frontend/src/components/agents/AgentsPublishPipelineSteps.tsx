@@ -23,6 +23,8 @@ export function PublishPipelineSteps({
   autoMergeDesired = false,
   className,
   prSupervisionStatus = null,
+  receiptPhase = null,
+  receiptState = null,
   targetPullRequestLabel = null,
   status,
   isPublishing,
@@ -32,6 +34,15 @@ export function PublishPipelineSteps({
   autoMergeDesired?: boolean;
   className?: string;
   prSupervisionStatus?: string | null;
+  receiptPhase?: "prepared" | "mutating" | "reconciling" | "settled" | null;
+  receiptState?:
+    | "not_attempted"
+    | "applied"
+    | "not_applied"
+    | "unknown"
+    | "reconciled"
+    | "conflicted"
+    | null;
   targetPullRequestLabel?: string | null;
   status: string | null;
   isPublishing: boolean;
@@ -55,7 +66,14 @@ export function PublishPipelineSteps({
     prSupervisionStatus,
     publicationPushStatus: normalizedStatus,
   });
+  const receiptIsActive =
+    receiptPhase === "prepared" ||
+    receiptPhase === "mutating" ||
+    receiptPhase === "reconciling";
   const activeIndex = (() => {
+    if (receiptIsActive) {
+      return PUBLISH_STEPS.length - 1;
+    }
     if (normalizedStatus === "pushed" && autoMergeDesired) {
       return autoMergeCurrent === true ? steps.length : PUBLISH_STEPS.length;
     }
@@ -80,11 +98,13 @@ export function PublishPipelineSteps({
     return 0;
   })();
   const isRepairStatus = normalizedStatus === "needs_agent";
-  const isDescriptionFailure = normalizedStatus === "description_failed";
+  const isDescriptionFailure =
+    normalizedStatus === "description_failed" && !receiptIsActive;
   const isTerminalFailure = normalizedStatus === "failed" || isRepairStatus || isDescriptionFailure;
   const failureIndex = isDescriptionFailure ? 3 : 0;
   const descriptionFailure = getAgentWorkspaceDescriptionFailurePresentation(
     targetPullRequestLabel,
+    receiptState,
   );
 
   return (
@@ -107,10 +127,12 @@ export function PublishPipelineSteps({
       >
         {steps.map((step, index) => {
           const isDone = activeIndex > index;
+          const isReceiptFinalStep = receiptIsActive && step.id === "pushed";
           const isActive =
             !isTerminalFailure &&
-            activeIndex === index &&
-            (isPublishing || (step.id === "auto_merge" && autoMergePending));
+            ((isReceiptFinalStep && isPublishing) ||
+              (activeIndex === index &&
+                (isPublishing || (step.id === "auto_merge" && autoMergePending))));
           const isDeferred = step.id === "auto_merge" && autoMergeDeferred;
           const isFailed = isTerminalFailure && index === failureIndex;
           return (
@@ -161,12 +183,21 @@ export function PublishPipelineSteps({
                 )}
               </span>
               <span className="min-w-0 leading-snug">
-                {isDeferred ? "Auto-merge deferred" : step.label}
+                {isDeferred
+                  ? "Auto-merge deferred"
+                  : step.id === "pushed" && targetPullRequestLabel
+                    ? "Update PR"
+                    : step.label}
               </span>
             </div>
           );
         })}
       </div>
+      {receiptIsActive && receiptPhase === "reconciling" && (
+        <div className="mt-3 text-xs text-[var(--text-muted)]">
+          GitHub may have applied the description. RalphX is verifying the linked PR before another write.
+        </div>
+      )}
       {isTerminalFailure && (
         <div className="mt-3 text-xs text-[var(--text-muted)]">
           {isRepairStatus

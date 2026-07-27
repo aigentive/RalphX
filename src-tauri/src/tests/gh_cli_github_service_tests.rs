@@ -939,10 +939,14 @@ fn parse_gh_auth_status_empty_returns_none() {
 // ── MockGithubService round-trip ───────────────────────────────────────────
 
 mod mock_roundtrip {
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer;
 
     use crate::domain::services::github_service::{
         GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus,
@@ -982,6 +986,61 @@ mod mock_roundtrip {
 
         fn gh_calls(&self) -> Vec<Vec<String>> {
             self.gh_calls.lock().unwrap().clone()
+        }
+    }
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct CapturedPatchLog {
+        fields: BTreeMap<String, String>,
+    }
+
+    struct PatchLogCapture {
+        events: Arc<Mutex<Vec<CapturedPatchLog>>>,
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for PatchLogCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct FieldVisitor(BTreeMap<String, String>);
+
+            impl tracing::field::Visit for FieldVisitor {
+                fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.insert(
+                        field.name().to_string(),
+                        format!("{value:?}").trim_matches('"').to_string(),
+                    );
+                }
+            }
+
+            let mut visitor = FieldVisitor(BTreeMap::new());
+            event.record(&mut visitor);
+            if visitor.0.get("message").map(String::as_str)
+                == Some("Patching pull-request metadata")
+            {
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push(CapturedPatchLog { fields: visitor.0 });
+            }
         }
     }
 
@@ -1485,6 +1544,92 @@ mod mock_roundtrip {
 
         assert!(matches!(error, AppError::Validation(_)));
         assert!(runner.gh_calls().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn patch_pr_metadata_logs_only_sanitized_attempt_boundary_fields() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Err(
+            AppError::Infrastructure("gh stderr: token=super-secret".to_string()),
+        )]));
+        let service = GhCliGithubService::with_runner(runner);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::LevelFilter::DEBUG)
+            .with(PatchLogCapture {
+                events: Arc::clone(&events),
+            });
+        let _guard = subscriber.set_default();
+
+        let error = service
+            .patch_pr_metadata(
+                Path::new("/tmp"),
+                68,
+                Some("Sensitive title"),
+                Some(Path::new("/tmp/secret-body.md")),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Infrastructure(_)));
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        for event in events.iter() {
+            assert!(event.fields.keys().all(|field| {
+                matches!(
+                    field.as_str(),
+                    "message" | "pr_number" | "has_title" | "has_body_file" | "result_class"
+                )
+            }));
+            assert_eq!(
+                event.fields.get("pr_number").map(String::as_str),
+                Some("68")
+            );
+            assert_eq!(
+                event.fields.get("has_title").map(String::as_str),
+                Some("true")
+            );
+            assert_eq!(
+                event.fields.get("has_body_file").map(String::as_str),
+                Some("true")
+            );
+            assert!(matches!(
+                event.fields.get("result_class").map(String::as_str),
+                Some("attempt" | "error")
+            ));
+            assert!(!event.fields.values().any(|value| {
+                value.contains("Sensitive title")
+                    || value.contains("secret-body")
+                    || value.contains("super-secret")
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_patch_pr_metadata_uses_queued_results_before_single_result_fallback() {
+        let mock = MockGithubService::new();
+        mock.queue_patch_pr_metadata_result(Err(AppError::Infrastructure(
+            "ambiguous patch outcome".to_string(),
+        )));
+        mock.queue_patch_pr_metadata_result(Ok(()));
+        mock.state().patch_pr_metadata_result = Some(Err(AppError::Infrastructure(
+            "fallback patch failure".to_string(),
+        )));
+
+        let first = mock
+            .patch_pr_metadata(Path::new("/tmp"), 68, Some("one"), None)
+            .await
+            .unwrap_err();
+        mock.patch_pr_metadata(Path::new("/tmp"), 68, Some("two"), None)
+            .await
+            .unwrap();
+        let third = mock
+            .patch_pr_metadata(Path::new("/tmp"), 68, Some("three"), None)
+            .await
+            .unwrap_err();
+
+        assert!(first.to_string().contains("ambiguous patch outcome"));
+        assert!(third.to_string().contains("fallback patch failure"));
+        assert_eq!(mock.state().patch_pr_metadata_calls, 3);
     }
 
     #[tokio::test]
