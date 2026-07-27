@@ -2894,7 +2894,7 @@ async fn complete_ideation_plan_pr_fix_publish(
     if let Err(error) = push_agent_workspace_publish_branch(
         github,
         &state.app_state.agent_conversation_workspace_repo,
-        &conversation_id,
+        conversation_id,
         &target.working_dir,
         &target.branch_name,
     )
