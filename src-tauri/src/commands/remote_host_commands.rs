@@ -192,3 +192,7 @@ pub async fn list_remote_advertised_endpoints(
     )
     .await)
 }
+
+#[cfg(test)]
+#[path = "remote_host_commands_tests.rs"]
+mod tests;

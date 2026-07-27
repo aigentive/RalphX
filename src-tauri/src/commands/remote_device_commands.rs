@@ -406,3 +406,7 @@ pub async fn disconnect_remote_session(
         .await;
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "remote_device_commands_tests.rs"]
+mod tests;
