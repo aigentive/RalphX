@@ -377,6 +377,30 @@ describe("classifyAgentWorkspacePublishTerminalEvent", () => {
     ).toEqual({ event: applied, kind: "success" });
   });
 
+  it("classifies an unscoped push failure after an earlier receipt settled", () => {
+    const pushFailure = publicationEvent({
+      id: "push-failure",
+      step: "failed",
+      status: "failed",
+      classification: "operational",
+      attemptId: null,
+    });
+    const receiptWorkspace = workspace({
+      publicationPushStatus: "failed",
+      publicationMetadataAttemptId: "attempt-previous",
+      publicationMetadataPhase: "settled",
+      publicationMetadataState: "applied",
+    });
+
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [pushFailure],
+        receiptWorkspace,
+        undefined,
+      ),
+    ).toEqual({ event: pushFailure, kind: "failure" });
+  });
+
   it.each([
     ["skipped", "not_attempted"],
     ["failed", "not_applied"],

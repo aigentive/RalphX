@@ -388,7 +388,10 @@ export function classifyAgentWorkspacePublishTerminalEvent(
 ): AgentWorkspacePublishTerminalEvent | null {
   const currentAttemptId = workspace?.publicationMetadataAttemptId;
   const authoritativeEvents = currentAttemptId
-    ? events.filter((event) => event.attemptId === currentAttemptId)
+    ? events.filter(
+        (event) =>
+          event.attemptId === currentAttemptId || event.attemptId === null,
+      )
     : events;
   const workspacePushStatus = normalizePublicationStatus(
     workspace?.publicationPushStatus,

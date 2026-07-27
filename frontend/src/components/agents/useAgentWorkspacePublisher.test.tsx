@@ -555,6 +555,69 @@ describe("useAgentWorkspacePublisher", () => {
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
+  it("settles a push failure when an earlier metadata receipt remains settled", async () => {
+    const queryClient = createTestQueryClient();
+    const baseline = publicationEvent({ id: "baseline" });
+    const pushFailure = publicationEvent({
+      id: "push-failure",
+      step: "failed",
+      status: "failed",
+      summary: "Remote rejected the branch push",
+      classification: "operational",
+      attemptId: null,
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([baseline]);
+    publishAgentConversationWorkspaceMock.mockReturnValue(new Promise(() => undefined));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({
+        publicationPushStatus: "failed",
+        publicationMetadataAttemptId: "attempt-previous",
+        publicationMetadataPhase: "settled",
+        publicationMetadataState: "applied",
+      }),
+    );
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: conversationWorkspaceFixture(),
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    let completed = false;
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1").then(() => {
+        completed = true;
+      });
+    });
+    await waitFor(() => expect(publishAgentConversationWorkspaceMock).toHaveBeenCalled());
+    act(() => {
+      queryClient.setQueryData(
+        ["agents", "conversation-workspace-publication-events", "conversation-1"],
+        [baseline, pushFailure],
+      );
+    });
+
+    await waitFor(() => expect(completed).toBe(true));
+    expect(toastErrorMock).toHaveBeenCalledWith("Failed to publish branch", {
+      closeButton: true,
+      description: "Untitled agent • Remote rejected the branch push",
+      dismissible: true,
+      duration: 12_000,
+      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+    });
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(
+      result.current.publishAttemptsByConversationId["conversation-1"],
+    ).toBeUndefined();
+  });
+
   it("settles a durable needs-agent failure before later repair events", async () => {
     const queryClient = createTestQueryClient();
     const baseline = publicationEvent({ id: "baseline" });
