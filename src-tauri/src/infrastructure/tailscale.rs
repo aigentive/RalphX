@@ -81,18 +81,6 @@ impl TailnetSelfAddressProvider for TailscaleSelfAddressProvider {
     }
 }
 
-/// Acquires the process-independent Tailscale Serve mapping for a loopback listener.
-#[allow(dead_code)]
-pub(crate) async fn acquire_serve(port: u16) -> Result<(), TailscaleServeError> {
-    RealTailscaleCommandRunner.run_serve_acquire(port).await
-}
-
-/// Releases the Tailscale Serve mapping.
-#[allow(dead_code)]
-pub(crate) async fn release_serve() -> Result<(), TailscaleServeError> {
-    RealTailscaleCommandRunner.run_serve_release().await
-}
-
 #[derive(Debug, Deserialize)]
 pub(crate) struct TailscaleStatus {
     #[serde(rename = "Version")]
