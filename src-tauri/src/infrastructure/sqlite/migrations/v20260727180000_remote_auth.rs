@@ -20,8 +20,8 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
             last_seen_at  TEXT,
             revoked_at    TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_remote_devices_token_hash
-            ON remote_devices(token_hash);
+        -- No index on token_hash: the UNIQUE constraint already creates one, and the mint
+        -- path pays for every duplicate.
         CREATE INDEX IF NOT EXISTS idx_remote_devices_revoked
             ON remote_devices(revoked_at);
 
@@ -33,8 +33,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
             expires_at  TEXT NOT NULL,
             consumed_at TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_remote_pairing_codes_hash
-            ON remote_pairing_codes(code_hash);
+        -- Ditto: code_hash is UNIQUE, so a second index only slows the mint.
         CREATE INDEX IF NOT EXISTS idx_remote_pairing_codes_outstanding
             ON remote_pairing_codes(consumed_at, expires_at);
 
