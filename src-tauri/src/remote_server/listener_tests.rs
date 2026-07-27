@@ -35,7 +35,10 @@ async fn response_body(response: axum::response::Response) -> Value {
 }
 
 fn descriptor_state() -> RemoteRouterState {
-    RemoteRouterState::new("11111111-2222-3333-4444-555555555555")
+    RemoteRouterState::new(
+        "11111111-2222-3333-4444-555555555555",
+        super::auth_tests::in_memory_auth_context(),
+    )
 }
 
 fn preflight_request(path: &str, origin: &str) -> Request<Body> {

@@ -9,6 +9,8 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
 use serde::Serialize;
 
+use crate::remote_server::auth::RemoteAuthContext;
+
 /// Oldest client protocol this host will negotiate with.
 ///
 /// Host acceptance policy, not protocol shape — it lives here rather than in the protocol
@@ -16,20 +18,29 @@ use serde::Serialize;
 pub(crate) const MIN_CLIENT_PROTOCOL: u32 = PROTOCOL_VERSION;
 
 /// Shared state for the remote router.
+///
+/// The auth context is **not** optional: there is no router shape that can serve a
+/// non-allowlisted route without a device store to check against (A-2).
 #[derive(Clone)]
 pub(crate) struct RemoteRouterState {
     environment_id: Arc<str>,
+    auth: Arc<RemoteAuthContext>,
 }
 
 impl RemoteRouterState {
-    pub(crate) fn new(environment_id: impl Into<Arc<str>>) -> Self {
+    pub(crate) fn new(environment_id: impl Into<Arc<str>>, auth: RemoteAuthContext) -> Self {
         Self {
             environment_id: environment_id.into(),
+            auth: Arc::new(auth),
         }
     }
 
     pub(crate) fn environment_id(&self) -> &str {
         &self.environment_id
+    }
+
+    pub(crate) fn auth(&self) -> &RemoteAuthContext {
+        &self.auth
     }
 }
 
