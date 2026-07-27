@@ -20,12 +20,6 @@
       "kind": "method"
     },
     {
-      "name": "agent:chunk",
-      "file": "src-tauri/src/remote_server/capture_tests.rs",
-      "line": 59,
-      "kind": "method"
-    },
-    {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
       "line": 475,
@@ -339,24 +333,6 @@
     },
     {
       "name": "agent:run_completed",
-      "file": "src-tauri/src/application/throttled_emitter_tests.rs",
-      "line": 48,
-      "kind": "method"
-    },
-    {
-      "name": "agent:run_completed",
-      "file": "src-tauri/src/commands/agent_workspace_auto_publish_tests.rs",
-      "line": 341,
-      "kind": "method"
-    },
-    {
-      "name": "agent:run_completed",
-      "file": "src-tauri/src/commands/agent_workspace_auto_review_tests.rs",
-      "line": 274,
-      "kind": "method"
-    },
-    {
-      "name": "agent:run_completed",
       "file": "src-tauri/src/http_server/handlers/ideation/verification/lifecycle.rs",
       "line": 183,
       "kind": "wrapper"
@@ -491,18 +467,6 @@
       "name": "agent:turn_completed",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
       "line": 2336,
-      "kind": "method"
-    },
-    {
-      "name": "agent:turn_completed",
-      "file": "src-tauri/src/commands/agent_workspace_auto_publish_tests.rs",
-      "line": 349,
-      "kind": "method"
-    },
-    {
-      "name": "agent:turn_completed",
-      "file": "src-tauri/src/commands/agent_workspace_auto_review_tests.rs",
-      "line": 276,
       "kind": "method"
     },
     {
@@ -641,42 +605,6 @@
       "name": "dependency:removed",
       "file": "src-tauri/src/commands/ideation_commands/ideation_commands_dependencies.rs",
       "line": 37,
-      "kind": "method"
-    },
-    {
-      "name": "event",
-      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
-      "line": 126,
-      "kind": "method"
-    },
-    {
-      "name": "event",
-      "file": "src-tauri/src/tests/event_sink_coverage_tests.rs",
-      "line": 17,
-      "kind": "method"
-    },
-    {
-      "name": "event",
-      "file": "src-tauri/src/tests/event_sink_coverage_tests.rs",
-      "line": 42,
-      "kind": "method"
-    },
-    {
-      "name": "event",
-      "file": "src-tauri/src/tests/event_sink_coverage_tests.rs",
-      "line": 53,
-      "kind": "method"
-    },
-    {
-      "name": "event1",
-      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
-      "line": 108,
-      "kind": "method"
-    },
-    {
-      "name": "event2",
-      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
-      "line": 109,
       "kind": "method"
     },
     {
@@ -989,30 +917,6 @@
       "name": "notification:created",
       "file": "src-tauri/src/application/notification_service.rs",
       "line": 311,
-      "kind": "method"
-    },
-    {
-      "name": "notification:created",
-      "file": "src-tauri/src/remote_server/capture_tests.rs",
-      "line": 58,
-      "kind": "method"
-    },
-    {
-      "name": "notification:created",
-      "file": "src-tauri/src/remote_server/capture_tests.rs",
-      "line": 82,
-      "kind": "method"
-    },
-    {
-      "name": "notification:created",
-      "file": "src-tauri/src/remote_server/capture_tests.rs",
-      "line": 84,
-      "kind": "method"
-    },
-    {
-      "name": "notification:created",
-      "file": "src-tauri/src/remote_server/capture_tests.rs",
-      "line": 85,
       "kind": "method"
     },
     {
@@ -1574,24 +1478,6 @@
       "kind": "method"
     },
     {
-      "name": "task:reconciliation_action",
-      "file": "src-tauri/src/tests/hardening/error_visibility_tests.rs",
-      "line": 431,
-      "kind": "method"
-    },
-    {
-      "name": "task:reconciliation_action",
-      "file": "src-tauri/src/tests/hardening/error_visibility_tests.rs",
-      "line": 434,
-      "kind": "wrapper_method"
-    },
-    {
-      "name": "task:reconciliation_action",
-      "file": "src-tauri/src/tests/hardening/error_visibility_tests.rs",
-      "line": 467,
-      "kind": "method"
-    },
-    {
       "name": "task:recovery_failed",
       "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
       "line": 3516,
@@ -1736,12 +1622,6 @@
       "kind": "method"
     },
     {
-      "name": "task_blocked",
-      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
-      "line": 95,
-      "kind": "wrapper_method"
-    },
-    {
       "name": "task_completed",
       "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/outcomes.rs",
       "line": 6,
@@ -1751,18 +1631,6 @@
       "name": "task_failed",
       "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/outcomes.rs",
       "line": 170,
-      "kind": "method"
-    },
-    {
-      "name": "task_started",
-      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
-      "line": 84,
-      "kind": "method"
-    },
-    {
-      "name": "task_started",
-      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
-      "line": 117,
       "kind": "method"
     },
     {

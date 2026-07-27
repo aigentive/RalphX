@@ -1,5 +1,5 @@
 use event_manifest_scanner::{
-    reviewed_unmatched_events, scan_consumed_source, scan_rust_source,
+    reviewed_unmatched_events, scan_consumed_source, scan_production_rust_tree, scan_rust_source,
     verify_unmatched_event_coverage, ScanError,
 };
 
@@ -48,6 +48,73 @@ fn rejects_unregistered_wrappers_called_with_event_names() {
     )
     .expect_err("wrapper contract must fail");
     assert!(matches!(error, ScanError::UnregisteredWrapper { .. }));
+}
+
+#[test]
+fn resolves_qualified_constants_and_rejects_ambiguous_leaf_constants() {
+    let source = r#"
+        mod module_a { pub const EVENT: &str = "task:created"; }
+        mod module_b { pub const EVENT: &str = "task:deleted"; }
+        fn emits(app: &App) {
+            app.emit(module_a::EVENT, ()).unwrap();
+            app.emit(module_b::EVENT, ()).unwrap();
+        }
+    "#;
+    assert_eq!(
+        names(source),
+        vec!["task:created".to_owned(), "task:deleted".to_owned()]
+    );
+
+    let ambiguous = r#"
+        mod module_a { pub const EVENT: &str = "task:created"; }
+        mod module_b { pub const EVENT: &str = "task:deleted"; }
+        fn emits(app: &App) { app.emit(EVENT, ()).unwrap(); }
+    "#;
+    let error = scan_rust_source("ambiguous.rs", ambiguous)
+        .expect_err("an ambiguous bare constant must fail closed");
+    assert!(matches!(error, ScanError::UnresolvedEmit { .. }));
+}
+
+#[test]
+fn production_census_excludes_test_only_emit_sites() {
+    let root = tempfile::tempdir().expect("temp root");
+    std::fs::write(
+        root.path().join("production.rs"),
+        "fn no_events() {}",
+    )
+    .expect("production source");
+    std::fs::create_dir(root.path().join("tests")).expect("tests directory");
+    std::fs::write(
+        root.path().join("tests/test_only.rs"),
+        "fn test_only(app: &App) { app.emit(\"agent:run_started\", ()).unwrap(); }",
+    )
+    .expect("test source");
+
+    let sites = scan_production_rust_tree(root.path()).expect("scan production tree");
+    assert!(sites.is_empty(), "test-only emit must not enter the production census");
+    let error = verify_unmatched_event_coverage(&["agent:run_started"])
+        .expect_err("test-only classified name remains unmatched");
+    assert!(error.to_string().contains("no reviewed gap entry"));
+}
+
+#[test]
+fn rejects_wrapper_defined_in_one_file_and_called_in_another() {
+    let root = tempfile::tempdir().expect("temp root");
+    std::fs::write(
+        root.path().join("wrapper.rs"),
+        "fn unregistered(app: &App, event: &str) { app.emit(event, ()).unwrap(); }",
+    )
+    .expect("wrapper source");
+    std::fs::write(
+        root.path().join("caller.rs"),
+        "fn call(app: &App) { unregistered(app, \"task:created\"); }",
+    )
+    .expect("caller source");
+
+    let error = scan_production_rust_tree(root.path())
+        .expect_err("cross-file forwarding wrapper must be registered");
+    let message = error.to_string();
+    assert!(message.contains("unregistered"), "{message}");
 }
 
 #[test]

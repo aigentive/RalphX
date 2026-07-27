@@ -197,8 +197,9 @@ pub fn scan_rust_source(file: impl Into<String>, source: &str) -> Result<Vec<Emi
     let file = file.into();
     let syntax = syn::parse_file(source).map_err(|error| ScanError::Parse(format!("{file}: {error}")))?;
     let constants = collect_constants_from_file(&syntax);
-    let functions = collect_functions(&syntax);
-    verify_wrapper_contract(&file, &syntax, &constants, &functions)?;
+    let functions = collect_functions(&syntax, &file);
+    let calls = collect_call_sites(&syntax, &file);
+    verify_wrapper_contract(&constants, &functions, &calls)?;
     let mut visitor = EmitVisitor {
         file,
         constants: &constants,
@@ -213,28 +214,14 @@ pub fn scan_rust_source(file: impl Into<String>, source: &str) -> Result<Vec<Emi
 
 pub fn build_manifest(root: &Path) -> Result<Manifest> {
     let rust_root = root.join("src-tauri/src");
-    let constants = collect_rust_constants(&rust_root)?;
-    let mut emitted = Vec::new();
-    for path in files_with_extension(&rust_root, "rs")? {
-        let source = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        let syntax = syn::parse_file(&source).with_context(|| format!("parse {}", path.display()))?;
-        let functions = collect_functions(&syntax);
-        let file = relative(root, &path);
-        verify_wrapper_contract(&file, &syntax, &constants, &functions).map_err(anyhow::Error::new)?;
-        let mut visitor = EmitVisitor {
-            file,
-            constants: &constants,
-            current_function: None,
-            current_locals: BTreeMap::new(),
-            sites: Vec::new(),
-            error: None,
-        };
-        visitor.visit_file(&syntax);
-        if let Some(error) = visitor.error {
-            return Err(error.into());
-        }
-        emitted.extend(visitor.sites);
-    }
+    let emitted = scan_production_rust_tree(&rust_root)?
+        .into_iter()
+        .map(|mut site| {
+            site.file = relative(root, &rust_root.join(&site.file));
+            site
+        })
+        .collect::<Vec<_>>();
+    let mut emitted = emitted;
     emitted.sort();
     emitted.dedup();
 
@@ -253,6 +240,41 @@ pub fn build_manifest(root: &Path) -> Result<Manifest> {
         static_event_functions: STATIC_EVENT_FUNCTIONS.to_vec(),
         unmatched_classified_events: reviewed_unmatched_events(),
     })
+}
+
+pub fn scan_production_rust_tree(root: &Path) -> Result<Vec<EmitSite>> {
+    let mut source_files = Vec::new();
+    let mut constants = ConstantTable::default();
+    let mut functions = Vec::new();
+    let mut calls = Vec::new();
+    for path in production_rust_files(root)? {
+        let file = relative(root, &path);
+        let source = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let syntax = syn::parse_file(&source).with_context(|| format!("parse {}", path.display()))?;
+        constants.extend(collect_constants_from_file(&syntax));
+        functions.extend(collect_functions(&syntax, &file));
+        calls.extend(collect_call_sites(&syntax, &file));
+        source_files.push((file, syntax));
+    }
+    verify_wrapper_contract(&constants, &functions, &calls).map_err(anyhow::Error::new)?;
+
+    let mut emitted = Vec::new();
+    for (file, syntax) in source_files {
+        let mut visitor = EmitVisitor {
+            file,
+            constants: &constants,
+            current_function: None,
+            current_locals: BTreeMap::new(),
+            sites: Vec::new(),
+            error: None,
+        };
+        visitor.visit_file(&syntax);
+        if let Some(error) = visitor.error {
+            return Err(error.into());
+        }
+        emitted.extend(visitor.sites);
+    }
+    Ok(emitted)
 }
 
 fn verify_manifest(
@@ -329,60 +351,99 @@ pub fn verify_unmatched_event_coverage(missing: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn collect_rust_constants(root: &Path) -> Result<BTreeMap<String, String>> {
-    let mut values = BTreeMap::new();
-    for path in files_with_extension(root, "rs")? {
-        let source = fs::read_to_string(&path)?;
-        let syntax = syn::parse_file(&source)?;
-        merge_constants(&mut values, collect_constants_from_file(&syntax));
-    }
-    Ok(values)
+#[derive(Debug, Clone, Default)]
+struct ConstantTable {
+    bindings: Vec<ConstantBinding>,
 }
 
-fn collect_constants_from_file(file: &File) -> BTreeMap<String, String> {
-    struct Constants(BTreeMap<String, String>);
-    impl<'ast> Visit<'ast> for Constants {
-        fn visit_item_const(&mut self, node: &'ast ItemConst) {
-            if let Some(value) = literal(&node.expr) {
-                self.0.insert(node.ident.to_string(), value);
-            }
-            visit::visit_item_const(self, node);
-        }
-    }
-    let mut visitor = Constants(BTreeMap::new());
-    visitor.visit_file(file);
-    visitor.0
+#[derive(Debug, Clone)]
+struct ConstantBinding {
+    qualified_name: String,
+    value: String,
 }
 
-fn merge_constants(into: &mut BTreeMap<String, String>, next: BTreeMap<String, String>) {
-    for (name, value) in next {
-        if let Some(previous) = into.get(&name) {
-            if previous != &value {
-                into.remove(&name);
+impl ConstantTable {
+    fn extend(&mut self, other: Self) {
+        self.bindings.extend(other.bindings);
+    }
+
+    fn resolve_path(&self, path: &syn::Path) -> Option<String> {
+        let requested = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .filter(|segment| !matches!(segment.as_str(), "crate" | "self" | "super"))
+            .collect::<Vec<_>>()
+            .join("::");
+        if requested.is_empty() {
+            return None;
+        }
+        let suffix = format!("::{requested}");
+        let matches = self
+            .bindings
+            .iter()
+            .filter(|binding| {
+                binding.qualified_name == requested
+                    || binding.qualified_name.ends_with(&suffix)
+                    || requested.ends_with(&format!("::{}", binding.qualified_name))
+            })
+            .collect::<Vec<_>>();
+        (matches.len() == 1).then(|| matches[0].value.clone())
+    }
+}
+
+fn collect_constants_from_file(file: &File) -> ConstantTable {
+    fn collect_items(items: &[Item], prefix: &str, table: &mut ConstantTable) {
+        for item in items {
+            match item {
+                Item::Const(ItemConst { ident, expr, .. }) => {
+                    if let Some(value) = literal(expr) {
+                        let qualified_name = if prefix.is_empty() {
+                            ident.to_string()
+                        } else {
+                            format!("{prefix}::{ident}")
+                        };
+                        table.bindings.push(ConstantBinding { qualified_name, value });
+                    }
+                }
+                Item::Mod(module) if !is_cfg_test(&module.attrs) => {
+                    if let Some((_, contents)) = &module.content {
+                        let nested = if prefix.is_empty() {
+                            module.ident.to_string()
+                        } else {
+                            format!("{prefix}::{}", module.ident)
+                        };
+                        collect_items(contents, &nested, table);
+                    }
+                }
+                _ => {}
             }
-        } else {
-            into.insert(name, value);
         }
     }
+
+    let mut table = ConstantTable::default();
+    collect_items(&file.items, "", &mut table);
+    table
 }
 
 #[derive(Debug, Clone)]
 struct FunctionInfo {
+    file: String,
     name: String,
     simple_name: String,
     emitted_param_indexes: BTreeSet<usize>,
 }
 
-fn collect_functions(file: &File) -> Vec<FunctionInfo> {
+fn collect_functions(file: &File, source_file: &str) -> Vec<FunctionInfo> {
     let mut functions = Vec::new();
     for item in &file.items {
         match item {
-            Item::Fn(function) => functions.push(function_info(function, None)),
+            Item::Fn(function) => functions.push(function_info(function, None, source_file)),
             Item::Impl(implementation) => {
                 let type_name = impl_type_name(&implementation.self_ty);
                 for member in &implementation.items {
                     if let ImplItem::Fn(function) = member {
-                        functions.push(impl_function_info(function, type_name.as_deref()));
+                        functions.push(impl_function_info(function, type_name.as_deref(), source_file));
                     }
                 }
             }
@@ -392,23 +453,29 @@ fn collect_functions(file: &File) -> Vec<FunctionInfo> {
     functions
 }
 
-fn function_info(function: &ItemFn, owner: Option<&str>) -> FunctionInfo {
+fn function_info(function: &ItemFn, owner: Option<&str>, source_file: &str) -> FunctionInfo {
     function_info_from_parts(
         owner,
         function.sig.ident.to_string(),
         &function.sig.inputs,
         &function.block,
         function.span().start().line,
+        source_file,
     )
 }
 
-fn impl_function_info(function: &syn::ImplItemFn, owner: Option<&str>) -> FunctionInfo {
+fn impl_function_info(
+    function: &syn::ImplItemFn,
+    owner: Option<&str>,
+    source_file: &str,
+) -> FunctionInfo {
     function_info_from_parts(
         owner,
         function.sig.ident.to_string(),
         &function.sig.inputs,
         &function.block,
         function.span().start().line,
+        source_file,
     )
 }
 
@@ -418,6 +485,7 @@ fn function_info_from_parts(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
     body: &syn::Block,
     line: usize,
+    source_file: &str,
 ) -> FunctionInfo {
     let param_names = inputs
         .iter()
@@ -442,7 +510,7 @@ fn function_info_from_parts(
         .collect();
     let name = owner.map_or_else(|| simple_name.clone(), |owner| format!("{owner}::{simple_name}"));
     let _ = line;
-    FunctionInfo { name, simple_name, emitted_param_indexes }
+    FunctionInfo { file: source_file.to_owned(), name, simple_name, emitted_param_indexes }
 }
 
 fn impl_type_name(ty: &syn::Type) -> Option<String> {
@@ -473,16 +541,10 @@ impl<'ast> Visit<'ast> for ParameterEmitFlow<'_> {
 }
 
 fn verify_wrapper_contract(
-    file: &str,
-    syntax: &File,
-    constants: &BTreeMap<String, String>,
+    constants: &ConstantTable,
     functions: &[FunctionInfo],
+    calls: &[CallSite],
 ) -> Result<(), ScanError> {
-    let mut calls = Vec::new();
-    {
-        let mut collector = CallCollector { calls: &mut calls };
-        collector.visit_file(syntax);
-    }
     for function in functions.iter().filter(|function| !function.emitted_param_indexes.is_empty()) {
         for call in calls.iter().filter(|call| call.name == function.simple_name) {
             for index in &function.emitted_param_indexes {
@@ -493,14 +555,14 @@ fn verify_wrapper_contract(
                 }
                 if resolve_name(argument, constants).is_none() {
                     return Err(ScanError::UnresolvedWrapperCall {
-                        file: file.to_owned(),
+                        file: call.file.clone(),
                         line,
                         function: function.name.clone(),
                     });
                 }
                 if !is_false_positive(function) {
                     return Err(ScanError::UnregisteredWrapper {
-                        file: file.to_owned(),
+                        file: function.file.clone(),
                         line,
                         function: function.name.clone(),
                     });
@@ -512,20 +574,29 @@ fn verify_wrapper_contract(
 }
 
 struct CallSite {
+    file: String,
     name: String,
     args: Vec<Expr>,
     line: usize,
 }
 
 struct CallCollector<'a> {
+    file: &'a str,
     calls: &'a mut Vec<CallSite>,
 }
 
 impl<'ast> Visit<'ast> for CallCollector<'ast> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if !is_cfg_test(&node.attrs) {
+            visit::visit_item_mod(self, node);
+        }
+    }
+
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
         if let Expr::Path(path) = peel(&node.func) {
             if let Some(segment) = path.path.segments.last() {
                 self.calls.push(CallSite {
+                    file: self.file.to_owned(),
                     name: segment.ident.to_string(),
                     args: node.args.iter().cloned().collect(),
                     line: node.span().start().line,
@@ -534,6 +605,12 @@ impl<'ast> Visit<'ast> for CallCollector<'ast> {
         }
         visit::visit_expr_call(self, node);
     }
+}
+
+fn collect_call_sites(syntax: &File, file: &str) -> Vec<CallSite> {
+    let mut calls = Vec::new();
+    CallCollector { file, calls: &mut calls }.visit_file(syntax);
+    calls
 }
 
 fn wrapper_for_method(method: &str, current_function: Option<&str>) -> Option<&'static Wrapper> {
@@ -560,7 +637,7 @@ fn is_false_positive(function: &FunctionInfo) -> bool {
 
 struct EmitVisitor<'a> {
     file: String,
-    constants: &'a BTreeMap<String, String>,
+    constants: &'a ConstantTable,
     current_function: Option<String>,
     current_locals: BTreeMap<String, BTreeSet<String>>,
     sites: Vec<EmitSite>,
@@ -612,7 +689,7 @@ impl EmitVisitor<'_> {
         };
         RECEIVER_FALSE_POSITIVE_ALLOWLIST.iter().any(|entry| {
             debug_assert!(!entry.reason.is_empty());
-            entry.file == self.file && entry.receiver == identity
+            entry.file.ends_with(&self.file) && entry.receiver == identity
         })
     }
 
@@ -631,6 +708,12 @@ impl EmitVisitor<'_> {
 }
 
 impl<'ast> Visit<'ast> for EmitVisitor<'_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if !is_cfg_test(&node.attrs) {
+            visit::visit_item_mod(self, node);
+        }
+    }
+
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
         self.enter_function(
             node.sig.ident.to_string(),
@@ -706,14 +789,9 @@ impl<'ast> Visit<'ast> for EmitVisitor<'_> {
     }
 }
 
-fn resolve_name(expr: &Expr, constants: &BTreeMap<String, String>) -> Option<String> {
+fn resolve_name(expr: &Expr, constants: &ConstantTable) -> Option<String> {
     literal(expr).or_else(|| match peel(expr) {
-        Expr::Path(path) => path
-            .path
-            .segments
-            .last()
-            .and_then(|segment| constants.get(&segment.ident.to_string()))
-            .cloned(),
+        Expr::Path(path) => (!path.path.segments.is_empty()).then(|| constants.resolve_path(&path.path)).flatten(),
         Expr::Reference(reference) => resolve_name(&reference.expr, constants),
         _ => None,
     })
@@ -721,7 +799,7 @@ fn resolve_name(expr: &Expr, constants: &BTreeMap<String, String>) -> Option<Str
 
 fn resolve_names(
     expr: &Expr,
-    constants: &BTreeMap<String, String>,
+    constants: &ConstantTable,
     locals: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeSet<String> {
     if let Expr::Path(path) = peel(expr) {
@@ -736,7 +814,7 @@ fn resolve_names(
 
 fn static_local_names(
     block: &syn::Block,
-    constants: &BTreeMap<String, String>,
+    constants: &ConstantTable,
 ) -> BTreeMap<String, BTreeSet<String>> {
     struct Locals {
         bindings: Vec<(Pat, Expr)>,
@@ -777,7 +855,7 @@ fn static_local_names(
 
 fn static_expression_names(
     expression: &Expr,
-    constants: &BTreeMap<String, String>,
+    constants: &ConstantTable,
     locals: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeSet<String> {
     match peel(expression) {
@@ -827,7 +905,7 @@ fn static_expression_names(
 
 fn static_block_names(
     block: &syn::Block,
-    constants: &BTreeMap<String, String>,
+    constants: &ConstantTable,
     locals: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeSet<String> {
     block.stmts.last().map_or_else(BTreeSet::new, |statement| match statement {
@@ -839,7 +917,7 @@ fn static_block_names(
 fn static_pattern_bindings(
     pattern: &Pat,
     expression: &Expr,
-    constants: &BTreeMap<String, String>,
+    constants: &ConstantTable,
     locals: &BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<(String, BTreeSet<String>)> {
     match pattern {
@@ -932,6 +1010,26 @@ fn files_with_extension(root: &Path, extension: &str) -> Result<Vec<PathBuf>> {
         .collect::<Vec<_>>();
     paths.sort();
     Ok(paths)
+}
+
+fn production_rust_files(root: &Path) -> Result<Vec<PathBuf>> {
+    Ok(files_with_extension(root, "rs")?
+        .into_iter()
+        .filter(|path| {
+            let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            !file_name.ends_with("_tests.rs")
+                && !path.components().any(|component| component.as_os_str() == "tests")
+        })
+        .collect())
+}
+
+fn is_cfg_test(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .parse_args::<syn::Ident>()
+                .is_ok_and(|identifier| identifier == "test")
+    })
 }
 
 fn relative(root: &Path, path: &Path) -> String {
