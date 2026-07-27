@@ -25,6 +25,8 @@ pub struct SessionExport {
     pub source_instance: SourceInstance,
     pub session: SessionData,
     pub plan_versions: Vec<PlanVersionData>,
+    #[serde(default)]
+    pub blueprint_versions: Vec<PlanVersionData>,
     pub proposals: Vec<ProposalData>,
     pub dependencies: Vec<DependencyData>,
 }
@@ -148,6 +150,8 @@ impl SessionExportService {
                     verification_convergence_reason: Option<String>,
                     plan_artifact_id: Option<String>,
                     inherited_plan_artifact_id: Option<String>,
+                    plan_blueprint_artifact_id: Option<String>,
+                    inherited_plan_blueprint_artifact_id: Option<String>,
                     project_name: Option<String>,
                 }
 
@@ -157,7 +161,8 @@ impl SessionExportService {
                          s.verification_in_progress, s.verification_generation, s.verification_current_round, \
                          s.verification_max_rounds, s.verification_gap_count, s.verification_gap_score, \
                          s.verification_convergence_reason, s.plan_artifact_id, \
-                         s.inherited_plan_artifact_id, p.name \
+                         s.inherited_plan_artifact_id, s.plan_blueprint_artifact_id, \
+                         s.inherited_plan_blueprint_artifact_id, p.name \
                          FROM ideation_sessions s \
                          LEFT JOIN projects p ON p.id = s.project_id \
                          WHERE s.id = ?1 AND s.project_id = ?2",
@@ -176,7 +181,9 @@ impl SessionExportService {
                                 verification_convergence_reason: row.get(9)?,
                                 plan_artifact_id: row.get(10)?,
                                 inherited_plan_artifact_id: row.get(11)?,
-                                project_name: row.get(12)?,
+                                plan_blueprint_artifact_id: row.get(12)?,
+                                inherited_plan_blueprint_artifact_id: row.get(13)?,
+                                project_name: row.get(14)?,
                             })
                         },
                     )
@@ -214,6 +221,16 @@ impl SessionExportService {
                 } else {
                     vec![]
                 };
+                let blueprint_versions =
+                    if let Some(ref root_id) = session_row.plan_blueprint_artifact_id {
+                        Self::walk_version_chain(conn, root_id, &session_id)?
+                    } else if let Some(ref inherited_id) =
+                        session_row.inherited_plan_blueprint_artifact_id
+                    {
+                        Self::walk_version_chain(conn, inherited_id, &session_id)?
+                    } else {
+                        vec![]
+                    };
 
                 // Load proposals
                 let mut proposal_stmt = conn.prepare(
@@ -372,6 +389,7 @@ impl SessionExportService {
                     },
                     session: session_data,
                     plan_versions,
+                    blueprint_versions,
                     proposals,
                     dependencies,
                 })
@@ -391,6 +409,32 @@ impl SessionExportService {
         let mut versions = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         let mut current_id = root_id.to_string();
+
+        // Session pointers normally reference the current version. Walk backward
+        // first so the portable export retains the complete immutable history.
+        loop {
+            if !visited.insert(current_id.clone()) {
+                warn!(
+                    "Version chain cycle detected at {} for session {}",
+                    current_id, session_id
+                );
+                return Ok(vec![]);
+            }
+            let previous_id: Option<String> = conn
+                .query_row(
+                    "SELECT previous_version_id FROM artifacts WHERE id = ?1",
+                    [&current_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(AppError::from)?
+                .flatten();
+            match previous_id {
+                Some(id) => current_id = id,
+                None => break,
+            }
+        }
+        visited.clear();
 
         loop {
             if visited.contains(&current_id) {
@@ -575,51 +619,43 @@ impl SessionExportService {
                 )
                 .map_err(AppError::from)?;
 
-                // Insert artifact chain
-                let mut first_artifact_id: Option<String> = None;
-                let mut latest_artifact_id: Option<String> = None;
-                let mut prev_artifact_id: Option<String> = None;
+                let (_first_artifact_id, latest_artifact_id) =
+                    Self::import_version_chain(conn, &export.plan_versions, &now)?;
+                let (_first_blueprint_id, latest_blueprint_id) =
+                    Self::import_version_chain(conn, &export.blueprint_versions, &now)?;
 
-                for version in &export.plan_versions {
-                    let new_id = Uuid::new_v4().to_string();
+                conn.execute(
+                    "UPDATE ideation_sessions
+                     SET plan_artifact_id = ?2,
+                         plan_blueprint_artifact_id = ?3,
+                         plan_contract_version = 2
+                     WHERE id = ?1",
+                    rusqlite::params![
+                        new_session_id,
+                        latest_artifact_id,
+                        latest_blueprint_id
+                    ],
+                )
+                .map_err(AppError::from)?;
 
+                if let (Some(overview_id), Some(blueprint_id)) =
+                    (&latest_artifact_id, &latest_blueprint_id)
+                {
                     conn.execute(
-                        "INSERT INTO artifacts \
-                         (id, type, name, content_type, content_text, content_path, \
-                          bucket_id, task_id, process_id, created_by, version, \
-                          previous_version_id, created_at, metadata_json) \
-                         VALUES (?1, 'specification', ?2, ?3, ?4, NULL, \
-                                 NULL, NULL, NULL, ?5, ?6, ?7, ?8, NULL)",
+                        "INSERT INTO artifact_relations
+                         (id, from_artifact_id, to_artifact_id, relation_type)
+                         VALUES (?1, ?2, ?3, 'related_to')",
                         rusqlite::params![
-                            new_id,
-                            version.name,
-                            version.content_type,
-                            version.content,
-                            version.created_by,
-                            version.version,
-                            prev_artifact_id,
-                            now,
+                            Uuid::new_v4().to_string(),
+                            overview_id,
+                            blueprint_id
                         ],
-                    )
-                    .map_err(AppError::from)?;
-
-                    if first_artifact_id.is_none() {
-                        first_artifact_id = Some(new_id.clone());
-                    }
-                    latest_artifact_id = Some(new_id.clone());
-                    prev_artifact_id = Some(new_id);
-                }
-
-                // Update session with root plan_artifact_id (first in chain)
-                if let Some(ref first_id) = first_artifact_id {
-                    conn.execute(
-                        "UPDATE ideation_sessions SET plan_artifact_id = ?2 WHERE id = ?1",
-                        rusqlite::params![new_session_id, first_id],
                     )
                     .map_err(AppError::from)?;
                 }
 
                 let plan_version_count = export.plan_versions.len();
+                let blueprint_version_count = export.blueprint_versions.len();
 
                 // Insert proposals and track index → new_id mapping
                 let mut index_to_new_id: Vec<String> = Vec::with_capacity(proposal_count);
@@ -648,9 +684,9 @@ impl SessionExportService {
                           suggested_priority, priority_score, priority_reason, priority_factors, \
                           estimated_complexity, user_priority, user_modified, status, selected, \
                           created_task_id, plan_artifact_id, plan_version_at_creation, sort_order, \
-                          created_at, updated_at) \
+                          blueprint_artifact_id, blueprint_version_at_creation, created_at, updated_at) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-                                 'pending', 0, NULL, ?15, ?16, ?17, ?18, ?19)",
+                                 'pending', 0, NULL, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                         rusqlite::params![
                             new_proposal_id,
                             new_session_id,
@@ -669,6 +705,8 @@ impl SessionExportService {
                             latest_artifact_id,
                             plan_version_count as i64,
                             proposal.sort_order,
+                            latest_blueprint_id,
+                            blueprint_version_count as i64,
                             now,
                             now,
                         ],
@@ -707,6 +745,47 @@ impl SessionExportService {
                 })
             })
             .await
+    }
+
+    fn import_version_chain(
+        conn: &rusqlite::Connection,
+        versions: &[PlanVersionData],
+        imported_at: &str,
+    ) -> AppResult<(Option<String>, Option<String>)> {
+        let mut first_artifact_id = None;
+        let mut latest_artifact_id = None;
+        let mut previous_artifact_id: Option<String> = None;
+
+        for version in versions {
+            let new_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO artifacts \
+                 (id, type, name, content_type, content_text, content_path, \
+                  bucket_id, task_id, process_id, created_by, version, \
+                  previous_version_id, created_at, metadata_json) \
+                 VALUES (?1, 'specification', ?2, ?3, ?4, NULL, \
+                         NULL, NULL, NULL, ?5, ?6, ?7, ?8, NULL)",
+                rusqlite::params![
+                    new_id,
+                    version.name,
+                    version.content_type,
+                    version.content,
+                    version.created_by,
+                    version.version,
+                    previous_artifact_id,
+                    imported_at,
+                ],
+            )
+            .map_err(AppError::from)?;
+
+            if first_artifact_id.is_none() {
+                first_artifact_id = Some(new_id.clone());
+            }
+            latest_artifact_id = Some(new_id.clone());
+            previous_artifact_id = Some(new_id);
+        }
+
+        Ok((first_artifact_id, latest_artifact_id))
     }
 
     /// Kahn's algorithm cycle detection on dependency graph.

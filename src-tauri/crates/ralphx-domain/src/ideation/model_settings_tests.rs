@@ -10,7 +10,16 @@ use crate::ideation::model_settings::{
 
 #[test]
 fn test_model_level_round_trip() {
-    let values = ["inherit", "sonnet", "opus", "haiku", "fable"];
+    let values = [
+        "inherit",
+        "sonnet",
+        "opus",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "haiku",
+        "fable",
+    ];
     for v in values {
         let parsed = ModelLevel::from_str(v).expect("parse");
         assert_eq!(parsed.to_string(), v, "round-trip for '{}'", v);
@@ -39,6 +48,16 @@ fn test_model_level_serde() {
     assert_eq!(de_fable, ModelLevel::Fable);
     let de_inherit: ModelLevel = serde_json::from_str("\"inherit\"").unwrap();
     assert_eq!(de_inherit, ModelLevel::Inherit);
+
+    for (json, expected) in [
+        ("\"claude-opus-4-7\"", ModelLevel::ClaudeOpus47),
+        ("\"claude-opus-4-8\"", ModelLevel::ClaudeOpus48),
+        ("\"claude-opus-5\"", ModelLevel::ClaudeOpus5),
+    ] {
+        let parsed: ModelLevel = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
+    }
 }
 
 // ── ModelBucket mapping ───────────────────────────────────────────────────

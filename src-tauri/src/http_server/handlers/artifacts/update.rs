@@ -18,10 +18,17 @@ pub async fn update_plan_artifact(
         .await
         .map_err(map_app_err)?;
 
+    let lookup_id = latest_artifact_id.clone();
     let owning_sessions = state
         .app_state
-        .ideation_session_repo
-        .get_by_plan_artifact_id(&latest_artifact_id)
+        .db
+        .run(move |conn| {
+            let mut sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &lookup_id)?;
+            sessions.extend(SessionRepo::get_by_plan_blueprint_artifact_id_sync(
+                conn, &lookup_id,
+            )?);
+            Ok(sessions)
+        })
         .await
         .map_err(map_app_err)?;
 
@@ -49,7 +56,11 @@ pub async fn update_plan_artifact(
             let old_artifact = ArtifactRepo::get_by_id_sync(conn, &old_id)?
                 .ok_or_else(|| AppError::NotFound(format!("Artifact {} not found", old_id)))?;
 
-            let owning_sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &old_id)?;
+            let mut owning_sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &old_id)?;
+            owning_sessions.extend(SessionRepo::get_by_plan_blueprint_artifact_id_sync(
+                conn,
+                &old_id,
+            )?);
             if let Some(session) = owning_sessions.first() {
                 crate::http_server::helpers::assert_session_mutable(session)?;
             }
@@ -57,7 +68,9 @@ pub async fn update_plan_artifact(
             if owning_sessions.is_empty() {
                 let inherited =
                     SessionRepo::get_by_inherited_plan_artifact_id_sync(conn, &old_id)?;
-                if !inherited.is_empty() {
+                let inherited_blueprints =
+                    SessionRepo::get_by_inherited_plan_blueprint_artifact_id_sync(conn, &old_id)?;
+                if !inherited.is_empty() || !inherited_blueprints.is_empty() {
                     return Err(AppError::Validation(
                         "Cannot update inherited plan. Use create_plan_artifact to create a session-specific plan.".to_string(),
                     ));
@@ -80,15 +93,20 @@ pub async fn update_plan_artifact(
         linked_proposal_ids,
         verification_reset,
     );
-    reconcile_plan_notifications(
-        &state,
-        Some(&old_artifact_id_str),
-        &created,
-        &sessions,
-        mutation_authority.as_ref(),
-    )
-    .await;
+    reconcile_plan_notifications(&state, &created, &sessions, mutation_authority.as_ref()).await;
     let mut response = ArtifactResponse::from(created);
+    response.artifact_role = sessions.first().map(|session| {
+        if session
+            .plan_blueprint_artifact_id
+            .as_ref()
+            .map(|id| id.as_str())
+            == Some(old_artifact_id_str.as_str())
+        {
+            "blueprint".to_string()
+        } else {
+            "overview".to_string()
+        }
+    });
     response.previous_artifact_id = Some(old_artifact_id_str);
     response.session_id = sessions.first().map(|s| s.id.to_string());
     if sessions

@@ -9,7 +9,7 @@
 const MODEL_LABEL_MAP: Record<string, string> = {
   // Short aliases used in ralphx.yaml and YAML agent configs
   sonnet: "Sonnet",
-  opus: "Opus 4.6",
+  opus: "Opus",
   haiku: "Haiku 4.5",
   fable: "Fable 5",
   "gpt-5.6": "GPT-5.6 Sol",
@@ -26,6 +26,9 @@ const MODEL_LABEL_MAP: Record<string, string> = {
   "claude-sonnet-5": "Sonnet 5",
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-opus-4-6": "Opus 4.6",
+  "claude-opus-4-7": "Opus 4.7",
+  "claude-opus-4-8": "Opus 4.8",
+  "claude-opus-5": "Opus 5",
   "claude-haiku-4-5-20251001": "Haiku 4.5",
   "claude-fable-5": "Fable 5",
 };

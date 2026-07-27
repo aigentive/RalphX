@@ -12,7 +12,7 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 | Target | Local workspace delta or selected local source against its base | One linked remote GitHub pull request at its current head, inspected through the agent-workspace checkout |
 | Source of truth | Backend-injected review target, diff fingerprint, applicable head, and review-run authority | Linked PR identity plus live GitHub head/lifecycle state; the checkout is the inspection substrate |
 | Agent | `ralphx-workspace-reviewer` | `ralphx-pr-reviewer` |
-| Durable artifact | Versioned local Workspace Review artifact and hunk annotations | Versioned PR Review artifact for the reviewed GitHub head |
+| Durable artifact | Versioned local Overview + Requested Changes artifact pair and Overview hunk annotations | Versioned PR Review artifact for the reviewed GitHub head |
 | Side effects | Completes the local publish/review gate; may route a local fixer | May propose Request Changes, Approve, or Comment; GitHub submission requires explicit user approval |
 | Freshness | Scope + diff fingerprint + applicable head | Exact PR number + current remote head SHA |
 | Pause | Not applicable | Pauses new-head re-review dispatch only; remote PR lifecycle monitoring continues |
@@ -46,4 +46,4 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 1. Name the workflow exactly (`Workspace Review` or `Review PR`) in code, tests, prompts, and UI copy.
 2. Extend only the owning row above; changing a model-facing tool also requires canonical metadata, runtime authorization/registration, prompt, and tests per `agent-mcp-tools.md`.
 3. For Review PR lifecycle changes, prove exact conversation+PR scoping, idempotent terminal settlement, stale-attempt rejection, live/startup recovery parity, and absence of post-terminal controls or notifications.
-4. For Workspace Review gate changes, prove scope/fingerprint/head freshness and publish/fixer handoff behavior; do not reuse Review PR lifecycle state.
+4. For Workspace Review gate changes, prove exact Overview + Requested Changes pair authority, scope/fingerprint/head freshness, legacy overview-only fail-closed behavior, and publish/fixer handoff; do not reuse Review PR lifecycle state.

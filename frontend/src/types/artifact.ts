@@ -207,6 +207,8 @@ export const PlanApprovalSchema = z.object({
   status: PlanApprovalStatusSchema,
   approvedArtifactId: z.string().optional(),
   approvedVersion: z.number().int().positive().optional(),
+  approvedBlueprintArtifactId: z.string().optional(),
+  approvedBlueprintVersion: z.number().int().positive().optional(),
   approvedAt: z.string().optional(),
 });
 
@@ -234,6 +236,8 @@ export const PlanComplexityAssessmentSchema = z.object({
   sessionId: z.string(),
   artifactId: z.string(),
   artifactVersion: z.number().int().positive(),
+  blueprintArtifactId: z.string().optional(),
+  blueprintArtifactVersion: z.number().int().positive().optional(),
   level: PlanComplexityLevelSchema,
   score: z.number().int().min(0).max(100),
   recommendedAction: PlanComplexityRecommendedActionSchema,
@@ -256,7 +260,18 @@ export type PlanComplexityAssessment = z.infer<
 /**
  * An artifact - a typed document that flows between processes
  */
-export const ArtifactSchema = z.object({
+const PlanBundleArtifactSchema = z.object({
+  id: z.string(),
+  type: ArtifactTypeSchema,
+  name: z.string(),
+  content: ArtifactContentSchema,
+  metadata: ArtifactMetadataSchema,
+  derivedFrom: z.array(z.string()).default([]),
+  bucketId: z.string().optional(),
+  artifactRole: z.enum(["overview", "blueprint"]).optional(),
+});
+
+export const ArtifactSchema = PlanBundleArtifactSchema.extend({
   /** Unique identifier */
   id: z.string(),
   /** The type of artifact */
@@ -273,6 +288,9 @@ export const ArtifactSchema = z.object({
   bucketId: z.string().optional(),
   /** Optional Plan-mode approval state for the artifact in its owning session */
   planApproval: PlanApprovalSchema.optional(),
+  blueprint: PlanBundleArtifactSchema.optional(),
+  planContractVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  planTargetId: z.string().optional(),
 });
 
 export type Artifact = z.infer<typeof ArtifactSchema>;

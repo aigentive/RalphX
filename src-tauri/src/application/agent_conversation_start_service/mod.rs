@@ -20,7 +20,7 @@ use crate::application::external_issue_link_service::TicketConversationLinkInput
 use crate::application::git_service::GitService;
 use crate::application::personas::PersonaService;
 use crate::application::plan_reference_import::{
-    import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
+    import_agent_conversation_plan_reference, rewrite_imported_plan_references,
     selected_plan_reference,
 };
 use crate::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;

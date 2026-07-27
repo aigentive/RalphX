@@ -33,8 +33,11 @@ fn session(current: &str, verified: Option<&str>) -> IdeationSession {
             "verification-gate-project".to_string(),
         ))
         .plan_artifact_id(ArtifactId::from_string(current.to_string()))
+        .plan_blueprint_artifact_id(ArtifactId::from_string("blueprint-v2".to_string()))
         .build();
     session.verified_plan_artifact_id = verified.map(|id| ArtifactId::from_string(id.to_string()));
+    session.verified_plan_blueprint_artifact_id =
+        verified.map(|_| ArtifactId::from_string("blueprint-v2".to_string()));
     session
 }
 

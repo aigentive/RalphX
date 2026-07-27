@@ -997,6 +997,60 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getByText("Persisted delegate lifecycle")).toBeInTheDocument();
   });
 
+  it("keeps restored persisted siblings visible when a late live block arrives", () => {
+    renderList({
+      messages: [
+        {
+          id: "turn-two-user",
+          role: "user",
+          content: "Inspect the timeline",
+          createdAt: "2026-07-15T10:00:00Z",
+        },
+        {
+          id: "persisted-text",
+          parentMessageId: "turn-two-provider",
+          role: "assistant",
+          content: "Persisted text before the tool",
+          createdAt: "2026-07-15T10:00:01Z",
+          timelineSequence: 20,
+          timelineStatus: "streaming",
+          contentBlocks: [{
+            type: "text",
+            text: "Persisted text before the tool",
+          }],
+        },
+        {
+          id: "persisted-tool",
+          parentMessageId: "turn-two-provider",
+          role: "assistant",
+          content: "Persisted tool call",
+          createdAt: "2026-07-15T10:00:02Z",
+          timelineSequence: 21,
+          timelineStatus: "streaming",
+          contentBlocks: [{
+            type: "tool_use",
+            id: "grep-persisted",
+            name: "Grep",
+            arguments: { pattern: "timeline" },
+          }],
+        },
+      ],
+      isAgentRunning: true,
+      streamingContentBlocks: [{
+        type: "text",
+        text: "Late live tail",
+        seq: 22,
+      }],
+    });
+
+    expect(screen.getByText("Persisted text before the tool")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {
+      name: "Agent called 1 tool. Expand tool details.",
+    }));
+    expect(screen.getByText("Persisted tool call")).toBeInTheDocument();
+    expect(screen.getByText("Late live tail")).toBeInTheDocument();
+  });
+
   it("folds non-adjacent terminal delegation rows into the original start row", () => {
     const messages: ChatMessageData[] = [
       {

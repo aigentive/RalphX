@@ -12,6 +12,9 @@ use super::{
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
+};
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
@@ -23,6 +26,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
 };
+use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
@@ -451,9 +455,9 @@ async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::
     let mut command = Command::new("sh");
     command
         .arg("-c")
-        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; sleep 10")
+        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; exec sleep 10")
         .env("RALPHX_STREAM_LINE", line)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -626,6 +630,91 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
     );
 }
 
+#[tokio::test]
+async fn claude_mode_handoff_turn_complete_retires_exact_ipr_without_waiting_for_eof() {
+    let mut child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"result","session_id":"sess-handoff","is_error":false,"result":"Handoff complete.","cost_usd":0.0}"#,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = "handoff-stream-context";
+    let run_id = "handoff-stream-run";
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    let interactive_registry = Arc::new(InteractiveProcessRegistry::new());
+    let token = interactive_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("handoff fixture stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(matches!(
+        interactive_registry
+            .arm_retire_after_turn_if_owner(&interactive_key, token, run_id)
+            .await,
+        crate::application::interactive_process_registry::InteractiveProcessRetireArmDisposition::AwaitingTurn
+    ));
+
+    let running_impl = Arc::new(MemoryRunningAgentRegistry::new());
+    running_impl
+        .register(
+            RunningAgentKey::new("project", context_id),
+            0,
+            conversation_id.as_str(),
+            run_id.to_string(),
+            None,
+            Some(CancellationToken::new()),
+        )
+        .await;
+    let running_registry: Arc<dyn RunningAgentRegistry> = running_impl;
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process_stream_background::<MockRuntime>(
+            child,
+            AgentHarnessKind::Claude,
+            ChatContextType::Project,
+            context_id,
+            &conversation_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            StreamingStateCache::new(),
+            Some(running_registry),
+            None,
+            Some(run_id.to_string()),
+            None,
+            None,
+            false,
+            false,
+            Some(interactive_registry.clone()),
+            Some(interactive_key.clone()),
+            Some(token),
+        ),
+    )
+    .await
+    .expect("TurnComplete mode handoff should not wait for process EOF")
+    .expect("mode handoff is a successful retirement, never a user cancellation");
+
+    assert!(outcome.mode_handoff_exit);
+    assert!(outcome.silent_interactive_exit);
+    assert!(
+        interactive_registry
+            .capture_owner(&interactive_key)
+            .await
+            .is_none(),
+        "TurnComplete must retire exactly the armed IPR owner"
+    );
+}
+
 async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
@@ -699,6 +788,10 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
     assert_eq!(outcome.response_text, "Done.");
     assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
     assert_eq!(outcome.turns_finalized, 0);
+    assert!(
+        !outcome.mode_handoff_exit,
+        "Codex no-EOF completion remains a normal provider completion"
+    );
 }
 
 #[tokio::test]
@@ -1139,6 +1232,109 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
 }
 
 #[tokio::test]
+async fn claude_text_only_in_flight_stream_persists_timeline_snapshot_before_finalization() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Still working through the timeline."}]},"session_id":"sess-text-only"}"#,
+    )
+    .await;
+    let cancellation_token = CancellationToken::new();
+    let stream_task = tokio::spawn({
+        let chat_message_repo = state.chat_message_repo.clone();
+        let chat_timeline_repo = state.chat_timeline_repo.clone();
+        let cancellation_token = cancellation_token.clone();
+        let conversation_id = conversation_id.clone();
+        let context_id = context_id.clone();
+        let pre_assistant_id = pre_assistant_id.clone();
+
+        async move {
+            process_stream_background::<MockRuntime>(
+                child,
+                AgentHarnessKind::Claude,
+                ChatContextType::Ideation,
+                context_id.as_str(),
+                &conversation_id,
+                None,
+                None,
+                None,
+                Some(chat_message_repo),
+                Some(chat_timeline_repo),
+                Some(pre_assistant_id),
+                None,
+                cancellation_token,
+                StreamingStateCache::new(),
+                None,
+                None,
+                Some("stream-run-id".to_string()),
+                None,
+                None,
+                false,
+                false,
+                None,
+                None,
+                None,
+            )
+            .await
+        }
+    });
+
+    let streaming_item = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let page = state
+                .chat_timeline_repo
+                .get_page(&conversation_id, 20, None)
+                .await
+                .expect("load streaming timeline page");
+            if let Some(item) = page.items.into_iter().find(|item| {
+                item.message_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == pre_assistant_id)
+            }) {
+                return item;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("text-only stream must persist before it finalizes");
+
+    assert_eq!(streaming_item.status, ChatTimelineItemStatus::Streaming);
+    assert_eq!(streaming_item.block_index, 0);
+    assert_eq!(
+        streaming_item.text.as_deref(),
+        Some("Still working through the timeline.")
+    );
+    assert!(
+        streaming_item.finalized_at.is_none(),
+        "the in-flight snapshot must remain streaming until the turn reaches its terminal path"
+    );
+
+    cancellation_token.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), stream_task)
+        .await
+        .expect("cancelled text-only stream should stop promptly")
+        .expect("stream task should not panic");
+    assert!(matches!(result, Err(StreamError::Cancelled { .. })));
+}
+
+#[tokio::test]
 async fn claude_multi_turn_stream_persists_combined_usage_to_canonical_run() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
@@ -1323,6 +1519,88 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .items
         .iter()
         .all(|item| item.finalized_at.is_some()));
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_preserves_streaming_block_order_and_kind_when_finalized() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-streaming-finalized-parity".to_string());
+    let blocks = vec![
+        ContentBlockItem::Text {
+            text: "Inspecting the persisted transcript.".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-read".to_string()),
+            name: "Read".to_string(),
+            arguments: serde_json::json!("src/application/chat_service.rs"),
+            result: Some(serde_json::json!("contents")),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "The timeline snapshot is the shared seam.".to_string(),
+        },
+    ];
+
+    let streaming_items = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+    let streaming_projection = streaming_items
+        .iter()
+        .map(|item| {
+            (
+                item.block_index,
+                item.kind,
+                item.text.clone(),
+                item.tool_call_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
+
+    let finalized = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 20, None)
+        .await
+        .expect("load finalized timeline page");
+    let finalized_projection = finalized
+        .items
+        .iter()
+        .map(|item| {
+            (
+                item.block_index,
+                item.kind,
+                item.text.clone(),
+                item.tool_call_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        finalized_projection, streaming_projection,
+        "finalization must retain every block rendered while streaming with its original order and kind"
+    );
+    assert!(
+        finalized
+            .items
+            .iter()
+            .all(|item| item.status == ChatTimelineItemStatus::Finalized && item.finalized_at.is_some()),
+        "finalization may change lifecycle metadata but must not alter the durable rendered projection"
+    );
 }
 
 #[tokio::test]

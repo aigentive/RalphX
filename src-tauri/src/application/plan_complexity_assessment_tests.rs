@@ -14,6 +14,8 @@ fn valid_request() -> SubmitPlanComplexityAssessmentRequest {
         session_id: "session-1".to_string(),
         artifact_id: "artifact-1".to_string(),
         artifact_version: 3,
+        blueprint_artifact_id: None,
+        blueprint_artifact_version: None,
         level: "moderate".to_string(),
         score: 58,
         recommended_action: "create_proposals".to_string(),
@@ -34,7 +36,9 @@ fn setup_db() -> Connection {
             id TEXT PRIMARY KEY,
             session_flow TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'active',
-            plan_artifact_id TEXT
+            plan_artifact_id TEXT,
+            plan_blueprint_artifact_id TEXT,
+            plan_contract_version INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE artifacts (
             id TEXT PRIMARY KEY,
@@ -44,6 +48,8 @@ fn setup_db() -> Connection {
             session_id TEXT NOT NULL,
             artifact_id TEXT NOT NULL,
             artifact_version INTEGER NOT NULL,
+            blueprint_artifact_id TEXT,
+            blueprint_artifact_version INTEGER,
             status TEXT NOT NULL,
             approved_at TEXT
         );
@@ -52,6 +58,8 @@ fn setup_db() -> Connection {
             session_id TEXT NOT NULL,
             artifact_id TEXT NOT NULL,
             artifact_version INTEGER NOT NULL,
+            blueprint_artifact_id TEXT,
+            blueprint_artifact_version INTEGER,
             level TEXT NOT NULL,
             score INTEGER NOT NULL,
             recommended_action TEXT NOT NULL,
@@ -61,7 +69,7 @@ fn setup_db() -> Connection {
             assessed_by TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(session_id, artifact_id, artifact_version)
+            UNIQUE(session_id, artifact_id, artifact_version, blueprint_artifact_id, blueprint_artifact_version)
         );
         CREATE TABLE ideation_settings (
             id INTEGER PRIMARY KEY,
@@ -317,15 +325,18 @@ fn assessment_reader_defaults_invalid_signals_to_empty_object() {
     let conn = setup_db();
     conn.execute(
         "INSERT INTO plan_complexity_assessments (
-            id, session_id, artifact_id, artifact_version, level, score,
+            id, session_id, artifact_id, artifact_version,
+            blueprint_artifact_id, blueprint_artifact_version, level, score,
             recommended_action, confidence, reason_summary, signals_json,
             assessed_by, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             "assessment-1",
             "session-1",
             "artifact-1",
             3_i64,
+            Option::<String>::None,
+            Option::<i64>::None,
             "complex",
             77_i64,
             "create_proposals",

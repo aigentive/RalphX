@@ -40,6 +40,23 @@ async fn test_upsert_and_get_project() {
 }
 
 #[tokio::test]
+async fn test_exact_opus_ids_round_trip_for_global_and_project_rows() {
+    let repo = MemoryIdeationModelSettingsRepository::new();
+    repo.upsert_global("claude-opus-4-7", "claude-opus-4-8", "inherit", "inherit")
+        .await
+        .unwrap();
+    repo.upsert_for_project("proj-123", "claude-opus-5", "inherit", "inherit", "inherit")
+        .await
+        .unwrap();
+
+    let global = repo.get_global().await.unwrap().unwrap();
+    let project = repo.get_for_project("proj-123").await.unwrap().unwrap();
+    assert_eq!(global.primary_model.to_string(), "claude-opus-4-7");
+    assert_eq!(global.verifier_model.to_string(), "claude-opus-4-8");
+    assert_eq!(project.primary_model.to_string(), "claude-opus-5");
+}
+
+#[tokio::test]
 async fn test_upsert_overwrites_existing() {
     let repo = MemoryIdeationModelSettingsRepository::new();
     repo.upsert_global("sonnet", "opus", "inherit", "inherit")

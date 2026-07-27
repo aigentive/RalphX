@@ -31,8 +31,8 @@ pub mod chat_responses;
 pub mod clickup_commands;
 #[cfg(test)]
 mod clickup_commands_tests;
-pub mod conversation_stats_commands;
 pub mod conversation_folder_reference_commands;
+pub mod conversation_stats_commands;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -130,9 +130,11 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_plan_commands::{
-    activate_agent_task_pipeline, copy_agent_conversation_plan, import_agent_conversation_plan,
-    start_agent_task_pipeline, ActivateAgentTaskPipelineInput, AgentConversationPlanSeedResponse,
-    CopyAgentConversationPlanInput, ImportAgentConversationPlanInput, StartAgentTaskPipelineInput,
+    activate_agent_plan_direct_implementation, activate_agent_task_pipeline,
+    copy_agent_conversation_plan, import_agent_conversation_plan, start_agent_task_pipeline,
+    ActivateAgentPlanDirectImplementationInput, ActivateAgentTaskPipelineInput,
+    AgentConversationPlanSeedResponse, CopyAgentConversationPlanInput,
+    ImportAgentConversationPlanInput, StartAgentTaskPipelineInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -364,6 +366,7 @@ pub use unified_chat_commands::{
     list_agent_conversation_workspaces_by_project, list_agent_conversations,
     list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
     publish_agent_conversation_workspace, queue_agent_message,
+    commit_agent_conversation_workspace_locally,
     reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision, start_agent_conversation, stop_agent,

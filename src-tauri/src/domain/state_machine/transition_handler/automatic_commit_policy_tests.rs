@@ -31,10 +31,11 @@ fn pr_mode_protects_primary_checkout_symlink_alias() {
     let alias_parent = tempfile::TempDir::new().unwrap();
     let alias = alias_parent.path().join("primary-alias");
     std::os::unix::fs::symlink(root.path(), &alias).unwrap();
-    let project = Project::new(
+    let mut project = Project::new(
         "Protected".into(),
         root.path().to_string_lossy().into_owned(),
     );
+    project.github_pr_enabled = true;
 
     assert!(protects_primary_checkout(&project, &alias));
 }

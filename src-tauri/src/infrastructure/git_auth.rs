@@ -1,8 +1,10 @@
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -72,6 +74,94 @@ pub(crate) struct GitRemoteAuthConfig {
     pub fetch_url: Option<String>,
     pub push_url: Option<String>,
     pub github_https_credential_helper_configured: bool,
+}
+
+/// Live, non-persisted repository topology for RalphX GitHub PR workflows.
+///
+/// This is intentionally independent from GitHub authentication: a supported
+/// GitHub push URL may still need credentials, while an unsupported topology
+/// may never start a GitHub PR workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RepositoryCapability {
+    LocalOnly,
+    Github {
+        fetch_url: Option<String>,
+        push_url: String,
+    },
+    OtherRemote {
+        fetch_url: Option<String>,
+        push_url: String,
+    },
+    InspectionFailed {
+        message: String,
+    },
+}
+
+/// Convert already-inspected `origin` configuration into the effective push
+/// capability. `GitRemoteAuthConfig::url_for_operation(Push)` uses the
+/// separately configured push URL and falls back to fetch only when Git has no
+/// push URL, so a mixed GitHub-fetch/non-GitHub-push remote is never PR-capable.
+pub(crate) fn repository_capability_from_origin_config(
+    config: &GitRemoteAuthConfig,
+) -> RepositoryCapability {
+    let Some(raw_push_url) = config.url_for_operation(GitNetworkOperation::Push) else {
+        return RepositoryCapability::LocalOnly;
+    };
+    let fetch_url = config.fetch_url.as_deref().map(sanitize_remote_url);
+    let push_url = sanitize_remote_url(raw_push_url);
+    if is_supported_github_remote(raw_push_url) {
+        RepositoryCapability::Github {
+            fetch_url,
+            push_url,
+        }
+    } else {
+        RepositoryCapability::OtherRemote {
+            fetch_url,
+            push_url,
+        }
+    }
+}
+
+/// Inspect the repository's current `origin` topology without performing
+/// network or credential checks. Inspection failures remain distinct from a
+/// normal no-origin repository so callers can fail closed before mutations.
+pub(crate) async fn inspect_repository_capability(working_dir: &Path) -> RepositoryCapability {
+    match inspect_effective_origin_topology_config(working_dir).await {
+        Ok(config) => repository_capability_from_origin_config(&config),
+        Err(error) => RepositoryCapability::InspectionFailed {
+            message: error.to_string(),
+        },
+    }
+}
+
+/// Read the URLs Git will actually use for transport. Capability authorizes a
+/// mutation, so it must honor includes and `url.*.insteadOf`/`pushInsteadOf`
+/// rewrites rather than relying on literal `.git/config` values.
+async fn inspect_effective_origin_topology_config(
+    working_dir: &Path,
+) -> AppResult<GitRemoteAuthConfig> {
+    let deadline = Duration::from_secs(5);
+    ensure_git_worktree(working_dir).await?;
+    let fetch_url = read_origin_url_strict_with_timeout(
+        working_dir,
+        &["remote", "get-url", "origin"],
+        deadline,
+    )
+    .await?;
+    let push_url = read_origin_url_strict_with_timeout(
+        working_dir,
+        &["remote", "get-url", "--push", "origin"],
+        deadline,
+    )
+    .await?
+    .or_else(|| fetch_url.clone());
+
+    Ok(GitRemoteAuthConfig {
+        fetch_url,
+        push_url,
+        github_https_credential_helper_configured: false,
+    })
 }
 
 impl GitRemoteAuthConfig {
@@ -424,47 +514,105 @@ pub(crate) async fn inspect_origin_auth_config_with_timeout(
     working_dir: &Path,
     deadline: Duration,
 ) -> AppResult<GitRemoteAuthConfig> {
-    let mut config = if let Some(config) = read_origin_auth_config_from_git_config(working_dir)? {
-        config
-    } else {
-        let fetch_url =
-            read_origin_url_with_timeout(working_dir, &["remote", "get-url", "origin"], deadline)
-                .await?;
-        let push_url = if fetch_url.is_some() {
-            match read_origin_url_with_timeout(
-                working_dir,
-                &["remote", "get-url", "--push", "origin"],
-                deadline,
-            )
-            .await
-            {
-                Ok(Some(url)) => Some(url),
-                _ => fetch_url.clone(),
-            }
-        } else {
-            None
-        };
-
-        GitRemoteAuthConfig {
-            fetch_url,
-            push_url,
-            github_https_credential_helper_configured: false,
-        }
-    };
-
+    let mut config = inspect_origin_topology_config_with_timeout(working_dir, deadline).await?;
     config.github_https_credential_helper_configured =
         inspect_github_https_credential_helper_configured(working_dir, &config, deadline).await;
 
     Ok(config)
 }
 
+/// Read origin URLs through local Git metadata or Git's local configuration
+/// commands. This bounded topology-only path deliberately skips credential
+/// helper inspection, so project list loading never performs auth work.
+async fn inspect_origin_topology_config_with_timeout(
+    working_dir: &Path,
+    deadline: Duration,
+) -> AppResult<GitRemoteAuthConfig> {
+    if let Some(config) = read_origin_auth_config_from_git_config(working_dir)? {
+        return Ok(config);
+    }
+
+    // Normal repositories can be inspected from `.git/config` without a
+    // subprocess. Linked worktrees use a `.git` pointer file, so validate them
+    // before falling back to Git's local configuration commands.
+    ensure_git_worktree(working_dir).await?;
+    let fetch_url =
+        read_origin_url_with_timeout(working_dir, &["remote", "get-url", "origin"], deadline)
+            .await?;
+    let push_url = if fetch_url.is_some() {
+        match read_origin_url_with_timeout(
+            working_dir,
+            &["remote", "get-url", "--push", "origin"],
+            deadline,
+        )
+        .await
+        {
+            Ok(Some(url)) => Some(url),
+            _ => fetch_url.clone(),
+        }
+    } else {
+        None
+    };
+
+    Ok(GitRemoteAuthConfig {
+        fetch_url,
+        push_url,
+        github_https_credential_helper_configured: false,
+    })
+}
+
 fn read_origin_auth_config_from_git_config(
     working_dir: &Path,
 ) -> AppResult<Option<GitRemoteAuthConfig>> {
     let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
-    let config_path = working_dir.join(".git").join("config");
-    if !config_path.is_file() {
+    let repository_root = working_dir.canonicalize().map_err(|error| {
+        AppError::GitOperation(format!(
+            "failed to canonicalize git working directory for origin inspection: {error}"
+        ))
+    })?;
+    let repository_root =
+        validate_absolute_non_root_path(&repository_root, "canonical git working directory")?;
+    let git_directory = repository_root.join(".git");
+    let git_metadata = match std::fs::symlink_metadata(&git_directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::GitOperation(format!(
+                "failed to inspect git metadata for origin inspection: {error}"
+            )));
+        }
+    };
+    if git_metadata.file_type().is_symlink() {
+        return Err(AppError::GitOperation(format!(
+            "git metadata for origin inspection must not be a symlink: {}",
+            git_directory.display()
+        )));
+    }
+    if git_metadata.is_file() {
         return Ok(None);
+    }
+    if !git_metadata.is_dir() {
+        return Err(AppError::GitOperation(format!(
+            "git metadata for origin inspection is not a directory: {}",
+            git_directory.display()
+        )));
+    }
+
+    let config_path = git_directory.join("config");
+    let config_metadata = match std::fs::symlink_metadata(&config_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::GitOperation(format!(
+                "failed to inspect git config for origin inspection: {error}"
+            )));
+        }
+    };
+    if config_metadata.file_type().is_symlink() || !config_metadata.is_file() {
+        return Err(AppError::GitOperation(format!(
+            "git config for origin inspection is not a regular file: {}",
+            config_path.display()
+        )));
     }
 
     let started_at = std::time::Instant::now();
@@ -489,6 +637,31 @@ fn read_origin_auth_config_from_git_config(
     }
 
     Ok(Some(parse_origin_auth_config_from_git_config(&raw)))
+}
+
+async fn ensure_git_worktree(working_dir: &Path) -> AppResult<()> {
+    let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
+    let mut command = Command::new(resolve_git_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let output = command
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&working_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|error| {
+            AppError::GitOperation(format!("failed to inspect git repository: {error}"))
+        })?;
+    if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true" {
+        Ok(())
+    } else {
+        Err(AppError::GitOperation(format!(
+            "git origin inspection requires a valid worktree: {}",
+            working_dir.display()
+        )))
+    }
 }
 
 fn parse_origin_auth_config_from_git_config(raw: &str) -> GitRemoteAuthConfig {
@@ -689,10 +862,45 @@ fn format_git_auth_recovery(
     parts.join(" ")
 }
 
+#[derive(Clone, Copy)]
+enum OriginUrlReadFailureMode {
+    TreatAsMissing,
+    FailClosed,
+}
+
 async fn read_origin_url_with_timeout(
     working_dir: &Path,
     args: &[&str],
     deadline: Duration,
+) -> AppResult<Option<String>> {
+    read_origin_url_with_timeout_and_failure_mode(
+        working_dir,
+        args,
+        deadline,
+        OriginUrlReadFailureMode::TreatAsMissing,
+    )
+    .await
+}
+
+async fn read_origin_url_strict_with_timeout(
+    working_dir: &Path,
+    args: &[&str],
+    deadline: Duration,
+) -> AppResult<Option<String>> {
+    read_origin_url_with_timeout_and_failure_mode(
+        working_dir,
+        args,
+        deadline,
+        OriginUrlReadFailureMode::FailClosed,
+    )
+    .await
+}
+
+async fn read_origin_url_with_timeout_and_failure_mode(
+    working_dir: &Path,
+    args: &[&str],
+    deadline: Duration,
+    failure_mode: OriginUrlReadFailureMode,
 ) -> AppResult<Option<String>> {
     let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
     let started_at = std::time::Instant::now();
@@ -702,7 +910,7 @@ async fn read_origin_url_with_timeout(
         .args(args)
         .current_dir(&working_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| AppError::GitOperation(format!("failed to spawn git: {error}")))?;
@@ -733,11 +941,26 @@ async fn read_origin_url_with_timeout(
     }
 
     if !output.status.success() {
-        return Ok(None);
+        if matches!(failure_mode, OriginUrlReadFailureMode::TreatAsMissing)
+            || origin_url_is_absent(&output.stderr)
+        {
+            return Ok(None);
+        }
+
+        return Err(AppError::GitOperation(format!(
+            "failed to inspect origin URL with `git {}`: {}",
+            args.join(" "),
+            redact(&String::from_utf8_lossy(&output.stderr)).trim()
+        )));
     }
 
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok((!url.is_empty()).then_some(url))
+}
+
+fn origin_url_is_absent(stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    stderr.contains("no such remote") || stderr.contains("no such url")
 }
 
 fn gui_safe_path() -> String {
@@ -764,9 +987,79 @@ fn is_safe_github_path_component(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+pub(crate) fn is_supported_github_remote(url: &str) -> bool {
+    let url = url.trim();
+    let path = if let Some(rest) = url.strip_prefix("https://") {
+        let Some((authority, path)) = rest.split_once('/') else {
+            return false;
+        };
+        (authority.rsplit('@').next() == Some("github.com")).then_some(path)
+    } else {
+        url.strip_prefix("git@github.com:")
+            .or_else(|| url.strip_prefix("ssh://git@github.com/"))
+    };
+    path.is_some_and(is_supported_github_repository_path)
+}
+
 fn is_github_https_remote(url: &str) -> bool {
-    url.trim().starts_with("https://github.com/")
-        && matches!(classify_git_remote_url(url), GitRemoteUrlKind::Https)
+    url.trim().starts_with("https://") && is_supported_github_remote(url)
+}
+
+fn is_supported_github_repository_path(path: &str) -> bool {
+    let path = path.trim_matches('/');
+    let mut components = path.split('/');
+    let (Some(owner), Some(repository), None) =
+        (components.next(), components.next(), components.next())
+    else {
+        return false;
+    };
+    is_safe_github_path_component(owner)
+        && is_safe_github_path_component(repository.trim_end_matches(".git"))
+        && !repository.trim_end_matches(".git").is_empty()
+}
+
+fn sanitize_remote_url(url: &str) -> String {
+    let url = url.trim();
+    let without_userinfo = if let Some(scheme_separator) = url.find("://") {
+        let authority_start = scheme_separator + 3;
+        let authority_end = url[authority_start..]
+            .find(['/', '?', '#'])
+            .map(|offset| authority_start + offset)
+            .unwrap_or(url.len());
+        let authority = &url[authority_start..authority_end];
+        if let Some(userinfo_end) = authority.rfind('@') {
+            format!(
+                "{}{}{}",
+                &url[..authority_start],
+                &authority[userinfo_end + 1..],
+                &url[authority_end..]
+            )
+        } else {
+            url.to_string()
+        }
+    } else if let Some(userinfo_end) = url.find('@') {
+        let host_separator = url.find([':', '/']).unwrap_or(url.len());
+        if userinfo_end < host_separator {
+            if &url[..userinfo_end] == "git" {
+                url.to_string()
+            } else {
+                format!("***{}", &url[userinfo_end..])
+            }
+        } else {
+            url.to_string()
+        }
+    } else {
+        url.to_string()
+    };
+    let without_query_or_fragment = if url.contains("://") {
+        without_userinfo
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+    } else {
+        &without_userinfo
+    };
+    redact(without_query_or_fragment)
 }
 
 fn kind_label(kind: Option<GitRemoteUrlKind>) -> &'static str {

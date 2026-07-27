@@ -63,6 +63,27 @@ fn test_path_exists(path: impl AsRef<Path>) -> bool {
         .expect("inspect Claude plugin test fixture")
 }
 
+#[cfg(unix)]
+fn write_fake_claude_cli(path: &Path) {
+    std::fs::write(
+        path,
+        r#"#!/bin/sh
+case "$1" in
+  --version) echo "2.1.219 (Claude Code)" ;;
+  --help) echo "Options:" ;;
+  *) exit 2 ;;
+esac
+"#,
+    )
+    .expect("write fake Claude CLI");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)
+        .expect("fake Claude CLI metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("mark fake Claude CLI executable");
+}
+
 fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
     entries
         .iter()
@@ -283,6 +304,50 @@ fn test_build_base_cli_command_defaults_to_most_permissive_claude_permissions() 
         args.contains(&"--dangerously-skip-permissions".to_string()),
         "Claude base command must bypass permission prompts by default"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_build_base_cli_command_preserves_supported_model_values_byte_for_byte() {
+    let _lock = lock_runtime_plugin_dirs_for_tests();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cli_path = temp_dir.path().join("claude");
+    write_fake_claude_cli(&cli_path);
+    clear_claude_cli_capability_cache();
+
+    for model in [
+        "sonnet",
+        "opus",
+        "haiku",
+        "fable",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+    ] {
+        let command = build_base_cli_command_inner(
+            &cli_path,
+            Path::new("/fake/plugin"),
+            None,
+            false,
+            None,
+            Some(model),
+            false,
+        )
+        .expect("supported model should build base command");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let model_index = args
+            .iter()
+            .position(|arg| arg == "--model")
+            .expect("--model flag");
+
+        assert_eq!(args.get(model_index + 1).map(String::as_str), Some(model));
+    }
+
+    clear_claude_cli_capability_cache();
 }
 
 #[test]

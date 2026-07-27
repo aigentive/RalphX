@@ -16,7 +16,7 @@ use crate::error::AppResult;
 
 use super::transition::AutomationTransitionService;
 
-pub(crate) const AUTOMATION_PLAN_REMINDER_PROMPT: &str = r#"The automation run is still in its planning phase. Continue from the current context, write the run plan artifact with the scope, files to inspect or change, approach, risks, and how it advances the current goal item, then end the turn. Do not begin implementation in this turn."#;
+pub(crate) const AUTOMATION_PLAN_REMINDER_PROMPT: &str = r#"The automation run is still in its planning phase. Continue from the current context and write the paired Plan Overview and Implementation Blueprint artifacts. Keep the overview high-level; make the blueprint implementation-ready with grounded files, ordered steps, risks, state and rollback edges, and targeted validation. Then end the turn without beginning implementation."#;
 pub(crate) const PLAN_JUDGE_FAILED_PAUSED_REASON_CODE: &str = "plan_judge_failed";
 pub(crate) const PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE: &str = "plan_revision_exhausted";
 pub(crate) const PLAN_RESUME_FAILED_ERROR_CODE: &str = "plan_resume_failed";
@@ -56,7 +56,7 @@ pub trait AutomationRunResumer: Send + Sync {
 
 pub(crate) fn ideation_bridge_delivery_prompt(approval: &PlanArtifactApproval) -> String {
     format!(
-        "<auto-propose>Automation plan v{} is verified and approved. Read the current plan, run the cross-project check, create atomic implementation task proposals with explicit dependencies, analyze the dependency graph, and finalize all proposals into executable tasks. Do not ask for another confirmation; this approved automation bridge is the authorization boundary.</auto-propose>",
+        "<auto-propose>Automation plan bundle v{} is verified and approved. Read both the Plan Overview and Implementation Blueprint, run the cross-project check, create atomic implementation task proposals with explicit dependencies and exact blueprint lineage, analyze the dependency graph, and finalize all proposals into executable tasks. Do not ask for another confirmation; this approved automation bridge is the authorization boundary.</auto-propose>",
         approval.artifact_version
     )
 }
@@ -129,14 +129,14 @@ pub(crate) fn is_plan_gate_pause_reason(reason: Option<&str>) -> bool {
 
 pub(crate) fn approval_delivery_prompt(approval: &PlanArtifactApproval) -> String {
     format!(
-        "Run plan v{} approved. Implement it now in this same run workspace. Follow the approved plan, keep the changes scoped, run targeted validation, and publish the run pull request when implementation is complete.",
+        "Run plan bundle v{} approved. Implement it now in this same run workspace. Follow both the approved Plan Overview and Implementation Blueprint, keep the changes scoped, run targeted validation, and publish the run pull request when implementation is complete.",
         approval.artifact_version
     )
 }
 
 pub(crate) fn revision_delivery_prompt(instructions: &str) -> String {
     format!(
-        "The plan gate requested revisions. Apply these instructions verbatim to the run plan artifact, then end the turn without implementing:\n\n{instructions}\n\nUpdate the plan artifact and end the turn."
+        "The plan gate requested revisions. Apply these instructions verbatim to the Plan Overview and/or Implementation Blueprint as appropriate, then end the turn without implementing:\n\n{instructions}\n\nUpdate the plan bundle and end the turn."
     )
 }
 
@@ -156,6 +156,33 @@ pub(crate) async fn current_plan_artifact_id_for_workspace(
         .map(|artifact_id| artifact_id.as_str().to_string()))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AutomationPlanArtifactIds {
+    pub overview_id: String,
+    pub blueprint_id: Option<String>,
+    pub target_id: String,
+}
+
+pub(crate) async fn current_plan_artifact_ids_for_workspace(
+    session_repo: &Arc<dyn IdeationSessionRepository>,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<Option<AutomationPlanArtifactIds>> {
+    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return Ok(None);
+    };
+    let Some(session) = session_repo.get_by_id(session_id).await? else {
+        return Ok(None);
+    };
+    Ok(session.plan_artifact_bundle().map(|bundle| {
+        let target_id = bundle.action_target_id();
+        AutomationPlanArtifactIds {
+            overview_id: bundle.overview_id.as_str().to_string(),
+            blueprint_id: bundle.blueprint_id.map(|id| id.as_str().to_string()),
+            target_id,
+        }
+    }))
+}
+
 pub(crate) async fn matching_plan_approval_for_workspace(
     session_repo: &Arc<dyn IdeationSessionRepository>,
     approval_repo: &Arc<dyn PlanArtifactApprovalRepository>,
@@ -167,14 +194,14 @@ pub(crate) async fn matching_plan_approval_for_workspace(
     let Some(session) = session_repo.get_by_id(session_id).await? else {
         return Ok(None);
     };
-    let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+    let Some(bundle) = session.plan_artifact_bundle() else {
         return Ok(None);
     };
     let Some(approval) = approval_repo.get_by_session(session_id).await? else {
         return Ok(None);
     };
 
-    if approval.artifact_id == *plan_artifact_id {
+    if approval.matches_bundle(&bundle) {
         Ok(Some(approval))
     } else {
         Ok(None)
@@ -208,14 +235,17 @@ pub(crate) async fn refresh_plan_park_baseline(
     run_repo: &Arc<dyn AutomationRunRepository>,
     run: &AutomationRun,
     plan_artifact_id: Option<String>,
+    plan_blueprint_artifact_id: Option<String>,
 ) -> AppResult<bool> {
-    if run.plan_last_parked_artifact_id == plan_artifact_id {
+    if run.plan_last_parked_artifact_id == plan_artifact_id
+        && run.plan_last_parked_blueprint_artifact_id == plan_blueprint_artifact_id
+    {
         return Ok(false);
     }
 
     let next_round = run.plan_revision_round.saturating_add(1);
     run_repo
-        .set_plan_last_parked_artifact_id(&run.id, plan_artifact_id)
+        .set_plan_last_parked_artifact_ids(&run.id, plan_artifact_id, plan_blueprint_artifact_id)
         .await?;
     run_repo
         .set_plan_revision_round(&run.id, next_round)

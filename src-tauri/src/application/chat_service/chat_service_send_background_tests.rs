@@ -1645,6 +1645,9 @@ async fn terminal_queued_verifier_failure_releases_deferred_plan_attention() {
         .unwrap();
     let mut session = IdeationSession::new(project.id.clone());
     session.session_flow = IdeationSessionFlow::Planning;
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "plan-current-blueprint",
+    ));
     let session = state.ideation_session_repo.create(session).await.unwrap();
     state
         .ideation_session_repo
@@ -1702,7 +1705,12 @@ async fn terminal_queued_verifier_failure_releases_deferred_plan_attention() {
     let mut verifier_run = AgentRun::new(conversation.id);
     verifier_run.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier_run.action_context_id = Some(session.id.as_str().to_string());
-    verifier_run.action_target_id = Some("plan-current".to_string());
+    verifier_run.action_target_id = Some(
+        session
+            .plan_artifact_bundle()
+            .expect("queued verifier test requires a complete plan bundle")
+            .action_target_id(),
+    );
     let verifier_run = state.agent_run_repo.create(verifier_run).await.unwrap();
     state
         .agent_run_repo

@@ -1,6 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use ralphx_lib::application::AppState;
+use ralphx_lib::commands::unified_chat_commands::AgentConversationWorkspaceResponse;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
@@ -10,7 +11,7 @@ use ralphx_lib::domain::entities::{
 };
 use ralphx_lib::http_server::handlers::agent_workspaces::{
     get_agent_workspace_review_context, get_agent_workspace_review_start_preview,
-    AgentWorkspaceReviewContextQuery,
+    AgentWorkspaceReviewContextQuery, CommitAgentWorkspaceLocallyResponse,
 };
 use ralphx_lib::http_server::types::HttpServerState;
 use std::path::Path as StdPath;
@@ -38,6 +39,41 @@ fn test_state() -> HttpServerState {
         execution_state: Arc::new(ExecutionState::new()),
         delegation_service: Default::default(),
     }
+}
+
+#[test]
+fn local_commit_http_response_serializes_snake_case_contract_fields() {
+    let workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("commit-http-conversation".to_string()),
+        ralphx_lib::domain::entities::ProjectId::from_string("commit-http-project".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base".to_string()),
+        "ralphx/commit-http".to_string(),
+        "/tmp/commit-http".to_string(),
+    );
+    let response = CommitAgentWorkspaceLocallyResponse {
+        success: true,
+        workspace: AgentConversationWorkspaceResponse::from(workspace),
+        outcome: "committed_local".to_string(),
+        branch_name: "ralphx/commit-http".to_string(),
+        previous_head_sha: "before".to_string(),
+        commit_sha: "after".to_string(),
+        had_changes: true,
+        attempt_token: "attempt-1".to_string(),
+    };
+
+    let value = serde_json::to_value(response).expect("HTTP response should serialize");
+
+    assert_eq!(value["branch_name"], "ralphx/commit-http");
+    assert_eq!(value["previous_head_sha"], "before");
+    assert_eq!(value["commit_sha"], "after");
+    assert_eq!(value["had_changes"], true);
+    assert_eq!(value["attempt_token"], "attempt-1");
+    assert!(value.get("branch").is_none());
+    assert!(value.get("current_head_sha").is_none());
 }
 
 #[tokio::test]

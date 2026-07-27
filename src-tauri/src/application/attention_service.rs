@@ -287,7 +287,7 @@ impl AttentionService {
             .get_active_by_project(&project_id)
             .await?
         {
-            let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+            let Some(bundle) = session.plan_artifact_bundle() else {
                 continue;
             };
             // Approval must match the session's CURRENT artifact (same rule as
@@ -297,11 +297,14 @@ impl AttentionService {
                 .plan_approval_repo
                 .get_by_session(&session.id)
                 .await?
-                .is_some_and(|approval| approval.artifact_id == *plan_artifact_id);
-            let approval_deferred = crate::application::plan_approval_notification_service::has_deferred_plan_approval_in_db(
+                .is_some_and(|approval| {
+                    approval.artifact_id == bundle.overview_id
+                        && approval.blueprint_artifact_id == bundle.blueprint_id
+                });
+            let approval_deferred = crate::application::plan_approval_notification_service::has_deferred_plan_target_in_db(
                 &self.db,
                 &session.id,
-                plan_artifact_id.as_str(),
+                &bundle.action_target_id(),
             )
             .await?;
             if current_artifact_approved

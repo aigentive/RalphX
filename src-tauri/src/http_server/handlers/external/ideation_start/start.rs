@@ -501,6 +501,7 @@ async fn clone_plan_approval_if_approved(
                 conn,
                 &new_sid,
                 &artifact,
+                None,
                 &now,
                 crate::domain::repositories::PlanApprovalActor::PlanImport,
             )

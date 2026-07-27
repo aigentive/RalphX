@@ -342,6 +342,9 @@ const mockAgentProviderSettings = {
         "sonnet",
         "claude-sonnet-4-6",
         "opus",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
         "haiku",
         "fable",
         "claude-sonnet-5",
@@ -465,6 +468,45 @@ const mockAgentModels = [
     menuLabel: "Claude Sonnet 4.6",
     description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
     supportedEfforts: ["low", "medium", "high", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    menuLabel: "Claude Opus 4.7",
+    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    menuLabel: "Claude Opus 4.8",
+    description: "Exact Claude Opus 4.8 model id; requires Claude Code 2.1.154 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-opus-5",
+    label: "Claude Opus 5",
+    menuLabel: "Claude Opus 5",
+    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
     source: "built_in",
     enabled: true,
@@ -2161,7 +2203,18 @@ const commandHandlers: Record<
     return true;
   },
   resume_deferred_git_startup: async () => true,
-  update_github_pr_enabled: async () => null,
+  update_github_pr_enabled: async (args) => {
+    const projectId = args.projectId as string;
+    const project = getStore().projects.get(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    getStore().projects.set(projectId, {
+      ...project,
+      githubPrEnabled: args.enabled === true,
+    });
+    return null;
+  },
 
   // Plan commands
   get_active_plan: async (args) =>

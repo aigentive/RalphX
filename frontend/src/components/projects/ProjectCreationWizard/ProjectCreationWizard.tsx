@@ -238,12 +238,9 @@ export function ProjectCreationWizard({
       workingDirectory: form.workingDirectory.trim(),
       gitMode: "worktree",
       baseBranch: form.baseBranch.trim(),
+      worktreeParentDirectory:
+        form.worktreeParentDirectory.trim() || "~/ralphx-worktrees",
     };
-
-    // Only include custom parent directory if user provided one
-    if (form.worktreeParentDirectory.trim()) {
-      project.worktreeParentDirectory = form.worktreeParentDirectory.trim();
-    }
 
     onCreate(project);
   }, [form, onCreate]);
@@ -363,7 +360,7 @@ export function ProjectCreationWizard({
               )}
             />
             <p className="text-xs text-[var(--text-muted)]">
-              Inferred from folder name. Override if desired.
+              RalphX initializes local Git in this folder. No remote repository is created; you can connect GitHub later.
             </p>
           </div>
 

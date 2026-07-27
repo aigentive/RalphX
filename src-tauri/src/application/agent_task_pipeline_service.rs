@@ -109,6 +109,30 @@ pub(crate) async fn validate_supervised_task_pipeline(
     if approval.artifact_id != latest.id || approval.artifact_version != latest.metadata.version {
         return Err("Current plan version is not approved".to_string());
     }
+    match session.plan_blueprint_artifact_id.as_ref() {
+        Some(blueprint_id) => {
+            let latest_blueprint_id = state
+                .artifact_repo
+                .resolve_latest_artifact_id(blueprint_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let latest_blueprint = state
+                .artifact_repo
+                .get_by_id(&latest_blueprint_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Current plan blueprint artifact not found".to_string())?;
+            if approval.blueprint_artifact_id.as_ref() != Some(&latest_blueprint.id)
+                || approval.blueprint_artifact_version != Some(latest_blueprint.metadata.version)
+            {
+                return Err("Current plan blueprint version is not approved".to_string());
+            }
+        }
+        None if session.plan_contract_version >= 2 => {
+            return Err("Task pipeline session has no implementation blueprint".to_string());
+        }
+        None => {}
+    }
     Ok(workspace)
 }
 
@@ -258,7 +282,7 @@ fn validate_activation_authority_sync(
             "Task pipeline activation authority changed before it was consumed".to_string(),
         ));
     }
-    validate_current_user_approved_plan_sync(conn, &session)
+    validate_current_user_approved_plan_sync(conn, &session).map(|_| ())
 }
 
 pub(crate) fn validate_start_authority_sync(
@@ -323,10 +347,15 @@ pub(crate) fn validate_start_authority_sync(
     Ok(())
 }
 
+pub(crate) struct ApprovedPlanBundleSnapshot {
+    pub overview: crate::domain::entities::Artifact,
+    pub blueprint: Option<crate::domain::entities::Artifact>,
+}
+
 fn validate_current_user_approved_plan_sync(
     conn: &rusqlite::Connection,
     session: &IdeationSession,
-) -> AppResult<()> {
+) -> AppResult<ApprovedPlanBundleSnapshot> {
     let plan_id = session
         .plan_artifact_id
         .as_ref()
@@ -336,7 +365,8 @@ fn validate_current_user_approved_plan_sync(
         .ok_or_else(|| AppError::NotFound("Current plan artifact not found".to_string()))?;
     let approval = conn
         .query_row(
-            "SELECT artifact_id, artifact_version, approved_by
+            "SELECT artifact_id, artifact_version, approved_by,
+                    blueprint_artifact_id, blueprint_artifact_version
              FROM plan_artifact_approvals WHERE session_id = ?1",
             [session.id.as_str()],
             |row| {
@@ -344,6 +374,8 @@ fn validate_current_user_approved_plan_sync(
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
                 ))
             },
         )
@@ -361,5 +393,68 @@ fn validate_current_user_approved_plan_sync(
             "Current plan version requires explicit user approval".to_string(),
         ));
     }
-    Ok(())
+    let blueprint = match session.plan_blueprint_artifact_id.as_ref() {
+        Some(blueprint_id) => {
+            let latest_blueprint_id =
+                ArtifactRepo::resolve_latest_sync(conn, blueprint_id.as_str())?;
+            let latest_blueprint = ArtifactRepo::get_by_id_sync(conn, &latest_blueprint_id)?
+                .ok_or_else(|| {
+                    AppError::NotFound("Current plan blueprint artifact not found".to_string())
+                })?;
+            if approval.3.as_deref() != Some(latest_blueprint.id.as_str())
+                || approval.4 != Some(i64::from(latest_blueprint.metadata.version))
+            {
+                return Err(AppError::Validation(
+                    "Current plan blueprint version requires explicit user approval".to_string(),
+                ));
+            }
+            Some(latest_blueprint)
+        }
+        None if session.plan_contract_version >= 2 => {
+            return Err(AppError::Validation(
+                "Task pipeline has no implementation blueprint".to_string(),
+            ));
+        }
+        None => None,
+    };
+    Ok(ApprovedPlanBundleSnapshot {
+        overview: latest,
+        blueprint,
+    })
+}
+
+pub(crate) fn validate_direct_implementation_authority_sync(
+    conn: &rusqlite::Connection,
+    conversation_id: &str,
+    session_id: &str,
+    retry: bool,
+) -> AppResult<ApprovedPlanBundleSnapshot> {
+    let session = SessionRepo::get_by_id_sync(conn, session_id)?
+        .ok_or_else(|| AppError::NotFound("Planning session not found".to_string()))?;
+    let owns_plan = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM agent_conversation_workspaces
+                WHERE conversation_id = ?1 AND mode = ?3
+                  AND linked_ideation_session_id = ?2
+             )",
+            rusqlite::params![
+                conversation_id,
+                session_id,
+                if retry { "edit" } else { "plan" }
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if !owns_plan {
+        return Err(AppError::Conflict(
+            if retry {
+                "Direct implementation retry is not in the authorized Edit workspace"
+            } else {
+                "Plan conversation no longer owns this planning session"
+            }
+            .to_string(),
+        ));
+    }
+    validate_current_user_approved_plan_sync(conn, &session)
 }

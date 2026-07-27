@@ -510,6 +510,10 @@ export function useAgentsViewController({
   const activeRuntimeConversationId =
     focusedWorkspaceReviewRuntimeConversationId ?? selectedConversationId;
   const reviewerRoleDefaults = useManualRoleDefaults(activeProjectId);
+  const activeProject = useMemo(
+    () => projects.find((project) => project.id === activeProjectId) ?? null,
+    [activeProjectId, projects],
+  );
   const workspaceReviewerRuntime = useMemo(
     () =>
       runtimeFromManualRoleDefault(
@@ -532,6 +536,7 @@ export function useAgentsViewController({
     terminalUnavailableReason,
   } = useAgentsWorkspaceModel({
     activeConversation,
+    activeProject,
     focusedWorkspaceReviewConversation,
     focusedWorkspaceReviewConversationId:
       focusedWorkspaceReviewRuntimeConversationId,
@@ -546,8 +551,8 @@ export function useAgentsViewController({
     workspaceReviewerRuntime,
   });
   const activeProjectBaseBranch = useMemo(
-    () => projects.find((project) => project.id === activeProjectId)?.baseBranch ?? null,
-    [activeProjectId, projects],
+    () => activeProject?.baseBranch ?? null,
+    [activeProject],
   );
   useAgentConversationTitleEvents(activeProjectId);
   useSyncedAgentProjectFocus(projectId, setFocusedProject);

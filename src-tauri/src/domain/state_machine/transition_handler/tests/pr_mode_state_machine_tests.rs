@@ -135,6 +135,10 @@ fn setup_plan_git_repo(branch_name: &str, ahead_of_base: bool) -> tempfile::Temp
         .current_dir(path)
         .output()
         .expect("checkout main");
+    run_git(
+        path,
+        &["remote", "add", "origin", "git@github.com:owner/repo.git"],
+    );
 
     dir
 }
@@ -172,7 +176,7 @@ fn setup_origin_with_remote_plan_branch_ahead(
     );
 
     let remote_path = remote.path().to_string_lossy().into_owned();
-    run_git(repo_path, &["remote", "add", "origin", &remote_path]);
+    run_git(repo_path, &["remote", "set-url", "origin", &remote_path]);
     run_git(repo_path, &["push", "origin", "main", branch_name]);
 
     let original_local_sha = run_git(repo_path, &["rev-parse", branch_name]);
@@ -209,7 +213,7 @@ fn setup_origin_with_conflicting_remote_plan_branch_ahead(
     );
 
     let remote_path = remote.path().to_string_lossy().into_owned();
-    run_git(repo_path, &["remote", "add", "origin", &remote_path]);
+    run_git(repo_path, &["remote", "set-url", "origin", &remote_path]);
     run_git(repo_path, &["push", "origin", "main", branch_name]);
 
     let original_local_sha = run_git(repo_path, &["rev-parse", branch_name]);
@@ -651,6 +655,630 @@ async fn sync_existing_plan_branch_pr_details_uses_drafted_body() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1: PR-mode with existing pr_number → push_branch + mark_pr_ready
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn persisted_pr_authority_pending_merge_without_github_capability_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/persisted-pr-authority-unavailable";
+    let repo = setup_plan_git_repo(branch_name, true);
+    run_git(repo.path(), &["remote", "remove", "origin"]);
+    let main_before = run_git(repo.path(), &["rev-parse", "main"]);
+    let mut project = Project::new(
+        "persisted PR authority without GitHub capability".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = false;
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-persisted-pr-no-github").await;
+    let mut plan_branch = make_pr_eligible_plan_branch(&task_id, Some(812), false);
+    plan_branch.pr_eligible = false;
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/812".to_string());
+    plan_branch.pr_status = Some(PrStatus::Open);
+    let plan_branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler.on_enter(&State::PendingMerge).await;
+    assert!(
+        result.is_ok(),
+        "PendingMerge should fail closed through the canonical merge-incomplete path: {result:?}"
+    );
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete,
+        "persisted PRs without GitHub supervision must stay recoverable instead of locally merging"
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("github_pr_capability_unavailable".to_string())
+    );
+    assert_eq!(metadata["pr_number"], Value::from(812_i64));
+    assert_ne!(
+        updated_task.internal_status,
+        InternalStatus::Merged,
+        "unavailable GitHub capability must never report a local merge success"
+    );
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .expect("plan branch should remain");
+    assert_eq!(updated_plan_branch.status, PlanBranchStatus::Active);
+    assert_eq!(updated_plan_branch.pr_number, Some(812));
+    assert_eq!(
+        updated_plan_branch.pr_url.as_deref(),
+        Some("https://github.com/owner/repo/pull/812")
+    );
+    assert_eq!(updated_plan_branch.pr_status, Some(PrStatus::Open));
+
+    assert_eq!(
+        run_git(repo.path(), &["rev-parse", "main"]),
+        main_before,
+        "the unavailable-capability path must not locally merge the plan branch into the base"
+    );
+}
+
+#[tokio::test]
+async fn plan_merge_without_plan_branch_row_stays_merge_incomplete_without_local_merge() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/missing-plan-branch-record";
+    let repo = setup_plan_git_repo(branch_name, true);
+    let main_before = run_git(repo.path(), &["rev-parse", "main"]);
+    let worktree_root = repo.path().join("worktrees");
+    std::fs::create_dir_all(&worktree_root).expect("create isolated merge worktree root");
+
+    let mut project = Project::new(
+        "Plan merge without plan branch record".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_root.to_string_lossy().into_owned());
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-missing-plan-branch-record").await;
+    let mut task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should exist");
+    task.task_branch = Some(branch_name.to_string());
+    task_repo.update(&task).await.unwrap();
+
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+    .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("missing plan branch should use the canonical merge-incomplete transition");
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_missing".to_string())
+    );
+    assert_eq!(
+        run_git(repo.path(), &["rev-parse", "main"]),
+        main_before,
+        "a missing plan branch record must never authorize a local plan merge"
+    );
+}
+
+#[tokio::test]
+async fn plan_merge_without_a_plan_branch_repository_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    setup_project(&project_repo).await;
+    let task_id =
+        create_pending_merge_task(&task_repo, "task-plan-branch-repository-unavailable").await;
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler.on_enter(&State::PendingMerge).await.expect(
+        "missing plan branch repository should use the canonical merge-incomplete transition",
+    );
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_repository_unavailable".to_string())
+    );
+}
+
+#[tokio::test]
+async fn plan_merge_with_a_plan_branch_lookup_error_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    setup_project(&project_repo).await;
+    let task_id = create_pending_merge_task(&task_repo, "task-plan-branch-lookup-error").await;
+    plan_branch_repo.fail_next_merge_task_lookup("planned repository outage");
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("plan branch lookup failures should use the canonical merge-incomplete transition");
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_lookup_failed".to_string())
+    );
+    assert_eq!(
+        metadata["cause"],
+        Value::String("Infrastructure error: planned repository outage".to_string())
+    );
+}
+
+#[tokio::test]
+async fn github_eligible_pre_pr_branch_without_github_service_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/github-without-service";
+    let repo = setup_plan_git_repo(branch_name, true);
+    let main_before = run_git(repo.path(), &["rev-parse", "main"]);
+    let mut project = Project::new(
+        "GitHub pre-PR branch without GitHub service".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-github-without-service").await;
+    let mut plan_branch = make_pr_eligible_plan_branch(&task_id, None, false);
+    plan_branch.branch_name = branch_name.to_string();
+    let plan_branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("missing GitHub supervision should use the canonical merge-incomplete transition");
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("github_pr_capability_unavailable".to_string())
+    );
+    assert_eq!(
+        metadata["branch_name"],
+        Value::String(branch_name.to_string())
+    );
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .expect("plan branch should remain");
+    assert_eq!(updated_plan_branch.status, PlanBranchStatus::Active);
+    assert_eq!(
+        run_git(repo.path(), &["rev-parse", "main"]),
+        main_before,
+        "a GitHub-capable branch without GitHub supervision must not enter the local merge path"
+    );
+}
+
+#[tokio::test]
+async fn reviewable_diff_read_failure_stays_merge_incomplete_without_github_or_local_merge() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let repo = setup_plan_git_repo("plan/reviewable-diff-fixture", true);
+    let main_before = run_git(repo.path(), &["rev-parse", "main"]);
+    let mut project = Project::new(
+        "Reviewable diff failure must fail closed".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("missing-review-base".to_string());
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-reviewable-diff-read-failure").await;
+    let mut plan_branch = make_pr_eligible_plan_branch(&task_id, None, false);
+    plan_branch.branch_name = "plan/reviewable-diff-fixture".to_string();
+    let plan_branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
+        .with_github_service(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler.on_enter(&State::PendingMerge).await.expect(
+        "reviewable-diff read failures should use the canonical merge-incomplete transition",
+    );
+
+    {
+        let github_state = mock_github.state();
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(github_state.create_draft_pr_calls, 0);
+        assert_eq!(github_state.mark_pr_ready_calls, 0);
+    }
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_reviewable_diff_check_failed".to_string())
+    );
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .expect("plan branch should remain");
+    assert_eq!(updated_plan_branch.status, PlanBranchStatus::Active);
+    assert_eq!(
+        run_git(repo.path(), &["rev-parse", "main"]),
+        main_before,
+        "a reviewable-diff read failure must not authorize local merge"
+    );
+}
+
+#[tokio::test]
+async fn stale_pre_pr_eligibility_without_origin_uses_local_merge_without_github_calls() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/stale-pre-pr-local";
+    let repo = setup_plan_git_repo(branch_name, true);
+    run_git(repo.path(), &["remote", "remove", "origin"]);
+    let worktree_root = repo.path().join("worktrees");
+    std::fs::create_dir_all(&worktree_root).expect("create isolated merge worktree root");
+
+    let mut project = Project::new(
+        "stale pre-PR local capability".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_root.to_string_lossy().into_owned());
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-stale-pre-pr-local").await;
+    let mut plan_branch = make_pr_eligible_plan_branch(&task_id, None, false);
+    plan_branch.branch_name = branch_name.to_string();
+    let plan_branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+    .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
+    .with_github_service(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("local-only PendingMerge entry should complete the canonical local merge");
+
+    {
+        let github_state = mock_github.state();
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(github_state.create_draft_pr_calls, 0);
+        assert_eq!(github_state.mark_pr_ready_calls, 0);
+    }
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(updated_task.internal_status, InternalStatus::Merged);
+    assert_eq!(
+        run_git(repo.path(), &["show", "main:plan.txt"]),
+        "plan branch work",
+        "the stale eligible branch must take the local merge pipeline"
+    );
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .expect("plan branch should remain");
+    assert!(!updated_plan_branch.pr_eligible);
+    assert_eq!(updated_plan_branch.pr_number, None);
+}
+
+#[tokio::test]
+async fn stale_pre_pr_eligibility_update_failure_stays_merge_incomplete() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/stale-pre-pr-update-failure";
+    let repo = setup_plan_git_repo(branch_name, true);
+    run_git(repo.path(), &["remote", "remove", "origin"]);
+    let main_before = run_git(repo.path(), &["rev-parse", "main"]);
+    let mut project = Project::new(
+        "stale pre-PR eligibility update failure".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-stale-pre-pr-update-failure").await;
+    let mut plan_branch = make_pr_eligible_plan_branch(&task_id, None, false);
+    plan_branch.branch_name = branch_name.to_string();
+    let plan_branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+    plan_branch_repo.fail_next_pr_eligibility_update("planned persistence outage");
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("stale eligibility persistence failures should use the canonical merge-incomplete transition");
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("plan_branch_pr_eligibility_update_failed".to_string())
+    );
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .expect("plan branch should remain");
+    assert!(
+        updated_plan_branch.pr_eligible,
+        "failed persistence must not claim the branch was routed to local merge"
+    );
+    assert_eq!(
+        run_git(repo.path(), &["rev-parse", "main"]),
+        main_before,
+        "failed eligibility persistence must never start a local merge"
+    );
+}
+
+#[tokio::test]
+async fn pre_pr_origin_inspection_failure_blocks_without_local_merge_or_github_calls() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/pre-pr-inspection-failure";
+    let repo = setup_plan_git_repo(branch_name, true);
+    let main_ref_path = repo.path().join(".git/refs/heads/main");
+    let main_before = std::fs::read_to_string(&main_ref_path).expect("read main ref");
+    std::fs::remove_file(repo.path().join(".git/config")).expect("remove Git config file");
+    std::fs::create_dir(repo.path().join(".git/config")).expect("corrupt Git config path");
+
+    let mut project = Project::new(
+        "pre-PR origin inspection failure".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+    project_repo.create(project).await.unwrap();
+
+    let task_id = create_pending_merge_task(&task_repo, "task-pre-pr-inspection-failure").await;
+    let plan_branch = make_pr_eligible_plan_branch(&task_id, None, false);
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
+        .with_github_service(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>);
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .on_enter(&State::PendingMerge)
+        .await
+        .expect("origin inspection failure should use the canonical merge-incomplete transition");
+
+    {
+        let github_state = mock_github.state();
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(github_state.create_draft_pr_calls, 0);
+        assert_eq!(github_state.mark_pr_ready_calls, 0);
+    }
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("merge task should remain");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("merge-incomplete transition should persist diagnostics"),
+    )
+    .expect("diagnostics should remain valid JSON");
+    assert_eq!(
+        metadata["error_code"],
+        Value::String("repository_capability_inspection_failed".to_string())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&main_ref_path).expect("read main ref after failure"),
+        main_before,
+        "origin inspection failure must never locally merge the plan branch"
+    );
+}
 
 /// PR-mode: plan_branch has pr_number=42.
 /// Expected: push_branch(42) + mark_pr_ready(42) called, create_draft_pr NOT called.
@@ -1347,7 +1975,7 @@ async fn test_pr_eligible_false_skips_pr_path() {
     let task_id = create_pending_merge_task(&task_repo, "task-push-to-main").await;
 
     // pr_eligible = false → should NOT trigger PR path
-    let mut pb = make_pr_eligible_plan_branch(&task_id, Some(42), false);
+    let mut pb = make_pr_eligible_plan_branch(&task_id, None, false);
     pb.pr_eligible = false;
     plan_branch_repo.create(pb).await.unwrap();
 

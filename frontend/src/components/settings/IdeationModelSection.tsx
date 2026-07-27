@@ -20,12 +20,11 @@ import { SectionCard, ErrorBanner } from "./SettingsView.shared";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useIdeationModelSettings } from "@/hooks/useIdeationModelSettings";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
+import { isAgentModelSelectableForProvider } from "@/lib/agent-models";
 
 // ============================================================================
 // Constants
 // ============================================================================
-
-const CLAUDE_FABLE_MIN_VERSION = "2.1.170";
 
 interface ModelOption {
   value: string;
@@ -51,6 +50,21 @@ const MODEL_OPTIONS = [
     description: "Most capable, highest cost",
   },
   {
+    value: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    description: "Claude Opus 4.7, requires Claude Code 2.1.111+",
+  },
+  {
+    value: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    description: "Claude Opus 4.8, requires Claude Code 2.1.154+",
+  },
+  {
+    value: "claude-opus-5",
+    label: "Claude Opus 5",
+    description: "Claude Opus 5, requires Claude Code 2.1.219+",
+  },
+  {
     value: "haiku",
     label: "Haiku",
     description: "Fastest, lowest cost",
@@ -58,7 +72,7 @@ const MODEL_OPTIONS = [
   {
     value: "fable",
     label: "Fable",
-    description: `Claude Fable 5, requires Claude Code ${CLAUDE_FABLE_MIN_VERSION}+`,
+    description: "Claude Fable 5, requires Claude Code 2.1.170+",
   },
 ] as const satisfies readonly ModelOption[];
 
@@ -83,28 +97,18 @@ function formatSource(source: string): string {
   }
 }
 
-function claudeSupportsFable(
+function modelOptionsForClaudeCapabilities(
   providers: readonly {
     provider: string;
     supportedModelAliases?: readonly string[] | null | undefined;
   }[],
-): boolean {
+): readonly ModelOption[] {
   const aliases =
     providers.find((provider) => provider.provider === "claude")
       ?.supportedModelAliases ?? null;
-  return (
-    aliases?.some((alias) => {
-      const normalized = alias.trim().toLowerCase();
-      return normalized === "fable" || normalized === "claude-fable-5";
-    }) ?? false
-  );
-}
-
-function modelOptionsForFableAvailability(
-  isFableAvailable: boolean,
-): readonly ModelOption[] {
   return MODEL_OPTIONS.map((option) =>
-    option.value !== "fable" || isFableAvailable
+    option.value === "inherit" ||
+    isAgentModelSelectableForProvider("claude", option.value, aliases)
       ? option
       : { ...option, disabled: true },
   );
@@ -365,9 +369,7 @@ function ProjectModelSubsection({
 export function IdeationModelSection() {
   const activeProject = useProjectStore(selectActiveProject);
   const { providers } = useHarnessProviders({ refreshRuntime: true });
-  const modelOptions = modelOptionsForFableAvailability(
-    claudeSupportsFable(providers),
-  );
+  const modelOptions = modelOptionsForClaudeCapabilities(providers);
 
   return (
     <SectionCard

@@ -78,6 +78,72 @@ async fn test_resolve_model_global_override() {
 }
 
 #[tokio::test]
+async fn test_resolve_model_preserves_native_aliases_across_override_scopes() {
+    for alias in ["sonnet", "opus", "haiku", "fable"] {
+        let repo = MemoryIdeationModelSettingsRepository::new();
+        repo.upsert_global(alias, "inherit", "inherit", "inherit")
+            .await
+            .unwrap();
+
+        let global = resolve_ideation_model("ralphx-ideation", None, &repo).await;
+        assert_eq!(global.model, alias);
+        assert_eq!(global.source, "global");
+
+        repo.upsert_for_project(
+            "native-alias-preservation-project",
+            alias,
+            "inherit",
+            "inherit",
+            "inherit",
+        )
+        .await
+        .unwrap();
+
+        let project = resolve_ideation_model(
+            "ralphx-ideation",
+            Some("native-alias-preservation-project"),
+            &repo,
+        )
+        .await;
+        assert_eq!(project.model, alias);
+        assert_eq!(project.source, "user");
+    }
+}
+
+#[tokio::test]
+async fn test_resolve_model_global_exact_opus_id_is_preserved() {
+    let repo = MemoryIdeationModelSettingsRepository::new();
+    repo.upsert_global("claude-opus-4-7", "inherit", "inherit", "inherit")
+        .await
+        .unwrap();
+
+    let result = resolve_ideation_model("ralphx-ideation", None, &repo).await;
+    assert_eq!(result.model, "claude-opus-4-7");
+    assert_eq!(result.source, "global");
+}
+
+#[tokio::test]
+async fn test_resolve_model_project_exact_opus_id_is_preserved() {
+    let repo = MemoryIdeationModelSettingsRepository::new();
+    repo.upsert_for_project(
+        "proj-abc",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "inherit",
+        "inherit",
+    )
+    .await
+    .unwrap();
+
+    let primary = resolve_ideation_model("ralphx-ideation", Some("proj-abc"), &repo).await;
+    let verifier = resolve_ideation_model("ralphx-plan-verifier", Some("proj-abc"), &repo).await;
+    assert_eq!(primary.model, "claude-opus-5");
+    assert_eq!(primary.source, "user");
+    assert_eq!(verifier.model, "claude-opus-4-8");
+    assert_eq!(verifier.source, "user");
+}
+
+#[tokio::test]
 async fn test_resolve_model_global_override_verifier() {
     let repo = MemoryIdeationModelSettingsRepository::new();
     repo.upsert_global("sonnet", "opus", "inherit", "inherit")

@@ -30,6 +30,9 @@ use axum::{
 
 use super::*;
 use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
+use crate::application::agent_workspace_local_commit::{
+    commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };
@@ -43,13 +46,15 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairClaim,
 };
 use crate::application::agent_workspace_review::{
-    apply_review_artifact_to_monitor, complete_agent_workspace_review_run_unlocked,
+    apply_review_artifact_pair_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
     lock_workspace_review_lifecycle, review_gate_publish_blocker,
     start_agent_workspace_review_blocking_fixer_with_override, workspace_review_mode_is_eligible,
     AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
     AgentWorkspaceReviewTarget, WorkspaceReviewFixerConfirmation,
 };
+#[cfg(test)]
+use crate::application::agent_workspace_review::apply_review_artifact_to_monitor;
 use crate::application::agent_workspace_review_auto_merge::{
     preview_manual_workspace_review_start, start_guarded_agent_workspace_review,
     start_guarded_agent_workspace_review_with_runtime_override, WorkspaceReviewStartConfirmation,
@@ -84,7 +89,8 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
 use crate::domain::entities::{
-    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    is_publication_push_active, pr_comment_body_excerpt, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
@@ -149,6 +155,29 @@ pub struct UpdateAgentWorkspaceFromBaseRequest {
     pub base_display_name: Option<String>,
     /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
     pub created_by_run_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommitAgentWorkspaceLocallyRequest {
+    pub expected_head_sha: String,
+    pub review_artifact_id: Option<String>,
+    pub review_artifact_version: Option<u32>,
+    pub reviewed_head_sha: Option<String>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub attempt_token: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CommitAgentWorkspaceLocallyResponse {
+    pub success: bool,
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub outcome: String,
+    pub branch_name: String,
+    pub previous_head_sha: String,
+    pub commit_sha: String,
+    pub had_changes: bool,
+    pub attempt_token: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -601,6 +630,9 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub review_artifact_id: Option<String>,
     pub review_artifact_version: Option<u32>,
     pub review_artifact_updated_at: Option<String>,
+    pub review_requested_changes_artifact_id: Option<String>,
+    pub review_requested_changes_artifact_version: Option<u32>,
+    pub review_requested_changes_artifact_updated_at: Option<String>,
     pub review_gate_bypassed_at: Option<String>,
     pub review_gate_bypassed_target_scope: Option<String>,
     pub review_gate_bypassed_diff_fingerprint: Option<String>,
@@ -619,6 +651,7 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub workspace_head_sha: Option<String>,
     pub current_diff_fingerprint: Option<String>,
     pub previous_version_id: Option<String>,
+    pub review_requested_changes_previous_version_id: Option<String>,
     pub review_blocking_summary: Option<String>,
     pub review_blocking_fingerprint: Option<String>,
     pub review_fixer_run_id: Option<String>,
@@ -657,6 +690,14 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             review_artifact_updated_at: value
                 .review_artifact_updated_at
                 .map(|value| value.to_rfc3339()),
+            review_requested_changes_artifact_id: value
+                .review_requested_changes_artifact_id
+                .map(|artifact_id| artifact_id.as_str().to_string()),
+            review_requested_changes_artifact_version: value
+                .review_requested_changes_artifact_version,
+            review_requested_changes_artifact_updated_at: value
+                .review_requested_changes_artifact_updated_at
+                .map(|value| value.to_rfc3339()),
             review_gate_bypassed_at: value
                 .review_gate_bypassed_at
                 .map(|value| value.to_rfc3339()),
@@ -682,6 +723,9 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             current_diff_fingerprint: value.current_diff_fingerprint,
             previous_version_id: value
                 .previous_version_id
+                .map(|artifact_id| artifact_id.as_str().to_string()),
+            review_requested_changes_previous_version_id: value
+                .review_requested_changes_previous_version_id
                 .map(|artifact_id| artifact_id.as_str().to_string()),
             review_blocking_summary: value.review_blocking_summary,
             review_blocking_fingerprint: value.review_blocking_fingerprint,
@@ -929,6 +973,8 @@ pub struct StartAgentWorkspaceReviewFixerResponse {
 pub struct WriteAgentWorkspaceReviewArtifactRequest {
     pub title: Option<String>,
     pub content: String,
+    pub requested_changes_title: Option<String>,
+    pub requested_changes_content: String,
     pub target_scope: Option<String>,
     pub head_sha: Option<String>,
     pub diff_fingerprint: Option<String>,
@@ -992,7 +1038,9 @@ pub struct WriteAgentWorkspaceReviewArtifactResponse {
     pub success: bool,
     pub monitor: AgentWorkspaceReviewMonitorResponse,
     pub artifact: ArtifactResponse,
+    pub requested_changes_artifact: ArtifactResponse,
     pub previous_artifact_id: Option<String>,
+    pub previous_requested_changes_artifact_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1335,6 +1383,44 @@ pub async fn publish_agent_workspace(
     }
 }
 
+/// POST /api/agent-workspaces/{conversation_id}/commit-local
+pub async fn commit_agent_workspace_locally_handler(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<CommitAgentWorkspaceLocallyRequest>,
+) -> Result<Json<CommitAgentWorkspaceLocallyResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = commit_agent_workspace_locally(
+        state.app_state.as_ref(),
+        conversation_id,
+        AgentWorkspaceLocalCommitRequest {
+            expected_head_sha: req.expected_head_sha,
+            review_artifact_id: req.review_artifact_id,
+            review_artifact_version: req.review_artifact_version,
+            reviewed_head_sha: req.reviewed_head_sha,
+            reviewed_diff_fingerprint: req.reviewed_diff_fingerprint,
+            attempt_token: req.attempt_token,
+            #[cfg(test)]
+            before_staging: None,
+        },
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
+    let workspace = agent_workspace_response_for_state(state.app_state.as_ref(), result.workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    Ok(Json(CommitAgentWorkspaceLocallyResponse {
+        success: true,
+        workspace,
+        outcome: result.outcome.as_str().to_string(),
+        branch_name: result.branch_name,
+        previous_head_sha: result.previous_head_sha,
+        commit_sha: result.commit_sha,
+        had_changes: result.had_changes,
+        attempt_token: result.attempt_token,
+    }))
+}
+
 /// GET /api/agent-workspaces/{conversation_id}/pr-fix-context
 pub async fn get_agent_workspace_pr_fix_context(
     State(state): State<HttpServerState>,
@@ -1645,7 +1731,10 @@ pub async fn write_agent_workspace_review_artifact(
         normalize_workspace_review_artifact_content(req.content),
         "content",
     )?;
+    let requested_changes_content =
+        non_empty_string(req.requested_changes_content, "requested_changes_content")?;
     let content_bytes = content.len();
+    let requested_changes_content_bytes = requested_changes_content.len();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
     let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
@@ -1698,6 +1787,28 @@ pub async fn write_agent_workspace_review_artifact(
         }
         None => None,
     };
+    let previous_requested_changes_artifact =
+        match monitor.review_requested_changes_artifact_id.clone() {
+            Some(artifact_id) => {
+                let latest_id = state
+                    .app_state
+                    .artifact_repo
+                    .resolve_latest_artifact_id(&artifact_id)
+                    .await
+                    .map_err(|error| {
+                        json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                    })?;
+                state
+                    .app_state
+                    .artifact_repo
+                    .get_by_id(&latest_id)
+                    .await
+                    .map_err(|error| {
+                        json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                    })?
+            }
+            None => None,
+        };
 
     let title = workspace_review_artifact_title(
         req.title,
@@ -1718,13 +1829,40 @@ pub async fn write_agent_workspace_review_artifact(
         .as_ref()
         .map(|artifact| artifact.metadata.version.saturating_add(1))
         .unwrap_or(1);
+    let requested_changes_title = req
+        .requested_changes_title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            previous_requested_changes_artifact
+                .as_ref()
+                .map(|artifact| artifact.name.clone())
+        })
+        .unwrap_or_else(|| format!("{title} — Requested Changes"));
+    let previous_requested_changes_artifact_id = previous_requested_changes_artifact
+        .as_ref()
+        .map(|artifact| artifact.id.as_str().to_string());
+    let previous_requested_changes_artifact_entity_id = previous_requested_changes_artifact
+        .as_ref()
+        .map(|artifact| artifact.id.clone());
+    let requested_changes_next_version = previous_requested_changes_artifact
+        .as_ref()
+        .map(|artifact| artifact.metadata.version.saturating_add(1))
+        .unwrap_or(1);
     let mut artifact = Artifact::new_inline(
-        title,
+        title.clone(),
         ArtifactType::PrReview,
         content,
         "ralphx-workspace-reviewer",
     );
     artifact.metadata.version = next_version;
+    let mut requested_changes_artifact = Artifact::new_inline(
+        requested_changes_title,
+        ArtifactType::PrReview,
+        requested_changes_content,
+        "ralphx-workspace-reviewer",
+    );
+    requested_changes_artifact.metadata.version = requested_changes_next_version;
 
     let created = if let Some(previous) = previous_artifact {
         state
@@ -1745,8 +1883,28 @@ pub async fn write_agent_workspace_review_artifact(
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
             })?
     };
+    let created_requested_changes =
+        if let Some(previous) = previous_requested_changes_artifact {
+            state
+                .app_state
+                .artifact_repo
+                .create_with_previous_version(requested_changes_artifact, previous.id)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?
+        } else {
+            state
+                .app_state
+                .artifact_repo
+                .create(requested_changes_artifact)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?
+        };
 
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target_scope,
         target_head_sha.clone(),
@@ -1756,6 +1914,10 @@ pub async fn write_agent_workspace_review_artifact(
         created.metadata.version,
         created.metadata.created_at,
         previous_artifact_entity_id,
+        created_requested_changes.id.clone(),
+        created_requested_changes.metadata.version,
+        created_requested_changes.metadata.created_at,
+        previous_requested_changes_artifact_entity_id,
     );
     let monitor = state
         .app_state
@@ -1782,17 +1944,27 @@ pub async fn write_agent_workspace_review_artifact(
             "headSha": target_head_sha,
             "diffFingerprint": target_diff_fingerprint,
             "previousArtifactId": previous_artifact_id,
+            "previousRequestedChangesArtifactId": previous_requested_changes_artifact_id,
             "artifact": {
                 "id": created.id.as_str(),
                 "name": created.name.clone(),
                 "content": content_text,
                 "version": created.metadata.version,
+            },
+            "requestedChangesArtifact": {
+                "id": created_requested_changes.id.as_str(),
+                "name": created_requested_changes.name.clone(),
+                "version": created_requested_changes.metadata.version,
             }
         }),
     );
 
     let mut artifact_response = ArtifactResponse::from(created);
     artifact_response.previous_artifact_id = previous_artifact_id.clone();
+    let mut requested_changes_artifact_response =
+        ArtifactResponse::from(created_requested_changes);
+    requested_changes_artifact_response.previous_artifact_id =
+        previous_requested_changes_artifact_id.clone();
     tracing::info!(
         target: "ralphx_lib::http_server::agent_workspaces",
         operation = "workspace_review_artifact_write_http",
@@ -1806,8 +1978,12 @@ pub async fn write_agent_workspace_review_artifact(
         artifact_id = %artifact_response.id,
         artifact_version = artifact_response.version,
         previous_artifact_id = %previous_artifact_id.as_deref().unwrap_or("none"),
+        requested_changes_artifact_id = %requested_changes_artifact_response.id,
+        requested_changes_artifact_version = requested_changes_artifact_response.version,
+        previous_requested_changes_artifact_id = %previous_requested_changes_artifact_id.as_deref().unwrap_or("none"),
         created_by_run_id = %created_by_run_id.as_deref().unwrap_or("none"),
         content_bytes,
+        requested_changes_content_bytes,
         monitor_status = %monitor.status,
         "Wrote workspace Review artifact"
     );
@@ -1816,7 +1992,9 @@ pub async fn write_agent_workspace_review_artifact(
         success: true,
         monitor: AgentWorkspaceReviewMonitorResponse::from(monitor),
         artifact: artifact_response,
+        requested_changes_artifact: requested_changes_artifact_response,
         previous_artifact_id,
+        previous_requested_changes_artifact_id,
     }))
 }
 
@@ -2044,7 +2222,7 @@ pub async fn complete_agent_workspace_review_run(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+    let lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let workspace = load_current_workspace_review_eligible(state.app_state.as_ref(), &workspace)
         .await
         .map_err(workspace_review_action_error)?;
@@ -2088,6 +2266,9 @@ pub async fn complete_agent_workspace_review_run(
         summary_bytes,
         "Handled workspace Review completion"
     );
+    // Publishing takes the same lifecycle lock to serialize against review mutations. The review
+    // result is durable now, so release this handler's guard before resuming publication.
+    drop(lifecycle_guard);
     settle_workspace_review_publish_authorization(&state, &conversation_id, &workspace, &monitor)
         .await?;
     // R3: on a Blocking/Failed gate for an automation-owned conversation, pause the automation and
@@ -4679,10 +4860,7 @@ fn parse_update_base_kind(
 }
 
 fn is_publish_in_progress(push_status: Option<&str>) -> bool {
-    matches!(
-        push_status,
-        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
-    )
+    is_publication_push_active(push_status)
 }
 
 fn update_only_repair_pr_supervision_state(

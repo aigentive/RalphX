@@ -2413,6 +2413,7 @@ impl AppState {
                     "CREATE TABLE deferred_plan_approval_notifications (
                         session_id TEXT PRIMARY KEY NOT NULL,
                         artifact_id TEXT NOT NULL,
+                        plan_target_id TEXT,
                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                     );",
                 )

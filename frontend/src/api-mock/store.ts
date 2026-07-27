@@ -68,6 +68,14 @@ function seedMockData(): void {
     id: "project-mock-1",
     name: "Demo Project",
     workingDirectory: "/demo/project",
+    baseBranch: "main",
+    worktreeParentDirectory: "/demo/worktrees",
+    githubPrEnabled: true,
+    repositoryCapability: {
+      kind: "github",
+      fetchUrl: "https://github.com/mock/demo-project.git",
+      pushUrl: "https://github.com/mock/demo-project.git",
+    },
   });
   store.projects.set(project.id, project);
 

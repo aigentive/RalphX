@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use crate::domain::entities::{
-    create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
-    ScopeDriftStatus, StepProgressSummary, TaskContext, TaskDependencySummary, TaskId,
-    TaskProposalSummary,
+    create_artifact_content_preview, generate_task_context_hints, ArtifactId, ArtifactSummary,
+    ScopeDriftStatus, StepProgressSummary, Task, TaskContext, TaskDependencySummary, TaskId,
+    TaskProposal, TaskProposalSummary,
 };
 use crate::domain::repositories::{
     ArtifactRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,

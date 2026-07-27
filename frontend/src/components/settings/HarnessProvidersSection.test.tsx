@@ -989,6 +989,51 @@ describe("HarnessProvidersSection", () => {
     });
   });
 
+  it("keeps a pinned model visible without saving when CLI capability support downgrades", () => {
+    const downgradedSettings: AgentProvidersSettingsResponse = {
+      ...settings,
+      providers: settings.providers.map((provider) =>
+        provider.provider === "claude"
+          ? {
+              ...provider,
+              enabled: true,
+              available: true,
+              binaryFound: true,
+              binaryPath: "/opt/homebrew/bin/claude",
+              model: "claude-opus-5",
+              supportedModelAliases: [
+                "sonnet",
+                "opus",
+                "haiku",
+                "claude-opus-4-7",
+                "claude-opus-4-8",
+              ],
+            }
+          : provider,
+      ),
+    };
+    mockProviders(downgradedSettings);
+    vi.mocked(useAgentModels).mockReturnValue({
+      models: [
+        {
+          provider: "claude",
+          modelId: "claude-opus-5",
+          menuLabel: "Claude Opus 5",
+          enabled: true,
+          defaultEffort: "high",
+          description: "Pinned Claude Opus 5.",
+        },
+      ],
+    } as ReturnType<typeof useAgentModels>);
+
+    render(<HarnessProvidersSection />);
+
+    const claudeCard = screen.getByTestId("provider-card-claude");
+    openSelectById("provider-model-claude");
+    expect(within(claudeCard).getByText("claude-opus-5")).toBeInTheDocument();
+    expect(updateProviderAsync).not.toHaveBeenCalled();
+  });
+
   it("reapplies the current default provider to all agents", async () => {
     const user = userEvent.setup();
     render(<HarnessProvidersSection />);

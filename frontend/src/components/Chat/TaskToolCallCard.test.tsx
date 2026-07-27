@@ -377,6 +377,27 @@ describe("TaskToolCallCard — RalphX native delegation", () => {
     expect(screen.getByText("Delegated review finished")).toBeInTheDocument();
   });
 
+  it("renders the typed empty-completion cause and safe terminal details when expanded", async () => {
+    const user = userEvent.setup();
+    render(
+      <TaskToolCallCard
+        toolCall={makeDelegateToolCall({
+          result: {
+            job_id: "job-no-output",
+            status: "failed",
+            error: "Codex exited without a response (context=project, code=Some(1), signal=None); diagnostics: Reading additional input from stdin...",
+          },
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /delegated task: ralphx-execution-reviewer/i }));
+
+    expect(screen.getByText(/Delegate completed without a response/)).toBeInTheDocument();
+    expect(screen.getByText(/Exit code: 1/)).toBeInTheDocument();
+    expect(screen.queryByText(/Reading additional input from stdin/)).not.toBeInTheDocument();
+  });
+
   it("does not fetch the delegated conversation until the card is expanded", () => {
     const getConversationMessagesPageSpy = vi.spyOn(chatApi, "getConversationMessagesPage").mockResolvedValue({
       conversation: {

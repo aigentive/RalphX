@@ -242,6 +242,10 @@ fn no_output_error_has_actionable_summary_and_retains_terminal_details() {
     }
     .to_string();
 
+    // The delegation UI keys off this prefix to render the typed
+    // "Delegate completed without a response" cause
+    // (frontend/src/components/Chat/delegation-tool-calls.ts). Changing it
+    // requires updating that mapping in the same change.
     assert!(error.starts_with("Codex exited without a response"));
     assert!(error.contains("code=Some(1)"));
     assert!(error.contains("Reading additional input from stdin"));

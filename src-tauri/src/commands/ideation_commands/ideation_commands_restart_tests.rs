@@ -892,7 +892,11 @@ async fn restart_core_discards_dirty_current_attempt_merge_worktree() {
         .expect("plan branch should remain");
     assert_eq!(refreshed_plan_branch.id, old_plan_branch_id);
     assert_eq!(refreshed_plan_branch.branch_name, plan_branch.branch_name);
-    assert_eq!(refreshed_plan_branch.pr_number, None);
+    assert_eq!(
+        refreshed_plan_branch.pr_number,
+        Some(739),
+        "a confirmed remote PR remains authoritative across restart"
+    );
     assert_eq!(github.state().check_pr_status_calls, 1);
     assert_eq!(github.state().close_pr_calls, 0);
     let archived_old_task = state
@@ -909,7 +913,11 @@ async fn restart_core_discards_dirty_current_attempt_merge_worktree() {
         .expect("workspace lookup should succeed")
         .expect("workspace should remain");
     assert_eq!(stored_workspace.linked_plan_branch_id, Some(plan_branch.id));
-    assert_eq!(stored_workspace.publication_pr_number, None);
+    assert_eq!(
+        stored_workspace.publication_pr_number,
+        Some(739),
+        "restart must not clear the workspace PR identity"
+    );
     assert_eq!(
         state
             .agent_conversation_workspace_repo

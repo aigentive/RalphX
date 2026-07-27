@@ -75,6 +75,7 @@ fn automation_run() -> AutomationRun {
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: Some("plan-artifact-1".to_string()),
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Author the automatic plan judge and keep it scoped to PR 5.".to_string(),
@@ -123,7 +124,8 @@ fn plan_judge_prompt_includes_budgeted_sections_current_phase_and_artifact_pin()
         "reason": "The plan missed artifact pinning.",
         "confidence": "medium",
         "revisionInstructions": "Add artifact id pinning and crash recovery details before implementation proceeds.",
-        "evaluatedArtifactId": "plan-artifact-0"
+        "evaluatedOverviewArtifactId": "plan-artifact-0",
+        "evaluatedBlueprintArtifactId": null
     })
     .to_string();
     let oversized_plan = format!(
@@ -135,8 +137,10 @@ fn plan_judge_prompt_includes_budgeted_sections_current_phase_and_artifact_pin()
     let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
         automation: &automation,
         run: &run,
-        evaluated_artifact_id: "plan-artifact-1",
-        plan_content: &oversized_plan,
+        evaluated_overview_artifact_id: "plan-artifact-1",
+        overview_content: &oversized_plan,
+        evaluated_blueprint_artifact_id: None,
+        blueprint_content: None,
         verification_context: None,
         spec_attachments: &spec_attachments,
         previous_verdict_json: Some(&previous),
@@ -152,7 +156,7 @@ fn plan_judge_prompt_includes_budgeted_sections_current_phase_and_artifact_pin()
     assert!(prompt.contains("Spec context is advisory."));
     assert!(prompt.contains("<run_prompt "));
     assert!(prompt.contains("Author the automatic plan judge"));
-    assert!(prompt.contains("<plan artifact_id=\"plan-artifact-1\" truncated=\"true\">"));
+    assert!(prompt.contains("<plan_overview artifact_id=\"plan-artifact-1\""));
     assert!(!prompt.contains("<verification "));
     assert!(prompt.contains("<previous_verdict "));
     assert!(prompt.contains("\"planRevisionRound\": 2"));
@@ -175,8 +179,10 @@ fn plan_judge_prompt_uses_current_goal_item_without_id() {
     let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
         automation: &automation,
         run: &run,
-        evaluated_artifact_id: "plan-artifact-1",
-        plan_content: "Plan body.",
+        evaluated_overview_artifact_id: "plan-artifact-1",
+        overview_content: "Plan body.",
+        evaluated_blueprint_artifact_id: None,
+        blueprint_content: None,
         verification_context: None,
         spec_attachments: &[],
         previous_verdict_json: None,
@@ -195,8 +201,10 @@ fn plan_judge_retry_instruction_respects_prompt_budget() {
     let mut prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
         automation: &automation,
         run: &run,
-        evaluated_artifact_id: "plan-artifact-1",
-        plan_content: "Plan body.",
+        evaluated_overview_artifact_id: "plan-artifact-1",
+        overview_content: "Plan body.",
+        evaluated_blueprint_artifact_id: None,
+        blueprint_content: None,
         verification_context: None,
         spec_attachments: &spec_attachments,
         previous_verdict_json: None,
@@ -236,8 +244,10 @@ fn plan_judge_prompt_includes_budgeted_verification_context_when_present() {
     let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
         automation: &automation,
         run: &run,
-        evaluated_artifact_id: "plan-artifact-1",
-        plan_content: "Plan body.",
+        evaluated_overview_artifact_id: "plan-artifact-1",
+        overview_content: "Plan body.",
+        evaluated_blueprint_artifact_id: None,
+        blueprint_content: None,
         verification_context: Some(&verification),
         spec_attachments: &[],
         previous_verdict_json: None,
@@ -260,18 +270,21 @@ fn parses_valid_approve_verdict() {
             "decision": "approve",
             "reason": "The plan is scoped to the current automatic judge slice.",
             "confidence": "high",
-            "evaluatedArtifactId": "plan-artifact-1"
+            "evaluatedOverviewArtifactId": "plan-artifact-1",
+            "evaluatedBlueprintArtifactId": null
         })
         .to_string(),
         AutomationPlanJudgeValidationContext {
-            expected_artifact_id: Some("plan-artifact-1"),
+            expected_overview_artifact_id: Some("plan-artifact-1"),
+            expected_blueprint_artifact_id: None,
+            blueprint_truncated: false,
         },
     )
     .unwrap();
 
     assert_eq!(verdict.decision, AutomationPlanJudgeDecision::Approve);
     assert!(verdict.revision_instructions.is_none());
-    assert_eq!(verdict.evaluated_artifact_id, "plan-artifact-1");
+    assert_eq!(verdict.evaluated_overview_artifact_id, "plan-artifact-1");
 }
 
 #[test]
@@ -282,11 +295,14 @@ fn parses_valid_revise_verdict() {
             "reason": "The plan does not cover crash recovery.",
             "confidence": "medium",
             "revisionInstructions": "Add explicit crash recovery for a stored revise verdict after pending instructions were cleared.",
-            "evaluatedArtifactId": "plan-artifact-1"
+            "evaluatedOverviewArtifactId": "plan-artifact-1",
+            "evaluatedBlueprintArtifactId": null
         })
         .to_string(),
         AutomationPlanJudgeValidationContext {
-            expected_artifact_id: Some("plan-artifact-1"),
+            expected_overview_artifact_id: Some("plan-artifact-1"),
+            expected_blueprint_artifact_id: None,
+            blueprint_truncated: false,
         },
     )
     .unwrap();
@@ -309,7 +325,9 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
         })
         .to_string(),
         AutomationPlanJudgeValidationContext {
-            expected_artifact_id: Some("plan-artifact-1"),
+            expected_overview_artifact_id: Some("plan-artifact-1"),
+            expected_blueprint_artifact_id: None,
+            blueprint_truncated: false,
         },
     )
     .unwrap_err();
@@ -321,11 +339,14 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
             "reason": "Too vague.",
             "confidence": "low",
             "revisionInstructions": "Be better.",
-            "evaluatedArtifactId": "plan-artifact-1"
+            "evaluatedOverviewArtifactId": "plan-artifact-1",
+            "evaluatedBlueprintArtifactId": null
         })
         .to_string(),
         AutomationPlanJudgeValidationContext {
-            expected_artifact_id: Some("plan-artifact-1"),
+            expected_overview_artifact_id: Some("plan-artifact-1"),
+            expected_blueprint_artifact_id: None,
+            blueprint_truncated: false,
         },
     )
     .unwrap_err();
@@ -337,11 +358,14 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
             "reason": "Approve but also change things.",
             "confidence": "medium",
             "revisionInstructions": "This should be absent for approve verdicts, not merely ignored by the parser.",
-            "evaluatedArtifactId": "plan-artifact-1"
+            "evaluatedOverviewArtifactId": "plan-artifact-1",
+            "evaluatedBlueprintArtifactId": null
         })
         .to_string(),
         AutomationPlanJudgeValidationContext {
-            expected_artifact_id: Some("plan-artifact-1"),
+            expected_overview_artifact_id: Some("plan-artifact-1"),
+            expected_blueprint_artifact_id: None,
+            blueprint_truncated: false,
         },
     )
     .unwrap_err();
@@ -355,14 +379,93 @@ fn rejects_wrong_evaluated_artifact_when_context_expects_a_pin() {
             "decision": "approve",
             "reason": "The plan is otherwise plausible.",
             "confidence": "high",
-            "evaluatedArtifactId": "plan-artifact-old"
+            "evaluatedOverviewArtifactId": "plan-artifact-old",
+            "evaluatedBlueprintArtifactId": null
         })
         .to_string(),
         AutomationPlanJudgeValidationContext {
-            expected_artifact_id: Some("plan-artifact-1"),
+            expected_overview_artifact_id: Some("plan-artifact-1"),
+            expected_blueprint_artifact_id: None,
+            blueprint_truncated: false,
         },
     )
     .unwrap_err();
 
     assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
+fn plan_judge_prompt_renders_overview_and_blueprint_with_independent_truncation_flags() {
+    let automation = automation_with_goal_items();
+    let run = automation_run();
+    let oversized_blueprint = "grounded implementation step ".repeat(10_000);
+
+    let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+        automation: &automation,
+        run: &run,
+        evaluated_overview_artifact_id: "overview-1",
+        overview_content: "Concise overview",
+        evaluated_blueprint_artifact_id: Some("blueprint-1"),
+        blueprint_content: Some(&oversized_blueprint),
+        verification_context: None,
+        spec_attachments: &[],
+        previous_verdict_json: None,
+    })
+    .unwrap();
+
+    assert!(prompt.contains(
+        "<plan_overview artifact_id=\"overview-1\" original_chars=\"16\" truncated=\"false\">"
+    ));
+    assert!(prompt.contains(
+        "<plan_blueprint artifact_id=\"blueprint-1\" original_chars=\"290000\" truncated=\"true\">"
+    ));
+}
+
+#[test]
+fn plan_judge_rejects_approval_when_blueprint_was_truncated() {
+    let error = parse_automation_plan_judge_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": "The visible portions look complete.",
+            "confidence": "high",
+            "evaluatedOverviewArtifactId": "overview-1",
+            "evaluatedBlueprintArtifactId": "blueprint-1"
+        })
+        .to_string(),
+        AutomationPlanJudgeValidationContext {
+            expected_overview_artifact_id: Some("overview-1"),
+            expected_blueprint_artifact_id: Some("blueprint-1"),
+            blueprint_truncated: true,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("truncated Blueprint cannot be approved"));
+}
+
+#[test]
+fn plan_judge_rejects_either_stale_bundle_member() {
+    let error = parse_automation_plan_judge_verdict(
+        &json!({
+            "decision": "revise",
+            "reason": "The Blueprint needs stronger recovery coverage.",
+            "confidence": "medium",
+            "revisionInstructions": "Add concrete restart recovery and stale-result rejection tests before implementation.",
+            "evaluatedOverviewArtifactId": "overview-1",
+            "evaluatedBlueprintArtifactId": "blueprint-old"
+        })
+        .to_string(),
+        AutomationPlanJudgeValidationContext {
+            expected_overview_artifact_id: Some("overview-1"),
+            expected_blueprint_artifact_id: Some("blueprint-1"),
+            blueprint_truncated: false,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("evaluatedBlueprintArtifactId blueprint-old did not match"));
 }

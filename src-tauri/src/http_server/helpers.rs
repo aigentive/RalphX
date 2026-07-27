@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::application::git_service::GitService;
+use crate::application::task_context_service::resolve_task_blueprint_artifact_id;
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::commands::ideation_commands::{
     apply_pending_proposals_core, apply_proposals_core, is_local_proposal, ApplyProposalsInput,
@@ -17,7 +18,7 @@ use crate::domain::entities::{
     AutomationRunStatus, AutomationStatus, Complexity, IdeationSession, IdeationSessionId,
     IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
     TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
-    ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus, VerificationStatus,
+    ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
 use crate::domain::services::resolve_effective_gate_policy;
@@ -281,6 +282,23 @@ pub async fn create_proposal_impl(
                 .ok_or_else(|| {
                     AppError::NotFound(format!("Plan artifact {} not found", plan_artifact_id))
                 })?;
+            let blueprint = match session.plan_blueprint_artifact_id.clone() {
+                Some(blueprint_id) => Some(
+                    ArtifactRepo::get_by_id_sync(conn, blueprint_id.as_str())?.ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "Plan blueprint artifact {} not found",
+                            blueprint_id
+                        ))
+                    })?,
+                ),
+                None if session.plan_contract_version >= 2 => {
+                    return Err(AppError::Validation(
+                        "Proposals require a complete plan overview and implementation blueprint"
+                            .to_string(),
+                    ));
+                }
+                None => None,
+            };
 
             // Stale plan guard — ensure agent has read the current plan version
             if let Some(last_read) = session.plan_version_last_read {
@@ -293,6 +311,21 @@ pub async fn create_proposal_impl(
                 }
             }
             // NULL plan_version_last_read → legacy session, no gate (backward compat)
+            if let Some(blueprint) = blueprint.as_ref() {
+                let last_read = session.blueprint_version_last_read.ok_or_else(|| {
+                    AppError::Validation(
+                        "Call get_session_plan to read the current implementation blueprint before creating proposals"
+                            .to_string(),
+                    )
+                })?;
+                if blueprint.metadata.version as i32 > last_read {
+                    return Err(AppError::Validation(format!(
+                        "Blueprint has been updated since you last read it (current: v{}, last read: v{}). \
+                         Call get_session_plan before creating proposals.",
+                        blueprint.metadata.version, last_read
+                    )));
+                }
+            }
 
             // Count proposals for sort_order (within same lock — no TOCTOU)
             let count = ProposalRepo::count_by_session_sync(conn, session_id.as_str())?;
@@ -311,6 +344,10 @@ pub async fn create_proposal_impl(
             proposal.sort_order = count as i32;
             proposal.plan_version_at_creation = Some(artifact.metadata.version);
             proposal.plan_artifact_id = Some(plan_artifact_id);
+            proposal.blueprint_artifact_id =
+                blueprint.as_ref().map(|artifact| artifact.id.clone());
+            proposal.blueprint_version_at_creation =
+                blueprint.as_ref().map(|artifact| artifact.metadata.version);
             if let Some(complexity_str) = options.estimated_complexity {
                 if let Ok(c) = complexity_str.parse::<Complexity>() {
                     proposal.estimated_complexity = c;
@@ -1024,10 +1061,10 @@ pub(crate) async fn automation_bridge_finalize_authorized(
     state: &AppState,
     session: &IdeationSession,
 ) -> AppResult<bool> {
-    if session.verification_status != VerificationStatus::Verified {
+    if !session.has_exact_plan_verification() {
         return Ok(false);
     }
-    let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+    let Some(bundle) = session.plan_artifact_bundle() else {
         return Ok(false);
     };
     let Some(workspace) = state
@@ -1078,7 +1115,7 @@ pub(crate) async fn automation_bridge_finalize_authorized(
     let Some(approval) = state.plan_approval_repo.get_by_session(&session.id).await? else {
         return Ok(false);
     };
-    Ok(approval.artifact_id == *plan_artifact_id)
+    Ok(approval.matches_bundle(&bundle))
 }
 
 /// Apply proposals core for an already-validated session.
@@ -1147,35 +1184,36 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         .ok_or_else(|| AppError::NotFound(format!("Task not found: {}", task_id)))?;
 
     // 2. If source_proposal_id present, fetch proposal and create TaskProposalSummary
-    let source_proposal = if let Some(proposal_id) = &task.source_proposal_id {
-        match state.task_proposal_repo.get_by_id(proposal_id).await? {
-            Some(proposal) => {
-                // Parse acceptance_criteria from JSON string to Vec<String>
-                let acceptance_criteria: Vec<String> = proposal
-                    .acceptance_criteria
-                    .as_ref()
-                    .and_then(|json_str| serde_json::from_str(json_str).ok())
-                    .unwrap_or_default();
-
-                Some(crate::domain::entities::TaskProposalSummary {
-                    id: proposal.id.clone(),
-                    title: proposal.title.clone(),
-                    description: proposal.description.clone().unwrap_or_default(),
-                    acceptance_criteria,
-                    implementation_notes: None,
-                    plan_version_at_creation: proposal.plan_version_at_creation,
-                    priority_score: proposal.priority_score,
-                    affected_paths: proposal
-                        .affected_paths
-                        .as_ref()
-                        .and_then(|json_str| serde_json::from_str(json_str).ok())
-                        .unwrap_or_default(),
-                })
-            }
-            None => None,
-        }
+    let source_proposal_entity = if let Some(proposal_id) = &task.source_proposal_id {
+        state.task_proposal_repo.get_by_id(proposal_id).await?
     } else {
         None
+    };
+    let source_proposal = match source_proposal_entity.as_ref() {
+        Some(proposal) => {
+            // Parse acceptance_criteria from JSON string to Vec<String>
+            let acceptance_criteria: Vec<String> = proposal
+                .acceptance_criteria
+                .as_ref()
+                .and_then(|json_str| serde_json::from_str(json_str).ok())
+                .unwrap_or_default();
+
+            Some(crate::domain::entities::TaskProposalSummary {
+                id: proposal.id.clone(),
+                title: proposal.title.clone(),
+                description: proposal.description.clone().unwrap_or_default(),
+                acceptance_criteria,
+                implementation_notes: None,
+                plan_version_at_creation: proposal.plan_version_at_creation,
+                priority_score: proposal.priority_score,
+                affected_paths: proposal
+                    .affected_paths
+                    .as_ref()
+                    .and_then(|json_str| serde_json::from_str(json_str).ok())
+                    .unwrap_or_default(),
+            })
+        }
+        None => None,
     };
 
     // 3. If plan_artifact_id present, fetch artifact and create ArtifactSummary
@@ -1193,6 +1231,29 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
             }
             None => None,
         }
+    } else {
+        None
+    };
+
+    let blueprint_id = resolve_task_blueprint_artifact_id(&task, source_proposal_entity.as_ref())?;
+    let blueprint_artifact = if let Some(blueprint_id) = blueprint_id {
+        let blueprint = state
+            .artifact_repo
+            .get_by_id(&blueprint_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Task immutable Blueprint artifact was not found: {}",
+                    blueprint_id.as_str()
+                ))
+            })?;
+        Some(ArtifactSummary {
+            content_preview: create_artifact_preview(&blueprint),
+            id: blueprint.id,
+            title: blueprint.name,
+            artifact_type: blueprint.artifact_type,
+            current_version: blueprint.metadata.version,
+        })
     } else {
         None
     };
@@ -1326,6 +1387,12 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
             task.title
         ));
     }
+    if blueprint_artifact.is_some() {
+        context_hints.push(
+            "Implementation Blueprint available - use get_artifact to read the immutable task-specific execution authority"
+                .to_string(),
+        );
+    }
     if !related_artifacts.is_empty() {
         context_hints.push(format!(
             "{} related artifact{} found - may contain useful context",
@@ -1384,6 +1451,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         task,
         source_proposal,
         plan_artifact,
+        blueprint_artifact,
         related_artifacts,
         steps,
         step_progress,

@@ -13,6 +13,7 @@ use crate::application::agent_conversation_workspace::resolve_agent_conversation
 use crate::application::agent_lane_resolution::{
     resolve_manual_role_spawn_settings, routing_role_for_delegated_launch,
 };
+use crate::application::agent_workspace_pr_description::escape_xml_text;
 use crate::application::chat_service::{
     chat_service_context, events, resolve_working_directory, AgentTaskCompletedPayload,
     AgentTaskStartedPayload, CachedStreamingTask, ChatService, SendMessageOptions, SendQueuePolicy,
@@ -874,8 +875,9 @@ fn build_delegated_prompt(
     });
 
     format!(
-        "You are running as delegated RalphX specialist `{agent_name}`.\n{}\nOperate through the RalphX MCP tools available to your role and treat the delegated session as your working context.{assignment_block}\n\nDelegated task:\n{prompt}",
+        "You are running as delegated RalphX specialist `{agent_name}`.\n{}\nOperate through the RalphX MCP tools available to your role and treat the delegated session as your working context.{assignment_block}\n\n<delegated_task>\n{}\n</delegated_task>",
         metadata_lines.join("\n"),
+        escape_xml_text(prompt),
     )
 }
 

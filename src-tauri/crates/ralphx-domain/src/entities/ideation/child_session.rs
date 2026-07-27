@@ -54,8 +54,13 @@ pub fn build_child_session(
         builder = builder.title(title);
     }
     if input.inherit_context {
-        if let Some(plan_artifact_id) = parent.plan_artifact_id.clone() {
-            builder = builder.inherited_plan_artifact_id(plan_artifact_id);
+        if let Some(bundle) = parent.plan_artifact_bundle() {
+            builder = builder
+                .inherited_plan_artifact_id(bundle.overview_id)
+                .plan_contract_version(bundle.contract_version);
+            if let Some(blueprint_id) = bundle.blueprint_id {
+                builder = builder.inherited_plan_blueprint_artifact_id(blueprint_id);
+            }
         }
     }
     if let Some(source_project_id) = parent.source_project_id.clone() {

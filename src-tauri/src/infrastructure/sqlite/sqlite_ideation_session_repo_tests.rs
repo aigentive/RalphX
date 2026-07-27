@@ -95,7 +95,9 @@ async fn complete_plan_verification_requires_live_exact_action_authority() {
         )
         .unwrap();
         conn.execute(
-            "UPDATE ideation_sessions SET plan_artifact_id = 'artifact-current' WHERE id = ?1",
+            "UPDATE ideation_sessions
+             SET plan_artifact_id = 'artifact-current', plan_contract_version = 1
+             WHERE id = ?1",
             [session.id.as_str()],
         )
         .unwrap();

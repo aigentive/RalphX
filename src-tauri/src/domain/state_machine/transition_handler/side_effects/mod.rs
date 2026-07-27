@@ -25,7 +25,7 @@ use crate::application::GitService;
 use crate::domain::entities::{
     merge_progress_event::{MergePhase, MergePhaseStatus},
     task_metadata::{CleanupPhase, MergeFailureSource},
-    InternalStatus, MergeValidationMode, PlanBranch, Project, Task, TaskId,
+    InternalStatus, MergeValidationMode, PlanBranch, Project, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
 use crate::domain::services::github_service::GithubServiceTrait;
@@ -86,51 +86,250 @@ impl<'a> super::TransitionHandler<'a> {
         let github_service = self.machine.context.services.github_service.clone();
         let task_id_for_fork = TaskId::from_string(task_id_str.to_string());
 
+        if task.category == TaskCategory::PlanMerge && plan_branch_repo.is_none() {
+            tracing::warn!(
+                task_id = task_id_str,
+                "PendingMerge: plan branch repository is unavailable for a plan merge"
+            );
+            self.transition_to_merge_incomplete(
+                super::TaskCore {
+                    task: &mut task,
+                    task_id: &task_id_for_fork,
+                    task_id_str,
+                    task_repo,
+                },
+                serde_json::json!({
+                    "error": "RalphX cannot load the plan branch required to merge this plan because its repository is unavailable.",
+                    "error_code": "plan_branch_repository_unavailable",
+                }),
+                true,
+            )
+            .await;
+            return;
+        }
+
         if let Some(ref pbr) = plan_branch_repo {
-            if let Ok(Some(plan_branch)) = pbr.get_by_merge_task_id(&task_id_for_fork).await {
-                let pr_mode = plan_branch.pr_eligible && github_service.is_some();
-                if pr_mode {
-                    let should_use_pr_path = if plan_branch.pr_number.is_some() {
-                        true
-                    } else {
-                        match plan_branch_has_reviewable_diff(&project, &plan_branch).await {
-                            Ok(true) => true,
-                            Ok(false) => {
-                                tracing::info!(
-                                    task_id = task_id_str,
-                                    branch = %plan_branch.branch_name,
-                                    "PR-mode PendingMerge: no reviewable diff yet, falling back to local merge path"
-                                );
-                                false
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    task_id = task_id_str,
-                                    branch = %plan_branch.branch_name,
-                                    error = %e,
-                                    "PR-mode PendingMerge: failed to determine whether the plan branch is ahead of base; falling back to local merge path"
-                                );
-                                false
-                            }
-                        }
-                    };
-                    if should_use_pr_path {
-                        let github =
-                            github_service.expect("pr_mode implies github_service is Some");
-                        let pbr_arc = Arc::clone(pbr);
-                        Box::pin(self.run_pr_mode_pending_merge(
-                            &mut task,
-                            &project,
-                            plan_branch,
-                            task_id_for_fork,
+            let plan_branch = match pbr.get_by_merge_task_id(&task_id_for_fork).await {
+                Ok(Some(plan_branch)) => Some(plan_branch),
+                Ok(None) if task.category == TaskCategory::PlanMerge => {
+                    tracing::warn!(
+                        task_id = task_id_str,
+                        "PendingMerge: required plan branch record is missing for a plan merge"
+                    );
+                    self.transition_to_merge_incomplete(
+                        super::TaskCore {
+                            task: &mut task,
+                            task_id: &task_id_for_fork,
                             task_id_str,
                             task_repo,
-                            &github,
-                            &pbr_arc,
-                        ))
+                        },
+                        serde_json::json!({
+                            "error": "RalphX cannot merge this plan because its required plan branch record is missing.",
+                            "error_code": "plan_branch_missing",
+                        }),
+                        true,
+                    )
+                    .await;
+                    return;
+                }
+                Ok(None) => None,
+                Err(error) if task.category == TaskCategory::PlanMerge => {
+                    tracing::warn!(
+                        task_id = task_id_str,
+                        error = %error,
+                        "PR-mode PendingMerge: failed to load plan branch for a plan merge"
+                    );
+                    self.transition_to_merge_incomplete(
+                        super::TaskCore {
+                            task: &mut task,
+                            task_id: &task_id_for_fork,
+                            task_id_str,
+                            task_repo,
+                        },
+                        serde_json::json!({
+                            "error": "RalphX could not load the plan branch required to merge this plan.",
+                            "error_code": "plan_branch_lookup_failed",
+                            "cause": error.to_string(),
+                        }),
+                        true,
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        task_id = task_id_str,
+                        error = %error,
+                        "PendingMerge: failed to load optional plan branch for a non-plan merge"
+                    );
+                    None
+                }
+            };
+            if let Some(plan_branch) = plan_branch {
+                let persisted_pr_is_authoritative = plan_branch.pr_number.is_some();
+                let should_use_pr_path = if persisted_pr_is_authoritative {
+                    true
+                } else if plan_branch.pr_eligible {
+                    match GitService::supports_github_prs(Path::new(&project.working_directory))
+                        .await
+                    {
+                        Ok(true) if github_service.is_some() => {
+                            match plan_branch_has_reviewable_diff(&project, &plan_branch).await {
+                                Ok(true) => true,
+                                Ok(false) => {
+                                    tracing::info!(
+                                        task_id = task_id_str,
+                                        branch = %plan_branch.branch_name,
+                                        "PR-mode PendingMerge: no reviewable diff yet, falling back to local merge path"
+                                    );
+                                    false
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        task_id = task_id_str,
+                                        branch = %plan_branch.branch_name,
+                                        error = %e,
+                                        "PR-mode PendingMerge: failed to determine whether the plan branch is ahead of base"
+                                    );
+                                    self.transition_to_merge_incomplete(
+                                        super::TaskCore {
+                                            task: &mut task,
+                                            task_id: &task_id_for_fork,
+                                            task_id_str,
+                                            task_repo,
+                                        },
+                                        serde_json::json!({
+                                            "error": "RalphX could not determine whether the plan branch has reviewable changes.",
+                                            "error_code": "plan_branch_reviewable_diff_check_failed",
+                                            "branch_name": plan_branch.branch_name,
+                                            "cause": e.to_string(),
+                                        }),
+                                        true,
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            }
+                        }
+                        Ok(true) => {
+                            tracing::warn!(
+                                task_id = task_id_str,
+                                branch = %plan_branch.branch_name,
+                                "PR-mode PendingMerge: GitHub origin requires GitHub supervision, but no GitHub service is configured"
+                            );
+                            self.transition_to_merge_incomplete(
+                                super::TaskCore {
+                                    task: &mut task,
+                                    task_id: &task_id_for_fork,
+                                    task_id_str,
+                                    task_repo,
+                                },
+                                serde_json::json!({
+                                    "error": "This GitHub plan branch cannot be supervised because GitHub capability is unavailable.",
+                                    "error_code": "github_pr_capability_unavailable",
+                                    "branch_name": plan_branch.branch_name,
+                                }),
+                                true,
+                            )
+                            .await;
+                            return;
+                        }
+                        Ok(false) => {
+                            if let Err(error) = pbr.update_pr_eligible(&plan_branch.id, false).await {
+                                tracing::warn!(
+                                    task_id = task_id_str,
+                                    plan_branch_id = plan_branch.id.as_str(),
+                                    error = %error,
+                                    "PR-mode PendingMerge: failed to clear stale pre-PR eligibility for a non-GitHub origin"
+                                );
+                                self.transition_to_merge_incomplete(
+                                    super::TaskCore {
+                                        task: &mut task,
+                                        task_id: &task_id_for_fork,
+                                        task_id_str,
+                                        task_repo,
+                                    },
+                                    serde_json::json!({
+                                        "error": "RalphX could not persist the local merge route for this plan branch.",
+                                        "error_code": "plan_branch_pr_eligibility_update_failed",
+                                    }),
+                                    true,
+                                )
+                                .await;
+                                return;
+                            }
+                            tracing::info!(
+                                task_id = task_id_str,
+                                branch = %plan_branch.branch_name,
+                                "PR-mode PendingMerge: non-GitHub origin routes stale pre-PR branch through the local merge path"
+                            );
+                            false
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                task_id = task_id_str,
+                                branch = %plan_branch.branch_name,
+                                error = %error,
+                                "PR-mode PendingMerge: failed to inspect origin before starting a new PR"
+                            );
+                            self.transition_to_merge_incomplete(
+                                super::TaskCore {
+                                    task: &mut task,
+                                    task_id: &task_id_for_fork,
+                                    task_id_str,
+                                    task_repo,
+                                },
+                                serde_json::json!({
+                                    "error": "RalphX could not inspect the repository origin before starting a pull request.",
+                                    "error_code": "repository_capability_inspection_failed",
+                                    "repository_capability": "inspection_failed",
+                                }),
+                                true,
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                } else {
+                    false
+                };
+                if should_use_pr_path {
+                    let Some(github) = github_service else {
+                        tracing::warn!(
+                            task_id = task_id_str,
+                            pr_number = ?plan_branch.pr_number,
+                            "PR-mode PendingMerge: persisted PR cannot be supervised because GitHub capability is unavailable"
+                        );
+                        self.transition_to_merge_incomplete(
+                            super::TaskCore {
+                                task: &mut task,
+                                task_id: &task_id_for_fork,
+                                task_id_str,
+                                task_repo,
+                            },
+                            serde_json::json!({
+                                "error": "Persisted pull request cannot be supervised because GitHub capability is unavailable.",
+                                "error_code": "github_pr_capability_unavailable",
+                                "pr_number": plan_branch.pr_number,
+                            }),
+                            true,
+                        )
                         .await;
                         return;
-                    }
+                    };
+                    let pbr_arc = Arc::clone(pbr);
+                    Box::pin(self.run_pr_mode_pending_merge(
+                        &mut task,
+                        &project,
+                        plan_branch,
+                        task_id_for_fork,
+                        task_id_str,
+                        task_repo,
+                        &github,
+                        &pbr_arc,
+                    ))
+                    .await;
+                    return;
                 }
             }
         }

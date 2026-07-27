@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use tokio::sync::RwLock;
 
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
@@ -12,11 +14,17 @@ use crate::domain::entities::{
     ProjectId, TaskId,
 };
 use crate::domain::repositories::PlanBranchRepository;
+#[cfg(test)]
+use crate::error::AppError;
 use crate::error::AppResult;
 
 pub struct MemoryPlanBranchRepository {
     branches: Arc<RwLock<HashMap<String, PlanBranch>>>,
     local_cleanup_markers: Arc<RwLock<HashMap<String, (String, DateTime<Utc>)>>>,
+    #[cfg(test)]
+    next_merge_task_lookup_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_pr_eligibility_update_error: Mutex<Option<String>>,
 }
 
 impl Default for MemoryPlanBranchRepository {
@@ -30,7 +38,21 @@ impl MemoryPlanBranchRepository {
         Self {
             branches: Arc::new(RwLock::new(HashMap::new())),
             local_cleanup_markers: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(test)]
+            next_merge_task_lookup_error: Mutex::new(None),
+            #[cfg(test)]
+            next_pr_eligibility_update_error: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_merge_task_lookup(&self, message: impl Into<String>) {
+        *self.next_merge_task_lookup_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_pr_eligibility_update(&self, message: impl Into<String>) {
+        *self.next_pr_eligibility_update_error.lock().unwrap() = Some(message.into());
     }
 }
 
@@ -93,6 +115,10 @@ impl PlanBranchRepository for MemoryPlanBranchRepository {
     }
 
     async fn get_by_merge_task_id(&self, task_id: &TaskId) -> AppResult<Option<PlanBranch>> {
+        #[cfg(test)]
+        if let Some(message) = self.next_merge_task_lookup_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
         let branches = self.branches.read().await;
         Ok(branches
             .values()
@@ -145,6 +171,10 @@ impl PlanBranchRepository for MemoryPlanBranchRepository {
     }
 
     async fn update_pr_eligible(&self, id: &PlanBranchId, enabled: bool) -> AppResult<()> {
+        #[cfg(test)]
+        if let Some(message) = self.next_pr_eligibility_update_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
         let mut branches = self.branches.write().await;
         if let Some(branch) = branches.get_mut(id.as_str()) {
             branch.pr_eligible = enabled;

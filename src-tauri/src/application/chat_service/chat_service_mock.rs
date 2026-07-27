@@ -355,6 +355,16 @@ impl ChatService for MockChatService {
         .await
     }
 
+    async fn send_queued_message_for_runtime_handoff(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        self.send_queued_message_now(context_type, context_id, message_id)
+            .await
+    }
+
     async fn get_or_create_conversation(
         &self,
         context_type: ChatContextType,

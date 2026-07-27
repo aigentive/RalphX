@@ -535,26 +535,69 @@ async fn read_provider_settings(
     refresh_runtime: bool,
 ) -> Result<AgentProvidersSettingsResponse, String> {
     let started_at = std::time::Instant::now();
+    let phase_started_at = std::time::Instant::now();
     let stored = state
         .agent_provider_settings_repo
         .list()
         .await
         .map_err(|err| err.to_string())?;
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "load_settings",
+        refresh_runtime,
+        provider_rows = stored.len(),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    let phase_started_at = std::time::Instant::now();
     let mut probes = if refresh_runtime {
         refresh_supported_harnesses()
     } else {
         snapshot_probes_from_provider_settings(&stored)
     };
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "resolve_runtime_probes",
+        refresh_runtime,
+        probe_count = probes.len(),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    let phase_started_at = std::time::Instant::now();
     if refresh_runtime {
         overlay_managed_provider_runtime_probes(&stored, &mut probes);
     }
     tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "overlay_managed_runtime_probes",
         refresh_runtime,
-        provider_rows = stored.len(),
-        elapsed_ms = started_at.elapsed().as_millis() as u64,
-        "Agent provider settings loaded"
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
     );
-    read_provider_settings_with_stored_and_probes(stored, &probes).await
+    let phase_started_at = std::time::Instant::now();
+    let response = read_provider_settings_with_stored_and_probes(stored, &probes).await?;
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "build_response",
+        refresh_runtime,
+        provider_rows = response.providers.len(),
+        elapsed_ms = phase_started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    tracing::info!(
+        operation = "agent_provider_settings_phase",
+        phase = "total",
+        refresh_runtime,
+        provider_rows = response.providers.len(),
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        total_elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings phase completed"
+    );
+    Ok(response)
 }
 
 fn overlay_managed_provider_runtime_probes(

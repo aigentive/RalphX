@@ -6,6 +6,8 @@ pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
 #[cfg(test)]
 mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_review_monitor_tests;
 pub mod agent_workspace_repair;
 #[cfg(test)]
 mod agent_workspace_repair_tests;

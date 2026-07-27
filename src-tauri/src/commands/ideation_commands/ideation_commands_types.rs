@@ -294,6 +294,8 @@ pub struct TaskProposalResponse {
     pub created_task_id: Option<String>,
     pub plan_artifact_id: Option<String>,
     pub plan_version_at_creation: Option<u32>,
+    pub blueprint_artifact_id: Option<String>,
+    pub blueprint_version_at_creation: Option<u32>,
     pub sort_order: i32,
     pub created_at: String,
     pub updated_at: String,
@@ -342,6 +344,10 @@ impl From<TaskProposal> for TaskProposalResponse {
             created_task_id: proposal.created_task_id.map(|id| id.as_str().to_string()),
             plan_artifact_id: proposal.plan_artifact_id.map(|id| id.as_str().to_string()),
             plan_version_at_creation: proposal.plan_version_at_creation,
+            blueprint_artifact_id: proposal
+                .blueprint_artifact_id
+                .map(|id| id.as_str().to_string()),
+            blueprint_version_at_creation: proposal.blueprint_version_at_creation,
             sort_order: proposal.sort_order,
             created_at: proposal.created_at.to_rfc3339(),
             updated_at: proposal.updated_at.to_rfc3339(),

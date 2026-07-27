@@ -212,7 +212,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             "project_archived",
         ));
     }
-    if !project.github_pr_enabled {
+    if !project.github_pr_enabled && workspace.publication_pr_number.is_none() {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "github_pr_disabled",
         ));

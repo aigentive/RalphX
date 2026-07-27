@@ -41,8 +41,8 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
         self.db
             .run(move |conn| {
                 conn.execute(
-                    "INSERT INTO plan_branches (id, plan_artifact_id, session_id, project_id, branch_name, source_branch, status, merge_task_id, created_at, merged_at, execution_plan_id, pr_eligible, base_branch_override)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    "INSERT INTO plan_branches (id, plan_artifact_id, session_id, project_id, branch_name, source_branch, status, merge_task_id, created_at, merged_at, execution_plan_id, pr_number, pr_eligible, base_branch_override)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     rusqlite::params![
                         branch.id.as_str(),
                         branch.plan_artifact_id.as_str(),
@@ -55,6 +55,7 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                         branch.created_at.to_rfc3339(),
                         branch.merged_at.map(|dt| dt.to_rfc3339()),
                         branch.execution_plan_id.as_ref().map(|id| id.as_str().to_string()),
+                        branch.pr_number,
                         branch.pr_eligible as i64,
                         branch.base_branch_override,
                     ],
@@ -70,8 +71,8 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
             .run(move |conn| {
                 let session_id = branch.session_id.as_str().to_string();
                 conn.execute(
-                    "INSERT INTO plan_branches (id, plan_artifact_id, session_id, project_id, branch_name, source_branch, status, merge_task_id, created_at, merged_at, execution_plan_id, pr_eligible, base_branch_override)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                    "INSERT INTO plan_branches (id, plan_artifact_id, session_id, project_id, branch_name, source_branch, status, merge_task_id, created_at, merged_at, execution_plan_id, pr_number, pr_eligible, base_branch_override)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                      ON CONFLICT(session_id) DO UPDATE SET
                        plan_artifact_id=excluded.plan_artifact_id,
                        project_id=excluded.project_id,
@@ -94,6 +95,7 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                         branch.created_at.to_rfc3339(),
                         branch.merged_at.map(|dt| dt.to_rfc3339()),
                         branch.execution_plan_id.as_ref().map(|id| id.as_str().to_string()),
+                        branch.pr_number,
                         branch.pr_eligible as i64,
                         branch.base_branch_override,
                     ],
@@ -274,8 +276,8 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                         "SELECT * FROM plan_branches
                          WHERE project_id = ?1
                            AND status = 'active'
-                           AND pr_eligible = 1
                            AND merge_task_id IS NOT NULL
+                           AND (pr_eligible = 1 OR pr_number IS NOT NULL)
                          ORDER BY created_at DESC",
                     )
                     .map_err(|e| {

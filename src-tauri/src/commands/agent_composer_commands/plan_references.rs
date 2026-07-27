@@ -1,4 +1,3 @@
-use rusqlite::OptionalExtension;
 use tauri::State;
 
 use super::types::{
@@ -61,13 +60,32 @@ pub async fn search_agent_composer_plan_references(
         };
 
         let approval = if session.session_flow == IdeationSessionFlow::Planning {
-            lookup_plan_approval(
-                &state,
-                session.id.as_str(),
-                artifact.id.as_str(),
-                artifact.metadata.version,
-            )
-            .await?
+            if let Some(bundle) = session.plan_artifact_bundle() {
+                let blueprint = if let Some(blueprint_id) = bundle.blueprint_id.as_ref() {
+                    let latest_blueprint_id = state
+                        .artifact_repo
+                        .resolve_latest_artifact_id(blueprint_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    state
+                        .artifact_repo
+                        .get_by_id(&latest_blueprint_id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| {
+                            format!(
+                                "Current plan blueprint artifact not found: {}",
+                                latest_blueprint_id.as_str()
+                            )
+                        })
+                        .map(Some)?
+                } else {
+                    None
+                };
+                lookup_plan_approval(&state, &session.id, &artifact, blueprint.as_ref()).await?
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -133,8 +151,6 @@ struct ScoredPlanReference {
 }
 
 pub(crate) struct PlanApprovalLookup {
-    pub(crate) approved_artifact_id: String,
-    pub(crate) approved_version: i64,
     pub(crate) approved_at: Option<String>,
 }
 
@@ -157,41 +173,23 @@ pub(crate) fn plan_reference_status(
     "draft".to_string()
 }
 
-async fn lookup_plan_approval(
+pub(crate) async fn lookup_plan_approval(
     state: &AppState,
-    session_id: &str,
-    artifact_id: &str,
-    artifact_version: u32,
+    session_id: &crate::domain::entities::IdeationSessionId,
+    artifact: &crate::domain::entities::Artifact,
+    blueprint: Option<&crate::domain::entities::Artifact>,
 ) -> Result<Option<PlanApprovalLookup>, String> {
-    let session_id = session_id.to_string();
-    let artifact_id = artifact_id.to_string();
     let approval = state
-        .db
-        .run(move |conn| {
-            let row = conn
-                .query_row(
-                    "SELECT artifact_id, artifact_version, approved_at
-                     FROM plan_artifact_approvals
-                     WHERE session_id = ?1 AND status = 'approved'",
-                    [session_id.as_str()],
-                    |row| {
-                        Ok(PlanApprovalLookup {
-                            approved_artifact_id: row.get(0)?,
-                            approved_version: row.get(1)?,
-                            approved_at: row.get(2)?,
-                        })
-                    },
-                )
-                .optional()?;
-            Ok(row)
-        })
+        .plan_approval_repo
+        .get_by_session(session_id)
         .await
         .map_err(|error| error.to_string())?;
 
-    Ok(approval.filter(|row| {
-        row.approved_artifact_id == artifact_id
-            && row.approved_version == i64::from(artifact_version)
-    }))
+    Ok(approval
+        .filter(|approval| approval.matches_artifacts(artifact, blueprint))
+        .map(|approval| PlanApprovalLookup {
+            approved_at: Some(approval.approved_at),
+        }))
 }
 
 pub(crate) fn score_reference(

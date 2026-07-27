@@ -12,11 +12,20 @@ pub const CLAUDE_SONNET_4_6_API_MODEL_ID: &str = "claude-sonnet-4-6";
 pub const CLAUDE_SONNET_5_API_MODEL_ID: &str = "claude-sonnet-5";
 pub const CLAUDE_SONNET_4_6_MIN_VERSION: (u64, u64, u64) = (2, 1, 197);
 pub const CLAUDE_SONNET_5_MIN_VERSION: (u64, u64, u64) = (2, 1, 197);
+pub const CLAUDE_OPUS_4_7_API_MODEL_ID: &str = "claude-opus-4-7";
+pub const CLAUDE_OPUS_4_7_MIN_VERSION: (u64, u64, u64) = (2, 1, 111);
+pub const CLAUDE_OPUS_4_8_API_MODEL_ID: &str = "claude-opus-4-8";
+pub const CLAUDE_OPUS_4_8_MIN_VERSION: (u64, u64, u64) = (2, 1, 154);
+pub const CLAUDE_OPUS_5_API_MODEL_ID: &str = "claude-opus-5";
+pub const CLAUDE_OPUS_5_MIN_VERSION: (u64, u64, u64) = (2, 1, 219);
 
 const CLAUDE_XHIGH_MIN_VERSION: (u64, u64, u64) = (2, 1, 111);
 const CLAUDE_FABLE_MIN_VERSION_LABEL: &str = "2.1.170";
 const CLAUDE_SONNET_4_6_MIN_VERSION_LABEL: &str = "2.1.197";
 const CLAUDE_SONNET_5_MIN_VERSION_LABEL: &str = "2.1.197";
+const CLAUDE_OPUS_4_7_MIN_VERSION_LABEL: &str = "2.1.111";
+const CLAUDE_OPUS_4_8_MIN_VERSION_LABEL: &str = "2.1.154";
+const CLAUDE_OPUS_5_MIN_VERSION_LABEL: &str = "2.1.219";
 const BASE_CLAUDE_MODEL_ALIASES: [&str; 3] = ["sonnet", "opus", "haiku"];
 const CLAUDE_EFFORT_ORDER: [LogicalEffort; 5] = [
     LogicalEffort::Low,
@@ -146,8 +155,8 @@ pub fn validate_claude_model_for_cli_path(cli_path: &Path, model: &str) -> Resul
 
     let capabilities = probe_claude_cli_cached(cli_path).map_err(|error| {
         format!(
-            "Cannot verify Claude Code supports {} before launching with --model {model:?}: {error}",
-            requirement.display_name
+            "Cannot verify Claude Code supports {} (requires Claude Code v{} or newer) before launching with --model {model:?}. Upgrade Claude Code before selecting --model {}: {error}",
+            requirement.display_name, requirement.min_version_label, requirement.selection_hint
         )
     })?;
     if capabilities.supports_model_alias(requirement.required_alias) {
@@ -180,6 +189,18 @@ pub fn is_claude_sonnet_4_6_model(model: &str) -> bool {
     normalize_model_alias(model) == CLAUDE_SONNET_4_6_API_MODEL_ID
 }
 
+pub fn is_claude_opus_4_7_model(model: &str) -> bool {
+    normalize_model_alias(model) == CLAUDE_OPUS_4_7_API_MODEL_ID
+}
+
+pub fn is_claude_opus_4_8_model(model: &str) -> bool {
+    normalize_model_alias(model) == CLAUDE_OPUS_4_8_API_MODEL_ID
+}
+
+pub fn is_claude_opus_5_model(model: &str) -> bool {
+    normalize_model_alias(model) == CLAUDE_OPUS_5_API_MODEL_ID
+}
+
 struct ClaudeModelVersionRequirement {
     required_alias: &'static str,
     display_name: &'static str,
@@ -210,6 +231,30 @@ fn claude_model_version_requirement(model: &str) -> Option<ClaudeModelVersionReq
             display_name: "Claude Sonnet 4.6",
             min_version_label: CLAUDE_SONNET_4_6_MIN_VERSION_LABEL,
             selection_hint: CLAUDE_SONNET_4_6_API_MODEL_ID,
+        });
+    }
+    if is_claude_opus_4_7_model(model) {
+        return Some(ClaudeModelVersionRequirement {
+            required_alias: CLAUDE_OPUS_4_7_API_MODEL_ID,
+            display_name: "Claude Opus 4.7",
+            min_version_label: CLAUDE_OPUS_4_7_MIN_VERSION_LABEL,
+            selection_hint: CLAUDE_OPUS_4_7_API_MODEL_ID,
+        });
+    }
+    if is_claude_opus_4_8_model(model) {
+        return Some(ClaudeModelVersionRequirement {
+            required_alias: CLAUDE_OPUS_4_8_API_MODEL_ID,
+            display_name: "Claude Opus 4.8",
+            min_version_label: CLAUDE_OPUS_4_8_MIN_VERSION_LABEL,
+            selection_hint: CLAUDE_OPUS_4_8_API_MODEL_ID,
+        });
+    }
+    if is_claude_opus_5_model(model) {
+        return Some(ClaudeModelVersionRequirement {
+            required_alias: CLAUDE_OPUS_5_API_MODEL_ID,
+            display_name: "Claude Opus 5",
+            min_version_label: CLAUDE_OPUS_5_MIN_VERSION_LABEL,
+            selection_hint: CLAUDE_OPUS_5_API_MODEL_ID,
         });
     }
     None
@@ -274,6 +319,18 @@ fn fallback_supported_model_aliases(version: Option<&str>) -> Vec<String> {
         .collect::<Vec<_>>();
     if version
         .and_then(parse_semver_triplet)
+        .is_some_and(|version| version >= CLAUDE_OPUS_4_7_MIN_VERSION)
+    {
+        aliases.push(CLAUDE_OPUS_4_7_API_MODEL_ID.to_string());
+    }
+    if version
+        .and_then(parse_semver_triplet)
+        .is_some_and(|version| version >= CLAUDE_OPUS_4_8_MIN_VERSION)
+    {
+        aliases.push(CLAUDE_OPUS_4_8_API_MODEL_ID.to_string());
+    }
+    if version
+        .and_then(parse_semver_triplet)
         .is_some_and(|version| version >= CLAUDE_FABLE_MIN_VERSION)
     {
         aliases.push(CLAUDE_FABLE_MODEL_ALIAS.to_string());
@@ -289,6 +346,12 @@ fn fallback_supported_model_aliases(version: Option<&str>) -> Vec<String> {
         .is_some_and(|version| version >= CLAUDE_SONNET_5_MIN_VERSION)
     {
         aliases.push(CLAUDE_SONNET_5_API_MODEL_ID.to_string());
+    }
+    if version
+        .and_then(parse_semver_triplet)
+        .is_some_and(|version| version >= CLAUDE_OPUS_5_MIN_VERSION)
+    {
+        aliases.push(CLAUDE_OPUS_5_API_MODEL_ID.to_string());
     }
     aliases
 }

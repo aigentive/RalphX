@@ -299,24 +299,16 @@ export function useAgentsActiveComposerControls({
     ],
   );
 
-  const handleActiveTeamEnabledChange = useCallback(
-    (enabled: boolean) =>
-      handleActiveCapabilityChange(enabled ? "rx_native_team" : "solo"),
-    [handleActiveCapabilityChange],
-  );
-
   return {
     activeProjectOptions,
     defaultRuntime,
     handleActiveConversationModeChange,
     handleActiveConversationModeMenuOpen,
     handleActiveCapabilityChange,
-    handleActiveTeamEnabledChange,
     handleActiveEffortChange,
     handleActiveModelChange,
     handleActiveProviderChange,
     switchingConversationModeId,
     updatingCapabilityConversationId,
-    updatingTeamConversationId: updatingCapabilityConversationId,
   };
 }

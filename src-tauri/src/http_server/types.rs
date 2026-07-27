@@ -940,6 +940,10 @@ pub struct TaskResponse {
 pub struct RegisterProjectExternalRequest {
     pub working_directory: String,
     pub name: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub worktree_parent_directory: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1105,6 +1109,10 @@ pub struct CreatePlanArtifactRequest {
     pub session_id: String,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub blueprint_title: Option<String>,
+    #[serde(default)]
+    pub blueprint_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1128,6 +1136,12 @@ pub struct ApprovePlanArtifactRequest {
     pub session_id: String,
     #[serde(default)]
     pub artifact_id: Option<String>,
+    /// The Blueprint identity displayed alongside the Overview being approved.
+    /// Required for v2 bundles so a stale UI cannot approve a revised Blueprint.
+    #[serde(default)]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(default)]
+    pub blueprint_artifact_version: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1135,6 +1149,10 @@ pub struct SubmitPlanComplexityAssessmentRequest {
     pub session_id: String,
     pub artifact_id: String,
     pub artifact_version: u32,
+    #[serde(default)]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(default)]
+    pub blueprint_artifact_version: Option<u32>,
     pub level: String,
     pub score: u8,
     pub recommended_action: String,
@@ -1156,6 +1174,10 @@ pub struct PlanComplexityAssessmentResponse {
     pub session_id: String,
     pub artifact_id: String,
     pub artifact_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact_version: Option<u32>,
     pub level: String,
     pub score: u8,
     pub recommended_action: String,
@@ -1212,6 +1234,18 @@ pub struct ArtifactResponse {
     pub task_id: Option<String>,
     pub process_id: Option<String>,
     pub derived_from: Vec<String>,
+    /// Companion detailed implementation blueprint for plan bundle responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blueprint_artifact: Option<Box<ArtifactResponse>>,
+    /// Plan contract version (1 = legacy overview-only, 2 = paired bundle).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_contract_version: Option<i32>,
+    /// Backend-derived verification/approval target for the exact current bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_target_id: Option<String>,
+    /// Role of the returned artifact within a plan bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_role: Option<String>,
     /// The artifact ID that was replaced (only set on update responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_artifact_id: Option<String>,
@@ -1234,6 +1268,10 @@ pub struct ArtifactResponse {
     /// Approved artifact version when the current artifact version is approved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_approved_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_blueprint_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_blueprint_version: Option<u32>,
     /// Approval timestamp for the current artifact version.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_approved_at: Option<String>,
@@ -1266,6 +1304,10 @@ impl From<Artifact> for ArtifactResponse {
                 .iter()
                 .map(|id| id.as_str().to_string())
                 .collect(),
+            blueprint_artifact: None,
+            plan_contract_version: None,
+            plan_target_id: None,
+            artifact_role: None,
             previous_artifact_id: None,
             session_id: None,
             is_inherited: None,
@@ -1273,6 +1315,8 @@ impl From<Artifact> for ArtifactResponse {
             plan_approval_status: None,
             plan_approved_artifact_id: None,
             plan_approved_version: None,
+            plan_approved_blueprint_artifact_id: None,
+            plan_approved_blueprint_version: None,
             plan_approved_at: None,
         }
     }

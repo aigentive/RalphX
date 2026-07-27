@@ -6,9 +6,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::application::git_service::GitBootstrapRequest;
+use crate::application::GitService;
 use crate::domain::entities::{InternalStatus, Project, ProjectId, TaskId};
 use crate::domain::services::validate_project_path;
 use crate::error::AppError;
+use crate::infrastructure::git_auth::{inspect_repository_capability, RepositoryCapability};
 use crate::infrastructure::sqlite::sqlite_project_repo::insert_project_row;
 
 pub async fn list_tasks(
@@ -260,6 +263,10 @@ pub struct RegisterProjectExternalResponse {
     pub id: String,
     pub name: String,
     pub working_directory: String,
+    pub base_branch: String,
+    pub worktree_parent_directory: Option<String>,
+    pub github_pr_enabled: bool,
+    pub repository_capability: RepositoryCapability,
     pub created_at: String,
 }
 
@@ -278,8 +285,15 @@ pub async fn register_project_external(
     validated_key: ValidatedExternalKey,
     Json(req): Json<RegisterProjectExternalRequest>,
 ) -> Result<Json<RegisterProjectExternalResponse>, HttpError> {
+    let RegisterProjectExternalRequest {
+        working_directory,
+        name,
+        base_branch,
+        worktree_parent_directory,
+    } = req;
+
     // 1-3. Validate path: canonicalize, blocklist, home directory check (shared helper)
-    let canonical = validate_project_path(&req.working_directory).map_err(|e| HttpError {
+    let canonical = validate_project_path(&working_directory).map_err(|e| HttpError {
         status: StatusCode::UNPROCESSABLE_ENTITY,
         message: Some(e.to_string()),
     })?;
@@ -311,26 +325,34 @@ pub async fn register_project_external(
 
     // 6. Ensure git is initialized (git-first: before DB to avoid zombie records)
     let ran_git_init = !canonical.join(".git").exists();
-    crate::commands::project_commands::ensure_git_initialized_async(&canonical_str)
-        .await
-        .map_err(|e| HttpError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: Some(format!("Git initialization failed: {e}")),
-        })?;
+    let bootstrap =
+        GitService::bootstrap_project_repository(&canonical, GitBootstrapRequest::new(base_branch))
+            .await
+            .map_err(|error| HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some(format!("Git initialization failed: {error}")),
+            })?;
+    let repository_capability = inspect_repository_capability(&canonical).await;
 
     // 7. Construct project with domain defaults (Project::new handles UUID, timestamps, etc.)
-    let name = req.name.unwrap_or_else(|| {
+    let name = name.unwrap_or_else(|| {
         canonical
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Unnamed Project".to_string())
     });
-    let project = Project::new(name, canonical_str.clone());
+    let mut project = Project::new(name, canonical_str.clone());
+    project.base_branch = Some(bootstrap.base_branch.clone());
+    project.worktree_parent_directory = worktree_parent_directory;
+    project.github_pr_enabled =
+        matches!(repository_capability, RepositoryCapability::Github { .. });
 
     // Extract response data before moving project into transaction closure
     let response_id = project.id.as_str().to_string();
     let response_name = project.name.clone();
     let response_created_at = project.created_at.to_rfc3339();
+    let response_worktree_parent_directory = project.worktree_parent_directory.clone();
+    let response_github_pr_enabled = project.github_pr_enabled;
     let key_id = validated_key.key_id.clone();
 
     // 8. Atomic DB transaction: INSERT project + INSERT OR IGNORE api_key_projects
@@ -382,6 +404,10 @@ pub async fn register_project_external(
         id: response_id,
         name: response_name,
         working_directory: canonical_str,
+        base_branch: bootstrap.base_branch,
+        worktree_parent_directory: response_worktree_parent_directory,
+        github_pr_enabled: response_github_pr_enabled,
+        repository_capability,
         created_at: response_created_at,
     }))
 }

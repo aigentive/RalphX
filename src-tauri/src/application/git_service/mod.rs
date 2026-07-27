@@ -9,6 +9,7 @@
 //! - Query operations for commits and diff stats
 
 mod branch;
+mod bootstrap;
 pub mod checkout_free;
 mod commit;
 pub(crate) mod git_cmd;
@@ -16,10 +17,12 @@ mod identity;
 mod merge;
 mod query;
 mod rebase;
+mod repository_capability;
 mod state_query;
 mod worktree;
 
 pub(crate) use rebase::FetchOriginOutcome;
+pub use bootstrap::{GitBootstrapRequest, ProjectGitBootstrap};
 
 #[cfg(test)]
 mod tests;

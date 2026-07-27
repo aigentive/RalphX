@@ -54,6 +54,7 @@ async fn create_project_and_session(
     repo: &RealGitRepo,
     acceptance_status: Option<AcceptanceStatus>,
 ) -> IdeationSessionId {
+    repo.configure_github_origin();
     let mut project = Project::new("PR Mode Acceptance".to_string(), repo.path_string());
     project.id = ProjectId::from_string(project_id.to_string());
     project.github_pr_enabled = true;
@@ -127,12 +128,36 @@ async fn accept_finalize_keeps_confirmation_pending_when_auto_verification_is_qu
         ))
         .await
         .expect("plan artifact should be created");
+    let blueprint = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Plan Blueprint",
+            ArtifactType::Specification,
+            "# Implementation blueprint",
+            "test",
+        ))
+        .await
+        .expect("plan blueprint should be created");
+    let session_id_for_db = session_id.as_str().to_string();
     state
         .app_state
-        .ideation_session_repo
-        .update_plan_artifact_id(&session_id, Some(artifact.id.as_str().to_string()))
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_artifact_id = ?1, plan_blueprint_artifact_id = ?2
+                 WHERE id = ?3",
+                rusqlite::params![
+                    artifact.id.as_str(),
+                    blueprint.id.as_str(),
+                    session_id_for_db
+                ],
+            )?;
+            Ok(())
+        })
         .await
-        .expect("plan artifact should be linked");
+        .expect("plan artifact bundle should be linked");
     create_single_feature_proposal(&state, &session_id).await;
 
     let mut settings = state

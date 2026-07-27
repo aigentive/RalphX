@@ -3891,6 +3891,7 @@ mod ipc_contract {
         project_id: ProjectId,
         source_session_id: IdeationSessionId,
         source_artifact_id: ArtifactId,
+        source_blueprint_id: ArtifactId,
         _repo_dir: tempfile::TempDir,
         _worktree_parent: tempfile::TempDir,
     }
@@ -3928,16 +3929,27 @@ mod ipc_contract {
             ))
             .await
             .expect("source artifact should persist");
+        let source_blueprint = state
+            .artifact_repo
+            .create(Artifact::new_inline(
+                "Source Blueprint",
+                ArtifactType::Specification,
+                "# Source Blueprint\n\nImplement the selected plan safely.",
+                "test",
+            ))
+            .await
+            .expect("source blueprint should persist");
+        let mut source_session = IdeationSession::builder()
+            .project_id(project_id.clone())
+            .title("Accepted source session")
+            .status(IdeationSessionStatus::Accepted)
+            .plan_artifact_id(source_artifact.id.clone())
+            .plan_contract_version(2)
+            .build();
+        source_session.plan_blueprint_artifact_id = Some(source_blueprint.id.clone());
         let source_session = state
             .ideation_session_repo
-            .create(
-                IdeationSession::builder()
-                    .project_id(project_id.clone())
-                    .title("Accepted source session")
-                    .status(IdeationSessionStatus::Accepted)
-                    .plan_artifact_id(source_artifact.id.clone())
-                    .build(),
-            )
+            .create(source_session)
             .await
             .expect("source session should persist");
         let mut source_proposal = TaskProposal::new(
@@ -3966,6 +3978,7 @@ mod ipc_contract {
             project_id,
             source_session_id: source_session.id,
             source_artifact_id: source_artifact.id,
+            source_blueprint_id: source_blueprint.id,
             _repo_dir: repo_dir,
             _worktree_parent: worktree_parent,
         }
@@ -4061,6 +4074,12 @@ mod ipc_contract {
                 .as_ref()
                 .unwrap_or_else(|| panic!("{mode} should set plan_artifact_id"));
             assert_ne!(cloned_artifact_id, &fix.source_artifact_id);
+            assert_eq!(new_session.plan_contract_version, 2);
+            let cloned_blueprint_id = new_session
+                .plan_blueprint_artifact_id
+                .as_ref()
+                .unwrap_or_else(|| panic!("{mode} should clone the plan blueprint"));
+            assert_ne!(cloned_blueprint_id, &fix.source_blueprint_id);
 
             let cloned_artifact = state
                 .artifact_repo
@@ -4081,6 +4100,18 @@ mod ipc_contract {
                     .derived_from
                     .contains(&fix.source_artifact_id),
                 "{mode} clone should retain source-artifact provenance"
+            );
+            let cloned_blueprint = state
+                .artifact_repo
+                .get_by_id(cloned_blueprint_id)
+                .await
+                .expect("cloned blueprint lookup should succeed")
+                .unwrap_or_else(|| panic!("{mode} cloned blueprint should exist"));
+            assert!(
+                cloned_blueprint
+                    .derived_from
+                    .contains(&fix.source_blueprint_id),
+                "{mode} clone should retain source-blueprint provenance"
             );
 
             let new_proposals = state
@@ -4107,7 +4138,7 @@ mod ipc_contract {
                     response.send_result.queued_message_id.as_deref() == Some(message.id.as_str())
                 })
                 .unwrap_or_else(|| panic!("{mode} queued message should be retained"));
-            assert_eq!(queued.composer_artifact_references.len(), 1);
+            assert_eq!(queued.composer_artifact_references.len(), 2);
             let queued_reference = &queued.composer_artifact_references[0];
             assert_eq!(queued_reference.kind, "plan");
             assert_eq!(queued_reference.artifact_id, cloned_artifact_id.as_str());
@@ -4118,6 +4149,20 @@ mod ipc_contract {
             assert_ne!(
                 queued_reference.artifact_id,
                 fix.source_artifact_id.as_str()
+            );
+            let queued_blueprint_reference = &queued.composer_artifact_references[1];
+            assert_eq!(queued_blueprint_reference.kind, "plan_blueprint");
+            assert_eq!(
+                queued_blueprint_reference.artifact_id,
+                cloned_blueprint_id.as_str()
+            );
+            assert_eq!(
+                queued_blueprint_reference.session_id.as_deref(),
+                Some(new_session.id.as_str())
+            );
+            assert_ne!(
+                queued_blueprint_reference.artifact_id,
+                fix.source_blueprint_id.as_str()
             );
         }
 
@@ -4767,6 +4812,15 @@ mod ipc_contract {
             .await
             .expect("models should list");
         assert!(initial.iter().any(|model| model.model_id == "gpt-5.5"));
+        for model_id in ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"] {
+            assert!(
+                initial
+                    .iter()
+                    .any(|model| model.model_id == model_id && model.source == "built_in"),
+                "expected built-in model '{}' in command response",
+                model_id
+            );
+        }
         assert!(initial
             .iter()
             .any(|model| model.default_effort == "max" || model.default_effort == "xhigh"));
@@ -4798,6 +4852,46 @@ mod ipc_contract {
             .iter()
             .any(|model| model.model_id == "gpt-5.6" && model.default_effort == "low"));
 
+        let opus_override = upsert_custom_agent_model(
+            UpsertCustomAgentModelInput {
+                provider: "claude".to_string(),
+                model_id: "claude-opus-5".to_string(),
+                label: "Private Opus 5".to_string(),
+                menu_label: Some("Private Opus 5".to_string()),
+                description: None,
+                supported_efforts: vec!["low".to_string(), "high".to_string()],
+                default_effort: "high".to_string(),
+                enabled: true,
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("same-ID custom override should save");
+        assert_eq!(opus_override.source, "custom");
+        let overridden = list_agent_models(app.state::<AppState>())
+            .await
+            .expect("models should list custom override");
+        assert!(overridden.iter().any(|model| {
+            model.model_id == "claude-opus-5"
+                && model.source == "custom"
+                && model.label == "Private Opus 5"
+        }));
+        assert!(delete_custom_agent_model(
+            "claude".to_string(),
+            "claude-opus-5".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("custom override should delete"));
+        let restored = list_agent_models(app.state::<AppState>())
+            .await
+            .expect("models should list restored built-in");
+        assert!(restored.iter().any(|model| {
+            model.model_id == "claude-opus-5"
+                && model.source == "built_in"
+                && model.label == "Claude Opus 5"
+        }));
+
         let deleted = delete_custom_agent_model(
             "codex".to_string(),
             "gpt-5.6".to_string(),
@@ -4820,7 +4914,22 @@ mod ipc_contract {
     #[test]
     fn agent_model_registry_ipc_contract_covers_provider_defaults() {
         let built_ins = built_in_agent_models();
-        assert_eq!(built_ins.len(), 14);
+        assert_eq!(built_ins.len(), 17);
+        for (model_id, label) in [
+            ("claude-opus-4-7", "Claude Opus 4.7"),
+            ("claude-opus-4-8", "Claude Opus 4.8"),
+            ("claude-opus-5", "Claude Opus 5"),
+        ] {
+            let model = built_ins
+                .iter()
+                .find(|model| {
+                    model.provider == AgentHarnessKind::Claude && model.model_id == model_id
+                })
+                .expect("pinned Opus model should be exposed as a built-in Claude model");
+            assert_eq!(model.source, AgentModelSource::BuiltIn);
+            assert_eq!(model.label, label);
+            assert_eq!(model.default_effort, LogicalEffort::High);
+        }
         let sonnet_4_6 = built_ins
             .iter()
             .find(|model| {

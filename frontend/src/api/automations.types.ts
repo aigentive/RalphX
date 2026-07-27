@@ -115,6 +115,9 @@ export interface AutomationRun {
   planRevisionPending: boolean;
   planPhase: boolean;
   planArtifactId: string | null;
+  planBlueprintArtifactId: string | null;
+  parkedPlanArtifactId: string | null;
+  parkedPlanBlueprintArtifactId: string | null;
   planApprovedBy: string | null;
   planApprovedArtifactVersion: number | null;
   planApprovedAt: string | null;

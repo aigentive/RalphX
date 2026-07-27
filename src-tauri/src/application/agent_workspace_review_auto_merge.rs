@@ -1,8 +1,9 @@
 //! Durable GitHub auto-merge coordination for workspace Reviews.
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_review::{
@@ -26,6 +27,28 @@ const REVIEW_AUTO_MERGE_RESTORED_SUMMARY: &str =
     "GitHub auto-merge was restored after the workspace Review passed.";
 const REVIEW_AUTO_MERGE_RESTORE_FAILED_SUMMARY: &str =
     "Workspace Review passed, but GitHub auto-merge could not be restored yet.";
+const WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET: &str =
+    "ralphx_lib::application::agent_workspace_review_auto_merge";
+
+fn log_workspace_review_auto_merge_phase(
+    operation: &'static str,
+    workspace: &AgentConversationWorkspace,
+    phase: &'static str,
+    phase_started: Instant,
+    total_started: Instant,
+) {
+    info!(
+        target: WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET,
+        operation,
+        phase,
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = phase_started.elapsed().as_millis(),
+        total_elapsed_ms = total_started.elapsed().as_millis(),
+        "Workspace Review auto-merge phase completed"
+    );
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceReviewStartOrigin {
@@ -66,12 +89,30 @@ pub async fn preview_manual_workspace_review_start(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<WorkspaceReviewManualStartPreview> {
+    let total_started = Instant::now();
+    let phase_started = Instant::now();
     let workspace = load_current_workspace_review_eligible(state, workspace).await?;
     let workspace = &workspace;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_start_preview_phase",
+        workspace,
+        "load_workspace",
+        phase_started,
+        total_started,
+    );
+    let phase_started = Instant::now();
     let target = resolve_current_target(state, workspace).await?;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_start_preview_phase",
+        workspace,
+        "resolve_target",
+        phase_started,
+        total_started,
+    );
     let pr_number = target
         .as_ref()
         .and_then(|target| review_target_pr_number(workspace, target));
+    let phase_started = Instant::now();
     let auto_merge = match (target.as_ref(), pr_number) {
         (Some(target), Some(pr_number)) => {
             let github = state.github_service.as_ref().ok_or_else(|| {
@@ -99,6 +140,13 @@ pub async fn preview_manual_workspace_review_start(
         }
         _ => None,
     };
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_start_preview_phase",
+        workspace,
+        "probe_github_auto_merge",
+        phase_started,
+        total_started,
+    );
     let confirmation = WorkspaceReviewStartConfirmation {
         target_scope: target.as_ref().map(|target| target.scope),
         diff_fingerprint: target
@@ -114,11 +162,19 @@ pub async fn preview_manual_workspace_review_start(
             .as_ref()
             .is_some_and(|effect| effect.restore_after_publish),
     };
-    Ok(WorkspaceReviewManualStartPreview {
+    let preview = WorkspaceReviewManualStartPreview {
         target,
         auto_merge,
         confirmation,
-    })
+    };
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_start_preview_phase",
+        workspace,
+        "total",
+        total_started,
+        total_started,
+    );
+    Ok(preview)
 }
 
 /// Re-reads GitHub state for a review target. A preview is absent when there is no open PR or
@@ -161,9 +217,27 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
     confirmation: Option<&WorkspaceReviewStartConfirmation>,
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
+    let total_started = Instant::now();
+    let phase_started = Instant::now();
     let _lifecycle_guard = lock_workspace_review_lifecycle(&workspace.conversation_id).await;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "wait_for_lifecycle_lock",
+        phase_started,
+        total_started,
+    );
+    let phase_started = Instant::now();
     let workspace = load_current_workspace_review_eligible(state.as_ref(), workspace).await?;
     let workspace = &workspace;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "load_workspace",
+        phase_started,
+        total_started,
+    );
+    let phase_started = Instant::now();
     let preview = match origin {
         WorkspaceReviewStartOrigin::Manual => {
             let manual_preview =
@@ -185,7 +259,15 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             preview_workspace_review_auto_merge_guard(state.as_ref(), workspace).await?
         }
     };
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "revalidate_confirmation",
+        phase_started,
+        total_started,
+    );
     let Some(preview) = preview else {
+        let phase_started = Instant::now();
         let start = start_agent_workspace_review_unlocked_with_runtime_override(
             Arc::clone(&state),
             workspace,
@@ -193,7 +275,15 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             runtime_override,
         )
         .await?;
-        return settle_skipped_guarded_workspace_review_start(
+        log_workspace_review_auto_merge_phase(
+            "workspace_review_guarded_start_phase",
+            workspace,
+            "start_review",
+            phase_started,
+            total_started,
+        );
+        let phase_started = Instant::now();
+        let settled = settle_skipped_guarded_workspace_review_start(
             state.as_ref(),
             workspace,
             start,
@@ -201,9 +291,32 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             None,
         )
         .await;
+        log_workspace_review_auto_merge_phase(
+            "workspace_review_guarded_start_phase",
+            workspace,
+            "settle_guard",
+            phase_started,
+            total_started,
+        );
+        log_workspace_review_auto_merge_phase(
+            "workspace_review_guarded_start_phase",
+            workspace,
+            "total",
+            total_started,
+            total_started,
+        );
+        return settled;
     };
 
+    let phase_started = Instant::now();
     let monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "load_monitor",
+        phase_started,
+        total_started,
+    );
     if let Some(existing_guard) = monitor.auto_merge_guard.as_ref() {
         if guard_matches_target(existing_guard, workspace, &preview.target) {
             ensure_guarded_auto_merge_is_paused(state.as_ref(), workspace, existing_guard).await?;
@@ -246,6 +359,7 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         .upsert_workspace_review_monitor(monitor.clone())
         .await?;
     let pausing = guard_for_preview(&preview, AgentWorkspaceReviewAutoMergeGuardStatus::Pausing);
+    let phase_started = Instant::now();
     let claimed = state
         .agent_conversation_workspace_repo
         .compare_and_set_workspace_review_auto_merge_guard(
@@ -254,6 +368,13 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             Some(pausing.clone()),
         )
         .await?;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "claim_auto_merge_guard",
+        phase_started,
+        total_started,
+    );
     if !claimed {
         return Err(AppError::Conflict(
             "workspace Review auto-merge state changed; refresh and retry".to_string(),
@@ -265,6 +386,7 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             "GitHub integration became unavailable before review start".to_string(),
         )
     })?;
+    let phase_started = Instant::now();
     if let Err(error) = github
         .disable_pr_auto_merge(&preview.target.working_directory, preview.pr_number)
         .await
@@ -281,7 +403,15 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             "could not disable GitHub auto-merge before workspace Review: {error}"
         )));
     }
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "disable_github_auto_merge",
+        phase_started,
+        total_started,
+    );
 
+    let phase_started = Instant::now();
     if let Err(error) = state
         .agent_conversation_workspace_repo
         .update_pr_auto_merge_state(
@@ -301,10 +431,18 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         .await;
         return Err(error);
     }
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "persist_auto_merge_state",
+        phase_started,
+        total_started,
+    );
     let paused = guard_for_preview(
         &preview,
         AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
     );
+    let phase_started = Instant::now();
     let paused_persisted = state
         .agent_conversation_workspace_repo
         .compare_and_set_workspace_review_auto_merge_guard(
@@ -313,6 +451,13 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             Some(paused.clone()),
         )
         .await?;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "persist_paused_guard",
+        phase_started,
+        total_started,
+    );
     if !paused_persisted {
         let _ = restore_guarded_auto_merge_after_failed_start(
             state.as_ref(),
@@ -325,6 +470,7 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             "workspace Review auto-merge guard changed after GitHub was paused".to_string(),
         ));
     }
+    let phase_started = Instant::now();
     let mut paused_monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
     if paused_monitor.auto_merge_guard.as_ref() != Some(&paused) {
         let _ = restore_guarded_auto_merge_after_failed_start(
@@ -344,6 +490,14 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(paused_monitor)
         .await?;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "record_review_target",
+        phase_started,
+        total_started,
+    );
+    let phase_started = Instant::now();
     append_auto_merge_guard_event(
         state.as_ref(),
         workspace,
@@ -353,7 +507,15 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         REVIEW_AUTO_MERGE_PAUSED_SUMMARY,
     )
     .await;
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "append_guard_event",
+        phase_started,
+        total_started,
+    );
 
+    let phase_started = Instant::now();
     let started = start_agent_workspace_review_unlocked_with_runtime_override(
         Arc::clone(&state),
         workspace,
@@ -361,7 +523,14 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         runtime_override,
     )
     .await;
-    match started {
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "start_review",
+        phase_started,
+        total_started,
+    );
+    let result = match started {
         Ok(start) if start.started => Ok(start),
         Ok(start) => {
             settle_skipped_guarded_workspace_review_start(
@@ -384,7 +553,15 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
             restore_result?;
             Err(error)
         }
-    }
+    };
+    log_workspace_review_auto_merge_phase(
+        "workspace_review_guarded_start_phase",
+        workspace,
+        "total",
+        total_started,
+        total_started,
+    );
+    result
 }
 
 /// A skipped start can still represent a current passing Review. Settle that result through the

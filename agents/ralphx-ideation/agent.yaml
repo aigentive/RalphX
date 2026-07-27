@@ -65,7 +65,7 @@ harnesses:
 profiles:
   plan:
     role: plan_chat
-    description: "Agent conversation Plan-mode assistant. Clarifies, researches, and maintains a linked planning artifact without starting proposals or task execution."
+    description: "Agent conversation Plan-mode assistant. Clarifies, researches, and maintains a linked Overview and Implementation Blueprint bundle without starting proposals or task execution."
     capabilities:
       mcp_tools:
         - fs_read_file

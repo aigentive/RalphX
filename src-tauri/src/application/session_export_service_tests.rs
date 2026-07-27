@@ -214,6 +214,14 @@ fn build_minimal_export() -> SessionExport {
             created_at: "2026-03-13T00:00:00Z".into(),
             created_by: "test".into(),
         }],
+        blueprint_versions: vec![PlanVersionData {
+            version: 1,
+            name: "Blueprint v1".into(),
+            content: Some("# Blueprint".into()),
+            content_type: "text/markdown".into(),
+            created_at: "2026-03-13T00:00:00Z".into(),
+            created_by: "test".into(),
+        }],
         proposals: vec![ProposalData {
             index: 0,
             title: "Feature A".into(),
@@ -270,6 +278,7 @@ async fn export_session_no_plan_returns_empty_versions() {
     let export = service.export("session-1", "project-1").await.unwrap();
 
     assert_eq!(export.plan_versions.len(), 0);
+    assert_eq!(export.blueprint_versions.len(), 0);
     assert_eq!(export.schema_version, 2);
 }
 
@@ -975,7 +984,30 @@ async fn round_trip_export_import_re_export() {
         Some("art-1"),
     )
     .await;
+    seed_artifact(
+        &app_state,
+        "blueprint-1",
+        1,
+        "Blueprint v1",
+        "# Blueprint",
+        None,
+    )
+    .await;
     seed_session(&app_state, "sess-1", "project-1", Some("art-1")).await;
+    app_state
+        .db
+        .run(|conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_blueprint_artifact_id = 'blueprint-1',
+                     plan_contract_version = 2
+                 WHERE id = 'sess-1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     seed_proposal(
         &app_state,
         "prop-0",
@@ -1001,6 +1033,7 @@ async fn round_trip_export_import_re_export() {
     // Export
     let export = service.export("sess-1", "project-1").await.unwrap();
     assert_eq!(export.plan_versions.len(), 2);
+    assert_eq!(export.blueprint_versions.len(), 1);
     assert_eq!(export.proposals.len(), 2);
     assert_eq!(export.dependencies.len(), 1);
 
@@ -1018,6 +1051,10 @@ async fn round_trip_export_import_re_export() {
 
     // Verify structural equivalence
     assert_eq!(re_export.plan_versions.len(), export.plan_versions.len());
+    assert_eq!(
+        re_export.blueprint_versions.len(),
+        export.blueprint_versions.len()
+    );
     assert_eq!(re_export.proposals.len(), export.proposals.len());
     assert_eq!(re_export.dependencies.len(), export.dependencies.len());
     assert_eq!(
@@ -1027,6 +1064,10 @@ async fn round_trip_export_import_re_export() {
     assert_eq!(
         re_export.plan_versions[1].content,
         export.plan_versions[1].content
+    );
+    assert_eq!(
+        re_export.blueprint_versions[0].content,
+        export.blueprint_versions[0].content
     );
     // Dependency structure preserved
     assert_eq!(

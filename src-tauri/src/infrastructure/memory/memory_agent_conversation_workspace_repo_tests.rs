@@ -120,6 +120,8 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(4);
+    monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
+    monitor.review_requested_changes_artifact_version = Some(4);
     monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
     repo.upsert_workspace_review_monitor(monitor)
         .await
@@ -127,6 +129,8 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     let snapshot = AgentWorkspaceReviewFixerSnapshot {
         target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
         diff_fingerprint: "diff-claim".to_string(),
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
         artifact_id,
         artifact_version: 4,
         blocking_fingerprint: "blocker-claim".to_string(),
@@ -169,6 +173,8 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
         diff_fingerprint: "diff-old".to_string(),
         artifact_id: artifact_id.clone(),
         artifact_version: 4,
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
         blocking_fingerprint: "blocker-old".to_string(),
     };
     let mut monitor = AgentWorkspaceReviewMonitor::new(
@@ -184,6 +190,10 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
     monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
     monitor.review_artifact_id = Some(artifact_id);
     monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_requested_changes_artifact_id =
+        Some(snapshot.requested_changes_artifact_id.clone());
+    monitor.review_requested_changes_artifact_version =
+        Some(snapshot.requested_changes_artifact_version);
     monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     let mut claimed = repo
@@ -1020,6 +1030,9 @@ async fn approve_workspace_review_anyway_is_exact_and_single_use() {
     monitor.reviewed_diff_fingerprint = Some("diff-1".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(2);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("changes-review-bypass"));
+    monitor.review_requested_changes_artifact_version = Some(2);
     repo.upsert_workspace_review_monitor(monitor)
         .await
         .expect("insert blocking monitor");

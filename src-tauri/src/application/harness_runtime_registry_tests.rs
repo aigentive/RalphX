@@ -118,7 +118,7 @@ fn refresh_supported_harnesses_reprobes_claude_aliases_after_cli_update() {
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
     let claude_cli = bin_dir.join("claude");
     let codex_cli = bin_dir.join("codex");
-    write_fake_claude(&claude_cli, "2.1.146");
+    write_fake_claude(&claude_cli, "2.1.110");
     write_fake_codex(&codex_cli);
 
     let _path = EnvGuard::set_os("PATH", &bin_dir);
@@ -131,18 +131,27 @@ fn refresh_supported_harnesses_reprobes_claude_aliases_after_cli_update() {
     clear_harness_runtime_caches_for_tests(AgentHarnessKind::Codex);
 
     let initial_probe = refresh_harness_runtime_probe(AgentHarnessKind::Claude);
-    assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.146"));
+    assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.110"));
+    assert!(!model_aliases(&initial_probe).contains(&"claude-opus-4-7".to_string()));
+    assert!(!model_aliases(&initial_probe).contains(&"claude-opus-4-8".to_string()));
+    assert!(!model_aliases(&initial_probe).contains(&"claude-opus-5".to_string()));
     assert!(!model_aliases(&initial_probe).contains(&"fable".to_string()));
     assert!(!model_aliases(&initial_probe).contains(&"claude-sonnet-4-6".to_string()));
     assert!(!model_aliases(&initial_probe).contains(&"claude-sonnet-5".to_string()));
 
-    write_fake_claude(&claude_cli, "2.1.197");
+    write_fake_claude(&claude_cli, "2.1.219");
     let cached_probe = claude_probe(&mut probe_supported_harnesses());
-    assert_eq!(cached_probe.cli_version.as_deref(), Some("2.1.146"));
+    assert_eq!(cached_probe.cli_version.as_deref(), Some("2.1.110"));
+    assert!(!model_aliases(&cached_probe).contains(&"claude-opus-4-7".to_string()));
+    assert!(!model_aliases(&cached_probe).contains(&"claude-opus-4-8".to_string()));
+    assert!(!model_aliases(&cached_probe).contains(&"claude-opus-5".to_string()));
     assert!(!model_aliases(&cached_probe).contains(&"fable".to_string()));
 
     let refreshed_probe = claude_probe(&mut refresh_supported_harnesses());
-    assert_eq!(refreshed_probe.cli_version.as_deref(), Some("2.1.197"));
+    assert_eq!(refreshed_probe.cli_version.as_deref(), Some("2.1.219"));
+    assert!(model_aliases(&refreshed_probe).contains(&"claude-opus-4-7".to_string()));
+    assert!(model_aliases(&refreshed_probe).contains(&"claude-opus-4-8".to_string()));
+    assert!(model_aliases(&refreshed_probe).contains(&"claude-opus-5".to_string()));
     assert!(model_aliases(&refreshed_probe).contains(&"fable".to_string()));
     assert!(model_aliases(&refreshed_probe).contains(&"claude-sonnet-4-6".to_string()));
     assert!(model_aliases(&refreshed_probe).contains(&"claude-sonnet-5".to_string()));

@@ -794,6 +794,7 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         execution_slot_held: false, // idle between turns at exit
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let has_output = outcome.has_meaningful_output();
     let skip_post_loop = outcome.turns_finalized > 0 && !has_output;
@@ -820,6 +821,7 @@ fn test_stream_outcome_turns_finalized_controls_post_loop_behavior() {
         execution_slot_held: true, // normal exit — slot still held
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let has_output = outcome_non_interactive.has_meaningful_output();
     let skip_post_loop = outcome_non_interactive.turns_finalized > 0 && !has_output;
@@ -854,6 +856,7 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         !idle_outcome.execution_slot_held,
@@ -874,6 +877,7 @@ fn test_stream_outcome_execution_slot_held_reflects_interactive_state() {
         execution_slot_held: true,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         active_outcome.execution_slot_held,
@@ -941,6 +945,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let will_process_queue_normal = will_process_queue(&outcome_normal, false);
     assert!(
@@ -962,6 +967,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: true,
+        mode_handoff_exit: false,
     };
     let will_process_queue_silent = will_process_queue(&outcome_silent, true);
     assert!(
@@ -990,6 +996,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     let will_process_queue_no_session = will_process_queue(&outcome_no_session, false);
     assert!(
@@ -1247,6 +1254,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: false, // slot released at TurnComplete
         completion_tool_called: false,
         silent_interactive_exit: true,
+        mode_handoff_exit: false,
     };
     assert!(
         idle_exit.silent_interactive_exit,
@@ -1271,6 +1279,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: true, // slot not yet released
         completion_tool_called: false,
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
     assert!(
         !active_exit.silent_interactive_exit,
@@ -1293,6 +1302,7 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: false,
         completion_tool_called: false,
         silent_interactive_exit: true, // set in Ok(Err(e)) branch when between_interactive_turns
+        mode_handoff_exit: false,
     };
     assert!(
         crash_idle.silent_interactive_exit,

@@ -49,6 +49,12 @@ describe("agentWorkspaceOperationToast", () => {
     vi.useRealTimers();
   });
 
+  it("gives local commits their own stable operation toast identity", () => {
+    expect(agentWorkspaceOperationToastId("conversation-1", "local-commit")).toBe(
+      "agent-workspace-operation:conversation-1:local-commit",
+    );
+  });
+
   it.each([
     ["committing", "Commit changes"],
     ["refreshing", "Refresh branch"],

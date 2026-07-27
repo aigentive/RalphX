@@ -1624,6 +1624,14 @@ async fn skips_recovery_when_workspace_or_project_state_blocks_it() {
 
     project.archived_at = None;
     project.github_pr_enabled = false;
+    let mut unlinked_workspace = workspace;
+    unlinked_workspace.publication_pr_number = None;
+    unlinked_workspace.publication_pr_url = None;
+    unlinked_workspace.publication_pr_status = None;
+    workspace_repo
+        .create_or_update(unlinked_workspace)
+        .await
+        .expect("future-PR-disabled workspace should persist");
     let outcome = recover_agent_workspace_pr_supervision(
         recovery_deps(
             workspace_repo,
@@ -1638,9 +1646,55 @@ async fn skips_recovery_when_workspace_or_project_state_blocks_it() {
     .expect("disabled PR skip");
     assert_eq!(
         outcome,
-        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("github_pr_disabled")
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("missing_pr_number")
     );
     assert_eq!(github.state().check_pr_sync_state_calls, 1);
+}
+
+#[tokio::test]
+async fn supervision_recovers_existing_pr_without_origin_when_future_pr_preference_is_disabled() {
+    let (_temp_dir, mut project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-no-origin-disabled").await;
+    project.github_pr_enabled = false;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(
+        "ralphx/test/pr-supervision-no-origin-disabled",
+        &head_sha,
+    ));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("persisted PR should remain recoverable without an origin remote");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
+            pr_number: 257,
+            head_sha,
+        }
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, Some(257));
+    assert_eq!(github.state().check_pr_sync_state_calls, 2);
 }
 
 #[tokio::test]
@@ -2065,6 +2119,11 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-current"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "requested-changes-artifact-current",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.reviewed_target_scope = Some(review_target.scope);
     monitor.reviewed_head_sha = review_target.head_sha.clone();
     monitor.reviewed_diff_fingerprint = Some(review_target.diff_fingerprint.clone());

@@ -60,7 +60,7 @@ async fn gh_auth_login_prompt_records_one_durable_notification_per_device_code()
 fn github_url_https_is_valid() {
     assert!(is_github_url("https://github.com/owner/repo.git"));
     assert!(is_github_url("https://github.com/owner/repo"));
-    assert!(is_github_url("https://github.com/org/sub/repo"));
+    assert!(!is_github_url("https://github.com/org/sub/repo"));
 }
 
 #[test]
@@ -96,10 +96,13 @@ async fn test_update_github_pr_enabled_persists_change() {
     let state = setup_test_state();
 
     let project = Project::new("Test".to_string(), "/test/path".to_string());
-    assert!(project.github_pr_enabled, "default should be true");
+    assert!(
+        !project.github_pr_enabled,
+        "fresh projects require an explicit GitHub PR-mode opt-in"
+    );
     let created = state.project_repo.create(project).await.unwrap();
 
-    // Disable PR mode
+    // Disabling remains allowed without repository capability.
     let mut updated = created.clone();
     updated.github_pr_enabled = false;
     updated.touch();
@@ -112,17 +115,6 @@ async fn test_update_github_pr_enabled_persists_change() {
         .unwrap()
         .unwrap();
     assert!(!found.github_pr_enabled);
-}
-
-#[tokio::test]
-async fn test_project_response_includes_github_pr_enabled() {
-    let project = Project::new("Test".to_string(), "/test".to_string());
-    let response = ProjectResponse::from(project);
-    // Default value should be true
-    assert!(response.github_pr_enabled);
-
-    let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains("\"github_pr_enabled\":true"));
 }
 
 fn setup_test_state() -> AppState {
@@ -242,23 +234,6 @@ async fn test_list_projects_returns_all() {
 
     let projects = state.project_repo.get_all().await.unwrap();
     assert_eq!(projects.len(), 3);
-}
-
-#[tokio::test]
-async fn test_project_response_serialization() {
-    let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    let response = ProjectResponse::from(project);
-
-    assert!(!response.id.is_empty());
-    assert_eq!(response.name, "Test Project");
-    assert_eq!(response.working_directory, "/test/path");
-    assert_eq!(response.git_mode, "worktree");
-
-    // Verify it serializes to JSON with snake_case (Rust default)
-    let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains("\"name\":\"Test Project\""));
-    assert!(json.contains("\"working_directory\":\"/test/path\""));
-    assert!(json.contains("\"git_mode\":\"worktree\""));
 }
 
 // ===== get_git_default_branch tests =====
@@ -437,12 +412,16 @@ mod ipc_contract {
 
     #[test]
     fn create_project_input_deserializes_camel_case() {
-        let json = r#"{"name":"My Project","workingDirectory":"/code/my-project","gitMode":"worktree","baseBranch":"main"}"#;
+        let json = r#"{"name":"My Project","workingDirectory":"/code/my-project","gitMode":"worktree","baseBranch":"main","worktreeParentDirectory":"/code/worktrees"}"#;
         let input: CreateProjectInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.name, "My Project");
         assert_eq!(input.working_directory, "/code/my-project");
         assert_eq!(input.git_mode, Some("worktree".to_string()));
         assert_eq!(input.base_branch, Some("main".to_string()));
+        assert_eq!(
+            input.worktree_parent_directory,
+            Some("/code/worktrees".to_string())
+        );
     }
 
     #[test]
@@ -453,6 +432,7 @@ mod ipc_contract {
         assert_eq!(input.working_directory, "/tmp/proj");
         assert!(input.git_mode.is_none());
         assert!(input.base_branch.is_none());
+        assert!(input.worktree_parent_directory.is_none());
     }
 
     #[test]
@@ -603,34 +583,71 @@ mod mode_switch_tests {
     }
 
     #[tokio::test]
-    async fn pr_to_push_clears_pr_fields_on_repo() {
-        // Verify that clear_pr_info removes pr_number and pr_url from the branch.
-        // This is the key side effect of the PR → push-to-main mode switch path.
+    async fn disabling_future_pr_preference_preserves_existing_pr_identity() {
         let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
-
-        let branch = make_branch_with_pr("proj-1", "task-merge-1", 42);
-        let branch_id = branch.id.clone();
-        plan_branch_repo.create(branch).await.unwrap();
-
-        // Verify PR fields are set before the operation
-        let before = plan_branch_repo
-            .get_by_id(&branch_id)
+        let task_repo = Arc::new(MemoryTaskRepository::new());
+        let project_repo = Arc::new(MemoryProjectRepository::new());
+        let mut state = AppState::with_repos(task_repo.clone(), project_repo.clone());
+        state.plan_branch_repo = plan_branch_repo.clone();
+        let project_id = ProjectId::from_string("proj-1".to_string());
+        let mut project = Project::new("Project".to_string(), "/test/project".to_string());
+        project.id = project_id.clone();
+        project_repo
+            .create(project)
             .await
-            .unwrap()
-            .unwrap();
-        assert!(before.pr_number.is_some(), "PR number should be set");
-        assert!(before.pr_url.is_some(), "PR URL should be set");
+            .expect("project should persist");
 
-        // Simulate what handle_pr_mode_switch does when PR → push-to-main
-        plan_branch_repo.clear_pr_info(&branch_id).await.unwrap();
+        let mut merge_task = Task::new(project_id.clone(), "Merge plan".to_string());
+        merge_task.category = TaskCategory::PlanMerge;
+        merge_task.internal_status = InternalStatus::PendingMerge;
+        let merge_task_id = merge_task.id.clone();
+        task_repo
+            .create(merge_task)
+            .await
+            .expect("merge task should persist");
+
+        let mut branch = make_branch_with_pr("proj-1", merge_task_id.as_str(), 42);
+        branch.project_id = project_id.clone();
+        let branch_id = branch.id.clone();
+        plan_branch_repo
+            .create(branch)
+            .await
+            .expect("plan branch should persist");
+
+        reconcile_pr_mode_switch(
+            &project_id,
+            false,
+            &state,
+            &Arc::new(ExecutionState::new()),
+            create_mock_app_handle(),
+        )
+        .await;
 
         let after = plan_branch_repo
             .get_by_id(&branch_id)
             .await
-            .unwrap()
-            .unwrap();
-        assert!(after.pr_number.is_none(), "PR number should be cleared");
-        assert!(after.pr_url.is_none(), "PR URL should be cleared");
+            .expect("plan branch should load")
+            .expect("plan branch should remain");
+        assert_eq!(
+            after.pr_number,
+            Some(42),
+            "PR number must remain authoritative"
+        );
+        assert_eq!(
+            after.pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/42"),
+            "preference changes must not clear remote identity"
+        );
+        assert_eq!(
+            task_repo
+                .get_by_id(&merge_task_id)
+                .await
+                .expect("merge task should load")
+                .expect("merge task should remain")
+                .internal_status,
+            InternalStatus::PendingMerge,
+            "a numbered PR must not be rerouted into local finalization"
+        );
     }
 
     #[tokio::test]
@@ -719,6 +736,16 @@ mod mode_switch_tests {
             .current_dir(repo_path)
             .output()
             .expect("checkout main");
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:ralphx/test-repository.git",
+            ])
+            .current_dir(repo_path)
+            .output()
+            .expect("configure GitHub origin");
         let mut project = Project::new(
             "PR Toggle".to_string(),
             working_dir.path().to_string_lossy().into_owned(),
@@ -788,8 +815,7 @@ mod mode_switch_tests {
         let branch_id = branch.id.clone();
         plan_branch_repo.create(branch).await.unwrap();
 
-        // Even if we tried clear_pr_info, the guard in handle_pr_mode_switch prevents it.
-        // Verify the branch still has PR fields (was never cleared — merged branches are skipped).
+        // Merged branches are outside pre-PR reconciliation and retain their PR identity.
         let found = plan_branch_repo
             .get_by_id(&branch_id)
             .await
@@ -890,8 +916,8 @@ fn test_ipc_contract_ensure_git_initialized_sync_no_commits() {
     ensure_git_initialized_for_test(path_str).expect("must succeed");
 
     assert!(
-        !has_commits(tmp.path()),
-        "sync helper treats an existing .git directory as initialized and does not backfill HEAD"
+        has_commits(tmp.path()),
+        "sync helper must provide a verified HEAD for an unborn repository"
     );
 }
 
@@ -1042,8 +1068,10 @@ async fn test_ensure_git_initialized_no_commits() {
         .expect("must succeed");
 
     assert!(tmp.path().join(".git").exists(), ".git must still exist");
-    // Commit may or may not succeed depending on global git config availability;
-    // ensure_git_initialized_async warns and returns Ok() either way
+    assert!(
+        has_commits(tmp.path()),
+        "command-local bootstrap identity must create the empty root commit"
+    );
 }
 
 /// State 3: .git exists WITH commits → ensure_git_initialized_async must be

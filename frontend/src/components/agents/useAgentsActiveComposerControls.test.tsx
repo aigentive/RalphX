@@ -280,7 +280,7 @@ describe("useAgentsActiveComposerControls", () => {
     expect(setRuntimeForConversation).not.toHaveBeenCalled();
   });
 
-  it("enables Team mode for the active project conversation", async () => {
+  it("updates the selected capability for the active project conversation", async () => {
     const invalidateProjectConversations = vi.fn().mockResolvedValue(undefined);
     const invalidateQueries = vi.fn().mockResolvedValue(undefined);
     const { result } = renderHook(() =>
@@ -296,7 +296,7 @@ describe("useAgentsActiveComposerControls", () => {
     );
 
     await act(async () => {
-      await result.current.handleActiveTeamEnabledChange(true);
+      await result.current.handleActiveCapabilityChange("rx_native_team");
     });
 
     expect(updateCoordinationModeMock).toHaveBeenCalledWith({
@@ -305,7 +305,7 @@ describe("useAgentsActiveComposerControls", () => {
     });
     expect(invalidateProjectConversations).toHaveBeenCalledWith("project-1");
     expect(invalidateQueries).toHaveBeenCalled();
-    expect(result.current.updatingTeamConversationId).toBeNull();
+    expect(result.current.updatingCapabilityConversationId).toBeNull();
   });
 
   it("passes the selected Codex model when enabling Ultra", async () => {
@@ -324,7 +324,7 @@ describe("useAgentsActiveComposerControls", () => {
     });
   });
 
-  it("does not update Team mode when the requested state already matches", async () => {
+  it("does not update a capability when the requested state already matches", async () => {
     const { result } = renderHook(() =>
       useAgentsActiveComposerControls(
         controlsArgs({
@@ -336,13 +336,13 @@ describe("useAgentsActiveComposerControls", () => {
     );
 
     await act(async () => {
-      await result.current.handleActiveTeamEnabledChange(true);
+      await result.current.handleActiveCapabilityChange("rx_native_team");
     });
 
     expect(updateCoordinationModeMock).not.toHaveBeenCalled();
   });
 
-  it("does not update Team mode without an active project conversation", async () => {
+  it("does not update a capability without an active project conversation", async () => {
     const { result } = renderHook(() =>
       useAgentsActiveComposerControls(
         controlsArgs({
@@ -353,20 +353,20 @@ describe("useAgentsActiveComposerControls", () => {
     );
 
     await act(async () => {
-      await result.current.handleActiveTeamEnabledChange(true);
+      await result.current.handleActiveCapabilityChange("rx_native_team");
     });
 
     expect(updateCoordinationModeMock).not.toHaveBeenCalled();
   });
 
-  it("clears Team mode pending state and reports update failures", async () => {
+  it("clears capability pending state and reports update failures", async () => {
     updateCoordinationModeMock.mockRejectedValue(new Error("Team update failed"));
     const { result } = renderHook(() =>
       useAgentsActiveComposerControls(controlsArgs()),
     );
 
     await act(async () => {
-      await result.current.handleActiveTeamEnabledChange(true);
+      await result.current.handleActiveCapabilityChange("rx_native_team");
     });
 
     expect(updateCoordinationModeMock).toHaveBeenCalledWith({
@@ -374,7 +374,7 @@ describe("useAgentsActiveComposerControls", () => {
       coordinationMode: "rx_native_team",
     });
     expect(toastErrorMock).toHaveBeenCalledWith("Team update failed");
-    expect(result.current.updatingTeamConversationId).toBeNull();
+    expect(result.current.updatingCapabilityConversationId).toBeNull();
   });
 
   it("normalizes active effort changes against provider-supported efforts", () => {

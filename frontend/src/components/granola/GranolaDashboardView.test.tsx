@@ -92,6 +92,11 @@ const project: Project = {
   customAnalysis: null,
   analyzedAt: null,
   githubPrEnabled: false,
+  repositoryCapability: {
+    kind: "github",
+    fetchUrl: "https://github.com/ralphx/ralphx.git",
+    pushUrl: "git@github.com:ralphx/ralphx.git",
+  },
   createdAt: "2026-06-19T22:00:00.000Z",
   updatedAt: "2026-06-19T22:00:00.000Z",
 };
@@ -296,6 +301,37 @@ describe("GranolaDashboardView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "No summary 0" }));
     expect(screen.getByText("No Granola notes match these filters.")).toBeInTheDocument();
+  });
+
+  it.each([
+    { kind: "localOnly" as const },
+    {
+      kind: "otherRemote" as const,
+      fetchUrl: "https://gitlab.com/ralphx/ralphx.git",
+      pushUrl: "git@gitlab.com:ralphx/ralphx.git",
+    },
+    { kind: "inspectionFailed" as const, message: "Unable to inspect" },
+  ])("does not load GitHub overview for a $kind project", async (repositoryCapability) => {
+    renderGranolaView({ project: { ...project, repositoryCapability } });
+
+    fireEvent.click(await screen.findByTestId(`granola-note-row-${granolaNote.id}`));
+    await screen.findByText("We should finish the standalone Granola dashboard.");
+    fireEvent.click(screen.getByRole("button", { name: "Add as context" }));
+
+    await screen.findByRole("dialog", { name: "Add Granola Context" });
+    expect(githubApi.getBranchOverview).not.toHaveBeenCalled();
+  });
+
+  it("loads GitHub overview when the selected project is GitHub capable", async () => {
+    renderGranolaView();
+
+    fireEvent.click(await screen.findByTestId(`granola-note-row-${granolaNote.id}`));
+    await screen.findByText("We should finish the standalone Granola dashboard.");
+    fireEvent.click(screen.getByRole("button", { name: "Add as context" }));
+
+    await waitFor(() =>
+      expect(githubApi.getBranchOverview).toHaveBeenCalledWith({ projectId: "project-1" }),
+    );
   });
 
   it("shows RX conversation, ticket, and PR associations for a Granola note", async () => {

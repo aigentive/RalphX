@@ -143,6 +143,7 @@ fn task_context_for(task: Task) -> TaskContext {
         task,
         source_proposal: None,
         plan_artifact: None,
+        blueprint_artifact: None,
         related_artifacts: Vec::new(),
         steps: Vec::new(),
         step_progress: None,

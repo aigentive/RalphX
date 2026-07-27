@@ -93,6 +93,7 @@ fn run_with_judge(
         plan_reminder_count: 0,
         plan_pending_instructions: None,
         plan_last_parked_artifact_id: None,
+        plan_last_parked_blueprint_artifact_id: None,
         agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Run 1 prompt".to_string(),
@@ -1221,12 +1222,17 @@ async fn delete_cleans_plan_gate_sessions_approvals_and_artifact_chains_for_each
             seed_conversation(&state, &project_id, &stopped.id, Some(&run.id), false).await;
         let (first_artifact_id, latest_artifact_id) =
             seed_plan_artifact_chain(&state, &format!("run-{index}-plan")).await;
+        let (first_blueprint_id, latest_blueprint_id) =
+            seed_plan_artifact_chain(&state, &format!("run-{index}-blueprint")).await;
         artifact_ids.push(first_artifact_id);
         artifact_ids.push(latest_artifact_id.clone());
+        artifact_ids.push(first_blueprint_id);
+        artifact_ids.push(latest_blueprint_id.clone());
         let session = IdeationSession::builder()
             .project_id(project_id.clone())
             .session_flow(IdeationSessionFlow::Planning)
             .plan_artifact_id(latest_artifact_id.clone())
+            .plan_blueprint_artifact_id(latest_blueprint_id)
             .build();
         let session_id = session.id.clone();
         state.ideation_session_repo.create(session).await.unwrap();

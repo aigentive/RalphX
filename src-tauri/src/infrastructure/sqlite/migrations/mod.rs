@@ -519,9 +519,9 @@ mod v20260720140000_remove_legacy_claude_team;
 #[cfg(test)]
 mod v20260720140000_remove_legacy_claude_team_tests;
 mod v20260720200633_auto_verify_draft_plans;
-mod v20260721190000_workspace_review_fixer_attempt;
 #[cfg(test)]
 mod v20260720200633_auto_verify_draft_plans_tests;
+mod v20260721190000_workspace_review_fixer_attempt;
 #[cfg(test)]
 mod v20260721190000_workspace_review_fixer_attempt_tests;
 mod v20260722022339_usage_capture_provenance_and_raw_snapshots;
@@ -542,6 +542,12 @@ mod v20260723100604_app_state_update_channel_tests;
 mod v20260724113627_agent_task_delegate_assignments;
 #[cfg(test)]
 mod v20260724113627_agent_task_delegate_assignments_tests;
+mod v20260724130000_plan_blueprints;
+#[cfg(test)]
+mod v20260724130000_plan_blueprints_tests;
+mod v20260724141500_workspace_review_requested_changes;
+#[cfg(test)]
+mod v20260724141500_workspace_review_requested_changes_tests;
 mod v20260724222347_agent_task_assignment_planned_run_identity;
 #[cfg(test)]
 mod v20260724222347_agent_task_assignment_planned_run_identity_tests;
@@ -1757,6 +1763,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260724113627,
         name: "agent_task_delegate_assignments",
         migrate: v20260724113627_agent_task_delegate_assignments::migrate,
+    },
+    Migration {
+        version: 20260724130000,
+        name: "plan_blueprints",
+        migrate: v20260724130000_plan_blueprints::migrate,
+    },
+    Migration {
+        version: 20260724141500,
+        name: "workspace_review_requested_changes",
+        migrate: v20260724141500_workspace_review_requested_changes::migrate,
     },
     Migration {
         version: 20260724222347,

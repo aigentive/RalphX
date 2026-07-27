@@ -79,8 +79,8 @@ fn update_with_expected_status_sync(
     expected_status: InternalStatus,
 ) -> AppResult<bool> {
     let rows_affected = conn.execute(
-        "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, task_branch_base_ref = ?17, task_branch_base_sha = ?18, worktree_path = ?19, merge_commit_sha = ?20, metadata = ?21, merge_pipeline_active = ?22
-         WHERE id = ?1 AND internal_status = ?23 AND (
+        "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, plan_blueprint_artifact_id = ?10, ideation_session_id = ?11, execution_plan_id = ?12, updated_at = ?13, started_at = ?14, completed_at = ?15, blocked_reason = ?16, task_branch = ?17, task_branch_base_ref = ?18, task_branch_base_sha = ?19, worktree_path = ?20, merge_commit_sha = ?21, metadata = ?22, merge_pipeline_active = ?23
+         WHERE id = ?1 AND internal_status = ?24 AND (
             internal_status = ?7 OR NOT EXISTS (
                 SELECT 1 FROM branch_update_operations
                 WHERE task_id = ?1 AND settled_at IS NULL
@@ -96,6 +96,9 @@ fn update_with_expected_status_sync(
             task.internal_status.as_str(),
             task.source_proposal_id.as_ref().map(|id| id.as_str()),
             task.plan_artifact_id.as_ref().map(|id| id.as_str()),
+            task.plan_blueprint_artifact_id
+                .as_ref()
+                .map(|id| id.as_str()),
             task.ideation_session_id.as_ref().map(|id| id.as_str()),
             task.execution_plan_id.as_ref().map(|id| id.as_str()),
             task.updated_at.to_rfc3339(),
@@ -129,8 +132,8 @@ impl TaskRepository for SqliteTaskRepository {
                     )?;
                 }
                 conn.execute(
-                    "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, task_branch_base_ref, task_branch_base_sha, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                    "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, plan_blueprint_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, task_branch_base_ref, task_branch_base_sha, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
                     rusqlite::params![
                         task.id.as_str(),
                         task.project_id.as_str(),
@@ -142,6 +145,9 @@ impl TaskRepository for SqliteTaskRepository {
                         task.needs_review_point,
                         task.source_proposal_id.as_ref().map(|id| id.as_str()),
                         task.plan_artifact_id.as_ref().map(|id| id.as_str()),
+                        task.plan_blueprint_artifact_id
+                            .as_ref()
+                            .map(|id| id.as_str()),
                         task.ideation_session_id.as_ref().map(|id| id.as_str()),
                         task.execution_plan_id.as_ref().map(|id| id.as_str()),
                         task.created_at.to_rfc3339(),
@@ -241,7 +247,7 @@ impl TaskRepository for SqliteTaskRepository {
                     )?;
                 }
                 let rows_affected = conn.execute(
-                    "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, task_branch_base_ref = ?17, task_branch_base_sha = ?18, worktree_path = ?19, merge_commit_sha = ?20, metadata = ?21, merge_pipeline_active = ?22
+                    "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, plan_blueprint_artifact_id = ?10, ideation_session_id = ?11, execution_plan_id = ?12, updated_at = ?13, started_at = ?14, completed_at = ?15, blocked_reason = ?16, task_branch = ?17, task_branch_base_ref = ?18, task_branch_base_sha = ?19, worktree_path = ?20, merge_commit_sha = ?21, metadata = ?22, merge_pipeline_active = ?23
                      WHERE id = ?1 AND (
                         internal_status = ?7 OR NOT EXISTS (
                             SELECT 1 FROM branch_update_operations
@@ -258,6 +264,9 @@ impl TaskRepository for SqliteTaskRepository {
                         task.internal_status.as_str(),
                         task.source_proposal_id.as_ref().map(|id| id.as_str()),
                         task.plan_artifact_id.as_ref().map(|id| id.as_str()),
+                        task.plan_blueprint_artifact_id
+                            .as_ref()
+                            .map(|id| id.as_str()),
                         task.ideation_session_id.as_ref().map(|id| id.as_str()),
                         task.execution_plan_id.as_ref().map(|id| id.as_str()),
                         task.updated_at.to_rfc3339(),

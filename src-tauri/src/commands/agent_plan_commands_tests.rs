@@ -1,6 +1,7 @@
 use super::agent_plan_commands::{
-    activate_agent_task_pipeline_for_state, copy_agent_conversation_plan_for_state,
-    import_agent_conversation_plan_for_state, validate_complete_task_pipeline_proposal_selection,
+    activate_agent_plan_direct_implementation_for_state, activate_agent_task_pipeline_for_state,
+    copy_agent_conversation_plan_for_state, import_agent_conversation_plan_for_state,
+    validate_complete_task_pipeline_proposal_selection, ActivateAgentPlanDirectImplementationInput,
     ActivateAgentTaskPipelineInput, CopyAgentConversationPlanInput,
     ImportAgentConversationPlanInput,
 };
@@ -77,6 +78,30 @@ fn file_plan(name: &str, path: &str, version: u32) -> Artifact {
         bucket_id: Some(ArtifactBucketId::from_string("prd-library")),
         archived_at: None,
     }
+}
+
+async fn seed_blueprint_for_session(state: &AppState, session_id: &str, content: &str) -> Artifact {
+    let blueprint = state
+        .artifact_repo
+        .create(inline_plan("Implementation Blueprint", content, 1))
+        .await
+        .unwrap();
+    let session_id = session_id.to_string();
+    let blueprint_id = blueprint.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_blueprint_artifact_id = ?2, plan_contract_version = 2
+                 WHERE id = ?1",
+                rusqlite::params![session_id, blueprint_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    blueprint
 }
 
 async fn setup_target_workspace(
@@ -211,11 +236,74 @@ async fn seed_source_plan(
                 .project_id(project.id.clone())
                 .session_flow(IdeationSessionFlow::Planning)
                 .plan_artifact_id(source_v2.id.clone())
+                .plan_contract_version(1)
                 .build(),
         )
         .await
         .unwrap();
     (source_session, source_v1, source_v2)
+}
+
+#[tokio::test]
+async fn copy_agent_conversation_plan_clones_complete_v2_bundle_and_provenance() {
+    let (state, project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let (mut source_session, _source_v1, source_overview) =
+        seed_source_plan(&state, &project).await;
+    let source_blueprint =
+        seed_blueprint_for_session(&state, source_session.id.as_str(), "# Source blueprint").await;
+    source_session = state
+        .ideation_session_repo
+        .get_by_id(&source_session.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let response = copy_agent_conversation_plan_for_state(
+        CopyAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_overview.id.as_str().to_string(),
+            source_version: source_overview.metadata.version,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let copied_blueprint = response
+        .blueprint_artifact
+        .expect("complete v2 copy must return its Blueprint");
+    assert_eq!(copied_blueprint.content, "# Source blueprint");
+    assert_eq!(
+        copied_blueprint.derived_from,
+        vec![source_blueprint.id.as_str().to_string()]
+    );
+
+    let target_session = state
+        .ideation_session_repo
+        .get_by_id(&IdeationSessionId::from_string(response.session_id.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    let target_bundle = target_session
+        .plan_artifact_bundle()
+        .expect("copied target must contain a complete bundle");
+    assert_eq!(target_bundle.overview_id.as_str(), response.artifact.id);
+    assert_eq!(
+        target_bundle.blueprint_id.as_ref().map(ArtifactId::as_str),
+        Some(copied_blueprint.id.as_str())
+    );
+
+    let relations = state
+        .artifact_repo
+        .get_relations(&ArtifactId::from_string(response.artifact.id))
+        .await
+        .unwrap();
+    assert!(relations.iter().any(|relation| {
+        relation.relation_type == ArtifactRelationType::RelatedTo
+            && relation.to_artifact_id.as_str() == copied_blueprint.id
+    }));
 }
 
 #[tokio::test]
@@ -280,6 +368,7 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -333,6 +422,99 @@ async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
 }
 
 #[tokio::test]
+async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Direct implementation".to_string(),
+            content: "# Overview".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint v1").await;
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint v2").await;
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+
+    let input = || ActivateAgentPlanDirectImplementationInput {
+        conversation_id: conversation.id.as_str().to_string(),
+        session_id: seeded.session_id.clone(),
+        retry: false,
+    };
+    let error = activate_agent_plan_direct_implementation_for_state(input(), &state)
+        .await
+        .unwrap_err();
+    assert!(error.contains("blueprint version requires explicit user approval"));
+    let unchanged = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.mode, AgentConversationWorkspaceMode::Plan);
+
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    let activated = activate_agent_plan_direct_implementation_for_state(input(), &state)
+        .await
+        .unwrap();
+    assert_eq!(activated.workspace.mode, "edit");
+    assert_eq!(activated.artifact_references.len(), 2);
+    assert_eq!(
+        activated.artifact_references[0].artifact_id,
+        seeded.artifact.id
+    );
+    assert_eq!(
+        activated.artifact_references[1].title.as_deref(),
+        Some("Implementation Blueprint")
+    );
+
+    let retry = activate_agent_plan_direct_implementation_for_state(
+        ActivateAgentPlanDirectImplementationInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+            retry: true,
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry.workspace.mode, "edit");
+    assert_eq!(retry.artifact_references, activated.artifact_references);
+}
+
+#[tokio::test]
 async fn task_pipeline_activation_atomically_applies_explicit_role_bindings() {
     let (state, _project, conversation, _test_root) =
         setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
@@ -346,6 +528,7 @@ async fn task_pipeline_activation_atomically_applies_explicit_role_bindings() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -434,6 +617,7 @@ async fn disabled_tasks_reject_pipeline_activation_without_attaching_workspace()
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -499,6 +683,7 @@ async fn activation_write_failure_cannot_advance_only_the_conversation_mode() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -575,6 +760,7 @@ async fn stale_conversation_projection_cannot_activate_tasks_pipeline() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let session_id = seeded.session_id.clone();
     let artifact_id = seeded.artifact.id.clone();
     state
@@ -667,6 +853,7 @@ async fn stale_plan_approval_cannot_activate_tasks_pipeline() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint v1").await;
     let approval_session_id = seeded.session_id.clone();
     let approval_artifact_id = seeded.artifact.id.clone();
     state
@@ -800,6 +987,7 @@ async fn task_pipeline_validation_rejects_empty_stale_and_non_user_authority() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
 
     let wrong_mode = validate_supervised_task_pipeline(
         &state,
@@ -868,6 +1056,7 @@ async fn start_authority_rejects_stale_state_and_accepts_restored_exact_state() 
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let approval_session_id = seeded.session_id.clone();
     let approval_artifact_id = seeded.artifact.id.clone();
     state
@@ -1091,6 +1280,7 @@ async fn supervised_apply_requires_the_owning_tasks_conversation() {
     )
     .await
     .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
     let approval_session_id = seeded.session_id.clone();
     let approval_artifact_id = seeded.artifact.id.clone();
     state
@@ -1264,6 +1454,44 @@ async fn copy_agent_conversation_plan_uses_selected_source_version() {
 }
 
 #[tokio::test]
+async fn copy_agent_conversation_plan_rejects_historical_v2_overview_without_exact_pair() {
+    let (state, project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let (source_session, _source_v1, source_v2) = seed_source_plan(&state, &project).await;
+    seed_blueprint_for_session(
+        &state,
+        source_session.id.as_str(),
+        "# Current source blueprint",
+    )
+    .await;
+
+    let error = copy_agent_conversation_plan_for_state(
+        CopyAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_v2.id.as_str().to_string(),
+            source_version: 1,
+        },
+        &state,
+    )
+    .await
+    .expect_err("historical v2 Overview cannot prove its exact Blueprint pair");
+
+    assert_eq!(
+        error,
+        "Historical v2 plan copies require selecting the current Overview and Blueprint pair"
+    );
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Edit);
+    assert!(workspace.linked_ideation_session_id.is_none());
+}
+
+#[tokio::test]
 async fn copy_agent_conversation_plan_rejects_file_backed_source_plan() {
     let (state, project, conversation, _test_root) =
         setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
@@ -1279,6 +1507,7 @@ async fn copy_agent_conversation_plan_rejects_file_backed_source_plan() {
                 .project_id(project.id.clone())
                 .session_flow(IdeationSessionFlow::Planning)
                 .plan_artifact_id(source_plan.id.clone())
+                .plan_contract_version(1)
                 .build(),
         )
         .await

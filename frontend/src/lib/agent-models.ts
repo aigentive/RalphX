@@ -105,6 +105,30 @@ const CLAUDE_MODEL_CATALOG = [
     description: "Claude Opus model alias.",
   },
   {
+    id: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    menuLabel: "Claude Opus 4.7",
+    defaultEffort: "high",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
+  },
+  {
+    id: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    menuLabel: "Claude Opus 4.8",
+    defaultEffort: "high",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    description: "Exact Claude Opus 4.8 model id; requires Claude Code 2.1.154 or newer.",
+  },
+  {
+    id: "claude-opus-5",
+    label: "Claude Opus 5",
+    menuLabel: "Claude Opus 5",
+    defaultEffort: "high",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
+  },
+  {
     id: "haiku",
     label: "haiku",
     menuLabel: "haiku",
@@ -392,11 +416,26 @@ export function isClaudeSonnet46ModelId(modelId: string): boolean {
   return normalizeModelId(modelId) === "claude-sonnet-4-6";
 }
 
+export function isClaudeOpus47ModelId(modelId: string): boolean {
+  return normalizeModelId(modelId) === "claude-opus-4-7";
+}
+
+export function isClaudeOpus48ModelId(modelId: string): boolean {
+  return normalizeModelId(modelId) === "claude-opus-4-8";
+}
+
+export function isClaudeOpus5ModelId(modelId: string): boolean {
+  return normalizeModelId(modelId) === "claude-opus-5";
+}
+
 function isClaudeCapabilityGatedModelId(modelId: string): boolean {
   return (
     isClaudeFableModelId(modelId) ||
     isClaudeSonnet46ModelId(modelId) ||
-    isClaudeSonnet5ModelId(modelId)
+    isClaudeSonnet5ModelId(modelId) ||
+    isClaudeOpus47ModelId(modelId) ||
+    isClaudeOpus48ModelId(modelId) ||
+    isClaudeOpus5ModelId(modelId)
   );
 }
 
@@ -430,6 +469,15 @@ function isClaudeGatedModelSupportedByAlias(modelId: string, alias: string): boo
   }
   if (isClaudeSonnet5ModelId(modelId)) {
     return isClaudeSonnet5ModelId(alias);
+  }
+  if (isClaudeOpus47ModelId(modelId)) {
+    return isClaudeOpus47ModelId(alias);
+  }
+  if (isClaudeOpus48ModelId(modelId)) {
+    return isClaudeOpus48ModelId(alias);
+  }
+  if (isClaudeOpus5ModelId(modelId)) {
+    return isClaudeOpus5ModelId(alias);
   }
   return false;
 }

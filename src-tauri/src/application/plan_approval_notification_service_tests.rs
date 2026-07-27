@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::application::attention_service::AttentionService;
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::plan_approval_notification_service::{
     has_deferred_plan_approval, has_deferred_plan_approval_in_db,
     reconcile_deferred_plan_approvals_on_startup, reconcile_plan_approval_on_publish,
@@ -12,7 +13,7 @@ use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,
     AgentRunId, ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession,
-    IdeationSessionFlow, Project,
+    IdeationSessionFlow, NotificationTarget, Project,
 };
 use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
 use crate::domain::repositories::{IdeationSettingsRepository, PlanApprovalActor};
@@ -67,6 +68,9 @@ async fn planning_session_with_workspace(state: &AppState) -> (IdeationSession, 
         .unwrap();
     let mut session = IdeationSession::new(project.id.clone());
     session.session_flow = IdeationSessionFlow::Planning;
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "plan-current-blueprint".to_string(),
+    ));
     let session = state.ideation_session_repo.create(session).await.unwrap();
     state
         .ideation_session_repo
@@ -119,19 +123,30 @@ async fn live_publish_authority(
 async fn seed_deferred_marker(state: &AppState, session: &IdeationSession, artifact_id: &str) {
     let session_id = session.id.as_str().to_string();
     let artifact_id = artifact_id.to_string();
+    let plan_target_id = session
+        .plan_artifact_bundle()
+        .expect("deferred approval tests require a complete plan bundle")
+        .action_target_id();
     state
         .db
         .run(move |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO deferred_plan_approval_notifications
-                    (session_id, artifact_id, created_at)
-                 VALUES (?1, ?2, datetime('now'))",
-                rusqlite::params![session_id, artifact_id],
+                    (session_id, artifact_id, plan_target_id, created_at)
+                 VALUES (?1, ?2, ?3, datetime('now'))",
+                rusqlite::params![session_id, artifact_id, plan_target_id],
             )?;
             Ok(())
         })
         .await
         .unwrap();
+}
+
+fn plan_target_id(session: &IdeationSession) -> String {
+    session
+        .plan_artifact_bundle()
+        .expect("plan approval tests require a complete plan bundle")
+        .action_target_id()
 }
 
 #[tokio::test]
@@ -187,7 +202,7 @@ async fn auto_verification_defers_all_plan_attention_until_terminal_release() {
         .notifications;
     assert_eq!(notifications.len(), 1);
     assert_eq!(notifications[0].title, "Plan approval needed");
-    let expected_dedupe = format!("plan:{}:plan-current", session.id);
+    let expected_dedupe = format!("plan:{}:{}", session.id, plan_target_id(&session));
     assert_eq!(
         notifications[0].dedupe_key.as_deref(),
         Some(expected_dedupe.as_str())
@@ -329,6 +344,108 @@ async fn plan_revision_replaces_deferred_identity_and_settles_prior_notification
 }
 
 #[tokio::test]
+async fn blueprint_only_revision_records_a_new_exact_bundle_notification() {
+    let state = AppState::new_test();
+    let (mut session, _) = planning_session_with_workspace(&state).await;
+    session.plan_contract_version = 2;
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "blueprint-1",
+    ));
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "plan-current",
+        std::slice::from_ref(&session),
+        None,
+    )
+    .await;
+    state
+        .notification_service()
+        .record_result(InteractiveNotificationProducer::plan_approval(
+            session.project_id.to_string(),
+            session.id.as_str(),
+            "plan-current",
+            session.title.as_deref(),
+            NotificationTarget::none(),
+        ))
+        .await
+        .unwrap();
+
+    let prior_session = session.clone();
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "blueprint-2",
+    ));
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+
+    reconcile_plan_approval_on_publish(
+        &state,
+        None,
+        "blueprint-2",
+        std::slice::from_ref(&prior_session),
+        None,
+    )
+    .await;
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(
+        notifications.len(),
+        3,
+        "a Blueprint-only revision must not dedupe against the prior pair or legacy key"
+    );
+    let current_target = session
+        .plan_artifact_bundle()
+        .expect("v2 session should have a complete bundle")
+        .action_target_id();
+    let expected_current_key = format!("plan:{}:{current_target}", session.id);
+    let current = notifications
+        .iter()
+        .find(|notification| notification.dedupe_key.as_deref() == Some(&expected_current_key))
+        .expect("the revised exact bundle should create its own notification");
+    assert!(
+        current.read_at.is_none(),
+        "the revised exact bundle notification must remain actionable"
+    );
+
+    let prior_target = prior_session
+        .plan_artifact_bundle()
+        .expect("prior v2 session should have a complete bundle")
+        .action_target_id();
+    let expected_prior_key = format!("plan:{}:{prior_target}", session.id);
+    let prior = notifications
+        .iter()
+        .find(|notification| notification.dedupe_key.as_deref() == Some(&expected_prior_key))
+        .expect("the prior exact bundle notification should be retained");
+    assert!(
+        prior.read_at.is_some(),
+        "the prior exact bundle notification should be settled"
+    );
+    let expected_legacy_key = format!("plan:{}:plan-current", session.id);
+    let legacy = notifications
+        .iter()
+        .find(|notification| notification.dedupe_key.as_deref() == Some(&expected_legacy_key))
+        .expect("the legacy Overview-keyed notification should be retained");
+    assert!(
+        legacy.read_at.is_some(),
+        "the legacy Overview-keyed notification should be settled"
+    );
+}
+
+#[tokio::test]
 async fn stale_and_missing_deferred_releases_are_skipped_without_attention() {
     let state = AppState::new_test();
     let (session, _) = planning_session_with_workspace(&state).await;
@@ -371,6 +488,11 @@ async fn non_planning_publish_clears_deferred_attention_without_recording() {
     let (mut session, _) = planning_session_with_workspace(&state).await;
     seed_deferred_marker(&state, &session, "plan-current").await;
     session.session_flow = IdeationSessionFlow::Ideation;
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
 
     reconcile_plan_approval_on_publish(
         &state,
@@ -403,7 +525,7 @@ async fn conversation_release_waits_for_verifier_then_terminal_run_records_atten
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
-    verifier.action_target_id = Some("plan-current".to_string());
+    verifier.action_target_id = Some(plan_target_id(&session));
     let verifier = state.agent_run_repo.create(verifier).await.unwrap();
 
     assert_eq!(
@@ -464,7 +586,7 @@ async fn conversation_release_skips_edit_workspace_before_verification_settlemen
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
-    verifier.action_target_id = Some("plan-current".to_string());
+    verifier.action_target_id = Some(plan_target_id(&session));
     state.agent_run_repo.create(verifier).await.unwrap();
 
     assert_eq!(
@@ -520,7 +642,7 @@ async fn run_release_rejects_missing_untyped_and_mismatched_authority() {
     let mut missing_session = AgentRun::new(conversation.id);
     missing_session.action_kind = Some(AgentRunActionKind::VerifyPlan);
     missing_session.action_context_id = Some("missing-session".to_string());
-    missing_session.action_target_id = Some("plan-current".to_string());
+    missing_session.action_target_id = Some(plan_target_id(&session));
     let missing_session = state.agent_run_repo.create(missing_session).await.unwrap();
     state
         .agent_run_repo
@@ -568,7 +690,7 @@ async fn startup_reconciliation_releases_terminal_markers_and_preserves_active_o
     let mut active_verifier = AgentRun::new(active_conversation.id);
     active_verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     active_verifier.action_context_id = Some(active_session.id.as_str().to_string());
-    active_verifier.action_target_id = Some("plan-current".to_string());
+    active_verifier.action_target_id = Some(plan_target_id(&active_session));
     state.agent_run_repo.create(active_verifier).await.unwrap();
 
     state
@@ -706,7 +828,7 @@ async fn exact_typed_verifier_authority_can_defer_its_own_artifact() {
     let mut verifier = AgentRun::new(conversation.id);
     verifier.action_kind = Some(AgentRunActionKind::VerifyPlan);
     verifier.action_context_id = Some(session.id.as_str().to_string());
-    verifier.action_target_id = Some("plan-current".to_string());
+    verifier.action_target_id = Some(plan_target_id(&session));
     let verifier = state.agent_run_repo.create(verifier).await.unwrap();
     let authority = PlanApprovalPublishAuthority::new(verifier.id, conversation.id);
 
@@ -800,6 +922,9 @@ async fn release_skips_non_planning_and_already_approved_sessions() {
     non_planning.plan_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
         "plan-non-planning",
     ));
+    non_planning.plan_blueprint_artifact_id = Some(
+        crate::domain::entities::ArtifactId::from_string("plan-non-planning-blueprint"),
+    );
     let non_planning = state
         .ideation_session_repo
         .create(non_planning)
@@ -813,9 +938,10 @@ async fn release_skips_non_planning_and_already_approved_sessions() {
         PlanApprovalNotificationDisposition::Skipped
     );
 
-    approval_repo.approve(
+    approval_repo.approve_bundle(
         session.id.clone(),
         crate::domain::entities::ArtifactId::from_string("plan-current"),
+        crate::domain::entities::ArtifactId::from_string("plan-current-blueprint"),
         1,
         PlanApprovalActor::User,
     );
@@ -827,14 +953,14 @@ async fn release_skips_non_planning_and_already_approved_sessions() {
         PlanApprovalNotificationDisposition::Skipped
     );
     assert!(
-        !has_deferred_plan_approval(&state, &session.id, "plan-current")
+        !has_deferred_plan_approval(&state, &session.id, &plan_target_id(&session))
             .await
             .unwrap()
     );
 }
 
 #[tokio::test]
-async fn startup_reconciliation_keeps_marker_when_attention_has_no_target() {
+async fn startup_reconciliation_clears_orphaned_marker_without_attention() {
     let state = AppState::new_test();
     let (_seed_session, _) = planning_session_with_workspace(&state).await;
     let mut session = IdeationSession::new(crate::domain::entities::ProjectId::new());
@@ -842,22 +968,27 @@ async fn startup_reconciliation_keeps_marker_when_attention_has_no_target() {
     session.plan_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
         "plan-orphaned",
     ));
+    session.plan_blueprint_artifact_id = Some(crate::domain::entities::ArtifactId::from_string(
+        "plan-orphaned-blueprint",
+    ));
     let session = state.ideation_session_repo.create(session).await.unwrap();
     seed_deferred_marker(&state, &session, "plan-orphaned").await;
-
-    let error = release_deferred_plan_approval(&state, &session.id)
-        .await
-        .expect_err("a plan without a navigable target must not lose attention");
-    assert!(error.to_string().contains("no navigable target"));
 
     reconcile_deferred_plan_approvals_on_startup(&state)
         .await
         .unwrap();
     assert!(
-        has_deferred_plan_approval(&state, &session.id, "plan-orphaned")
+        !has_deferred_plan_approval(&state, &session.id, &plan_target_id(&session))
             .await
             .unwrap()
     );
+    assert!(state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications
+        .is_empty());
 }
 
 #[tokio::test]

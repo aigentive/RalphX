@@ -49,6 +49,7 @@ use crate::domain::state_machine::transition_handler::{
     sync_plan_branch_pr_if_needed,
 };
 use crate::infrastructure::agents::claude::git_runtime_config;
+use crate::infrastructure::git_auth::{inspect_repository_capability, RepositoryCapability};
 
 const PR_METADATA_REFRESH_CONCURRENCY: usize = 8;
 const PR_CREATION_RECOVERY_PROJECT_CONCURRENCY: usize = 4;
@@ -545,6 +546,60 @@ async fn recover_missing_draft_prs_for_project(
             continue;
         };
 
+        if plan_branch.pr_number.is_none() && plan_branch.pr_eligible {
+            match inspect_repository_capability(std::path::Path::new(&project.working_directory))
+                .await
+            {
+                RepositoryCapability::Github { .. } => {}
+                RepositoryCapability::LocalOnly | RepositoryCapability::OtherRemote { .. } => {
+                    if let Err(error) = plan_branch_repo
+                        .update_pr_eligible(&plan_branch.id, false)
+                        .await
+                    {
+                        tracing::warn!(
+                            project_id = project.id.as_str(),
+                            branch_id = plan_branch.id.as_str(),
+                            branch = %plan_branch.branch_name,
+                            error = %error,
+                            "PR startup recovery: failed to clear stale pre-PR eligibility for a non-GitHub origin"
+                        );
+                    } else {
+                        tracing::info!(
+                            project_id = project.id.as_str(),
+                            branch_id = plan_branch.id.as_str(),
+                            branch = %plan_branch.branch_name,
+                            "PR startup recovery: non-GitHub origin disabled stale pre-PR eligibility"
+                        );
+                    }
+                    record_slow_pr_recovery_candidate(
+                        &mut result,
+                        &project,
+                        &plan_branch,
+                        candidate_started_at,
+                        "non_github_origin",
+                    );
+                    continue;
+                }
+                RepositoryCapability::InspectionFailed { message } => {
+                    tracing::warn!(
+                        project_id = project.id.as_str(),
+                        branch_id = plan_branch.id.as_str(),
+                        branch = %plan_branch.branch_name,
+                        error = %message,
+                        "PR startup recovery: refusing to create a PR because origin inspection failed"
+                    );
+                    record_slow_pr_recovery_candidate(
+                        &mut result,
+                        &project,
+                        &plan_branch,
+                        candidate_started_at,
+                        "origin_inspection_failed",
+                    );
+                    continue;
+                }
+            }
+        }
+
         let merge_task_read_started_at = Instant::now();
         let Some(merge_task) = task_snapshot.get_task(merge_task_id) else {
             result.merge_task_read_elapsed_ms += elapsed_ms_u64(merge_task_read_started_at);
@@ -902,7 +957,8 @@ async fn plan_branch_needs_pr_recovery(
         return false;
     }
 
-    if !project.github_pr_enabled {
+    let has_persisted_pr = plan_branch.pr_number.is_some();
+    if !has_persisted_pr && !project.github_pr_enabled {
         tracing::debug!(
             project_id = project.id.as_str(),
             branch_id = plan_branch.id.as_str(),
@@ -912,7 +968,9 @@ async fn plan_branch_needs_pr_recovery(
         return false;
     }
 
-    if !plan_branch.pr_eligible || plan_branch.status != PlanBranchStatus::Active {
+    if (!has_persisted_pr && !plan_branch.pr_eligible)
+        || plan_branch.status != PlanBranchStatus::Active
+    {
         return false;
     }
 
@@ -2241,14 +2299,6 @@ async fn recover_one_pr_poller(
             return;
         }
     };
-
-    if !plan_branch.pr_eligible {
-        tracing::debug!(
-            task_id = task_id.as_str(),
-            "PR startup recovery: pr_eligible=false, skipping"
-        );
-        return;
-    }
 
     // Load project for working_dir and base_branch
     let project = match project_repo.get_by_id(&plan_branch.project_id).await {

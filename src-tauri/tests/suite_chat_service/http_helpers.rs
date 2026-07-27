@@ -110,16 +110,27 @@ async fn test_create_proposal_with_plan_artifact_succeeds_and_auto_links() {
     );
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
+    let blueprint = Artifact::new_inline(
+        "Test Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
 
     // Create a session WITH a plan artifact
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Test Proposal".to_string(),
@@ -160,16 +171,27 @@ async fn test_create_proposal_sets_plan_version_at_creation() {
     );
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
+    let blueprint = Artifact::new_inline(
+        "Test Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
 
     // Create session with plan artifact
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id.clone())
         .title("Test Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Versioned Proposal".to_string(),
@@ -220,20 +242,31 @@ async fn setup_session_with_gate(
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Gate Test Session")
         .plan_artifact_id(artifact_id.clone())
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     state
         .ideation_session_repo
         .create(session.clone())
         .await
         .unwrap();
 
-    // Apply verification_status and gate setting via raw SQL (both share the same SQLite conn)
+    // Model the read receipt written by get_session_plan before proposal creation.
     let sid = session.id.as_str().to_string();
+    let session_id_for_read = session.id.as_str().to_string();
     let status = verification_status.to_string();
     let gate: i64 = if gate_enabled { 1 } else { 0 };
     state
@@ -242,6 +275,13 @@ async fn setup_session_with_gate(
             conn.execute(
                 "UPDATE ideation_sessions SET verification_status = ?1 WHERE id = ?2",
                 rusqlite::params![status, sid],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_version_last_read = 1, blueprint_version_last_read = 1
+                 WHERE id = ?1",
+                rusqlite::params![session_id_for_read],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
             conn.execute(
@@ -277,6 +317,25 @@ async fn create_test_proposal(state: &AppState, session_id: &IdeationSessionId) 
         .expect("test proposal creation should succeed")
         .0
         .id
+}
+
+/// Model the paired read receipts written by `get_session_plan` for a v2 plan bundle.
+async fn mark_plan_bundle_read(state: &AppState, session_id: &IdeationSessionId) {
+    let session_id = session_id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET plan_version_last_read = 1, blueprint_version_last_read = 1
+                 WHERE id = ?1",
+                rusqlite::params![session_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 // Scenario 10: The retired proposal gate cannot block draft proposal creation.
@@ -662,14 +721,25 @@ async fn test_update_proposal_on_archived_session_blocked() {
     state.artifact_repo.create(artifact).await.unwrap();
 
     // Create as Active, create proposal, then Archive the session
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Archived Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
     let proposal_id = create_test_proposal(&state, &session_id).await;
 
     // Archive the session via SQL
@@ -711,14 +781,25 @@ async fn test_archive_proposal_on_accepted_session_blocked() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Accepted Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
     let proposal_id = create_test_proposal(&state, &session_id).await;
 
     // Accept the session via SQL
@@ -1372,8 +1453,8 @@ async fn test_update_add_depends_on_partial_failure() {
 // Stale Plan Guard Tests — Version Gate for Proposal Creation
 // ============================================================================
 
-// Proof obligation 1: NULL plan_version_last_read → passthrough (backward compat).
-// Legacy sessions (field = NULL) must create proposals without any error.
+// Proof obligation 1: a NULL overview receipt remains a backwards-compatible passthrough.
+// A v2 bundle still requires the paired blueprint receipt.
 #[tokio::test]
 async fn test_stale_plan_guard_null_passthrough() {
     let state = AppState::new_sqlite_test();
@@ -1383,15 +1464,39 @@ async fn test_stale_plan_guard_null_passthrough() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
     // Builder default: plan_version_last_read = None (no .plan_version_last_read() call)
-    let session = IdeationSession::builder()
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Legacy Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    let blueprint_read_session_id = session_id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions SET blueprint_version_last_read = 1 WHERE id = ?1",
+                rusqlite::params![blueprint_read_session_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 
     let options = CreateProposalOptions {
         title: "Legacy Proposal".to_string(),
@@ -1425,29 +1530,28 @@ async fn test_stale_plan_guard_fresh_version_ok() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Fresh Read Session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
-    // Simulate get_session_plan acknowledgment: set plan_version_last_read = 1 (matches artifact v1)
-    let sid = session_id.as_str().to_string();
-    state
-        .db
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE ideation_sessions SET plan_version_last_read = 1 WHERE id = ?1",
-                rusqlite::params![sid],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    // Simulate get_session_plan acknowledgment for both v2 plan-bundle artifacts.
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Fresh Proposal".to_string(),
@@ -1481,29 +1585,28 @@ async fn test_stale_plan_guard_stale_version_blocked_with_actionable_error() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Plan Blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Stale Read Session")
         .plan_artifact_id(artifact_id.clone())
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
 
-    // Agent reads plan at v1: set plan_version_last_read = 1
-    let sid = session_id.as_str().to_string();
-    state
-        .db
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE ideation_sessions SET plan_version_last_read = 1 WHERE id = ?1",
-                rusqlite::params![sid],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    // Agent reads the full v2 bundle at v1.
+    mark_plan_bundle_read(&state, &session_id).await;
 
     // Simulate child bumping plan to v2 (plan_version_last_read is now stale)
     let aid = artifact_id.as_str().to_string();
@@ -2015,15 +2118,27 @@ async fn test_finalize_ignores_foreign_feature_without_affected_paths() {
     let artifact_id = artifact.id.clone();
     state.artifact_repo.create(artifact).await.unwrap();
 
-    let session = IdeationSession::builder()
+    let blueprint = Artifact::new_inline(
+        "Cross-project blueprint",
+        ArtifactType::Specification,
+        "# Implementation blueprint",
+        "test",
+    );
+    let blueprint_id = blueprint.id.clone();
+    state.artifact_repo.create(blueprint).await.unwrap();
+
+    let mut session = IdeationSession::builder()
         .project_id(project_id)
         .title("Cross-project source session")
         .plan_artifact_id(artifact_id)
+        .blueprint_version_last_read(1)
         .cross_project_checked(true)
         .expected_proposal_count(1)
         .build();
+    session.plan_blueprint_artifact_id = Some(blueprint_id);
     let session_id = session.id.clone();
     state.ideation_session_repo.create(session).await.unwrap();
+    mark_plan_bundle_read(&state, &session_id).await;
 
     let options = CreateProposalOptions {
         title: "Foreign feature without local scope".to_string(),

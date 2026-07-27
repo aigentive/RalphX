@@ -16,6 +16,17 @@ pub mod agent_conversation_workspace_base;
 pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
+pub mod manual_role_default_service;
+pub mod manual_router_config;
+pub mod mcp_policy_config;
+pub mod mcp_policy_agent_client;
+pub mod mcp_policy_service;
+#[cfg(test)]
+mod mcp_policy_agent_client_tests;
+#[cfg(test)]
+mod mcp_policy_config_tests;
+#[cfg(test)]
+mod mcp_policy_service_tests;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_assignment_recovery;
@@ -23,12 +34,18 @@ pub(crate) mod agent_task_pipeline_service;
 pub mod agent_task_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
+pub mod agent_workspace_local_commit;
+#[cfg(test)]
+mod agent_workspace_local_commit_tests;
 pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]
 mod agent_workspace_pr_autofix_attempt_tests;
 pub mod agent_workspace_pr_description;
+pub(crate) mod agent_workspace_terminal_cleanup;
+#[cfg(test)]
+mod agent_workspace_terminal_cleanup_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub(crate) mod agent_workspace_publish_repair_state;

@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentWorkspaceHttpError,
@@ -10,6 +10,7 @@ import {
   type AgentWorkspaceReviewStartConfirmation,
   type AgentWorkspaceReviewStartPreview,
 } from "@/api/chat";
+import { logger } from "@/lib/logger";
 
 import { useWorkspaceReviewActions } from "./useWorkspaceReviewActions";
 
@@ -33,6 +34,15 @@ vi.mock("@/api/chat", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("@/lib/logger", () => ({
+  logger: {
+    debug: vi.fn(),
+    log: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 vi.mock("@/hooks/useAgentModels", () => ({
   useAgentModels: () => ({
@@ -186,6 +196,10 @@ describe("useWorkspaceReviewActions", () => {
   const unfinishedGitDetail =
     "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review.";
 
+  beforeEach(() => {
+    vi.mocked(logger.debug).mockReset();
+  });
+
   it("requires a prepared receipt before starting a manual review", async () => {
     const preview: AgentWorkspaceReviewStartPreview = {
       success: true,
@@ -236,6 +250,24 @@ describe("useWorkspaceReviewActions", () => {
         runtimeOverride: reviewerRuntime,
       });
     });
+    for (const phase of [
+      "load_role_defaults",
+      "refresh_provider_runtime",
+      "prepare_description",
+      "prepare_completed",
+      "confirm_action",
+    ]) {
+      expect(logger.debug).toHaveBeenCalledWith(
+        "[RoleRuntimeConfirmationTiming]",
+        expect.objectContaining({
+          role: "workspace_reviewer",
+          phase,
+          elapsedMs: expect.any(Number),
+          totalElapsedMs: expect.any(Number),
+          outcome: "completed",
+        }),
+      );
+    }
   });
 
   it("refreshes a stale receipt and requires a new confirmation after a start conflict", async () => {
@@ -398,6 +430,24 @@ describe("useWorkspaceReviewActions", () => {
         runtimeOverride: reviewerRuntime,
       });
     });
+    for (const phase of [
+      "load_role_defaults",
+      "refresh_provider_runtime",
+      "prepare_description",
+      "prepare_completed",
+      "confirm_action",
+    ]) {
+      expect(logger.debug).toHaveBeenCalledWith(
+        "[RoleRuntimeConfirmationTiming]",
+        expect.objectContaining({
+          role: "workspace_repair",
+          phase,
+          elapsedMs: expect.any(Number),
+          totalElapsedMs: expect.any(Number),
+          outcome: "completed",
+        }),
+      );
+    }
   });
 
   it("keeps fixer recovery open and disabled when authoritative refetch fails", async () => {

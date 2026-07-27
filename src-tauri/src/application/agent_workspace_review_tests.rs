@@ -17,7 +17,112 @@ use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::infrastructure::MockAgenticClient;
+use std::collections::BTreeSet;
 use std::process::Command;
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
+
+#[derive(Clone, Debug)]
+struct WorkspaceReviewTimingEvent {
+    operation: String,
+    phase: String,
+    fields: BTreeSet<String>,
+}
+
+struct WorkspaceReviewTimingLayer {
+    captured: StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewTimingLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct TimingVisitor {
+            operation: Option<String>,
+            phase: Option<String>,
+            fields: BTreeSet<String>,
+        }
+
+        impl tracing::field::Visit for TimingVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.fields.insert(field.name().to_string());
+                match field.name() {
+                    "operation" => self.operation = Some(value.to_string()),
+                    "phase" => self.phase = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.fields.insert(field.name().to_string());
+                match field.name() {
+                    "operation" => self.operation = Some(format!("{value:?}").replace('"', "")),
+                    "phase" => self.phase = Some(format!("{value:?}").replace('"', "")),
+                    _ => {}
+                }
+            }
+        }
+
+        let mut visitor = TimingVisitor::default();
+        event.record(&mut visitor);
+        let (Some(operation), Some(phase)) = (visitor.operation, visitor.phase) else {
+            return;
+        };
+        if !operation.starts_with("workspace_review_") || !operation.ends_with("_phase") {
+            return;
+        }
+        self.captured
+            .lock()
+            .expect("timing capture lock should remain available")
+            .push(WorkspaceReviewTimingEvent {
+                operation,
+                phase,
+                fields: visitor.fields,
+            });
+    }
+}
+
+fn capture_workspace_review_timings() -> (
+    tracing::dispatcher::DefaultGuard,
+    StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
+) {
+    let captured = StdArc::new(StdMutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(WorkspaceReviewTimingLayer {
+        captured: StdArc::clone(&captured),
+    });
+    (subscriber.set_default(), captured)
+}
+
+fn assert_workspace_review_timing_phases(
+    captured: &StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
+    operation: &str,
+    expected_phases: &[&str],
+) {
+    let captured = captured
+        .lock()
+        .expect("timing capture lock should remain available");
+    for expected_phase in expected_phases {
+        let event = captured
+            .iter()
+            .find(|event| event.operation == operation && event.phase == *expected_phase)
+            .unwrap_or_else(|| {
+                panic!("missing {operation} phase {expected_phase}; captured events: {captured:?}")
+            });
+        assert!(
+            event.fields.contains("elapsed_ms"),
+            "{operation}/{expected_phase} should record elapsed_ms"
+        );
+        assert!(
+            event.fields.contains("total_elapsed_ms"),
+            "{operation}/{expected_phase} should record total_elapsed_ms"
+        );
+    }
+}
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -135,6 +240,10 @@ fn fixer_attempt_monitor(
     monitor.reviewed_diff_fingerprint = Some(fingerprint);
     monitor.review_artifact_id = Some(ArtifactId::from_string(format!("artifact-{attempt_id}")));
     monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(format!(
+        "requested-changes-{attempt_id}"
+    )));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.review_blocking_fingerprint = Some(format!("blocker-{attempt_id}"));
     monitor.review_fixer_status = Some(status.to_string());
     monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
@@ -410,6 +519,9 @@ async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artif
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
         .inherited_plan_artifact_id(missing_artifact_id.clone())
+        .inherited_plan_blueprint_artifact_id(ArtifactId::from_string(
+            "missing-plan-blueprint-artifact",
+        ))
         .build();
     let missing_artifact_session = state
         .ideation_session_repo
@@ -933,13 +1045,17 @@ async fn existing_review_artifact_marks_context_current_then_outdated() {
         .expect("initial context should load");
     let target = initial.target.expect("initial target should exist");
     let mut monitor = initial.monitor;
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
         target.diff_fingerprint.clone(),
         Some("run-1".to_string()),
         ArtifactId::from_string("artifact-1"),
+        1,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("artifact-requested-changes-1"),
         1,
         Utc::now(),
         None,
@@ -971,6 +1087,51 @@ async fn existing_review_artifact_marks_context_current_then_outdated() {
 }
 
 #[tokio::test]
+async fn overview_only_workspace_review_is_readable_but_cannot_authorize_currentness() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let initial = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("initial context should load");
+    let target = initial.target.expect("initial target should exist");
+    let mut monitor = initial.monitor;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.reviewed_target_scope = Some(target.scope);
+    monitor.reviewed_head_sha = target.head_sha.clone();
+    monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    monitor.current_target_scope = Some(target.scope);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint);
+    monitor.review_artifact_id = Some(ArtifactId::from_string("legacy-overview"));
+    monitor.review_artifact_version = Some(2);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("legacy monitor should persist");
+
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("legacy context should remain readable");
+    assert!(!context.is_current);
+    assert!(context.is_outdated);
+    assert_eq!(
+        context.monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Required
+    );
+}
+
+#[tokio::test]
 async fn passing_workspace_review_survives_equivalent_commit_then_invalidates_on_content_change() {
     let (_temp, repo, base_sha) = init_repo();
     std::fs::write(repo.join("README.md"), "base\nupdated\n")
@@ -994,13 +1155,17 @@ async fn passing_workspace_review_survives_equivalent_commit_then_invalidates_on
     let target = initial.target.expect("initial target should exist");
     let reviewed_head_sha = target.head_sha.clone();
     let mut monitor = initial.monitor;
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
         target.diff_fingerprint.clone(),
         Some("run-equivalent".to_string()),
         ArtifactId::from_string("artifact-equivalent"),
+        1,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("artifact-equivalent-requested-changes"),
         1,
         Utc::now(),
         None,
@@ -1097,7 +1262,7 @@ async fn stale_approval_retry_does_not_refresh_or_clear_monitor_before_cas() {
         artifact_version: 7,
     };
     let mut monitor = initial.monitor;
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
@@ -1105,6 +1270,10 @@ async fn stale_approval_retry_does_not_refresh_or_clear_monitor_before_cas() {
         Some("run-approved-anyway".to_string()),
         artifact_id,
         snapshot.artifact_version,
+        approved_at,
+        None,
+        ArtifactId::from_string("artifact-approved-anyway-requested-changes"),
+        7,
         approved_at,
         None,
     );
@@ -1427,10 +1596,21 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .create(plan_artifact)
         .await
         .expect("plan artifact should persist");
+    let blueprint_artifact = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Implementation blueprint",
+            ArtifactType::Specification,
+            "# Blueprint\n\nImplement the workspace review plan.",
+            "ralphx-ideation",
+        ))
+        .await
+        .expect("blueprint artifact should persist");
     let planning_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
         .plan_artifact_id(plan_artifact.id.clone())
+        .plan_blueprint_artifact_id(blueprint_artifact.id.clone())
         .build();
     let planning_session = state
         .ideation_session_repo
@@ -1512,6 +1692,7 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .await
         .expect("hidden parent message should persist");
 
+    let (_timing_guard, captured_timings) = capture_workspace_review_timings();
     let start = start_agent_workspace_review_with_chat_service(
         Arc::clone(&state),
         &workspace,
@@ -1521,6 +1702,25 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
     )
     .await
     .expect("review child chat should start");
+    assert_workspace_review_timing_phases(
+        &captured_timings,
+        "workspace_review_start_phase",
+        &[
+            "load_workspace",
+            "load_project",
+            "resolve_target",
+            "load_monitor",
+            "load_inherited_references",
+            "validate_parent_conversation",
+            "load_latest_run",
+            "resolve_runtime",
+            "create_child_conversation",
+            "reserve_monitor",
+            "start_child_chat",
+            "append_publication_event",
+            "total",
+        ],
+    );
 
     assert!(start.started);
     assert_eq!(start.skipped_reason, None);
@@ -1649,7 +1849,7 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .any(|reference| reference.provider == "clickup"
             && reference.kind == "clickup"
             && reference.id == "task-1"));
-    assert_eq!(options.composer_artifact_references.len(), 2);
+    assert_eq!(options.composer_artifact_references.len(), 3);
     assert!(options
         .composer_artifact_references
         .iter()
@@ -1665,6 +1865,14 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
                 && reference.session_id.as_deref() == Some(planning_session.id.as_str())
                 && reference.title.as_deref() == Some("Approved implementation plan")
                 && reference.version == Some(4)
+        ));
+    assert!(options
+        .composer_artifact_references
+        .iter()
+        .any(
+            |reference| reference.artifact_id == blueprint_artifact.id.as_str()
+                && reference.kind == "plan_blueprint"
+                && reference.session_id.as_deref() == Some(planning_session.id.as_str())
         ));
     assert!(options.force_new_provider_session);
     let metadata: serde_json::Value = serde_json::from_str(
@@ -2810,13 +3018,17 @@ async fn startup_reconciliation_marks_completed_current_workspace_review_ready()
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
     monitor.review_conversation_id = Some(child_conversation_id);
     monitor.last_run_id = Some(run_id.clone());
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
         target.diff_fingerprint.clone(),
         Some(run_id.clone()),
         ArtifactId::from_string("artifact-startup-ready"),
+        9,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("artifact-startup-ready-requested-changes"),
         9,
         Utc::now(),
         None,
@@ -2889,13 +3101,17 @@ async fn startup_reconciliation_does_not_consume_completed_review_output_in_plan
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
     monitor.review_conversation_id = Some(child_conversation_id);
     monitor.last_run_id = Some(run_id.clone());
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
         target.diff_fingerprint.clone(),
         Some(run_id),
         ArtifactId::from_string("historical-plan-review-artifact"),
+        7,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("review-requested-changes-1"),
         7,
         Utc::now(),
         None,
@@ -2976,13 +3192,17 @@ async fn startup_reconciliation_blocks_completed_stale_workspace_review_artifact
         .expect("completed run should persist");
 
     let mut monitor = context.monitor;
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
         "stale-diff-fingerprint".to_string(),
         Some(run_id.clone()),
         ArtifactId::from_string("artifact-startup-stale"),
+        8,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("artifact-startup-stale-requested-changes"),
         8,
         Utc::now(),
         None,
@@ -3480,15 +3700,46 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
         .clone()
         .expect("blocking fingerprint should be recorded");
 
+    let confirmation = WorkspaceReviewFixerConfirmation {
+        target_scope: target.scope,
+        diff_fingerprint: target.diff_fingerprint.clone(),
+        artifact_id: completed
+            .review_artifact_id
+            .as_ref()
+            .expect("review artifact should remain current")
+            .as_str()
+            .to_string(),
+        artifact_version: completed
+            .review_artifact_version
+            .expect("review artifact version should remain current"),
+        blocking_fingerprint: blocking_fingerprint.clone(),
+    };
+    let (_timing_guard, captured_timings) = capture_workspace_review_timings();
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
-        None,
+        Some(&confirmation),
         None,
         &chat_service,
     )
     .await
     .expect("manual fixer should route");
+    assert_workspace_review_timing_phases(
+        &captured_timings,
+        "workspace_review_fixer_start_phase",
+        &[
+            "load_workspace",
+            "load_context",
+            "validate_confirmation",
+            "prepare_launch",
+            "resolve_runtime",
+            "claim_attempt",
+            "start_child_chat",
+            "settle_attempt",
+            "reload_context",
+            "total",
+        ],
+    );
 
     assert!(start.started);
     assert_eq!(start.skipped_reason, None);
@@ -3904,13 +4155,17 @@ async fn blocking_repair_message_injects_review_artifact_and_keeps_fetch_optiona
         .expect("context should load");
     let target = context.target.expect("target should exist");
     let mut monitor = context.monitor;
-    apply_review_artifact_to_monitor(
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
         target.diff_fingerprint.clone(),
         Some("review-run".to_string()),
         ArtifactId::from_string("review-artifact-1"),
+        7,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("review-requested-changes-1"),
         7,
         Utc::now(),
         None,
@@ -3931,17 +4186,31 @@ async fn blocking_repair_message_injects_review_artifact_and_keeps_fetch_optiona
         content_truncated: false,
         original_chars: 49,
     };
+    let requested_changes_artifact_context = AgentWorkspaceReviewResolvedArtifactContext {
+        artifact_id: "review-requested-changes-1".to_string(),
+        kind: "review_requested_changes".to_string(),
+        title: Some("Workspace Review — Requested Changes".to_string()),
+        session_id: None,
+        version: Some(7),
+        content: "## Step 1\n\nUpdate the exact repair seam.".to_string(),
+        content_truncated: false,
+        original_chars: 45,
+    };
     let message = build_workspace_review_blocking_repair_message(
         &workspace,
         &monitor,
         &target,
         &goal_context,
         Some(&review_artifact_context),
+        Some(&requested_changes_artifact_context),
     );
 
     assert!(message.contains("Review artifact: review-artifact-1 v7"));
-    assert!(message.contains("Review artifact content injected by RalphX"));
+    assert!(message.contains("Requested Changes artifact: review-requested-changes-1 v7"));
+    assert!(message.contains("Review Overview content injected by RalphX"));
+    assert!(message.contains("Requested Changes content injected by RalphX"));
     assert!(message.contains("Blocking detail from generated Review."));
+    assert!(message.contains("Update the exact repair seam."));
     assert!(message.contains(
         "Call `get_artifact` only if this injected content is truncated or insufficient."
     ));
@@ -4001,10 +4270,21 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
         .create(plan_artifact)
         .await
         .expect("plan artifact should persist");
+    let blueprint_artifact = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Parent implementation blueprint",
+            ArtifactType::Specification,
+            "# Blueprint\n\nKeep parent references available to child repair.",
+            "ralphx-ideation",
+        ))
+        .await
+        .expect("blueprint artifact should persist");
     let planning_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
         .plan_artifact_id(plan_artifact.id.clone())
+        .plan_blueprint_artifact_id(blueprint_artifact.id.clone())
         .build();
     let planning_session = state
         .ideation_session_repo
@@ -4108,6 +4388,14 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
                 && reference.session_id.as_deref() == Some(planning_session.id.as_str())
                 && reference.version == Some(3)
         ));
+    assert!(options
+        .composer_artifact_references
+        .iter()
+        .any(|reference| {
+            reference.artifact_id == blueprint_artifact.id.as_str()
+                && reference.kind == "plan_blueprint"
+                && reference.session_id.as_deref() == Some(planning_session.id.as_str())
+        }));
     let metadata: serde_json::Value = serde_json::from_str(
         options
             .metadata
@@ -4127,7 +4415,7 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
     assert!(sent_messages[0].contains("<workspace_goal_context>"));
     assert!(sent_messages[0].contains("RX-42"));
     assert!(sent_messages[0].contains(plan_artifact.id.as_str()));
-    assert!(sent_messages[0].contains("Review artifact content injected by RalphX"));
+    assert!(sent_messages[0].contains("Review Overview content injected by RalphX"));
     assert!(sent_messages[0].contains("Preserve parent references in the repair."));
     assert!(!sent_messages[0].contains("Fetch the full Review artifact before editing"));
 }
@@ -4830,6 +5118,7 @@ async fn mark_workspace_review_blocked_pauses_owning_automation() {
             plan_reminder_count: 0,
             plan_pending_instructions: None,
             plan_last_parked_artifact_id: None,
+            plan_last_parked_blueprint_artifact_id: None,
             agent_phase_started_at: None,
             conversation_id: Some(workspace.conversation_id.clone()),
             run_prompt: "Run".to_string(),

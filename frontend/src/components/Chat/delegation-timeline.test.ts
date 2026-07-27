@@ -4,6 +4,7 @@ import {
   foldDelegationTimelineMessages,
   projectDelegationTimelineMessages,
 } from "./delegation-timeline";
+import { buildDelegationLifecycleTask } from "./delegation-tool-calls";
 import type { StreamingTask } from "@/types/streaming-task";
 
 function lifecycleMessage(
@@ -88,6 +89,49 @@ function liveTask(overrides: Partial<StreamingTask> = {}): StreamingTask {
 }
 
 describe("projectDelegationTimelineMessages", () => {
+  it("projects one typed failed settlement after the running delegate card", () => {
+    const running = buildDelegationLifecycleTask({
+      tool_use_id: "delegate-job:job-1",
+      delegated_job_id: "job-1",
+      status: "running",
+    }, undefined, 100);
+    const failed = buildDelegationLifecycleTask({
+      tool_use_id: "delegate-job:job-1",
+      delegated_job_id: "job-1",
+      status: "failed",
+      error: "Codex exited without a response (context=project, code=Some(1), signal=None); diagnostics: Reading additional input from stdin...",
+      seq: 2,
+    }, running, 200);
+    const duplicateTerminal = buildDelegationLifecycleTask({
+      tool_use_id: "delegate-job:job-1",
+      delegated_job_id: "job-1",
+      status: "failed",
+      error: "generic duplicate terminal error",
+      seq: 1,
+    }, running, 300);
+
+    const projection = projectDelegationTimelineMessages([
+      lifecycleMessage("persisted-start", 20, "delegate_start", {
+        job_id: "job-1",
+        status: "running",
+      }),
+    ], new Map([
+      ["delegate-job:job-1", failed],
+      ["duplicate-terminal", duplicateTerminal],
+    ]));
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]?.contentBlocks?.[0]).toMatchObject({
+      result: expect.objectContaining({
+        status: "failed",
+        content: "Delegate completed without a response\n\nExit code: 1",
+      }),
+    });
+    expect(projection.messages[0]?.contentBlocks?.[0]?.result).not.toEqual(
+      expect.objectContaining({ content: expect.stringContaining("stdin") }),
+    );
+  });
+
   it("keeps the earliest persisted card while enriching it from live terminal evidence and suppressing aliases", () => {
     const projection = projectDelegationTimelineMessages([
       lifecycleMessage("persisted-start", 20, "delegate_start", {
@@ -157,5 +201,38 @@ describe("projectDelegationTimelineMessages", () => {
         timestamp_provenance: expect.anything(),
       }),
     });
+  });
+
+  it("matches a persisted start to its live task by tool-use identity before the job id is persisted", () => {
+    const persistedStart: ChatMessageData = {
+      id: "persisted-start",
+      role: "assistant",
+      content: "Delegated reviewer",
+      createdAt: "2026-07-23T00:00:00Z",
+      timelineSequence: 20,
+      contentBlocks: [{
+        type: "tool_use",
+        id: "provider-marker",
+        name: "delegate_start",
+        arguments: { agent_name: "ralphx-general-explorer" },
+        result: { status: "running" },
+      }],
+    };
+
+    const projection = projectDelegationTimelineMessages(
+      [persistedStart],
+      new Map([["provider-marker", liveTask()]]),
+    );
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]?.contentBlocks?.[0]).toMatchObject({
+      result: expect.objectContaining({
+        job_id: "job-1",
+        status: "completed",
+        content: "Live terminal handoff",
+        delegated_conversation_id: "child-conversation",
+      }),
+    });
+    expect(projection.liveAliases).toEqual(new Set(["provider-marker"]));
   });
 });

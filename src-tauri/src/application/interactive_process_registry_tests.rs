@@ -4,6 +4,535 @@ use std::sync::Arc;
 use tokio::process::ChildStdin;
 
 #[tokio::test]
+async fn capture_owner_returns_current_token_run_id_and_cloned_metadata() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "capture-owner");
+    let (stdin, _child) = create_test_stdin().await;
+    let metadata = InteractiveProcessMetadata {
+        agent_run_id: Some("current-run".to_string()),
+        harness: Some(AgentHarnessKind::Codex),
+        provider_session_id: Some("thread-123".to_string()),
+        persona_id: Some("planner".to_string()),
+        persona_content_hash: Some("content-hash".to_string()),
+    };
+    let token = registry
+        .register_with_metadata(key.clone(), stdin, metadata.clone())
+        .await;
+
+    let owner = registry
+        .capture_owner(&key)
+        .await
+        .expect("the current launch owner must be captured");
+
+    assert_eq!(owner.token, token);
+    assert_eq!(owner.agent_run_id, "current-run");
+    assert_eq!(owner.metadata, metadata);
+}
+
+#[tokio::test]
+async fn capture_owner_fails_closed_without_a_run_id() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "capture-no-run-id");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(key.clone(), stdin, InteractiveProcessMetadata::default())
+        .await;
+
+    assert!(registry.capture_owner(&key).await.is_none());
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(&key, token, "")
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Stale
+    );
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(
+                &InteractiveProcessKey::new("project", "missing-owner"),
+                token,
+                "current-run",
+            )
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Stale
+    );
+}
+
+#[tokio::test]
+async fn captured_owner_snapshot_is_invalidated_by_replacement() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "capture-replacement");
+    let (stale_stdin, _stale_child) = create_test_stdin().await;
+    registry
+        .register_with_metadata(
+            key.clone(),
+            stale_stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("stale-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let stale_owner = registry
+        .capture_owner(&key)
+        .await
+        .expect("first owner must be captured");
+
+    let (current_stdin, _current_child) = create_test_stdin().await;
+    registry
+        .register_with_metadata(
+            key.clone(),
+            current_stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let current_owner = registry
+        .capture_owner(&key)
+        .await
+        .expect("replacement owner must be captured");
+
+    assert_ne!(current_owner.token, stale_owner.token);
+    assert_eq!(current_owner.agent_run_id, "current-run");
+    assert_eq!(
+        current_owner.metadata.agent_run_id.as_deref(),
+        Some("current-run")
+    );
+}
+
+#[tokio::test]
+async fn retire_after_turn_disposition_reports_armed_and_unarmed_active_and_idle_states() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-disposition");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Active { is_armed: false }
+    );
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::AwaitingTurn
+    );
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Active { is_armed: true }
+    );
+
+    assert!(registry.mark_idle_if_token(&key, token).await);
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Idle { is_armed: true }
+    );
+    assert!(
+        registry
+            .disarm_retire_after_turn_if_owner(&key, token, "current-run")
+            .await
+    );
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Idle { is_armed: false }
+    );
+}
+
+#[tokio::test]
+async fn stale_retirement_disposition_query_preserves_the_replacement() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-query-replacement");
+    let (stale_stdin, _stale_child) = create_test_stdin().await;
+    let stale_token = registry
+        .register_with_metadata(
+            key.clone(),
+            stale_stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("stale-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let (current_stdin, _current_child) = create_test_stdin().await;
+    let current_token = registry
+        .register_with_metadata(
+            key.clone(),
+            current_stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(&key, stale_token, "stale-run")
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Stale
+    );
+    assert_eq!(
+        registry
+            .retire_after_turn_disposition_if_owner(&key, current_token, "current-run")
+            .await,
+        InteractiveProcessRetireAfterTurnDisposition::Active { is_armed: false }
+    );
+    assert_eq!(
+        registry
+            .capture_owner(&key)
+            .await
+            .expect("replacement must remain registered")
+            .token,
+        current_token
+    );
+}
+
+#[tokio::test]
+async fn retire_after_turn_requires_exact_token_and_run_owner() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-owner");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::AwaitingTurn
+    );
+    assert!(matches!(
+        registry
+            .write_message(&key, "must not queue behind retirement")
+            .await,
+        Err(InteractiveProcessWriteError::Retiring { .. })
+    ));
+    assert_eq!(
+        registry
+            .complete_turn_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+    );
+    assert!(!registry.has_process(&key).await);
+}
+
+#[tokio::test]
+async fn stale_retire_after_turn_owner_is_rejected_without_affecting_current_entry() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-stale");
+    let (stdin_a, _child_a) = create_test_stdin().await;
+    let stale_token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin_a,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("stale-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let (stdin_b, _child_b) = create_test_stdin().await;
+    let current_token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin_b,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, stale_token, "stale-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::Stale
+    );
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, current_token, "stale-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::Stale
+    );
+    assert_eq!(
+        registry
+            .complete_turn_if_owner(&key, stale_token, "stale-run")
+            .await,
+        InteractiveProcessTurnCompleteDisposition::Stale
+    );
+    assert_eq!(
+        registry
+            .complete_turn_if_owner(&key, current_token, "current-run")
+            .await,
+        InteractiveProcessTurnCompleteDisposition::KeepAlive
+    );
+    assert_eq!(
+        registry.state_for_test(&key).await,
+        Some(InteractiveProcessState::Idle)
+    );
+}
+
+#[tokio::test]
+async fn disarming_retire_after_turn_restores_writes_and_idle_disposition() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-disarm");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::AwaitingTurn
+    );
+    assert!(
+        registry
+            .disarm_retire_after_turn_if_owner(&key, token, "current-run")
+            .await
+    );
+    registry
+        .write_message(&key, "continue normally")
+        .await
+        .unwrap();
+    assert_eq!(
+        registry
+            .complete_turn_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessTurnCompleteDisposition::KeepAlive
+    );
+    assert!(registry.has_process(&key).await);
+}
+
+#[tokio::test]
+async fn arming_an_idle_entry_stages_retirement_until_exact_owner_commits() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-idle");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(
+        registry
+            .complete_turn_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessTurnCompleteDisposition::KeepAlive
+    );
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, token, "current-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::IdleReady
+    );
+    assert!(registry.has_process(&key).await);
+    assert_eq!(
+        registry.state_for_test(&key).await,
+        Some(InteractiveProcessState::Idle)
+    );
+    assert!(registry.retire_if_idle(&key).await.is_none());
+    assert!(registry.has_process(&key).await);
+    assert!(matches!(
+        registry
+            .write_message(&key, "must not queue behind staged retirement")
+            .await,
+        Err(InteractiveProcessWriteError::Retiring { .. })
+    ));
+    assert!(
+        registry
+            .disarm_retire_after_turn_if_owner(&key, token, "current-run")
+            .await
+    );
+    assert!(registry.has_process(&key).await);
+    registry
+        .write_message(&key, "resume after failed staging")
+        .await
+        .unwrap();
+    assert_eq!(
+        registry.state_for_test(&key).await,
+        Some(InteractiveProcessState::Active)
+    );
+}
+
+#[tokio::test]
+async fn stale_retirement_cannot_remove_a_replacement_entry() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-replacement");
+    let (stdin_a, _child_a) = create_test_stdin().await;
+    let stale_token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin_a,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("stale-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let (stdin_b, _child_b) = create_test_stdin().await;
+    let current_token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin_b,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, stale_token, "stale-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::Stale
+    );
+    assert_eq!(
+        registry
+            .complete_turn_if_owner(&key, stale_token, "stale-run")
+            .await,
+        InteractiveProcessTurnCompleteDisposition::Stale
+    );
+    assert!(registry.has_process(&key).await);
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, current_token, "current-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::AwaitingTurn
+    );
+    assert_eq!(
+        registry
+            .complete_turn_if_owner(&key, current_token, "current-run")
+            .await,
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+    );
+    assert!(!registry.has_process(&key).await);
+}
+
+#[tokio::test]
+async fn exact_post_commit_idle_retirement_removes_only_the_armed_owner() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-idle-post-commit");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("planning-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(registry.mark_idle_if_token(&key, token).await);
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, token, "planning-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::IdleReady
+    );
+
+    let retired = registry
+        .retire_armed_idle_if_owner(&key, token, "planning-run")
+        .await
+        .expect("the exact armed idle entry must retire after commit");
+
+    assert_eq!(
+        retired.metadata.agent_run_id.as_deref(),
+        Some("planning-run")
+    );
+    assert!(!registry.has_process(&key).await);
+}
+
+#[tokio::test]
+async fn stale_post_commit_cleanup_preserves_a_replacement_entry() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "retire-idle-replacement");
+    let (stdin_a, _child_a) = create_test_stdin().await;
+    let stale_token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin_a,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("stale-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let (stdin_b, _child_b) = create_test_stdin().await;
+    let current_token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin_b,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(registry.mark_idle_if_token(&key, current_token).await);
+    assert_eq!(
+        registry
+            .arm_retire_after_turn_if_owner(&key, stale_token, "stale-run")
+            .await,
+        InteractiveProcessRetireArmDisposition::Stale
+    );
+
+    assert!(registry
+        .retire_armed_idle_if_owner(&key, stale_token, "stale-run")
+        .await
+        .is_none());
+    assert!(registry.has_process(&key).await);
+    assert_eq!(
+        registry.state_for_test(&key).await,
+        Some(InteractiveProcessState::Idle)
+    );
+}
+
+#[tokio::test]
 async fn registration_is_active_and_token_scoped_idle_transition_rejects_stale_stream() {
     let registry = InteractiveProcessRegistry::new();
     let key = InteractiveProcessKey::new("project", "idle-token");
@@ -128,8 +657,64 @@ async fn test_write_message_no_process_returns_error() {
     let registry = InteractiveProcessRegistry::new();
     let key = InteractiveProcessKey::new("ideation", "session-123");
     let result = registry.write_message(&key, "hello").await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("No interactive process"));
+    assert!(matches!(
+        result,
+        Err(InteractiveProcessWriteError::Missing { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stdin_write_error_exposes_original_token_and_cannot_remove_replacement() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "write-error-replacement");
+    let (stdin, mut child) = create_test_stdin().await;
+    let failed_token = registry
+        .register_with_metadata(key.clone(), stdin, InteractiveProcessMetadata::default())
+        .await;
+    child.kill().await.expect("terminate stdin fixture");
+    child.wait().await.expect("reap stdin fixture");
+
+    let error = registry
+        .write_message(&key, "must fail after process exit")
+        .await
+        .expect_err("closed stdin must report a write error");
+    assert!(matches!(
+        error,
+        InteractiveProcessWriteError::StdinIo { token, .. } if token == failed_token
+    ));
+
+    let (replacement_stdin, _replacement_child) = create_test_stdin().await;
+    let replacement_token = registry
+        .register_with_metadata(
+            key.clone(),
+            replacement_stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("replacement-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        registry.remove_if_token(&key, failed_token).await.is_none(),
+        "I/O cleanup for the failed owner must not remove a replacement"
+    );
+    assert_eq!(
+        registry
+            .capture_owner(&key)
+            .await
+            .expect("replacement must remain registered")
+            .token,
+        replacement_token,
+        "I/O cleanup for the failed owner must retain the replacement"
+    );
+    assert!(
+        registry
+            .remove_if_token(&key, replacement_token)
+            .await
+            .is_some(),
+        "the current owner remains removable by its own token"
+    );
 }
 
 #[tokio::test]

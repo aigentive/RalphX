@@ -160,14 +160,15 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             "project_archived",
         ));
     }
+
+    if workspace.publication_pr_number.is_some() {
+        return reconcile_linked_agent_workspace_pr(deps, &workspace, &project).await;
+    }
+
     if !project.github_pr_enabled {
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
             "github_pr_disabled",
         ));
-    }
-
-    if workspace.publication_pr_number.is_some() {
-        return reconcile_linked_agent_workspace_pr(deps, &workspace, &project).await;
     }
 
     let lookup_started = Instant::now();

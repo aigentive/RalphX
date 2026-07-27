@@ -54,6 +54,10 @@ import {
   hasWorkspaceReviewPublishAuthorization,
   isWorkspaceReviewApprovedAnyway,
 } from "./workspaceReviewAuthorization";
+import {
+  ReviewArtifactTabs,
+  type ReviewArtifactBodyMode,
+} from "./ReviewArtifactTabs";
 
 const LazyPlanDisplay = lazy(() =>
   import("@/components/Ideation/PlanDisplay").then((module) => ({
@@ -92,6 +96,7 @@ type ReviewStatus = {
 
 interface AgentReviewPanelProps {
   reviewArtifact: Artifact | null;
+  reviewRequestedChangesArtifact?: Artifact | null;
   reviewContext: AgentWorkspaceReviewContext | null;
   reviewStartResult: StartAgentWorkspaceReviewResult | null;
   reviewStartError: Error | null;
@@ -350,6 +355,7 @@ function reviewStatusForState({
 
 export function AgentReviewPanel({
   reviewArtifact,
+  reviewRequestedChangesArtifact = null,
   reviewContext,
   reviewStartResult,
   reviewStartError,
@@ -375,6 +381,8 @@ export function AgentReviewPanel({
   onPrReviewMonitorChange,
 }: AgentReviewPanelProps) {
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
+  const [reviewBodyMode, setReviewBodyMode] =
+    useState<ReviewArtifactBodyMode>("overview");
   const [isStopMonitoringDialogOpen, setIsStopMonitoringDialogOpen] =
     useState(false);
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
@@ -382,7 +390,13 @@ export function AgentReviewPanel({
 
   useEffect(() => {
     setIsReviewExpanded(true);
-  }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
+    setReviewBodyMode("overview");
+  }, [
+    reviewArtifact?.id,
+    reviewArtifact?.metadata.version,
+    reviewRequestedChangesArtifact?.id,
+    reviewRequestedChangesArtifact?.metadata.version,
+  ]);
 
   const displayContext = (
     isReviewPrWorkspace
@@ -402,19 +416,22 @@ export function AgentReviewPanel({
     canApproveBlockingReview(displayContext, isRunning, isFixerActive);
   const errorMessage = reviewErrorMessage(displayContext, reviewStartError);
   const isRunFailed = Boolean(errorMessage) && !isRunning;
+  const hasReviewArtifact = Boolean(
+    reviewArtifact || reviewRequestedChangesArtifact,
+  );
   const retainedArtifactFailureDetail =
-    isRunFailed && reviewArtifact
+    isRunFailed && hasReviewArtifact
       ? "Review failed; output was saved but not finalized."
       : null;
   const status = reviewStatusForState({
     context: displayContext,
-    hasArtifact: Boolean(reviewArtifact),
+    hasArtifact: hasReviewArtifact,
     isRunFailed,
     isRunning,
   });
   const action = reviewActionForState({
     context: displayContext,
-    hasArtifact: Boolean(reviewArtifact),
+    hasArtifact: hasReviewArtifact,
     isRunFailed,
     isRunning,
     isFixerActive,
@@ -437,8 +454,12 @@ export function AgentReviewPanel({
     }
   })();
   const skippedReason = reviewStartResult?.skippedReason ?? null;
-  const versionLabel = displayContext?.monitor.reviewArtifactVersion
-    ? `v${displayContext.monitor.reviewArtifactVersion}`
+  const selectedReviewVersion =
+    reviewBodyMode === "requested_changes"
+      ? displayContext?.monitor.reviewRequestedChangesArtifactVersion
+      : displayContext?.monitor.reviewArtifactVersion;
+  const versionLabel = selectedReviewVersion
+    ? `v${selectedReviewVersion}`
     : null;
   const StatusIcon = status.icon;
   const isAnyActionPending =
@@ -451,8 +472,12 @@ export function AgentReviewPanel({
     : action?.kind === "fix"
       ? Wrench
       : RefreshCw;
-  const reviewUpdatedAt = displayContext?.monitor.reviewArtifactUpdatedAt
-    ? new Date(displayContext.monitor.reviewArtifactUpdatedAt).toLocaleString()
+  const selectedReviewUpdatedAt =
+    reviewBodyMode === "requested_changes"
+      ? displayContext?.monitor.reviewRequestedChangesArtifactUpdatedAt
+      : displayContext?.monitor.reviewArtifactUpdatedAt;
+  const reviewUpdatedAt = selectedReviewUpdatedAt
+    ? new Date(selectedReviewUpdatedAt).toLocaleString()
     : null;
   const actionDisabledReason = action
     ? (reviewActionBlocker?.message ?? reviewActionDisabledReason({
@@ -699,16 +724,24 @@ export function AgentReviewPanel({
     onStartReview,
   ]);
 
-  if (isReviewLoading) {
-    return <EmptyArtifactState title="Loading review..." />;
-  }
-
-  if (!displayContext && reviewArtifact && !isReviewPrWorkspace) {
-    return (
-      <div className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}>
+  const selectedReviewArtifact =
+    !isReviewPrWorkspace && reviewBodyMode === "requested_changes"
+      ? reviewRequestedChangesArtifact
+      : reviewArtifact;
+  const reviewDocuments = hasReviewArtifact ? (
+    <>
+      {!isReviewPrWorkspace ? (
+        <div className="mb-3">
+          <ReviewArtifactTabs
+            value={reviewBodyMode}
+            onValueChange={setReviewBodyMode}
+          />
+        </div>
+      ) : null}
+      {selectedReviewArtifact ? (
         <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
           <LazyPlanDisplay
-            plan={reviewArtifact}
+            plan={selectedReviewArtifact}
             artifactLabel="Review"
             linkedProposalsCount={0}
             isExpanded={isReviewExpanded}
@@ -716,6 +749,21 @@ export function AgentReviewPanel({
             chromeless
           />
         </Suspense>
+      ) : (
+        <EmptyArtifactState
+          title="Requested Changes not available"
+          detail="This Review predates the Requested Changes blueprint. Run Workspace Review again to generate both documents."
+        />
+      )}
+    </>
+  ) : isReviewLoading ? (
+    <EmptyArtifactState title="Loading review..." />
+  ) : null;
+
+  if (!displayContext && hasReviewArtifact && !isReviewPrWorkspace) {
+    return (
+      <div className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}>
+        {reviewDocuments}
       </div>
     );
   }
@@ -968,18 +1016,7 @@ export function AgentReviewPanel({
         </div>
       )}
 
-      {reviewArtifact && (
-        <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
-          <LazyPlanDisplay
-            plan={reviewArtifact}
-            artifactLabel="Review"
-            linkedProposalsCount={0}
-            isExpanded={isReviewExpanded}
-            onExpandedChange={setIsReviewExpanded}
-            chromeless
-          />
-        </Suspense>
-      )}
+      {reviewDocuments}
     </div>
   );
 }

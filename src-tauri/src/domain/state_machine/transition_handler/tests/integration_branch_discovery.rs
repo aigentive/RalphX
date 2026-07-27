@@ -366,9 +366,10 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
     task_repo.create(task.clone()).await.unwrap();
     project_repo.create(project.clone()).await.unwrap();
 
-    let mut services = TaskServices::new_mock();
-    services.task_repo = Some(task_repo.clone());
-    services.project_repo = Some(project_repo.clone());
+    let services =
+        with_default_test_branch_update_authority(TaskServices::new_mock(), Arc::clone(&task_repo))
+            .with_task_repo(Arc::clone(&task_repo))
+            .with_project_repo(Arc::clone(&project_repo));
 
     let context = create_context_with_services(task.id.as_str(), project.id.as_str(), services);
     let mut machine = TaskStateMachine::new(context);

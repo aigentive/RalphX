@@ -1,5 +1,6 @@
 use super::project_commands::*;
 use crate::application::AppState;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{Project, ProjectId};
 use crate::domain::services::github_service::GithubConnectionState;
 use crate::domain::services::{GithubServiceTrait, PrSearchResult};
@@ -139,6 +140,277 @@ fn diagnostics_response_exposes_github_https_credential_helper_state() {
     assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
     assert_eq!(response.push_kind.as_deref(), Some("HTTPS"));
     assert!(response.github_https_credential_helper_configured);
+}
+
+#[tokio::test]
+async fn enabling_github_pr_mode_requires_current_github_repository_capability() {
+    let temporary = tempfile::tempdir().expect("temporary repository");
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Local only".to_string(),
+        temporary.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-local-only".to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+    let app = mock_builder()
+        .manage(state)
+        .manage(Arc::new(ExecutionState::new()))
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let error = update_github_pr_enabled_with_app(
+        project.id.as_str().to_string(),
+        true,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+    )
+    .await
+    .expect_err("local-only projects cannot enable GitHub PR mode");
+
+    assert!(error.contains("supported GitHub origin push URL"));
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&project.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!persisted.github_pr_enabled);
+
+    update_github_pr_enabled_with_app(
+        project.id.as_str().to_string(),
+        false,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+    )
+    .await
+    .expect("disabling remains allowed for a local-only project");
+}
+
+#[tokio::test]
+async fn create_project_persists_worktree_parent_and_resolved_local_only_contract() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = create_project(
+        CreateProjectInput {
+            name: "Picker project".to_string(),
+            working_directory: temporary.path().to_string_lossy().to_string(),
+            git_mode: Some("worktree".to_string()),
+            base_branch: Some("main".to_string()),
+            worktree_parent_directory: Some("/custom/worktrees".to_string()),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("GUI project creation should bootstrap before persistence");
+
+    assert_eq!(response.base_branch.as_deref(), Some("main"));
+    assert_eq!(
+        response.worktree_parent_directory.as_deref(),
+        Some("/custom/worktrees")
+    );
+    assert!(!response.github_pr_enabled);
+    let response_json = serde_json::to_value(&response).expect("response serializes");
+    assert_eq!(response_json["repository_capability"]["kind"], "local_only");
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string(response.id))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist");
+    assert_eq!(persisted.base_branch.as_deref(), Some("main"));
+    assert_eq!(
+        persisted.worktree_parent_directory.as_deref(),
+        Some("/custom/worktrees")
+    );
+    assert!(
+        !persisted.github_pr_enabled,
+        "fresh local-only GUI projects must remain opted out of PR mode"
+    );
+}
+
+#[tokio::test]
+async fn updating_project_preserves_the_bootstrap_resolved_unborn_branch() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "develop"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Unborn project".to_string(),
+        temporary.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-unborn-update".to_string());
+    project.base_branch = Some("develop".to_string());
+    state.project_repo.create(project).await.unwrap();
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = update_project(
+        "project-unborn-update".to_string(),
+        UpdateProjectInput {
+            name: None,
+            working_directory: Some(temporary.path().to_string_lossy().to_string()),
+            git_mode: None,
+            base_branch: Some("main".to_string()),
+            merge_validation_mode: None,
+            merge_strategy: None,
+            worktree_parent_directory: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("unborn repository should preserve its symbolic branch");
+
+    assert_eq!(response.base_branch.as_deref(), Some("develop"));
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string("project-unborn-update".to_string()))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist");
+    assert_eq!(persisted.base_branch.as_deref(), Some("develop"));
+}
+
+#[tokio::test]
+async fn updating_only_the_base_branch_validates_the_current_repository() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(temporary.path())
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    assert!(Command::new(resolve_git_cli_path())
+        .args([
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test User",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ])
+        .current_dir(temporary.path())
+        .output()
+        .expect("initial commit should run")
+        .status
+        .success());
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Validated project".to_string(),
+        temporary.path().to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-base-only-update".to_string());
+    project.base_branch = Some("main".to_string());
+    state.project_repo.create(project).await.unwrap();
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let error = update_project(
+        "project-base-only-update".to_string(),
+        UpdateProjectInput {
+            name: None,
+            working_directory: None,
+            git_mode: None,
+            base_branch: Some("missing".to_string()),
+            merge_validation_mode: None,
+            merge_strategy: None,
+            worktree_parent_directory: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("a base-only update must validate the existing repository");
+
+    assert!(error.contains("does not exist"));
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string(
+            "project-base-only-update".to_string(),
+        ))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should remain");
+    assert_eq!(persisted.base_branch.as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn create_project_enables_pr_mode_for_a_github_capable_repository() {
+    let temporary = tempfile::tempdir().expect("temporary project directory");
+    let project_path = temporary.path();
+    assert!(Command::new(resolve_git_cli_path())
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(project_path)
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    assert!(Command::new(resolve_git_cli_path())
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:owner/repository.git",
+        ])
+        .current_dir(project_path)
+        .output()
+        .expect("git remote add should run")
+        .status
+        .success());
+    let app = mock_builder()
+        .manage(AppState::new_test())
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = create_project(
+        CreateProjectInput {
+            name: "GitHub project".to_string(),
+            working_directory: project_path.to_string_lossy().to_string(),
+            git_mode: None,
+            base_branch: None,
+            worktree_parent_directory: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("GUI project creation should retain GitHub PR capability");
+
+    assert!(response.github_pr_enabled);
+    let persisted = app
+        .state::<AppState>()
+        .project_repo
+        .get_by_id(&ProjectId::from_string(response.id))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist");
+    assert!(persisted.github_pr_enabled);
 }
 
 #[test]

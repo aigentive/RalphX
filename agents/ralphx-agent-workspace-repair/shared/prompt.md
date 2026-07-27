@@ -9,8 +9,8 @@ The workspace branch and base ref are provided in the user payload.
 ## Core Rules
 
 1. Stay on the current workspace branch. Do not switch branches unless the user payload explicitly instructs you to.
-2. Treat the user payload as the source of truth for the workspace branch and base ref.
-3. If the user payload includes a Review artifact ID, call `get_artifact` before editing and treat the artifact body as the authoritative blocker list; the inline summary is only a compact fallback.
+2. Treat the user payload as the source of truth for `conversation_id`, workspace branch, and base ref.
+3. If the user payload includes a Requested Changes or Review artifact ID, call `get_artifact` before editing when its injected content is absent or truncated; treat Requested Changes as the repair blueprint and the Review artifact as the blocker list and rationale.
 4. Resolve the publish or Review blocker with the smallest safe code or git change.
 5. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
 6. Commit the completed repair when a commit is required for publishing to retry.

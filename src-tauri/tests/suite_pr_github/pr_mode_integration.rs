@@ -148,6 +148,16 @@ fn setup_plan_git_repo(branch_name: &str) -> tempfile::TempDir {
         .current_dir(path)
         .output()
         .expect("initial commit");
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:ralphx/test-repository.git",
+        ])
+        .current_dir(path)
+        .output()
+        .expect("configure GitHub origin");
 
     std::process::Command::new("git")
         .args(["checkout", "-b", branch_name])

@@ -403,6 +403,75 @@ describe("agentOptions", () => {
     ).toEqual(["sonnet", "opus", "haiku"]);
   });
 
+  it("progressively exposes each pinned Opus model only for its exact reported id", () => {
+    const oldCliAliases = ["sonnet", "opus", "haiku", "fable"];
+    const opus47Aliases = [...oldCliAliases, "  CLAUDE-OPUS-4-7  "];
+    const opus48Aliases = [...opus47Aliases, "claude-opus-4-8"];
+    const opus5Aliases = [...opus48Aliases, "claude-opus-5"];
+
+    expect(agentModelOptions("claude", undefined, oldCliAliases).map((option) => option.id)).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+      "fable",
+    ]);
+    expect(agentModelOptions("claude", undefined, opus47Aliases).map((option) => option.id)).toEqual([
+      "sonnet",
+      "opus",
+      "claude-opus-4-7",
+      "haiku",
+      "fable",
+    ]);
+    expect(agentModelOptions("claude", undefined, opus48Aliases).map((option) => option.id)).toEqual([
+      "sonnet",
+      "opus",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "haiku",
+      "fable",
+    ]);
+    expect(agentModelOptions("claude", undefined, opus5Aliases).map((option) => option.id)).toEqual([
+      "sonnet",
+      "opus",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "haiku",
+      "fable",
+    ]);
+    expect(agentModelOptions("claude", undefined, ["opus"]).map((option) => option.id)).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+    ]);
+
+    for (const modelId of ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"]) {
+      expect(agentEffortOptionsForModel("claude", modelId).map((option) => option.id)).toEqual([
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+      ]);
+      expect(
+        normalizeRuntimeSelection(
+          { provider: "claude", modelId, effort: "retired-effort" },
+          undefined,
+          null,
+          [modelId],
+        ),
+      ).toEqual({ provider: "claude", modelId, effort: "high" });
+    }
+    expect(
+      normalizeRuntimeSelection(
+        { provider: "claude", modelId: "claude-opus-5", effort: "xhigh" },
+        undefined,
+        null,
+        opus48Aliases,
+      ),
+    ).toEqual({ provider: "claude", modelId: "sonnet", effort: "medium" });
+  });
+
   it("progressively exposes Sonnet 5 only when Claude reports the model id", () => {
     expect(agentModelOptions("claude").map((option) => option.id)).toEqual([
       "sonnet",

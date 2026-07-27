@@ -33,7 +33,7 @@ paths:
 |---|---|
 | One visible turn | `Verify Plan` queues an ordinary turn in the active Plan conversation; never create a hidden verification child. |
 | Active model owns review | The current model selects review lenses and may use its normal allowed delegates; no fixed verifier, critic, or specialist roster. |
-| Exact proof | Acceptance proof is `current plan_artifact_id == verified_plan_artifact_id`. Any revised artifact needs new proof. |
+| Exact proof | Acceptance proof matches both current Overview and Blueprint ids to their verified pointers. Any one-sided revision needs new proof; legacy v1 remains overview-only. |
 | Typed authority | Only a live `agent_runs.action_kind = verify_plan` run with matching session, artifact, and conversation may complete verification. |
 | Backend derives identity | `complete_plan_verification` has no model-supplied session, artifact, run, status, generation, or timestamp arguments. |
 | Fail closed | Missing settings/proof, malformed action metadata, ordinary chat turns, stale runs, and failed/cancelled runs never satisfy a required gate. |
@@ -49,12 +49,12 @@ paths:
 CTA / auto policy / external MCP
   -> request_plan_verification(session, source)
   -> resolve active Plan conversation
-  -> queue ordinary message with verify_plan(session, current artifact) metadata
-  -> active model reviews repository + plan, chooses lenses/delegates, revises plan if needed
+  -> queue ordinary message with verify_plan(session, deterministic current bundle target) metadata
+  -> active model reviews repository + both plan documents, chooses lenses/delegates, revises either if needed
   -> model calls zero-argument complete_plan_verification exactly once
   -> transport derives run + conversation
-  -> SQLite CAS checks live matching run + exact current artifact + owning conversation
-  -> verified_plan_artifact_id and verified_plan_agent_run_id are stored
+  -> SQLite CAS checks live matching run + exact current pair + owning conversation
+  -> both verified artifact pointers and verified_plan_agent_run_id are stored
 ```
 
 With `auto_verify_draft_plans` enabled, successful completion of the latest ordinary turn in an
@@ -68,7 +68,7 @@ superseded runs, non-Plan workspaces, and verifier turns do not trigger another 
 |---|---|
 | Shared request/status/completion | `src-tauri/src/application/plan_verification_service.rs` |
 | Action identity | `AgentRunActionKind::VerifyPlan` and action context/target fields |
-| Exact proof | `ideation_sessions.verified_plan_artifact_id` + `verified_plan_agent_run_id` |
+| Exact proof | `ideation_sessions.verified_plan_artifact_id` + `verified_plan_blueprint_artifact_id` + `verified_plan_agent_run_id` |
 | Atomic proof write | `IdeationSessionRepository::complete_plan_verification` SQLite implementation |
 | Manual trigger | `POST /api/verification/confirm` |
 | Agent completion | `POST /api/plan-verification/complete` |

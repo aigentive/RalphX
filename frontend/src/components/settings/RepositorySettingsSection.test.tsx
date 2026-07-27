@@ -14,7 +14,6 @@ vi.mock("sonner", () => ({
 }));
 
 vi.mock("@/hooks/useGithubSettings", () => ({
-  useGitRemoteUrl: vi.fn(),
   useGitAuthDiagnostics: vi.fn(),
   useLoginGhWithBrowser: vi.fn(),
   useSwitchGitOriginToSsh: vi.fn(),
@@ -43,7 +42,6 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 import {
-  useGitRemoteUrl,
   useGitAuthDiagnostics,
   useLoginGhWithBrowser,
   useSwitchGitOriginToSsh,
@@ -54,11 +52,17 @@ import {
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import { useProjectStore } from "@/stores/projectStore";
 import { api, getGitDefaultBranch } from "@/lib/tauri";
+import type { Project } from "@/types/project";
 
 const mockProject = {
   id: "proj-1",
   name: "Test Project",
   githubPrEnabled: false,
+  repositoryCapability: {
+    kind: "github" as const,
+    fetchUrl: "https://github.com/user/repo.git",
+    pushUrl: "https://github.com/user/repo.git",
+  },
   workingDirectory: "/home/user/project",
   baseBranch: "main",
   useFeatureBranches: false,
@@ -75,6 +79,19 @@ const mockLoginGhWithBrowser = vi.fn();
 const mockResumeDeferredGitStartup = vi.fn();
 const mockRefetchGitAuth = vi.fn();
 const mockRefetchGhAuth = vi.fn();
+
+function mockProjectCapability(
+  changes: Pick<Project, "githubPrEnabled" | "repositoryCapability">,
+) {
+  vi.mocked(useProjectStore).mockImplementation(((selector: unknown) => {
+    const state = { updateProject: mockUpdateProject };
+    if (typeof selector === "function") {
+      const result = (selector as (s: unknown) => unknown)(state);
+      return result === undefined ? { ...mockProject, ...changes } : result;
+    }
+    return mockProject;
+  }) as never);
+}
 
 function ghStatus(state: "authenticated" | "unauthenticated" | "credential_rejected" | "provider_unavailable" | "cli_unavailable" | "probe_failed") {
   return {
@@ -129,11 +146,6 @@ describe("RepositorySettingsSection", () => {
       }
       return mockProject;
     }) as never);
-
-    vi.mocked(useGitRemoteUrl).mockReturnValue({
-      data: "https://github.com/user/repo.git",
-      isLoading: false,
-    } as ReturnType<typeof useGitRemoteUrl>);
 
     vi.mocked(useGitAuthDiagnostics).mockReturnValue({
       data: {
@@ -216,6 +228,18 @@ describe("RepositorySettingsSection", () => {
     ).toBeInTheDocument();
   });
 
+  it("uses live local-only capability rather than the remote URL query to disable future PR mode", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByText("Local workflows available")).toBeInTheDocument();
+    expect(screen.getByTestId("github-pr-enabled")).toBeDisabled();
+  });
+
   it("shows Authenticated when gh authed", () => {
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -254,10 +278,6 @@ describe("RepositorySettingsSection", () => {
       ...mockProject,
       githubPrEnabled: true,
     });
-    vi.mocked(useGitRemoteUrl).mockReturnValue({
-      data: "git@github.com:user/repo.git",
-      isLoading: false,
-    } as ReturnType<typeof useGitRemoteUrl>);
     vi.mocked(useGitHubConnectionStatus).mockReturnValue({
       data: ghStatus("unauthenticated"),
       isLoading: false,
@@ -273,11 +293,15 @@ describe("RepositorySettingsSection", () => {
     expect(screen.queryByText(/Run gh auth login/i)).not.toBeInTheDocument();
   });
 
-  it("disables PR mode toggle when remote is not GitHub", () => {
-    vi.mocked(useGitRemoteUrl).mockReturnValue({
-      data: "https://gitlab.com/user/repo.git",
-      isLoading: false,
-    } as ReturnType<typeof useGitRemoteUrl>);
+  it("disables PR mode toggle when the repository capability is not GitHub", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: {
+        kind: "otherRemote",
+        fetchUrl: "https://gitlab.com/user/repo.git",
+        pushUrl: "https://gitlab.com/user/repo.git",
+      },
+    });
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -292,11 +316,15 @@ describe("RepositorySettingsSection", () => {
     expect(toggle).not.toBeDisabled();
   });
 
-  it("enables PR mode toggle for GitHub SSH remotes", () => {
-    vi.mocked(useGitRemoteUrl).mockReturnValue({
-      data: "git@github.com:user/repo.git",
-      isLoading: false,
-    } as ReturnType<typeof useGitRemoteUrl>);
+  it("enables PR mode toggle for GitHub SSH capabilities", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: {
+        kind: "github",
+        fetchUrl: "git@github.com:user/repo.git",
+        pushUrl: "git@github.com:user/repo.git",
+      },
+    });
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -404,11 +432,15 @@ describe("RepositorySettingsSection", () => {
     });
   });
 
-  it("disables PR mode toggle for URLs that only mention github.com in a query string", () => {
-    vi.mocked(useGitRemoteUrl).mockReturnValue({
-      data: "https://evil.example.com/redirect?target=https://github.com/user/repo.git",
-      isLoading: false,
-    } as ReturnType<typeof useGitRemoteUrl>);
+  it("disables PR mode toggle for non-GitHub capability even with a GitHub-looking URL", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: {
+        kind: "otherRemote",
+        fetchUrl: "https://evil.example.com/redirect?target=https://github.com/user/repo.git",
+        pushUrl: "https://evil.example.com/redirect?target=https://github.com/user/repo.git",
+      },
+    });
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
@@ -446,22 +478,25 @@ describe("RepositorySettingsSection", () => {
     expect(screen.getByTestId("merge-validation-mode")).toBeInTheDocument();
   });
 
-  it("shows 'Not configured' when remote URL is null", () => {
-    vi.mocked(useGitRemoteUrl).mockReturnValue({
-      data: null,
-      isLoading: false,
-    } as unknown as ReturnType<typeof useGitRemoteUrl>);
+  it("shows 'Not configured' when a local-only repository has no remote", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
     expect(screen.getByText("Not configured")).toBeInTheDocument();
   });
 
-  it("disables PR toggle for malformed URLs", () => {
-    vi.mocked(useGitRemoteUrl).mockReturnValue({
-      data: "::::not a url::::",
-      isLoading: false,
-    } as unknown as ReturnType<typeof useGitRemoteUrl>);
+  it("disables PR toggle when capability inspection fails", () => {
+    mockProjectCapability({
+      githubPrEnabled: false,
+      repositoryCapability: {
+        kind: "inspectionFailed",
+        message: "Could not inspect origin",
+      },
+    });
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 

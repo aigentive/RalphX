@@ -184,6 +184,8 @@ fn blocking_review_bypass_authorizes_only_the_exact_artifact_and_target() {
     monitor.reviewed_diff_fingerprint = Some("diff-1".to_string());
     monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-1"));
     monitor.review_artifact_version = Some(3);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string("changes-1"));
+    monitor.review_requested_changes_artifact_version = Some(3);
     monitor.review_gate_bypassed_at = Some(Utc::now());
     monitor.review_gate_bypassed_target_scope =
         Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);

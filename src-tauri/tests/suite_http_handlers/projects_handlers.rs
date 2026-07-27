@@ -22,6 +22,7 @@ use ralphx_lib::infrastructure::sqlite::{
     sqlite_api_key_repo::SqliteApiKeyRepository, sqlite_project_repo::SqliteProjectRepository,
     DbConnection,
 };
+use std::process::Command;
 use std::sync::Arc;
 
 // ============================================================================
@@ -155,6 +156,8 @@ async fn test_register_project_etc_rejected() {
         Json(RegisterProjectExternalRequest {
             working_directory: "/etc/passwd".to_string(),
             name: None,
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await;
@@ -176,6 +179,8 @@ async fn test_register_project_tmp_rejected() {
         Json(RegisterProjectExternalRequest {
             working_directory: "/tmp/some-project".to_string(),
             name: None,
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await;
@@ -196,6 +201,8 @@ async fn test_register_project_usr_rejected() {
         Json(RegisterProjectExternalRequest {
             working_directory: "/usr/local/bin".to_string(),
             name: None,
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await;
@@ -220,6 +227,8 @@ async fn test_register_project_home_subdir_accepted() {
         Json(RegisterProjectExternalRequest {
             working_directory: path,
             name: Some("IntegTest".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await;
@@ -246,6 +255,8 @@ async fn test_register_project_persists_merge_validation_mode_off() {
         Json(RegisterProjectExternalRequest {
             working_directory: path,
             name: Some("DefaultMode".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await
@@ -269,6 +280,268 @@ async fn test_register_project_persists_merge_validation_mode_off() {
     assert_eq!(merge_validation_mode, "off");
 }
 
+#[test]
+fn register_project_request_accepts_legacy_payload_without_optional_git_fields() {
+    let request: RegisterProjectExternalRequest =
+        serde_json::from_str(r#"{"working_directory":"/workspace/project","name":"Legacy"}"#)
+            .expect("legacy request must deserialize");
+
+    assert!(request.base_branch.is_none());
+    assert!(request.worktree_parent_directory.is_none());
+}
+
+#[tokio::test]
+async fn test_register_project_round_trips_selected_base_and_worktree_parent_directory() {
+    let (_db, state) = setup_sqlite_register_state();
+    let key_id = insert_key(&state, PERMISSION_CREATE_PROJECT).await;
+    let temporary = temp_dir_under_home();
+    let worktree_parent_directory = "/custom/ralphx-worktrees".to_string();
+
+    let response = register_project_external(
+        State(state.clone()),
+        make_validated_key(&key_id),
+        Json(RegisterProjectExternalRequest {
+            working_directory: temporary.path().to_string_lossy().to_string(),
+            name: Some("Selected base".to_string()),
+            base_branch: Some("develop".to_string()),
+            worktree_parent_directory: Some(worktree_parent_directory.clone()),
+        }),
+    )
+    .await
+    .expect("registration should persist selected Git settings");
+
+    assert_eq!(response.0.base_branch, "develop");
+    assert_eq!(
+        response.0.worktree_parent_directory.as_deref(),
+        Some(worktree_parent_directory.as_str())
+    );
+    let persisted = state
+        .app_state
+        .project_repo
+        .get_by_id(&ralphx_lib::domain::entities::ProjectId::from_string(
+            response.0.id,
+        ))
+        .await
+        .expect("project lookup should succeed")
+        .expect("registered project should persist");
+    assert_eq!(persisted.base_branch.as_deref(), Some("develop"));
+    assert_eq!(
+        persisted.worktree_parent_directory.as_deref(),
+        Some(worktree_parent_directory.as_str())
+    );
+}
+
+#[tokio::test]
+async fn test_register_project_bootstraps_unborn_repo_before_persisting_resolved_branch() {
+    let (_db, state) = setup_sqlite_register_state();
+    let key_id = insert_key(&state, PERMISSION_CREATE_PROJECT).await;
+    let temporary = temp_dir_under_home();
+    let path = temporary.path();
+    assert!(Command::new("git")
+        .args(["init", "--initial-branch", "develop"])
+        .current_dir(path)
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    std::fs::write(path.join("staged.txt"), "preserve staged user work\n")
+        .expect("fixture should write");
+    assert!(Command::new("git")
+        .args(["add", "staged.txt"])
+        .current_dir(path)
+        .output()
+        .expect("git add should run")
+        .status
+        .success());
+
+    let response = register_project_external(
+        State(state.clone()),
+        make_validated_key(&key_id),
+        Json(RegisterProjectExternalRequest {
+            working_directory: path.to_string_lossy().to_string(),
+            name: Some("Unborn".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
+        }),
+    )
+    .await
+    .expect("registration should bootstrap the unborn repository");
+
+    assert_eq!(response.0.base_branch, "develop");
+    assert!(!response.0.github_pr_enabled);
+    let response_json = serde_json::to_value(&response.0).expect("response serializes");
+    assert_eq!(response_json["repository_capability"]["kind"], "local_only");
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(path)
+        .output()
+        .expect("git diff should run");
+    assert_eq!(String::from_utf8_lossy(&staged.stdout).trim(), "staged.txt");
+    let persisted = state
+        .app_state
+        .project_repo
+        .get_by_id(&ralphx_lib::domain::entities::ProjectId::from_string(
+            response.0.id,
+        ))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist after bootstrap");
+    assert_eq!(persisted.base_branch.as_deref(), Some("develop"));
+}
+
+#[tokio::test]
+async fn test_register_project_enables_pr_mode_for_a_github_capable_repository() {
+    let (_db, state) = setup_sqlite_register_state();
+    let key_id = insert_key(&state, PERMISSION_CREATE_PROJECT).await;
+    let temporary = temp_dir_under_home();
+    let path = temporary.path();
+    assert!(Command::new("git")
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(path)
+        .output()
+        .expect("git init should run")
+        .status
+        .success());
+    assert!(Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:owner/repository.git"
+        ])
+        .current_dir(path)
+        .output()
+        .expect("git remote add should run")
+        .status
+        .success());
+
+    let response = register_project_external(
+        State(state.clone()),
+        make_validated_key(&key_id),
+        Json(RegisterProjectExternalRequest {
+            working_directory: path.to_string_lossy().to_string(),
+            name: Some("GitHub repository".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
+        }),
+    )
+    .await
+    .expect("registration should detect the configured GitHub origin");
+
+    assert!(response.0.github_pr_enabled);
+    let response_json = serde_json::to_value(&response.0).expect("response serializes");
+    assert_eq!(response_json["repository_capability"]["kind"], "github");
+    let persisted = state
+        .app_state
+        .project_repo
+        .get_by_id(&ralphx_lib::domain::entities::ProjectId::from_string(
+            response.0.id,
+        ))
+        .await
+        .expect("project lookup should succeed")
+        .expect("project should persist after registration");
+    assert!(persisted.github_pr_enabled);
+}
+
+#[tokio::test]
+async fn test_register_project_rejects_detached_repository_before_database_insert() {
+    let (_db, state) = setup_sqlite_register_state();
+    let key_id = insert_key(&state, PERMISSION_CREATE_PROJECT).await;
+    let temporary = temp_dir_under_home();
+    let path = temporary.path();
+    for args in [
+        vec!["init", "--initial-branch", "main"],
+        vec!["config", "user.name", "Test User"],
+        vec!["config", "user.email", "test@example.com"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("git setup should run")
+            .status
+            .success());
+    }
+    std::fs::write(path.join("README.md"), "base\n").expect("fixture should write");
+    for args in [
+        vec!["add", "README.md"],
+        vec!["commit", "-m", "base"],
+        vec!["checkout", "--detach", "HEAD"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("git setup should run")
+            .status
+            .success());
+    }
+
+    let result = register_project_external(
+        State(state.clone()),
+        make_validated_key(&key_id),
+        Json(RegisterProjectExternalRequest {
+            working_directory: path.to_string_lossy().to_string(),
+            name: Some("Detached".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
+        }),
+    )
+    .await;
+
+    assert!(result.is_err(), "detached HEAD must reject registration");
+    assert!(state
+        .app_state
+        .project_repo
+        .get_all()
+        .await
+        .expect("project list should succeed")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_register_project_rejects_invalid_git_metadata_without_database_insert_or_repair() {
+    let (_db, state) = setup_sqlite_register_state();
+    let key_id = insert_key(&state, PERMISSION_CREATE_PROJECT).await;
+    let temporary = temp_dir_under_home();
+    let git_dir = temporary.path().join(".git");
+    std::fs::create_dir(&git_dir).expect("invalid git metadata directory should exist");
+    let head_path = git_dir.join("HEAD");
+    std::fs::write(&head_path, "not a valid git head\n").expect("invalid HEAD should write");
+
+    let result = register_project_external(
+        State(state.clone()),
+        make_validated_key(&key_id),
+        Json(RegisterProjectExternalRequest {
+            working_directory: temporary.path().to_string_lossy().to_string(),
+            name: Some("Invalid Git".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "invalid Git metadata must reject registration"
+    );
+    assert!(state
+        .app_state
+        .project_repo
+        .get_all()
+        .await
+        .expect("project list should succeed")
+        .is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&head_path).expect("HEAD must remain untouched"),
+        "not a valid git head\n"
+    );
+    assert!(
+        !git_dir.join("config").exists(),
+        "strict bootstrap must not repair invalid metadata"
+    );
+}
+
 // ============================================================================
 // Duplicate working_directory → 409 Conflict
 // ============================================================================
@@ -288,6 +561,8 @@ async fn test_register_project_duplicate_path_returns_409() {
         Json(RegisterProjectExternalRequest {
             working_directory: path.clone(),
             name: Some("FirstReg".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await;
@@ -301,6 +576,8 @@ async fn test_register_project_duplicate_path_returns_409() {
         Json(RegisterProjectExternalRequest {
             working_directory: path,
             name: Some("SecondReg".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await;
@@ -332,6 +609,8 @@ async fn test_register_project_creating_key_gets_scope() {
         Json(RegisterProjectExternalRequest {
             working_directory: path,
             name: Some("ScopeTest".to_string()),
+            base_branch: None,
+            worktree_parent_directory: None,
         }),
     )
     .await

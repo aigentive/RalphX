@@ -30,10 +30,11 @@ use crate::commands::execution_commands::{
     context_matches_running_status_for_gc, ActiveProjectState, ExecutionState,
     AGENT_ACTIVE_STATUSES, AUTO_TRANSITION_STATES,
 };
-use crate::domain::entities::ideation::IdeationSessionStatus;
+use crate::domain::entities::ideation::{IdeationSessionFlow, IdeationSessionStatus};
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRunStatus, ChatContextType, IdeationSessionId,
-    InternalStatus, ProjectId, ReviewNote, ReviewOutcome, ReviewerType,
+    app_state::ExecutionHaltMode, AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType,
+    ChatConversationId, IdeationSessionId, InternalStatus, ProjectId, ReviewNote, ReviewOutcome,
+    ReviewerType,
 };
 use crate::domain::repositories::{
     AgentRunRepository, AppStateRepository, ChatConversationRepository,
@@ -41,7 +42,7 @@ use crate::domain::repositories::{
     ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
     ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
-use crate::domain::services::RunningAgentKey;
+use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppResult;
 
@@ -92,6 +93,44 @@ fn startup_job_step_completed(step: &'static str, started_at: Instant) {
         elapsed_ms = started_at.elapsed().as_millis(),
         "Startup job runner step completed"
     );
+}
+
+const ACCEPTED_PLAN_MODE_HANDOFF_SOURCE: &str = "accepted_plan_mode_proposal";
+
+fn is_accepted_plan_mode_handoff_row(key: &QueueKey, message: &QueuedMessage) -> bool {
+    if key.context_type != ChatContextType::Project {
+        return false;
+    }
+    let Some(metadata) = message.metadata_override.as_deref() else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_str::<serde_json::Value>(metadata) else {
+        return false;
+    };
+    let Some(request_id) = metadata
+        .get("source_request_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    message.id == format!("plan-mode-handoff:{request_id}")
+        && metadata.get("source").and_then(|value| value.as_str())
+            == Some(ACCEPTED_PLAN_MODE_HANDOFF_SOURCE)
+        && metadata
+            .get("required_workspace_mode")
+            .and_then(|value| value.as_str())
+            == Some("plan")
+        && metadata
+            .get("resume_in_place")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        && metadata
+            .get("persist_hidden_marker")
+            .and_then(|value| value.as_bool())
+            == Some(true)
 }
 
 /// Returns true if a task's metadata indicates it should be auto-recovered on startup.
@@ -837,6 +876,13 @@ impl StartupJobRunner {
             return HashSet::new();
         }
         debug!("Execution NOT paused, continuing...");
+
+        // Recover exact durable Plan-mode handoffs after previous-session cleanup.
+        // This runs before task/ideation recovery so it cannot compete with a
+        // replacement Plan turn for the same project conversation.
+        let step_started_at = startup_job_step_started("accepted_plan_mode_handoff_recovery");
+        self.recover_accepted_plan_mode_handoffs().await;
+        startup_job_step_completed("accepted_plan_mode_handoff_recovery", step_started_at);
 
         if active_project_id.is_none() {
             info!("No active project in DB, skipping task resumption");
@@ -2486,6 +2532,144 @@ impl StartupJobRunner {
             count = project_ids.len(),
             "Startup pending drain: drain complete"
         );
+    }
+
+    /// Restart only exact accepted Plan-mode continuations through ChatService's
+    /// canonical queued-send seam. Malformed durable rows and uncertain ownership
+    /// are intentionally ignored so startup cannot launch arbitrary messages.
+    async fn recover_accepted_plan_mode_handoffs(&self) {
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            debug!("Startup Plan-mode handoff recovery: no app handle configured");
+            return;
+        };
+        let Some(state) = app_handle.try_state::<crate::application::AppState>() else {
+            tracing::warn!("Startup Plan-mode handoff recovery: AppState is unavailable");
+            return;
+        };
+        self.recover_accepted_plan_mode_handoffs_for_state(state.inner())
+            .await;
+    }
+
+    async fn recover_accepted_plan_mode_handoffs_for_state(
+        &self,
+        state: &crate::application::AppState,
+    ) {
+        let Some(chat_service) = self.chat_service.as_ref().cloned() else {
+            debug!("Startup Plan-mode handoff recovery: no chat service configured");
+            return;
+        };
+        let queued_message_repo = Arc::clone(&state.queued_message_repo);
+        let chat_conversation_repo = Arc::clone(&state.chat_conversation_repo);
+        let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+        let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+        let running_agent_registry = Arc::clone(&state.running_agent_registry);
+        let interactive_process_registry = Arc::clone(&state.interactive_process_registry);
+
+        let running_project_owners = match running_agent_registry
+            .list_by_context_type(&ChatContextType::Project.to_string())
+            .await
+        {
+            Ok(owners) => owners,
+            Err(error) => {
+                tracing::warn!(error = %error, "Startup Plan-mode handoff recovery: running-registry read failed; recovery skipped");
+                return;
+            }
+        };
+
+        let keys = match queued_message_repo.list_keys().await {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(error = %error, "Startup Plan-mode handoff recovery: queue-key read failed");
+                return;
+            }
+        };
+
+        for key in keys
+            .into_iter()
+            .filter(|key| key.context_type == ChatContextType::Project)
+        {
+            let messages = match queued_message_repo.list(&key).await {
+                Ok(messages) => messages,
+                Err(error) => {
+                    tracing::warn!(context_id = %key.context_id, error = %error, "Startup Plan-mode handoff recovery: queue-row read failed");
+                    continue;
+                }
+            };
+            let conversation_id = ChatConversationId::from_string(key.context_id.clone());
+
+            for message in messages
+                .iter()
+                .filter(|message| is_accepted_plan_mode_handoff_row(&key, message))
+            {
+                match chat_conversation_repo.get_by_id(&conversation_id).await {
+                    Ok(Some(conversation))
+                        if conversation.context_type == ChatContextType::Project
+                            && conversation.agent_mode
+                                == Some(AgentConversationWorkspaceMode::Plan) => {}
+                    Ok(_) => continue,
+                    Err(error) => {
+                        tracing::warn!(conversation_id = %conversation_id, error = %error, "Startup Plan-mode handoff recovery: conversation read failed");
+                        continue;
+                    }
+                }
+                let workspace = match workspace_repo
+                    .get_by_conversation_id(&conversation_id)
+                    .await
+                {
+                    Ok(Some(workspace))
+                        if workspace.mode == AgentConversationWorkspaceMode::Plan =>
+                    {
+                        workspace
+                    }
+                    Ok(_) => continue,
+                    Err(error) => {
+                        tracing::warn!(conversation_id = %conversation_id, error = %error, "Startup Plan-mode handoff recovery: workspace read failed");
+                        continue;
+                    }
+                };
+                let Some(session_id) = workspace.linked_ideation_session_id else {
+                    continue;
+                };
+                match ideation_session_repo.get_by_id(&session_id).await {
+                    Ok(Some(session))
+                        if session.session_flow == IdeationSessionFlow::Planning
+                            && session.status == IdeationSessionStatus::Active => {}
+                    Ok(_) => continue,
+                    Err(error) => {
+                        tracing::warn!(conversation_id = %conversation_id, error = %error, "Startup Plan-mode handoff recovery: linked session read failed");
+                        continue;
+                    }
+                }
+
+                let running_key = RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                );
+                if running_project_owners
+                    .iter()
+                    .any(|(key, _)| key == &running_key)
+                    || interactive_process_registry
+                        .capture_owner(&crate::application::interactive_process_registry::InteractiveProcessKey::new(
+                            ChatContextType::Project.to_string(),
+                            conversation_id.as_str(),
+                        ))
+                        .await
+                        .is_some()
+                {
+                    continue;
+                }
+
+                let outcome = chat_service
+                    .kick_runtime_handoff(&conversation_id, &message.id)
+                    .await;
+                tracing::info!(
+                    conversation_id = %conversation_id,
+                    queued_message_id = %message.id,
+                    outcome = ?outcome,
+                    "Startup Plan-mode handoff recovery attempted canonical queue kick"
+                );
+            }
+        }
     }
 }
 

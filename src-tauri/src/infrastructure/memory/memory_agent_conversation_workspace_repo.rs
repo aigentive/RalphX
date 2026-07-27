@@ -1574,8 +1574,24 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 monitor.review_artifact_version = existing.review_artifact_version;
                 monitor.review_artifact_updated_at = existing.review_artifact_updated_at;
             }
+            if monitor.review_requested_changes_artifact_id.is_none() {
+                monitor.review_requested_changes_artifact_id =
+                    existing.review_requested_changes_artifact_id.clone();
+                monitor.review_requested_changes_artifact_version =
+                    existing.review_requested_changes_artifact_version;
+                monitor.review_requested_changes_artifact_updated_at =
+                    existing.review_requested_changes_artifact_updated_at;
+            }
             if monitor.previous_version_id.is_none() {
                 monitor.previous_version_id = existing.previous_version_id.clone();
+            }
+            if monitor
+                .review_requested_changes_previous_version_id
+                .is_none()
+            {
+                monitor.review_requested_changes_previous_version_id = existing
+                    .review_requested_changes_previous_version_id
+                    .clone();
             }
             // Guard transitions are exclusively compare-and-set operations. A normal Review
             // monitor upsert must not erase the durable GitHub auto-merge ownership record.
@@ -1621,6 +1637,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 != Some(snapshot.diff_fingerprint.as_str())
             || monitor.review_artifact_id.as_ref() != Some(&snapshot.artifact_id)
             || monitor.review_artifact_version != Some(snapshot.artifact_version)
+            || monitor.review_requested_changes_artifact_id.as_ref()
+                != Some(&snapshot.requested_changes_artifact_id)
+            || monitor.review_requested_changes_artifact_version
+                != Some(snapshot.requested_changes_artifact_version)
             || monitor.review_blocking_fingerprint.as_deref()
                 != Some(snapshot.blocking_fingerprint.as_str())
             || matches!(
@@ -1658,6 +1678,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 != Some(expected_snapshot.diff_fingerprint.as_str())
             || current.review_artifact_id.as_ref() != Some(&expected_snapshot.artifact_id)
             || current.review_artifact_version != Some(expected_snapshot.artifact_version)
+            || current.review_requested_changes_artifact_id.as_ref()
+                != Some(&expected_snapshot.requested_changes_artifact_id)
+            || current.review_requested_changes_artifact_version
+                != Some(expected_snapshot.requested_changes_artifact_version)
             || current.review_blocking_fingerprint.as_deref()
                 != Some(expected_snapshot.blocking_fingerprint.as_str())
         {
@@ -1768,6 +1792,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 != Some(snapshot.diff_fingerprint.as_str())
             || monitor.review_artifact_id.as_ref() != Some(&snapshot.artifact_id)
             || monitor.review_artifact_version != Some(snapshot.artifact_version)
+            || !monitor.has_review_artifact_pair()
             || fixer_active
         {
             return Ok(None);

@@ -62,9 +62,6 @@ coverage:
           - "!src-tauri/src/domain/repositories/mod.rs"
           - "!src-tauri/src/infrastructure/memory/mod.rs"
           - "!src-tauri/src/infrastructure/sqlite/mod.rs"
-          # GitHub auth subprocess probes depend on local gh credential state.
-          # Deterministic URL parsing and auth-preflight logic are covered separately.
-          - "!src-tauri/src/infrastructure/git_auth.rs"
           # Native Atlassian support spans live external APIs, OAuth loopback
           # listener plumbing, replayable secret storage, Tauri command glue,
           # SQLite persistence glue, startup/settings composition, queued
@@ -81,7 +78,6 @@ coverage:
           - "!src-tauri/src/application/chat_service/chat_service_queue.rs"
           - "!src-tauri/src/application/atlassian_integration_service.rs"
           - "!src-tauri/src/commands/atlassian_commands.rs"
-          - "!src-tauri/src/commands/unified_chat_commands.rs"
           # Plan-mode transition and artifact-reference support spans Tauri
           # command glue, HTTP DTO/handler adapters, long-lived agent spawn
           # orchestration, and large agent UI container/controller surfaces.
@@ -150,6 +146,27 @@ coverage:
           - "!src-tauri/src/http_server/handlers/plan_complexity.rs"
           - "!src-tauri/src/http_server/handlers/questions.rs"
           - "!src-tauri/src/http_server/types.rs"
+          # Plan Bundle crosses Tauri commands, Axum handlers, SQLite adapters,
+          # and scheduler-owned durable orchestration. Its deterministic domain,
+          # service, IPC, and repository-contract behavior is covered by the
+          # focused sidecar and integration suites; keep the patch gate off the
+          # adapter/composition branches that require live AppState, DbConnection,
+          # or background scheduling to exercise.
+          - "!src-tauri/src/application/agent_task_pipeline_service.rs"
+          - "!src-tauri/src/application/apply_service/mod.rs"
+          - "!src-tauri/src/application/automation/scheduler.rs"
+          - "!src-tauri/src/application/plan_artifact_approval.rs"
+          - "!src-tauri/src/application/plan_verification_service.rs"
+          - "!src-tauri/src/commands/agent_plan_commands.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_apply.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_cross_project.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_types.rs"
+          - "!src-tauri/src/http_server/handlers/agent_workspaces/mod.rs"
+          - "!src-tauri/src/http_server/handlers/artifacts/linking.rs"
+          - "!src-tauri/src/http_server/helpers.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_automation_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_ideation_session_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_task_proposal_repo/mod.rs"
           - "!src-tauri/src/infrastructure/agents/claude/mod.rs"
           - "!src-tauri/src/infrastructure/agents/spawner.rs"
           # Merge recovery entry points below mostly compose already-tested
@@ -170,10 +187,6 @@ coverage:
           - "!src-tauri/src/commands/automation_commands.rs"
           - "!src-tauri/src/commands/manual_role_default_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
-          # Agent-workspace PR auto-publish listener wiring depends on Tauri's
-          # managed runtime state and background scheduling. Its deterministic
-          # authorization and publication decisions are covered in sidecar tests.
-          - "!src-tauri/src/commands/agent_workspace_auto_publish.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
 parsers:
@@ -198,6 +211,10 @@ ignore:
   - "src-tauri/src/application/orphan_worktree_cleanup.rs"
   - "src-tauri/src/application/pr_startup_recovery.rs"
   - "src-tauri/crates/ralphx-domain/src/repositories/agent_conversation_workspace_repository.rs"
+  # Local repository bootstrap and GitHub auth invoke real Git/gh state. Their
+  # deterministic request, validation, and result behavior is sidecar-tested.
+  - "src-tauri/src/application/git_service/bootstrap.rs"
+  - "src-tauri/src/infrastructure/git_auth.rs"
   # Workspace Review auto-merge coordinates GitHub calls, reviewer startup,
   # and durable recovery; deterministic behavior is covered by sidecar tests.
   - "src-tauri/src/application/agent_workspace_review_auto_merge.rs"
@@ -212,6 +229,12 @@ ignore:
   - "src-tauri/src/domain/state_machine/transition_handler/merge_orchestrator.rs"
   - "src-tauri/src/domain/state_machine/transition_handler/merge_outcome_handler.rs"
   - "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/merge.rs"
+  # Tauri workspace-publishing commands and their publish-panel composition
+  # coordinate app handles, event emission, and background repair scheduling.
+  # Their deterministic authorization and response behavior is sidecar-tested.
+  - "src-tauri/src/commands/unified_chat_commands/mod.rs"
+  - "src-tauri/src/commands/agent_workspace_auto_publish.rs"
+  - "frontend/src/components/agents/AgentsPublishPanel.tsx"
   # Dedicated branch-update repair similarly spans command wrappers, Axum/MCP
   # handlers, reconciliation adapters, real git subprocess/worktree
   # orchestration, and persistence glue. Deterministic behavior is covered by

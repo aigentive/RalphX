@@ -506,6 +506,10 @@ pub async fn start_http_server_with_listener_ready(
             post(publish_agent_workspace),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/commit-local",
+            post(commit_agent_workspace_locally_handler),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/pr-fix-context",
             get(get_agent_workspace_pr_fix_context),
         )
