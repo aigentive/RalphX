@@ -362,21 +362,21 @@ fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads
         None,
         &mut inherited,
         &mut project_seen,
-        &mut integration_seen,
+        Some(&mut integration_seen),
         &mut artifact_seen,
     );
     merge_workspace_review_references_from_metadata(
         Some("not-json"),
         &mut inherited,
         &mut project_seen,
-        &mut integration_seen,
+        Some(&mut integration_seen),
         &mut artifact_seen,
     );
     merge_workspace_review_references_from_metadata(
         Some("[]"),
         &mut inherited,
         &mut project_seen,
-        &mut integration_seen,
+        Some(&mut integration_seen),
         &mut artifact_seen,
     );
 
@@ -405,7 +405,7 @@ fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads
                 "provider": "atlassian",
                 "kind": "jira",
                 "id": "RX-42",
-                "key": "RX-42",
+                "key": "DIFFERENT-DISPLAY-KEY",
                 "title": "Duplicate"
             },
             { "provider": "linear", "kind": "issue", "id": "LIN-1" },
@@ -436,7 +436,7 @@ fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads
         Some(&metadata),
         &mut inherited,
         &mut project_seen,
-        &mut integration_seen,
+        Some(&mut integration_seen),
         &mut artifact_seen,
     );
 
@@ -467,7 +467,7 @@ fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads
         Some(&metadata),
         &mut inherited,
         &mut project_seen,
-        &mut integration_seen,
+        Some(&mut integration_seen),
         &mut artifact_seen,
     );
     assert_eq!(inherited.project_references.len(), 8);
@@ -1828,14 +1828,14 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .composer_project_references
         .iter()
         .any(|reference| reference.path == "hidden-recovery.md"));
-    assert_eq!(options.composer_integration_references.len(), 2);
+    assert_eq!(options.composer_integration_references.len(), 3);
     assert!(options
         .composer_integration_references
         .iter()
         .any(|reference| reference.provider == "atlassian"
             && reference.kind == "jira"
             && reference.key.as_deref() == Some("RX-42")));
-    assert!(!options
+    assert!(options
         .composer_integration_references
         .iter()
         .any(|reference| reference.id == "LIN-HIDDEN"));

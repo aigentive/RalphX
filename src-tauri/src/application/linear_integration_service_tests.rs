@@ -11,6 +11,9 @@ use super::{
     LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearLabel,
     LinearProject, LinearUser, LinearWorkflowState, UnavailableLinearApiClient,
 };
+use crate::application::integration_reference_expansion::{
+    SkippedIntegrationReferenceReason, MAX_INTEGRATION_REFERENCES,
+};
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::domain::services::{ComposerIntegrationReference, SecretStore, SecretStoreError};
 use crate::infrastructure::memory::MemorySecretStore;
@@ -18,6 +21,19 @@ use crate::infrastructure::memory::MemorySecretStore;
 #[derive(Default)]
 struct TestSettingsRepo {
     settings: RwLock<LinearIntegrationSettings>,
+}
+
+fn linear_reference(id: impl Into<String>) -> ComposerIntegrationReference {
+    ComposerIntegrationReference {
+        provider: "linear".to_string(),
+        kind: "linear".to_string(),
+        id: id.into(),
+        key: None,
+        title: None,
+        url: None,
+        summary_excerpt: None,
+        include_transcript: None,
+    }
 }
 
 #[async_trait]
@@ -536,6 +552,102 @@ async fn expands_linear_issue_references_for_prompt() {
     assert!(expanded.contains("<linear_issue"));
     assert!(expanded.contains("LIN-123"));
     assert!(expanded.contains("Issue body"));
+}
+
+#[tokio::test]
+async fn budgeted_expansion_reports_typed_budget_auth_and_fetch_skips() {
+    let repo = Arc::new(TestSettingsRepo::default());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let client = Arc::new(TestLinearClient::default());
+    let service = LinearIntegrationService::new(repo.clone(), secrets, client.clone());
+    service
+        .save_settings(Some("lin-api-token".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+    let reference = linear_reference("issue-1");
+
+    let zero_budget = service
+        .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 0)
+        .await;
+    assert_eq!(zero_budget.rewritten_prompt, "Base");
+    assert_eq!(
+        zero_budget.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::BudgetExceeded
+    );
+
+    let capped_references = (0..=MAX_INTEGRATION_REFERENCES)
+        .map(|index| linear_reference(format!("issue-{index}")))
+        .collect::<Vec<_>>();
+    let capped = service
+        .expand_references_for_prompt_with_budget("Base", &capped_references, 16 * 1024)
+        .await;
+    assert!(capped.rewritten_prompt.contains("<linear_issue"));
+    assert!(capped.skipped_references.iter().any(|skipped| {
+        skipped.id == format!("issue-{MAX_INTEGRATION_REFERENCES}")
+            && skipped.reason == SkippedIntegrationReferenceReason::BudgetExceeded
+    }));
+
+    let one = service
+        .expand_references_for_prompt_with_budget(
+            "Base",
+            std::slice::from_ref(&reference),
+            16 * 1024,
+        )
+        .await;
+    let one_reference_budget = one.rewritten_prompt.len() - "Base".len();
+    let starved = service
+        .expand_references_for_prompt_with_budget(
+            "Base",
+            &[reference.clone(), linear_reference("issue-2")],
+            one_reference_budget,
+        )
+        .await;
+    assert!(starved.rewritten_prompt.contains("issue-1"));
+    assert!(starved.skipped_references.iter().any(|skipped| {
+        skipped.id == "issue-2"
+            && skipped.reason == SkippedIntegrationReferenceReason::BudgetExceeded
+    }));
+
+    let disabled = LinearIntegrationService::new(
+        Arc::new(TestSettingsRepo::default()),
+        Arc::new(MemorySecretStore::new()),
+        client.clone(),
+    )
+    .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 4096)
+    .await;
+    assert_eq!(
+        disabled.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::IntegrationDisabled
+    );
+
+    let missing_credentials = LinearIntegrationService::new(
+        Arc::new(TestSettingsRepo {
+            settings: RwLock::new(LinearIntegrationSettings {
+                enabled: true,
+                token_secret_ref: Some("missing-token".to_string()),
+                validation_status: IntegrationValidationStatus::Valid,
+                ..LinearIntegrationSettings::default()
+            }),
+        }),
+        Arc::new(MemorySecretStore::new()),
+        client.clone(),
+    )
+    .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 4096)
+    .await;
+    assert_eq!(
+        missing_credentials.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::MissingCredentials
+    );
+
+    *client.fetch_error.lock().await = Some("upstream failure".to_string());
+    let fetch_failure = service
+        .expand_references_for_prompt_with_budget("Base", &[reference], 4096)
+        .await;
+    assert_eq!(
+        fetch_failure.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::ApiError
+    );
 }
 
 #[tokio::test]

@@ -148,6 +148,7 @@ struct TestAtlassianClient {
     oauth_token: Mutex<Option<AtlassianOAuthTokenResponse>>,
     /// Optional canned accessible resources for `oauth_accessible_resources`.
     oauth_resources: Mutex<Vec<AtlassianOAuthResource>>,
+    oauth_refresh_calls: Mutex<usize>,
 }
 
 impl TestAtlassianClient {
@@ -212,7 +213,16 @@ impl AtlassianApiClient for TestAtlassianClient {
         auth: &AtlassianAuthContext,
         reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String> {
-        self.assert_api_token_auth(auth).await;
+        match &auth.credential {
+            AtlassianCredential::ApiToken { .. } => self.assert_api_token_auth(auth).await,
+            AtlassianCredential::OAuth {
+                access_token,
+                cloud_id,
+            } => {
+                assert_eq!(access_token, "refreshed-access-token");
+                assert_eq!(cloud_id, "cloud-1");
+            }
+        }
         if let Some(error) = self.error.lock().await.clone() {
             return Err(error);
         }
@@ -444,6 +454,7 @@ impl AtlassianApiClient for TestAtlassianClient {
         _client_secret: &str,
         _refresh_token: &str,
     ) -> Result<AtlassianOAuthTokenResponse, String> {
+        *self.oauth_refresh_calls.lock().await += 1;
         self.oauth_token
             .lock()
             .await
@@ -477,6 +488,19 @@ fn disabled_service(client: Arc<TestAtlassianClient>) -> AtlassianIntegrationSer
     let repo = Arc::new(TestSettingsRepo::disabled());
     let secrets = Arc::new(MemorySecretStore::new());
     AtlassianIntegrationService::new(repo, secrets, client)
+}
+
+fn atlassian_reference(id: impl Into<String>) -> ComposerIntegrationReference {
+    ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: "jira".to_string(),
+        id: id.into(),
+        key: None,
+        title: None,
+        url: None,
+        summary_excerpt: None,
+        include_transcript: None,
+    }
 }
 
 #[tokio::test]
@@ -1042,6 +1066,135 @@ async fn expand_references_truncates_large_resource_body() {
 
     assert!(expanded.contains("truncated=\"true\""), "{expanded}");
     assert!(expanded.contains("bytes=\"71680\""));
+}
+
+#[tokio::test]
+async fn budgeted_expansion_reports_typed_budget_auth_and_fetch_skips() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+    let reference = atlassian_reference("PROJ-1");
+
+    let zero_budget = service
+        .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 0)
+        .await;
+    assert_eq!(zero_budget.rewritten_prompt, "Base");
+    assert_eq!(
+        zero_budget.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::BudgetExceeded
+    );
+
+    let capped_references = (0..=MAX_INTEGRATION_REFERENCES)
+        .map(|index| atlassian_reference(format!("PROJ-{index}")))
+        .collect::<Vec<_>>();
+    let capped = service
+        .expand_references_for_prompt_with_budget("Base", &capped_references, 16 * 1024)
+        .await;
+    assert!(capped.rewritten_prompt.contains("<jira"));
+    assert!(capped.skipped_references.iter().any(|skipped| {
+        skipped.id == format!("PROJ-{MAX_INTEGRATION_REFERENCES}")
+            && skipped.reason == SkippedIntegrationReferenceReason::BudgetExceeded
+    }));
+
+    let one = service
+        .expand_references_for_prompt_with_budget(
+            "Base",
+            std::slice::from_ref(&reference),
+            16 * 1024,
+        )
+        .await;
+    let one_reference_budget = one.rewritten_prompt.len() - "Base".len();
+    let starved = service
+        .expand_references_for_prompt_with_budget(
+            "Base",
+            &[reference.clone(), atlassian_reference("PROJ-2")],
+            one_reference_budget,
+        )
+        .await;
+    assert!(starved.rewritten_prompt.contains("PROJ-1"));
+    assert!(starved.skipped_references.iter().any(|skipped| {
+        skipped.id == "PROJ-2"
+            && skipped.reason == SkippedIntegrationReferenceReason::BudgetExceeded
+    }));
+
+    let disabled = disabled_service(client.clone())
+        .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 4096)
+        .await;
+    assert_eq!(
+        disabled.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::IntegrationDisabled
+    );
+
+    let missing_credentials = AtlassianIntegrationService::new(
+        Arc::new(TestSettingsRepo::enabled()),
+        Arc::new(MemorySecretStore::new()),
+        client.clone(),
+    )
+    .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 4096)
+    .await;
+    assert_eq!(
+        missing_credentials.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::MissingCredentials
+    );
+
+    *client.error.lock().await = Some("upstream failure".to_string());
+    let fetch_failure = service
+        .expand_references_for_prompt_with_budget("Base", &[reference], 4096)
+        .await;
+    assert_eq!(
+        fetch_failure.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::ApiError
+    );
+}
+
+#[tokio::test]
+async fn budgeted_expansion_refreshes_expired_oauth_before_fetching() {
+    let client = Arc::new(TestAtlassianClient::default());
+    *client.oauth_token.lock().await = Some(AtlassianOAuthTokenResponse {
+        access_token: "refreshed-access-token".to_string(),
+        refresh_token: None,
+        expires_in: Some(3600),
+        scope: None,
+    });
+    *client.oauth_resources.lock().await = vec![AtlassianOAuthResource {
+        id: "cloud-1".to_string(),
+        url: "https://example.atlassian.net".to_string(),
+        scopes: Vec::new(),
+    }];
+    let settings = AtlassianIntegrationSettings {
+        enabled: true,
+        auth_method: AtlassianAuthMethod::OAuth,
+        site_url: Some("https://example.atlassian.net".to_string()),
+        oauth_client_id: Some("client-id".to_string()),
+        oauth_client_secret_ref: Some("oauth-client-secret".to_string()),
+        oauth_refresh_token_ref: Some("oauth-refresh-token".to_string()),
+        oauth_access_token_expires_at: Some(Utc::now() - chrono::Duration::minutes(1)),
+        validation_status: IntegrationValidationStatus::Valid,
+        ..AtlassianIntegrationSettings::default()
+    };
+    let secrets = Arc::new(MemorySecretStore::new());
+    secrets
+        .put_secret("oauth-client-secret", "client-secret")
+        .await
+        .unwrap();
+    secrets
+        .put_secret("oauth-refresh-token", "refresh-token")
+        .await
+        .unwrap();
+    let service = AtlassianIntegrationService::new(
+        Arc::new(TestSettingsRepo {
+            settings: RwLock::new(settings),
+        }),
+        secrets,
+        client.clone(),
+    );
+
+    let expansion = service
+        .expand_references_for_prompt_with_budget("Base", &[atlassian_reference("PROJ-1")], 4096)
+        .await;
+
+    assert!(expansion.rewritten_prompt.contains("<jira"));
+    assert!(expansion.skipped_references.is_empty());
+    assert_eq!(*client.oauth_refresh_calls.lock().await, 1);
 }
 
 // ── validate_and_enable + save_settings + disconnect flows ───────────────────

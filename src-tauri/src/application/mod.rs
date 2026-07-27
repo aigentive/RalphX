@@ -89,10 +89,17 @@ pub mod attention_service;
 pub mod automation;
 pub mod branch_update_executor;
 #[cfg(test)]
+<<<<<<< HEAD
 mod branch_update_executor_tests;
 pub mod branch_update_workflow;
 pub mod builder_attachment_materializer;
 pub mod chat_attachment_service;
+=======
+mod conversation_folder_reference_service_tests;
+pub(crate) mod conversation_reference_inheritance;
+#[cfg(test)]
+mod conversation_reference_inheritance_tests;
+>>>>>>> origin/main
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -447,9 +454,13 @@ mod ideation_workspace_tests;
 #[cfg(test)]
 mod integration_reference_expansion_tests;
 #[cfg(test)]
+<<<<<<< HEAD
 mod manual_role_default_service_tests;
 #[cfg(test)]
 mod manual_router_config_tests;
+=======
+mod integration_reference_expansion_edge_tests;
+>>>>>>> origin/main
 #[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
