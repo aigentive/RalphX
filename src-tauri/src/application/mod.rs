@@ -253,6 +253,15 @@ mod ticket_attachment_runtime_store_tests;
 #[cfg(test)]
 mod ticket_attachment_tests;
 pub mod ticket_canonical_branch;
+pub mod ticket_git_convention;
+mod ticket_git_convention_render;
+pub mod ticket_git_cycle_lifecycle;
+#[cfg(test)]
+mod ticket_git_cycle_lifecycle_tests;
+pub mod ticket_git_publish_policy;
+#[cfg(test)]
+mod ticket_git_publish_policy_tests;
+pub mod ticket_git_strict_start;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;
@@ -295,9 +304,10 @@ pub use jira_agile_types::{
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
 pub use clickup_integration_service::{
-    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService, ClickUpSpace,
-    ClickUpStatus, ClickUpTag, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
-    ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
+    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService,
+    ClickUpIntegrationSettingsUpdate, ClickUpSpace, ClickUpStatus, ClickUpTag, ClickUpTaskContent,
+    ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace, EmptyClickUpApiClient,
+    UnavailableClickUpApiClient,
 };
 pub use dependency_service::{DependencyAnalysis, DependencyService, ValidationResult};
 pub use diff_service::{
@@ -496,6 +506,8 @@ mod task_transition_service_tests;
 mod throttled_emitter_tests;
 #[cfg(test)]
 mod ticketing_cache_invalidator_tests;
+#[cfg(test)]
+mod ticket_git_convention_tests;
 #[cfg(test)]
 mod ticketing_pr_summary_tests;
 #[cfg(test)]

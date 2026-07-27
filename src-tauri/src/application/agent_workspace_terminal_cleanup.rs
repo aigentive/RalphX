@@ -13,7 +13,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_terminal_agent_workspace_local_artifacts,
-    cleanup_terminal_linked_plan_branch_local_artifacts, LocalGitArtifactCleanupReport,
+    cleanup_terminal_linked_plan_branch_local_artifacts,
+    cleanup_terminal_strict_ticket_workspace_local_artifacts, LocalGitArtifactCleanupReport,
     LOCAL_CLEANUP_STATUS_CLEANED, LOCAL_CLEANUP_STATUS_FAILED_OPERATIONAL,
     LOCAL_CLEANUP_STATUS_FAILED_UNSAFE,
 };
@@ -235,6 +236,42 @@ pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
     conversation_id: &ChatConversationId,
     project: &Project,
 ) -> TerminalAgentWorkspaceOutcome {
+    cleanup_terminal_agent_workspace_after_pr_with_options(
+        workspace_repo,
+        plan_branch_repo,
+        conversation_id,
+        project,
+        false,
+    )
+    .await
+}
+
+/// Terminal cleanup for a strict ClickUp ticket workspace: the worktree is
+/// removed while the canonical ticket branch is preserved. Callers must have
+/// already proven the strict `TicketCanonicalBranch` binding for the workspace.
+pub(crate) async fn cleanup_terminal_strict_ticket_workspace_after_pr(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+) -> TerminalAgentWorkspaceOutcome {
+    cleanup_terminal_agent_workspace_after_pr_with_options(
+        workspace_repo,
+        plan_branch_repo,
+        conversation_id,
+        project,
+        true,
+    )
+    .await
+}
+
+async fn cleanup_terminal_agent_workspace_after_pr_with_options(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+    strict_ticket_managed: bool,
+) -> TerminalAgentWorkspaceOutcome {
     let cleanup_started = Instant::now();
     let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
         Ok(Some(workspace)) => workspace,
@@ -322,7 +359,7 @@ pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
                 )
                 .await;
             }
-            match run_local_cleanup(project, &workspace, target).await {
+            match run_local_cleanup(project, &workspace, target, strict_ticket_managed).await {
                 Ok(report) => classify_report(report),
                 Err(error) => (
                     LOCAL_CLEANUP_STATUS_FAILED_OPERATIONAL,
@@ -492,9 +529,13 @@ async fn run_local_cleanup(
     project: &Project,
     workspace: &crate::domain::entities::AgentConversationWorkspace,
     target: TerminalCleanupTarget,
+    strict_ticket_managed: bool,
 ) -> crate::error::AppResult<LocalGitArtifactCleanupReport> {
     git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
         match target {
+            TerminalCleanupTarget::Direct { .. } if strict_ticket_managed => {
+                cleanup_terminal_strict_ticket_workspace_local_artifacts(project, workspace).await
+            }
             TerminalCleanupTarget::Direct { .. } => {
                 cleanup_terminal_agent_workspace_local_artifacts(project, workspace, true).await
             }

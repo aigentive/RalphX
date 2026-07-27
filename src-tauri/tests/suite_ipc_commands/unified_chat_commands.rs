@@ -1941,6 +1941,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_art
         Arc::clone(&state.plan_branch_repo),
         Arc::clone(&state.project_repo),
         None,
+        None,
         Arc::new(HashSet::new()),
         Arc::clone(&state.running_agent_registry),
     )
@@ -2084,6 +2085,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
         Arc::clone(&state.plan_branch_repo),
         Arc::clone(&state.project_repo),
         None,
+        None,
         Arc::new(HashSet::new()),
         Arc::clone(&state.running_agent_registry),
     )
@@ -2164,6 +2166,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         project.clone(),
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&state.agent_run_repo),
         Arc::new(MockChatService::new()),
     );
@@ -2249,6 +2252,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_artifacts() {
         project,
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&state.agent_run_repo),
         Arc::new(MockChatService::new()),
     );

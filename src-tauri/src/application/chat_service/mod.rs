@@ -74,6 +74,7 @@ use crate::application::notification_service::NotificationService;
 use crate::application::persona_prompt::ResolvedPersona;
 use crate::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
 use crate::application::question_state::QuestionState;
+use crate::application::ticket_git_cycle_lifecycle::rollover_strict_ticket_workspace;
 use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
@@ -3969,12 +3970,32 @@ impl<R: Runtime> AppChatService<R> {
             )));
         }
 
-        let rollover_result = rollover_agent_conversation_workspace_with_setup_mode(
-            &project,
-            &workspace,
-            AgentConversationWorkspaceSetupMode::Deferred,
-        )
-        .await;
+        let strict_rollover = match self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+        {
+            Some(app_state) => rollover_strict_ticket_workspace(
+                app_state.inner(),
+                &project,
+                &workspace,
+                AgentConversationWorkspaceSetupMode::Deferred,
+            )
+            .await
+            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?,
+            None => None,
+        };
+        let rollover_result = match strict_rollover {
+            Some(workspace) => Ok(workspace),
+            None => {
+                rollover_agent_conversation_workspace_with_setup_mode(
+                    &project,
+                    &workspace,
+                    AgentConversationWorkspaceSetupMode::Deferred,
+                )
+                .await
+            }
+        };
         self.emit_event(
             "agent:workspace_changed",
             serde_json::json!({ "conversation_id": conversation_id.as_str() }),

@@ -5,7 +5,7 @@ use tauri::{Emitter, Runtime};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
-    prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint,
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target,
     resolve_valid_agent_conversation_workspace_path,
     validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspaceSetupMode,
@@ -26,6 +26,12 @@ use crate::application::plan_reference_import::{
 use crate::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;
 use crate::application::standalone_workspace::{
     create_workspace, remove_workspace_if_present, resolve_workspace,
+};
+use crate::application::ticket_git_publish_policy::install_ticket_git_commit_hook;
+use crate::application::ticket_git_strict_start::{
+    activate_strict_ticket_branch_cycle, ensure_strict_clickup_ticket_branch_from_services,
+    resolve_strict_ticket_target_base_ref, rollback_strict_ticket_workspace_activation,
+    strict_clickup_ticket_policy_applies, StrictTicketGitResolution,
 };
 use crate::application::{AppState, ChatService, SendResult};
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ManualServiceTier};

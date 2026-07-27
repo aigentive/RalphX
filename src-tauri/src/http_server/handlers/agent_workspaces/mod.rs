@@ -74,11 +74,16 @@ use crate::application::publish_resilience::{
     AgentWorkspaceRepairCompletionCheck, AgentWorkspaceSettledHeadCheck,
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
+use crate::application::ticket_git_publish_policy::{
+    load_ticket_git_publish_policy, validate_resolved_ticket_git_publish_policy,
+};
 use crate::application::{AppState, ChatService, GitService};
 use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
-    publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
+    publish_agent_conversation_workspace_for_app_state,
+    publish_agent_conversation_workspace_while_guarded, resolve_agent_workspace_publish_target,
+    try_acquire_agent_workspace_publish_guard,
     update_agent_conversation_workspace_from_base_for_app_state_with_caller,
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
@@ -5042,6 +5047,8 @@ pub async fn complete_agent_workspace_repair(
     }
 
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let _repair_publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)
+        .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
     let workspace = state
         .app_state
         .agent_conversation_workspace_repo
@@ -5107,6 +5114,15 @@ pub async fn complete_agent_workspace_repair(
         has_conflict_markers,
     })
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
+
+    let ticket_git_policy = load_ticket_git_publish_policy(
+        state.app_state.as_ref(),
+        &workspace,
+        &publish_target.worktree_path,
+        &req.summary,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string(), None))?;
 
     let publication_events = state
         .app_state
@@ -5220,6 +5236,14 @@ pub async fn complete_agent_workspace_repair(
         } else if let (Some(github), Some(published_pr_number)) =
             (state.app_state.github_service.as_ref(), pr_number)
         {
+            if let Some(policy) = ticket_git_policy.as_ref() {
+                validate_resolved_ticket_git_publish_policy(
+                    &publish_target.worktree_path,
+                    policy,
+                )
+                .await
+                .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string(), None))?;
+            }
             match push_publish_branch(
                 github,
                 &publish_target.worktree_path,
@@ -5498,7 +5522,7 @@ pub async fn complete_agent_workspace_repair(
             workspace.publication_pr_url.clone(),
         )
     } else {
-        let auto_publish = publish_agent_conversation_workspace_for_app_state(
+        let auto_publish = publish_agent_conversation_workspace_while_guarded(
             state.app_state.as_ref(),
             &state.execution_state,
             conversation_id,

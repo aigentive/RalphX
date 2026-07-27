@@ -28,6 +28,13 @@ async fn get_returns_seeded_defaults() {
     assert!(!settings.task_search_available);
     assert!(settings.last_validated_at.is_none());
     assert!(settings.last_error.is_none());
+    assert!(!settings.strict_git_naming_enabled);
+    assert_eq!(
+        settings.branch_name_template,
+        ":taskId:_:taskName:_:username:"
+    );
+    assert_eq!(settings.commit_subject_template, ":taskId: - :taskName:");
+    assert_eq!(settings.pr_title_template, ":taskId: - :taskName:");
 }
 
 #[tokio::test]
@@ -43,6 +50,10 @@ async fn upsert_round_trips_all_clickup_settings_fields() {
         task_search_available: true,
         last_validated_at: Some(validated_at),
         last_error: Some("previous warning".to_string()),
+        strict_git_naming_enabled: true,
+        branch_name_template: "work/:taskId:_:taskName:".to_string(),
+        commit_subject_template: ":taskId: | :summary:".to_string(),
+        pr_title_template: ":taskId: | :taskName:".to_string(),
         updated_at,
     };
 
@@ -59,6 +70,13 @@ async fn upsert_round_trips_all_clickup_settings_fields() {
         Some(validated_at.to_rfc3339())
     );
     assert_eq!(stored.last_error.as_deref(), Some("previous warning"));
+    assert!(stored.strict_git_naming_enabled);
+    assert_eq!(stored.branch_name_template, settings.branch_name_template);
+    assert_eq!(
+        stored.commit_subject_template,
+        settings.commit_subject_template
+    );
+    assert_eq!(stored.pr_title_template, settings.pr_title_template);
     assert_eq!(stored.updated_at.to_rfc3339(), updated_at.to_rfc3339());
 }
 

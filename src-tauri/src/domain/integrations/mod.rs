@@ -12,7 +12,13 @@ pub use ticketing::{
 };
 
 mod clickup_settings;
-pub use clickup_settings::{ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository};
+pub use clickup_settings::{
+    ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository,
+    DEFAULT_CLICKUP_BRANCH_NAME_TEMPLATE, DEFAULT_CLICKUP_COMMIT_SUBJECT_TEMPLATE,
+    DEFAULT_CLICKUP_PR_TITLE_TEMPLATE,
+};
+#[cfg(test)]
+mod clickup_settings_tests;
 
 mod granola_settings;
 pub use granola_settings::{GranolaIntegrationSettings, GranolaIntegrationSettingsRepository};

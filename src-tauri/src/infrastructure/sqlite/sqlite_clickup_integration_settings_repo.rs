@@ -66,6 +66,19 @@ fn row_to_settings(row: &rusqlite::Row<'_>) -> AppResult<ClickUpIntegrationSetti
             .get::<_, i64>("task_search_available")
             .map_err(|error| AppError::Database(error.to_string()))?
             != 0,
+        strict_git_naming_enabled: row
+            .get::<_, i64>("strict_git_naming_enabled")
+            .map_err(|error| AppError::Database(error.to_string()))?
+            != 0,
+        branch_name_template: row
+            .get("branch_name_template")
+            .map_err(|error| AppError::Database(error.to_string()))?,
+        commit_subject_template: row
+            .get("commit_subject_template")
+            .map_err(|error| AppError::Database(error.to_string()))?,
+        pr_title_template: row
+            .get("pr_title_template")
+            .map_err(|error| AppError::Database(error.to_string()))?,
         last_validated_at: parse_datetime(
             row.get("last_validated_at")
                 .map_err(|error| AppError::Database(error.to_string()))?,
@@ -88,7 +101,9 @@ impl ClickUpIntegrationSettingsRepository for SqliteClickUpIntegrationSettingsRe
             .run(move |conn| {
                 let result = conn.query_row(
                     "SELECT enabled, token_secret_ref, workspace_id, validation_status,
-                            task_search_available, last_validated_at, last_error, updated_at
+                            task_search_available, strict_git_naming_enabled,
+                            branch_name_template, commit_subject_template, pr_title_template,
+                            last_validated_at, last_error, updated_at
                        FROM clickup_integration_settings
                       WHERE id = 'default'",
                     [],
@@ -124,9 +139,11 @@ impl ClickUpIntegrationSettingsRepository for SqliteClickUpIntegrationSettingsRe
                 conn.execute(
                     "INSERT INTO clickup_integration_settings (
                         id, enabled, token_secret_ref, workspace_id, validation_status,
-                        task_search_available, last_validated_at, last_error, updated_at
+                        task_search_available, strict_git_naming_enabled, branch_name_template,
+                        commit_subject_template, pr_title_template, last_validated_at,
+                        last_error, updated_at
                     ) VALUES (
-                        'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                        'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
                     )
                     ON CONFLICT(id) DO UPDATE SET
                         enabled = excluded.enabled,
@@ -134,6 +151,10 @@ impl ClickUpIntegrationSettingsRepository for SqliteClickUpIntegrationSettingsRe
                         workspace_id = excluded.workspace_id,
                         validation_status = excluded.validation_status,
                         task_search_available = excluded.task_search_available,
+                        strict_git_naming_enabled = excluded.strict_git_naming_enabled,
+                        branch_name_template = excluded.branch_name_template,
+                        commit_subject_template = excluded.commit_subject_template,
+                        pr_title_template = excluded.pr_title_template,
                         last_validated_at = excluded.last_validated_at,
                         last_error = excluded.last_error,
                         updated_at = excluded.updated_at",
@@ -143,6 +164,10 @@ impl ClickUpIntegrationSettingsRepository for SqliteClickUpIntegrationSettingsRe
                         settings.workspace_id,
                         settings.validation_status.as_str(),
                         settings.task_search_available as i64,
+                        settings.strict_git_naming_enabled as i64,
+                        settings.branch_name_template,
+                        settings.commit_subject_template,
+                        settings.pr_title_template,
                         settings.last_validated_at.map(|value| value.to_rfc3339()),
                         settings.last_error,
                         settings.updated_at.to_rfc3339(),

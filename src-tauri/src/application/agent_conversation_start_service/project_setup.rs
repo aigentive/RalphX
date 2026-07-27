@@ -29,6 +29,8 @@ pub(super) struct ProjectSetupOutput {
     pub(super) base_display_name: Option<String>,
     pub(super) ticket_branch_name_hint: Option<AgentConversationWorkspaceBranchNameHint>,
     pub(super) source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
+    pub(super) strict_ticket_resolution: Option<StrictTicketGitResolution>,
+    pub(super) linked_target_base_ref: Option<String>,
 }
 
 impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
@@ -54,6 +56,9 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             context_type,
             context_log_id,
         } = input;
+
+        let mut strict_ticket_resolution: Option<StrictTicketGitResolution> = None;
+        let mut linked_target_base_ref: Option<String> = None;
 
         if let Some(source_persona_id) = source_persona_id.as_ref() {
             PersonaService::new(
@@ -90,21 +95,81 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             });
 
             // should_create_workspace can only be true when context_type == Project
-            // (see its derivation above), so `project` is guaranteed Some whenever
-            // this branch runs.
-            let should_auto_resolve_ticket_base = should_create_workspace
+            // (see its derivation above), so `project` and `project_id_opt` are
+            // guaranteed Some whenever the strict/auto branches below run.
+            let should_resolve_strict_ticket_base = should_create_workspace
                 && matches!(
                     mode,
                     AgentConversationWorkspaceMode::Edit
                         | AgentConversationWorkspaceMode::Plan
                         | AgentConversationWorkspaceMode::Ideation
-                )
+                );
+            let should_auto_resolve_ticket_base = should_resolve_strict_ticket_base
                 && matches!(
                     base_ref_kind,
                     None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
                         | Some(IdeationAnalysisBaseRefKind::CurrentBranch)
                 );
-            if should_auto_resolve_ticket_base {
+            let strict_policy_applies = should_resolve_strict_ticket_base
+                && strict_clickup_ticket_policy_applies(
+                    self.deps.state,
+                    project_id_opt
+                        .as_ref()
+                        .expect("should_create_workspace implies a Project context"),
+                    &task,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let strict_target_base_ref = if strict_policy_applies {
+                let project = project
+                    .as_ref()
+                    .expect("should_create_workspace implies a Project context");
+                let selected_pr_target = source_pull_request
+                    .as_ref()
+                    .and_then(|pull_request| pull_request.base_ref_name.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                Some(
+                    resolve_strict_ticket_target_base_ref(
+                        project,
+                        if selected_pr_target.is_some() {
+                            Some(IdeationAnalysisBaseRefKind::LocalBranch)
+                        } else {
+                            base_ref_kind
+                        },
+                        selected_pr_target.or(base_ref.as_deref()),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?,
+                )
+            } else {
+                None
+            };
+            if let Some(target_base_ref) = strict_target_base_ref.as_deref() {
+                strict_ticket_resolution = ensure_strict_clickup_ticket_branch_from_services(
+                    self.deps.state,
+                    project_id_opt
+                        .as_ref()
+                        .expect("should_create_workspace implies a Project context"),
+                    &task,
+                    target_base_ref,
+                    draft_conversation_id.as_ref(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            if let Some(strict) = strict_ticket_resolution.as_ref() {
+                base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
+                base_branch_mode = Some(AgentConversationWorkspaceBranchMode::Linked);
+                base_ref = Some(strict.binding.branch_name.clone());
+                base_display_name = Some(format!(
+                    "ClickUp {} ({})",
+                    identity.preferred_token(),
+                    strict.binding.branch_name
+                ));
+                linked_target_base_ref = Some(strict.binding.base_branch.clone());
+                source_pull_request = None;
+            } else if should_auto_resolve_ticket_base {
                 let project = project
                     .as_ref()
                     .expect("should_create_workspace implies a Project context");
@@ -236,6 +301,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             base_display_name,
             ticket_branch_name_hint,
             source_pull_request,
+            strict_ticket_resolution,
+            linked_target_base_ref,
         })
     }
 }

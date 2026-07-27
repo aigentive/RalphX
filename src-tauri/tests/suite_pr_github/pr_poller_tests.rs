@@ -342,6 +342,7 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
         Arc::clone(&app_state.project_repo),
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
+        None,
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
@@ -384,6 +385,7 @@ async fn recover_agent_workspace_pr_pollers_skips_workspaces_waiting_on_agent() 
         Arc::clone(&app_state.project_repo),
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
+        None,
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         empty_startup_blocked_projects(),
@@ -424,6 +426,7 @@ async fn agent_workspace_poller_stops_when_workspace_is_ideation_owned() {
         project,
         std::path::PathBuf::from("/tmp/agent-workspace"),
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     );

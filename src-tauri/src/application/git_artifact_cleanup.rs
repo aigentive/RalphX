@@ -122,6 +122,40 @@ pub(crate) async fn cleanup_terminal_agent_workspace_local_artifacts_with_known_
     _delete_branch_if_merged: bool,
     known_local_branches: Option<&HashSet<String>>,
 ) -> AppResult<LocalGitArtifactCleanupReport> {
+    cleanup_terminal_agent_workspace_local_artifacts_inner(
+        project,
+        workspace,
+        known_local_branches,
+        false,
+    )
+    .await
+}
+
+/// Clean up a terminal strict ClickUp ticket workspace: remove the worktree but
+/// preserve the canonical ticket branch.
+///
+/// Strict ticket branches use the ticket provider's naming convention (e.g.
+/// `eng-42_ticket_ada`) and are intentionally not RalphX-named, so the generic
+/// `is_expected_agent_workspace_branch` ownership gate would otherwise skip them
+/// with `branch_not_ralphx_owned`. They are still RalphX-managed via their
+/// `TicketCanonicalBranch` binding, so callers that have already proven the
+/// strict binding force worktree removal here while leaving the branch intact.
+///
+/// # Errors
+/// Returns an error when the underlying git worktree removal fails.
+pub(crate) async fn cleanup_terminal_strict_ticket_workspace_local_artifacts(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<LocalGitArtifactCleanupReport> {
+    cleanup_terminal_agent_workspace_local_artifacts_inner(project, workspace, None, true).await
+}
+
+async fn cleanup_terminal_agent_workspace_local_artifacts_inner(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    known_local_branches: Option<&HashSet<String>>,
+    strict_ticket_managed: bool,
+) -> AppResult<LocalGitArtifactCleanupReport> {
     let repo_path = crate::utils::path_safety::validate_absolute_non_root_path(
         Path::new(&project.working_directory),
         "project checkout",
@@ -143,7 +177,11 @@ pub(crate) async fn cleanup_terminal_agent_workspace_local_artifacts_with_known_
         });
     }
 
-    if !is_expected_agent_workspace_branch(project, workspace) {
+    // Strict ticket workspaces are RalphX-managed via their canonical binding even
+    // though their branch name is not RalphX-owned; the caller has already proven
+    // the strict policy, so we skip the name-based ownership gate and preserve the
+    // canonical branch during force cleanup.
+    if !strict_ticket_managed && !is_expected_agent_workspace_branch(project, workspace) {
         return Ok(LocalGitArtifactCleanupReport {
             skipped_reason: Some("branch_not_ralphx_owned".to_string()),
             ..LocalGitArtifactCleanupReport::default()
@@ -156,6 +194,7 @@ pub(crate) async fn cleanup_terminal_agent_workspace_local_artifacts_with_known_
         &expected_path,
         &workspace.branch_name,
         known_local_branches,
+        strict_ticket_managed,
     )
     .await
 }
@@ -189,6 +228,7 @@ pub(crate) async fn cleanup_terminal_linked_plan_branch_local_artifacts(
         &expected_path,
         &plan_branch.branch_name,
         None,
+        false,
     )
     .await
 }
@@ -199,6 +239,7 @@ async fn cleanup_force_owned_terminal_artifacts(
     expected_path: &Path,
     branch_name: &str,
     known_local_branches: Option<&HashSet<String>>,
+    preserve_branch: bool,
 ) -> AppResult<LocalGitArtifactCleanupReport> {
     let project_workspace_dir = resolve_agent_conversation_project_workspace_dir(project)?;
     let worktree_parent = expand_worktree_parent_public(project.worktree_parent_or_default())?;
@@ -283,19 +324,23 @@ async fn cleanup_force_owned_terminal_artifacts(
         report.worktree_removed = true;
     }
 
-    let branch_exists = match known_local_branches {
-        Some(local_branches) => local_branches.contains(branch_name),
-        None => GitService::branch_exists(repo_path, branch_name).await?,
-    };
-    if branch_exists {
-        GitService::delete_branch(repo_path, branch_name, true)
-            .await
-            .map_err(|error| {
-                AppError::GitOperation(format!(
-                    "Failed to force-delete verified terminal local branch '{branch_name}': {error}"
-                ))
-            })?;
-        report.branch_deleted = true;
+    // Strict ticket branches are preserved: the canonical branch outlives the
+    // terminal worktree, so only the worktree is removed for those workspaces.
+    if !preserve_branch {
+        let branch_exists = match known_local_branches {
+            Some(local_branches) => local_branches.contains(branch_name),
+            None => GitService::branch_exists(repo_path, branch_name).await?,
+        };
+        if branch_exists {
+            GitService::delete_branch(repo_path, branch_name, true)
+                .await
+                .map_err(|error| {
+                    AppError::GitOperation(format!(
+                        "Failed to force-delete verified terminal local branch '{branch_name}': {error}"
+                    ))
+                })?;
+            report.branch_deleted = true;
+        }
     }
 
     Ok(report)

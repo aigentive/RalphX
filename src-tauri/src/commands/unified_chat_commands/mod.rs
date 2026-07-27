@@ -44,10 +44,21 @@ pub use crate::application::agent_conversation_start_service::{
 };
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
-    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target,
     reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
+};
+use crate::application::ticket_git_strict_start::{
+    activate_strict_ticket_branch_cycle, authoritative_clickup_task_for_conversation,
+    ensure_strict_clickup_ticket_branch_from_services, resolve_strict_ticket_target_base_ref,
+    rollback_strict_ticket_workspace_activation,
+};
+use crate::application::ticket_git_publish_policy::{
+    install_resolved_ticket_git_commit_hook, install_ticket_git_commit_hook,
+    load_ticket_git_publish_policy,
+    refresh_ticket_git_publish_cycle_base, validate_resolved_ticket_git_publish_policy,
+    TicketGitPublishFailure,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
@@ -1488,7 +1499,7 @@ fn agent_workspace_publish_locks() -> &'static DashMap<String, Arc<tokio::sync::
     LOCKS.get_or_init(DashMap::new)
 }
 
-fn try_acquire_agent_workspace_publish_guard(
+pub(crate) fn try_acquire_agent_workspace_publish_guard(
     conversation_id: &ChatConversationId,
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     let lock = agent_workspace_publish_locks()
@@ -3205,14 +3216,17 @@ fn validate_agent_conversation_mode_transition(
 mod agent_mode_workspace_tests;
 
 fn build_agent_workspace_commit_message(conversation: &ChatConversation) -> String {
+    format!("feat: {}", agent_workspace_commit_summary(conversation))
+}
+
+fn agent_workspace_commit_summary(conversation: &ChatConversation) -> String {
     let title = conversation
         .title
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "Untitled agent")
         .unwrap_or("agent conversation work");
-    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!("feat: {title}")
+    title.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn normalized_effort_for_supported(
@@ -3543,10 +3557,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
-    let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-    let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
-    let base_ref = trim_optional_input(input.base_ref);
-    let base_display_name = trim_optional_input(input.base_display_name);
+    let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let mut base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
+    let mut base_ref = trim_optional_input(input.base_ref);
+    let mut base_display_name = trim_optional_input(input.base_display_name);
     let mut source_pull_request = normalize_agent_workspace_source_pull_request(
         input.base_source_pull_request,
         base_ref_kind,
@@ -3554,6 +3568,9 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     )?;
     let should_create_workspace =
         agent_mode_should_create_workspace(target_mode, source_pull_request.as_ref());
+    let mut strict_ticket_resolution = None;
+    let mut strict_ticket_project = None;
+    let mut linked_target_base_ref = None;
 
     let mut conversation = state
         .chat_conversation_repo
@@ -3768,6 +3785,61 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
+                if matches!(
+                    target_mode,
+                    AgentConversationWorkspaceMode::Edit
+                        | AgentConversationWorkspaceMode::Plan
+                        | AgentConversationWorkspaceMode::Ideation
+                ) {
+                    if let Some(task) = authoritative_clickup_task_for_conversation(
+                        state,
+                        &project_id,
+                        &conversation.id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?
+                    {
+                        let selected_pr_target = source_pull_request
+                            .as_ref()
+                            .and_then(|pull_request| pull_request.base_ref_name.as_deref())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty());
+                        let target_base_ref = resolve_strict_ticket_target_base_ref(
+                            &project,
+                            if selected_pr_target.is_some() {
+                                Some(IdeationAnalysisBaseRefKind::LocalBranch)
+                            } else {
+                                base_ref_kind
+                            },
+                            selected_pr_target.or(base_ref.as_deref()),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                        strict_ticket_resolution =
+                            ensure_strict_clickup_ticket_branch_from_services(
+                                state,
+                                &project_id,
+                                &task,
+                                &target_base_ref,
+                                Some(&conversation.id),
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        if let Some(strict) = strict_ticket_resolution.as_ref() {
+                            strict_ticket_project = Some(project.clone());
+                            base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
+                            base_branch_mode =
+                                Some(AgentConversationWorkspaceBranchMode::Linked);
+                            base_ref = Some(strict.binding.branch_name.clone());
+                            base_display_name = Some(format!(
+                                "ClickUp {} ({})",
+                                strict.binding.issue_key, strict.binding.branch_name
+                            ));
+                            linked_target_base_ref = Some(strict.binding.base_branch.clone());
+                            source_pull_request = None;
+                        }
+                    }
+                }
                 ensure_linked_branch_workspace_available(
                     state,
                     &project_id,
@@ -3787,7 +3859,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                 .await?;
                 let pr_automation_defaults =
                     agent_workspace_pr_automation_defaults_for_project(state, &project.id).await?;
-                let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+                let workspace = prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target(
                     &project,
                     &conversation.id,
                     target_mode,
@@ -3801,6 +3873,8 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     AgentConversationWorkspaceSetupMode::Blocking,
                     pr_automation_defaults,
                     false,
+                    None,
+                    linked_target_base_ref,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -3816,6 +3890,52 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             }
         }
     };
+
+    if let (Some(strict), Some(workspace)) =
+        (strict_ticket_resolution.as_ref(), workspace.as_ref())
+    {
+        let activation = async {
+            let project = strict_ticket_project
+                .as_ref()
+                .ok_or_else(|| "Strict ticket project was not retained".to_string())?;
+            let frozen = strict
+                .binding
+                .strict_policy
+                .as_ref()
+                .ok_or_else(|| "Strict ticket binding has no frozen Git convention".to_string())?;
+            let worktree_path = resolve_valid_agent_conversation_workspace_path(project, workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            install_ticket_git_commit_hook(&worktree_path, frozen)
+                .await
+                .map_err(|error| error.to_string())?;
+            activate_strict_ticket_branch_cycle(
+                state,
+                &strict.binding,
+                workspace.base_commit.as_deref(),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        }
+        .await;
+        if let Err(error) = activation {
+            let cleanup_error = match strict_ticket_project.as_ref() {
+                Some(project) => {
+                    rollback_strict_ticket_workspace_activation(state, project, workspace)
+                        .await
+                        .err()
+                }
+                None => Some("strict ticket project was not retained for rollback".to_string()),
+            };
+            return Err(match cleanup_error {
+                Some(cleanup_error) => {
+                    format!("{error}; strict workspace rollback failed: {cleanup_error}")
+                }
+                None => error.to_string(),
+            });
+        }
+    }
 
     if current_mode != target_mode {
         crate::application::agent_workspace_review_context::
@@ -4972,6 +5092,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                     project,
                     target.working_dir.clone(),
                     Arc::clone(&state.agent_conversation_workspace_repo),
+                    Some(Arc::clone(&state.ticket_canonical_branch_repo)),
                     Arc::clone(&state.agent_run_repo),
                     chat_service,
                 );
@@ -5820,6 +5941,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     selection: AgentConversationWorkspaceBaseSelection,
     created_by_run_id: Option<&str>,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
@@ -5896,6 +6018,42 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
                 return Err(error);
             }
         };
+    let mut ticket_git_policy = match load_ticket_git_publish_policy(
+        state,
+        &workspace,
+        &publish_target.worktree_path,
+        "workspace base update",
+    )
+    .await
+    {
+        Ok(policy) => policy,
+        Err(failure) => {
+            mark_ticket_git_update_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    };
+    if let Some(policy) = ticket_git_policy.as_ref() {
+        if let Err(failure) =
+            install_resolved_ticket_git_commit_hook(&publish_target.worktree_path, policy).await
+        {
+            mark_ticket_git_update_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    }
 
     let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
         publish_target.base_ref = explicit_base.base_ref.clone();
@@ -6055,6 +6213,44 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             return Err(message);
         }
     };
+
+    if let Some(policy) = ticket_git_policy.as_mut() {
+        if let Err(failure) = refresh_ticket_git_publish_cycle_base(
+            state,
+            &workspace,
+            &publish_target.worktree_path,
+            policy,
+            &base_commit,
+        )
+        .await
+        {
+            mark_ticket_git_update_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+        if let Err(failure) = validate_resolved_ticket_git_publish_policy(
+            &publish_target.worktree_path,
+            policy,
+        )
+        .await
+        {
+            mark_ticket_git_update_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    }
 
     let mut push_status = "refreshed";
     if let Some(plan_branch) = publish_target.plan_branch.as_ref() {
@@ -6892,6 +7088,44 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         .unwrap_or(workspace);
 
     let repair_target = publish_target.repair_target();
+    let mut ticket_git_policy = match load_ticket_git_publish_policy(
+        state,
+        &workspace,
+        &publish_target.worktree_path,
+        &agent_workspace_commit_summary(&conversation),
+    )
+    .await
+    {
+        Ok(policy) => policy,
+        Err(failure) => {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    };
+    if let Some(policy) = ticket_git_policy.as_ref() {
+        if let Err(failure) =
+            install_resolved_ticket_git_commit_hook(&publish_target.worktree_path, policy).await
+        {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    }
     let github = match state.github_service.as_ref() {
         Some(github) => github,
         None => {
@@ -6972,7 +7206,10 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         mark_agent_workspace_publish_status(state, &workspace, "committing")
             .await
             .map_err(|e| e.to_string())?;
-        let message = build_agent_workspace_commit_message(&conversation);
+        let message = ticket_git_policy
+            .as_ref()
+            .map(|policy| policy.automatic_commit_subject.clone())
+            .unwrap_or_else(|| build_agent_workspace_commit_message(&conversation));
         match GitService::commit_all_including_deletions(&publish_target.worktree_path, &message)
             .await
         {
@@ -6995,6 +7232,24 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     } else {
         None
     };
+
+    if let Some(policy) = ticket_git_policy.as_ref() {
+        if let Err(failure) =
+            validate_resolved_ticket_git_publish_policy(&publish_target.worktree_path, policy)
+                .await
+        {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    }
 
     mark_agent_workspace_publish_status(state, &workspace, "refreshing")
         .await
@@ -7039,6 +7294,45 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         )
         .await;
         return Err(error);
+    }
+    if let Some(policy) = ticket_git_policy.as_mut() {
+        if let Err(failure) = refresh_ticket_git_publish_cycle_base(
+            state,
+            &workspace,
+            &publish_target.worktree_path,
+            policy,
+            &freshness.target_base_commit,
+        )
+        .await
+        {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+        if let Err(failure) = validate_resolved_ticket_git_publish_policy(
+            &publish_target.worktree_path,
+            policy,
+        )
+        .await
+        {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
     }
     if workspace.base_commit.as_deref() != Some(freshness.target_base_commit.as_str()) {
         workspace.base_commit = Some(freshness.target_base_commit.clone());
@@ -7235,6 +7529,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         project.clone(),
         publish_target.worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&state.agent_run_repo),
         review_chat_service,
     );
@@ -7268,6 +7563,22 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
+    publish_agent_conversation_workspace_while_guarded(
+        state,
+        execution_state,
+        conversation_id,
+        route_fixable_failures_to_agent,
+    )
+    .await
+}
+
+/// Publishes a workspace whose publish guard is already held by the caller.
+pub(crate) async fn publish_agent_conversation_workspace_while_guarded(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    conversation_id: ChatConversationId,
+    route_fixable_failures_to_agent: bool,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _workspace_review_lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     publish_agent_conversation_workspace_for_app_state_unlocked(
         state,
@@ -7404,6 +7715,43 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     }
     let mut repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
 
+    let mut ticket_git_policy = match load_ticket_git_publish_policy(
+        state,
+        &workspace,
+        &worktree_path,
+        &agent_workspace_commit_summary(&conversation),
+    )
+    .await
+    {
+        Ok(policy) => policy,
+        Err(failure) => {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    };
+    if let Some(policy) = ticket_git_policy.as_ref() {
+        if let Err(failure) = install_resolved_ticket_git_commit_hook(&worktree_path, policy).await {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    }
+
     let github = match state.github_service.as_ref() {
         Some(github) => github,
         None => {
@@ -7500,7 +7848,10 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         mark_agent_workspace_publish_status(state, &workspace, "committing")
             .await
             .map_err(|e| e.to_string())?;
-        let message = build_agent_workspace_commit_message(&conversation);
+        let message = ticket_git_policy
+            .as_ref()
+            .map(|policy| policy.automatic_commit_subject.clone())
+            .unwrap_or_else(|| build_agent_workspace_commit_message(&conversation));
         match GitService::commit_all_including_deletions(&worktree_path, &message).await {
             Ok(commit_sha) => commit_sha,
             Err(error) => {
@@ -7521,6 +7872,23 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     } else {
         None
     };
+
+    if let Some(policy) = ticket_git_policy.as_ref() {
+        if let Err(failure) =
+            validate_resolved_ticket_git_publish_policy(&worktree_path, policy).await
+        {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    }
 
     if let Err(error) =
         review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)
@@ -7583,6 +7951,43 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             return Err(message);
         }
     };
+
+    if let Some(policy) = ticket_git_policy.as_mut() {
+        if let Err(failure) = refresh_ticket_git_publish_cycle_base(
+            state,
+            &workspace,
+            &worktree_path,
+            policy,
+            &refreshed_base_commit,
+        )
+        .await
+        {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+        if let Err(failure) =
+            validate_resolved_ticket_git_publish_policy(&worktree_path, policy).await
+        {
+            mark_ticket_git_publish_failure(
+                state,
+                &workspace,
+                &failure,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(failure.to_string());
+        }
+    }
 
     if workspace.base_commit.as_deref() != Some(refreshed_base_commit.as_str()) {
         workspace.base_commit = Some(refreshed_base_commit);
@@ -7930,6 +8335,9 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     if let Some(markdown) = plan_markdown {
         publisher = publisher.with_plan_markdown(markdown);
     }
+    if let Some(policy) = ticket_git_policy.as_ref() {
+        publisher = publisher.with_frozen_title(&policy.frozen_pr_title);
+    }
     let publish_pr_started = Instant::now();
     let pr_result = match (&pr_target, &pr_metadata_decision) {
         (
@@ -8128,6 +8536,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         project.clone(),
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&state.agent_run_repo),
         review_chat_service,
     );
@@ -8438,6 +8847,53 @@ pub async fn mark_agent_workspace_publish_failure_with_target<S>(
         repair_service,
         true,
         target,
+    )
+    .await;
+}
+
+async fn mark_ticket_git_publish_failure<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    failure: &TicketGitPublishFailure,
+    repair_service: &S,
+    route_fixable_failures_to_agent: bool,
+    target: &AgentConversationWorkspaceRepairTarget,
+) where
+    S: ChatService + ?Sized,
+{
+    mark_agent_workspace_failure_with_routing_and_action_classified(
+        state,
+        workspace,
+        &failure.to_string(),
+        None,
+        repair_service,
+        route_fixable_failures_to_agent,
+        target,
+        AgentWorkspacePostRepairAction::Publish,
+        failure.class(),
+    )
+    .await;
+}
+
+async fn mark_ticket_git_update_failure<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    failure: &TicketGitPublishFailure,
+    repair_service: &S,
+    target: &AgentConversationWorkspaceRepairTarget,
+) where
+    S: ChatService + ?Sized,
+{
+    mark_agent_workspace_failure_with_routing_and_action_classified(
+        state,
+        workspace,
+        &failure.to_string(),
+        None,
+        repair_service,
+        true,
+        target,
+        AgentWorkspacePostRepairAction::UpdateOnly,
+        failure.class(),
     )
     .await;
 }

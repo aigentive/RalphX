@@ -333,6 +333,7 @@ macro_rules! register_tauri_commands {
             commands::clickup_commands::disconnect_clickup_integration,
             commands::clickup_commands::list_clickup_workspaces,
             commands::clickup_commands::search_clickup_tasks,
+            commands::clickup_commands::preview_clickup_ticket_git_convention,
             // Granola integration commands
             commands::granola_commands::assign_agent_conversation_granola_note,
             commands::granola_commands::clear_agent_conversation_granola_note,

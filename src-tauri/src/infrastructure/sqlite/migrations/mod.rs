@@ -491,6 +491,12 @@ mod v20260716204027_conversation_folder_references_tests;
 mod v20260716210000_supervised_native_task_pipeline;
 #[cfg(test)]
 mod v20260716210000_supervised_native_task_pipeline_tests;
+mod v20260716214835_clickup_strict_git_naming_settings;
+#[cfg(test)]
+mod v20260716214835_clickup_strict_git_naming_settings_tests;
+mod v20260716224726_ticket_canonical_branch_strict_policy;
+#[cfg(test)]
+mod v20260716224726_ticket_canonical_branch_strict_policy_tests;
 mod v20260717152713_persona_builder_result_binding;
 #[cfg(test)]
 mod v20260717152713_persona_builder_result_binding_tests;
@@ -1675,6 +1681,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260716210000,
         name: "supervised_native_task_pipeline",
         migrate: v20260716210000_supervised_native_task_pipeline::migrate,
+    },
+    Migration {
+        version: 20260716214835,
+        name: "clickup_strict_git_naming_settings",
+        migrate: v20260716214835_clickup_strict_git_naming_settings::migrate,
+    },
+    Migration {
+        version: 20260716224726,
+        name: "ticket_canonical_branch_strict_policy",
+        migrate: v20260716224726_ticket_canonical_branch_strict_policy::migrate,
     },
     Migration {
         version: 20260717152713,

@@ -368,6 +368,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             base_display_name,
             ticket_branch_name_hint,
             source_pull_request,
+            strict_ticket_resolution,
+            linked_target_base_ref,
         } = self
             .resolve_project_setup(ProjectSetupInput {
                 project_id_opt: project_id_opt.clone(),
@@ -435,6 +437,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 _ => ChatConversation::new_standalone(),
             }
         };
+        let previous_agent_mode = conversation.agent_mode;
         conversation.set_agent_mode(Some(mode));
         if let Some(coordination_mode) = requested_coordination_mode {
             conversation.set_coordination_mode(coordination_mode);
@@ -505,7 +508,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 agent_workspace_pr_automation_defaults_for_project(self.deps.state, &project.id)
                     .await?;
             let mut workspace =
-                match prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
+                match prepare_agent_conversation_workspace_with_setup_mode_defaults_branch_name_hint_and_linked_target(
                     project,
                     &conversation.id,
                     mode,
@@ -524,6 +527,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     // start-point.
                     conversation.automation_id.is_some(),
                     ticket_branch_name_hint.clone(),
+                    linked_target_base_ref,
                 )
                 .await
                 {
@@ -593,8 +597,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             context_type_label,
             context_log_id,
             conversation,
+            previous_agent_mode,
             should_create_conversation,
             workspace,
+            strict_ticket_resolution,
             source_persona_id,
             persona_id,
             validated_clickup_task,

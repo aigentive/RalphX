@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
@@ -25,6 +25,7 @@ use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
 };
 use crate::application::chat_service::ChatService;
+use crate::application::ticket_git_cycle_lifecycle::mark_strict_ticket_cycle_terminal;
 use crate::application::git_service::GitService;
 use crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue;
 use crate::application::services::PrPollerRegistry;
@@ -174,6 +175,35 @@ pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
             ),
         }
     });
+}
+
+/// Mark a strict ClickUp ticket branch cycle terminal when its workspace PR
+/// reaches a terminal state during supervision recovery. Non-strict workspaces
+/// are ignored by `mark_strict_ticket_cycle_terminal`; failures are logged and
+/// never block runtime terminalization.
+async fn reconcile_strict_ticket_cycle_terminal(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+    workspace: &AgentConversationWorkspace,
+    pr_status: &str,
+) {
+    let Some(ticket_branch_repo) = deps
+        .app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<crate::application::AppState>())
+        .map(|state| Arc::clone(&state.ticket_canonical_branch_repo))
+    else {
+        return;
+    };
+    if let Err(error) =
+        mark_strict_ticket_cycle_terminal(ticket_branch_repo.as_ref(), workspace, pr_status).await
+    {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_status,
+            error = %error,
+            "Agent workspace PR supervision recovery: failed to persist strict cycle terminal state"
+        );
+    }
 }
 
 pub(crate) async fn recover_agent_workspace_pr_supervision(
@@ -335,6 +365,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     ))
                     .await?;
                 emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+                reconcile_strict_ticket_cycle_terminal(&deps, &workspace, pr_status).await;
                 let terminalized = terminalize_agent_workspace_after_pr(
                     Arc::clone(&deps.workspace_repo),
                     Arc::clone(&deps.agent_run_repo),
@@ -397,6 +428,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             ))
             .await?;
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+        reconcile_strict_ticket_cycle_terminal(&deps, &workspace, pr_status).await;
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
@@ -769,6 +801,10 @@ fn start_recovered_pr_polling(
         project.clone(),
         target.worktree_path.clone(),
         Arc::clone(&deps.workspace_repo),
+        deps.app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<crate::application::AppState>())
+            .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&deps.agent_run_repo),
         Arc::clone(chat_service),
     );

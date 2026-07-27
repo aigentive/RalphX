@@ -5,13 +5,14 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
 };
 use crate::application::chat_service::ChatService;
+use crate::application::ticket_git_cycle_lifecycle::mark_strict_ticket_cycle_terminal;
 use crate::application::clickup_git_association::{
     reconcile_clickup_pr_to_conversation, ClickUpGitEvidence, ClickUpPrAssociationInput,
     ClickUpPrAssociationOutcome,
@@ -220,11 +221,16 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
                 project.clone(),
                 Path::new(&project.working_directory).to_path_buf(),
                 Arc::clone(&deps.workspace_repo),
+                deps.app_handle
+                    .as_ref()
+                    .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                    .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
                 Arc::clone(&deps.agent_run_repo),
                 Arc::clone(chat_service),
             );
         }
     } else {
+        reconcile_strict_ticket_cycle_terminal(&deps, &workspace, pr_status).await;
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
@@ -281,6 +287,10 @@ async fn reconcile_linked_agent_workspace_pr(
                 project.clone(),
                 Path::new(&workspace.worktree_path).to_path_buf(),
                 Arc::clone(&deps.workspace_repo),
+                deps.app_handle
+                    .as_ref()
+                    .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                    .map(|state| Arc::clone(&state.ticket_canonical_branch_repo)),
                 Arc::clone(&deps.agent_run_repo),
                 Arc::clone(chat_service),
             );
@@ -309,6 +319,7 @@ async fn reconcile_linked_agent_workspace_pr(
         ))
         .await?;
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+    reconcile_strict_ticket_cycle_terminal(&deps, workspace, pr_status).await;
     let terminalized = terminalize_agent_workspace_after_pr(
         Arc::clone(&deps.workspace_repo),
         Arc::clone(&deps.agent_run_repo),
@@ -327,6 +338,35 @@ async fn reconcile_linked_agent_workspace_pr(
         pr_number,
         pr_status: pr_status.to_string(),
     })
+}
+
+/// Mark a strict ClickUp ticket branch cycle terminal when its workspace PR
+/// reaches a terminal state during external reconciliation. Non-strict
+/// workspaces are ignored by `mark_strict_ticket_cycle_terminal`; failures are
+/// logged and never block runtime terminalization.
+async fn reconcile_strict_ticket_cycle_terminal(
+    deps: &AgentWorkspaceExternalPrReconciliationDeps,
+    workspace: &AgentConversationWorkspace,
+    pr_status: &str,
+) {
+    let Some(ticket_branch_repo) = deps
+        .app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<crate::application::AppState>())
+        .map(|state| Arc::clone(&state.ticket_canonical_branch_repo))
+    else {
+        return;
+    };
+    if let Err(error) =
+        mark_strict_ticket_cycle_terminal(ticket_branch_repo.as_ref(), workspace, pr_status).await
+    {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_status,
+            error = %error,
+            "Agent workspace external PR reconciliation: failed to persist strict cycle terminal state"
+        );
+    }
 }
 
 async fn reconcile_clickup_ticket_for_workspace_pr(

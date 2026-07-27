@@ -66,8 +66,10 @@ pub(super) struct FinishFlow {
     pub(super) context_type_label: &'static str,
     pub(super) context_log_id: String,
     pub(super) conversation: ChatConversation,
+    pub(super) previous_agent_mode: Option<AgentConversationWorkspaceMode>,
     pub(super) should_create_conversation: bool,
     pub(super) workspace: Option<AgentConversationWorkspace>,
+    pub(super) strict_ticket_resolution: Option<StrictTicketGitResolution>,
     pub(super) source_persona_id: Option<PersonaId>,
     pub(super) persona_id: Option<PersonaId>,
     pub(super) validated_clickup_task:
@@ -95,8 +97,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             context_type_label,
             context_log_id,
             conversation,
+            previous_agent_mode,
             should_create_conversation,
             workspace,
+            strict_ticket_resolution,
             source_persona_id,
             persona_id,
             validated_clickup_task,
@@ -374,6 +378,63 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             },
             None => None,
         };
+        if let (Some(strict), Some(workspace), Some(strict_project)) = (
+            strict_ticket_resolution.as_ref(),
+            workspace.as_ref(),
+            project.as_ref(),
+        ) {
+            let activation = async {
+                let frozen = strict.binding.strict_policy.as_ref().ok_or_else(|| {
+                    "Strict ticket binding has no frozen Git convention".to_string()
+                })?;
+                let worktree_path =
+                    resolve_valid_agent_conversation_workspace_path(strict_project, workspace)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                install_ticket_git_commit_hook(&worktree_path, frozen)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                activate_strict_ticket_branch_cycle(
+                    self.deps.state,
+                    &strict.binding,
+                    workspace.base_commit.as_deref(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            }
+            .await;
+            if let Err(error) = activation {
+                let cleanup_error = rollback_strict_ticket_workspace_activation(
+                    self.deps.state,
+                    strict_project,
+                    workspace,
+                )
+                .await
+                .err();
+                if should_create_conversation {
+                    let _ = self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .delete(&conversation.id)
+                        .await;
+                } else {
+                    let _ = self
+                        .deps
+                        .state
+                        .chat_conversation_repo
+                        .update_agent_mode(&conversation.id, previous_agent_mode)
+                        .await;
+                }
+                return Err(match cleanup_error {
+                    Some(cleanup_error) => {
+                        format!("{error}; strict workspace rollback failed: {cleanup_error}")
+                    }
+                    None => error.to_string(),
+                });
+            }
+        }
         let review_pr_monitor = ensure_review_pr_monitor_for_workspace(
             self.deps.state.agent_conversation_workspace_repo.as_ref(),
             workspace.as_ref(),

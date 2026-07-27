@@ -5363,6 +5363,7 @@ async fn agent_workspace_poller_start_reports_unavailable_without_github() {
         project,
         std::path::PathBuf::from("/tmp/review-pr"),
         workspace_repo,
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
     );
@@ -5877,6 +5878,7 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_and_branch() {
         project,
         repo.path().to_path_buf(),
         Arc::clone(&workspace_repo),
+        None,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
     );

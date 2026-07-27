@@ -34,6 +34,7 @@ use crate::application::services::pr_auto_merge_status::{
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
+use crate::application::ticket_git_cycle_lifecycle::mark_strict_ticket_cycle_terminal;
 use crate::application::{AppState, NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
@@ -45,6 +46,7 @@ use crate::domain::entities::{
 use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+    TicketCanonicalBranchRepository,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -180,6 +182,7 @@ pub async fn start_review_pr_lifecycle_polling(
         project,
         worktree_path,
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.ticket_canonical_branch_repo)),
         Arc::clone(&state.agent_run_repo),
         chat_service,
     ))
@@ -222,6 +225,7 @@ impl PrPollerRegistry {
         project: Project,
         working_dir: PathBuf,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
         chat_service: Arc<dyn ChatService>,
     ) -> AgentWorkspacePrPollerStart {
@@ -272,6 +276,7 @@ impl PrPollerRegistry {
                 stopping,
                 semaphore,
                 workspace_repo,
+                ticket_branch_repo,
                 agent_run_repo,
                 plan_branch_repo,
                 chat_service,
@@ -946,6 +951,7 @@ async fn agent_workspace_poll_loop(
     stopping: Arc<DashMap<ChatConversationId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     chat_service: Arc<dyn ChatService>,
@@ -1006,6 +1012,7 @@ async fn agent_workspace_poll_loop(
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::MergedPr,
+                    ticket_branch_repo.as_ref().map(Arc::clone),
                     "merged",
                     "Pull request merged",
                     interval,
@@ -1027,6 +1034,7 @@ async fn agent_workspace_poll_loop(
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::ClosedPr,
+                    ticket_branch_repo.as_ref().map(Arc::clone),
                     "closed",
                     "Pull request closed without merging",
                     interval,
@@ -1259,6 +1267,7 @@ async fn terminalize_polled_agent_workspace(
         conversation_id,
         project,
         cause,
+        None,
         status,
         summary,
         retry_interval,
@@ -1277,6 +1286,7 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     conversation_id: &ChatConversationId,
     project: &Project,
     cause: TerminalAgentWorkspaceCause,
+    ticket_branch_repo: Option<Arc<dyn TicketCanonicalBranchRepository>>,
     status: &str,
     summary: &str,
     retry_interval: Duration,
@@ -1368,6 +1378,51 @@ async fn terminalize_polled_agent_workspace_with_notifications(
         tokio::time::sleep(retry_interval).await;
         if stopping.contains_key(conversation_id) {
             return;
+        }
+    }
+
+    if let Some(ticket_branch_repo) = ticket_branch_repo.as_ref() {
+        loop {
+            let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+                Ok(Some(workspace)) => Some(workspace),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::error!(
+                        conversation_id = conversation_id.as_str(),
+                        error = %error,
+                        retry_secs = retry_interval.as_secs(),
+                        "Agent workspace PR poller: failed to load strict ticket binding; retrying"
+                    );
+                    tokio::time::sleep(retry_interval).await;
+                    if stopping.contains_key(conversation_id) {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            let Some(workspace) = workspace else {
+                break;
+            };
+            match mark_strict_ticket_cycle_terminal(
+                ticket_branch_repo.as_ref(),
+                &workspace,
+                status,
+            )
+            .await
+            {
+                Ok(_) => break,
+                Err(error) => tracing::error!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_status = status,
+                    error = %error,
+                    retry_secs = retry_interval.as_secs(),
+                    "Agent workspace PR poller: failed to persist strict cycle terminal state; retrying"
+                ),
+            }
+            tokio::time::sleep(retry_interval).await;
+            if stopping.contains_key(conversation_id) {
+                return;
+            }
         }
     }
 
