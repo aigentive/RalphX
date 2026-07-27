@@ -24,7 +24,28 @@ export default defineConfig(async ({ mode }) => {
       __dirname,
       "./node_modules/@dagrejs/graphlib/dist/graphlib.cjs.js"
     ),
+    // The un-aliased Tauri core. `@tauri-apps/api/core` is redirected to the project
+    // -owned invoke wrapper below, so the wrapper itself needs a specifier that is NOT
+    // redirected or it would import itself (§6.2, PR 2.2). Only files under
+    // `src/lib/remote/` may use it — enforced by scripts/check-remote-transport-drift.mjs.
+    "#tauri-core-primitive": path.resolve(
+      __dirname,
+      "./node_modules/@tauri-apps/api/core.js"
+    ),
   };
+
+  // Native/dev mode: route `invoke` through the project-owned transport wrapper so all
+  // ~116 importers switch environments with zero call-site edits (A-3/A-13, §6.2).
+  // Web mode deliberately gets NOTHING here — the mock alias below must win (it stands
+  // in for the whole Tauri runtime, which the wrapper's local branch would call into).
+  const transportAliases: Record<string, string> = isWebMode
+    ? {}
+    : {
+        "@tauri-apps/api/core": path.resolve(
+          __dirname,
+          "./src/lib/remote/invoke.ts"
+        ),
+      };
 
   // In web mode, alias Tauri APIs and plugins to our mock implementations
   const webModeAliases: Record<string, string> = isWebMode
@@ -89,6 +110,8 @@ export default defineConfig(async ({ mode }) => {
     resolve: {
       alias: {
         ...baseAlias,
+        ...transportAliases,
+        // Last wins: in web mode the Tauri mocks must beat the transport wrapper.
         ...webModeAliases,
       },
     },

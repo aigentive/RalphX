@@ -5,14 +5,14 @@
  * ideation.ts acceptance section.
  */
 
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 
 // ============================================================================
 // Internal helper
 // ============================================================================
 
-async function verificationFetch<T>(url: string, init: RequestInit, label: string): Promise<T> {
-  const res = await fetch(url, init);
+async function verificationFetch<T>(path: string, init: RequestInit, label: string): Promise<T> {
+  const res = await backendFetch(path, init);
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as Record<string, unknown>;
     throw new Error((body as { error?: string }).error ?? `${label}: ${res.status}`);
@@ -26,7 +26,7 @@ export const verificationApi = {
    */
   confirm: async (sessionId: string): Promise<{ status: string }> => {
     return verificationFetch(
-      backendApiUrl("verification/confirm"),
+      "verification/confirm",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },

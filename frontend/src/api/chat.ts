@@ -20,7 +20,7 @@ import type { ToolCallDetailRef } from "../components/Chat/tool-widgets/shared.c
 import type { ContentBlockItem } from "../components/Chat/MessageItem";
 import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 import {
   ArtifactResponseSchema,
   transformArtifactResponse,
@@ -569,8 +569,8 @@ const ConversationActiveStateResponseSchema = z.object({
 export async function getConversationActiveState(
   conversationId: string,
 ): Promise<ConversationActiveStateResponse> {
-  const res = await fetch(
-    backendApiUrl(`conversations/${conversationId}/active-state`),
+  const res = await backendFetch(
+    `conversations/${conversationId}/active-state`,
   );
   if (!res.ok) {
     throw new Error(`Failed to get conversation active state: ${res.status}`);
@@ -636,10 +636,8 @@ export async function getChildSessionStatus(
     }
   }
 
-  const res = await fetch(
-    backendApiUrl(
-      `ideation/sessions/${sessionId}/child-status?include_messages=true&message_limit=5`,
-    ),
+  const res = await backendFetch(
+    `ideation/sessions/${sessionId}/child-status?include_messages=true&message_limit=5`,
   );
   if (!res.ok) {
     throw new Error(`Failed to get child session status: ${res.status}`);
@@ -3784,7 +3782,7 @@ async function fetchAgentWorkspaceJson<T>(
   schema: z.ZodType<T>,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(backendApiUrl(path), init);
+  const response = await backendFetch(path, init);
   if (!response.ok) {
     let detail: string | null = null;
     try {

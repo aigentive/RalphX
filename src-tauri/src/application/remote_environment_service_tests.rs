@@ -335,21 +335,290 @@ async fn invoke_for_a_non_active_environment_is_rejected() {
 }
 
 #[tokio::test]
-async fn invoke_for_the_active_environment_passes_binding_and_hits_the_stub() {
+async fn invoke_for_the_active_environment_dispatches_with_the_stored_bearer() {
     let f = fixture();
     let (a, _b) = two_paired_environments(&f).await;
     f.service
         .set_active_environment(&a)
         .await
         .expect("activating A should succeed");
+    f.host.script_invoke(200, r#"{"ok":true,"result":{"status":"ok"}}"#);
 
-    let error = f
+    let outcome = f
         .service
         .invoke(&a, "req-1", "health_check", serde_json::json!({}))
         .await
-        .expect_err("transport is a PR 2.2 stub");
-    assert!(matches!(error, RemoteEnvironmentError::NotConnected));
-    assert_eq!(error.code(), "NOT_CONNECTED");
+        .expect("an authorized dispatch should reach the host");
+
+    assert_eq!(
+        outcome,
+        RemoteInvokeOutcome::Ok {
+            result: serde_json::json!({"status": "ok"})
+        }
+    );
+    // The client-minted requestId must arrive verbatim: the host binds it to a
+    // cmd+args hash for mutation dedup (§3.3), so re-minting would silently disarm
+    // the client's only defence against a double-applied mutation.
+    let dispatched = f
+        .host
+        .recorded_calls()
+        .into_iter()
+        .find_map(|call| match call {
+            RecordedHostCall::Invoke { token, request, .. } => Some((token, request)),
+            _ => None,
+        })
+        .expect("the host should have seen one dispatch");
+    assert_eq!(dispatched.0, TOKEN, "the bearer comes from the Keychain");
+    assert_eq!(dispatched.1.request_id, "req-1");
+    assert_eq!(dispatched.1.cmd, "health_check");
+}
+
+#[tokio::test]
+async fn a_host_command_error_is_not_a_transport_error() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activating A should succeed");
+    f.host
+        .script_invoke(200, r#"{"ok":false,"error":"task not found"}"#);
+
+    let outcome = f
+        .service
+        .invoke(&a, "req-1", "get_task", serde_json::json!({"id": "nope"}))
+        .await
+        .expect("a command error must resolve, so JS can reject with the value itself");
+
+    assert_eq!(
+        outcome,
+        RemoteInvokeOutcome::CommandError {
+            error: serde_json::json!("task not found")
+        }
+    );
+}
+
+/// A host that answers with the bare command result (no `{ok}` envelope) is still a
+/// valid answer — the client must not pin itself to a body shape the host facade is
+/// still landing.
+#[tokio::test]
+async fn a_bare_result_body_is_read_as_success() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service.set_active_environment(&a).await.expect("activate");
+    f.host.script_invoke(200, r#"[{"id":"task-1"}]"#);
+
+    let outcome = f
+        .service
+        .invoke(&a, "req-1", "list_tasks", serde_json::json!({}))
+        .await
+        .expect("a bare result body is a success");
+    assert_eq!(
+        outcome,
+        RemoteInvokeOutcome::Ok {
+            result: serde_json::json!([{"id": "task-1"}])
+        }
+    );
+}
+
+/// Every code the host can name must survive the trip to JS as itself — a mapping
+/// that collapsed any of them would turn a scope refusal into a retryable-looking
+/// unreachable, or an unknown outcome into a safe-to-resend failure.
+#[tokio::test]
+async fn host_error_bodies_map_to_their_taxonomy_codes() {
+    let cases: &[(u16, &str, &str)] = &[
+        (404, "REMOTE_COMMAND_UNAVAILABLE", "REMOTE_COMMAND_UNAVAILABLE"),
+        (403, "REMOTE_FORBIDDEN", "REMOTE_FORBIDDEN"),
+        (401, "REMOTE_UNAUTHORIZED", "REMOTE_UNAUTHORIZED"),
+        (426, "REMOTE_VERSION_MISMATCH", "REMOTE_VERSION_MISMATCH"),
+        (409, "REMOTE_REQUEST_IN_PROGRESS", "REMOTE_REQUEST_IN_PROGRESS"),
+        (409, "REMOTE_REQUEST_ID_REUSED", "REMOTE_REQUEST_ID_REUSED"),
+        (504, "REMOTE_TIMEOUT_UNKNOWN", "REMOTE_TIMEOUT_UNKNOWN"),
+        (502, "REMOTE_UNREACHABLE", "REMOTE_UNREACHABLE"),
+    ];
+    for (status, body_code, expected) in cases {
+        let f = fixture();
+        let (a, _b) = two_paired_environments(&f).await;
+        f.service.set_active_environment(&a).await.expect("activate");
+        f.host.script_invoke(
+            *status,
+            format!(r#"{{"code":"{body_code}","message":"nope"}}"#),
+        );
+
+        let error = f
+            .service
+            .invoke(&a, "req-1", "list_tasks", serde_json::json!({}))
+            .await
+            .expect_err("a host refusal is a transport error");
+        assert_eq!(error.code(), *expected, "status {status} / body {body_code}");
+    }
+}
+
+/// A host that refuses without a typed body still produces a typed code — the status
+/// alone must never degrade into an untyped string on the IPC boundary.
+#[tokio::test]
+async fn an_untyped_host_refusal_maps_by_status() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service.set_active_environment(&a).await.expect("activate");
+    f.host.script_invoke(403, "forbidden");
+
+    let error = f
+        .service
+        .invoke(&a, "req-1", "list_tasks", serde_json::json!({}))
+        .await
+        .expect_err("403 is a refusal");
+    assert_eq!(error.code(), "REMOTE_FORBIDDEN");
+}
+
+/// A timed-out dispatch is an UNKNOWN outcome, never "unreachable": the request WAS
+/// sent, so the mutation may already be committed host-side and a caller that read
+/// "unreachable" could resend it (§3.3).
+#[tokio::test]
+async fn a_dispatch_timeout_is_an_unknown_outcome_not_unreachable() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service.set_active_environment(&a).await.expect("activate");
+    f.host
+        .script_invoke_error(RemoteHostClientError::Timeout("no answer after 30s".into()));
+
+    let error = f
+        .service
+        .invoke(&a, "req-1", "send_agent_message", serde_json::json!({}))
+        .await
+        .expect_err("a timeout is a transport error");
+    assert_eq!(error.code(), "REMOTE_TIMEOUT_UNKNOWN");
+}
+
+/// A registry row without a Keychain secret must not produce an unauthenticated
+/// request: fail closed with the code the supervisor parks `blocked` on.
+#[tokio::test]
+async fn a_missing_bearer_fails_closed_before_any_request() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service.set_active_environment(&a).await.expect("activate");
+    let env = f
+        .repo
+        .get(&crate::domain::entities::remote_environment::RemoteEnvironmentId::from_string(&a))
+        .await
+        .expect("registry read")
+        .expect("row exists");
+    f.secrets
+        .delete_secret(&env.token_secret_ref)
+        .await
+        .expect("secret delete");
+
+    let error = f
+        .service
+        .invoke(&a, "req-1", "list_tasks", serde_json::json!({}))
+        .await
+        .expect_err("no bearer, no request");
+    assert_eq!(error.code(), "REMOTE_UNAUTHORIZED");
+    assert!(
+        !f.host
+            .recorded_calls()
+            .iter()
+            .any(|call| matches!(call, RecordedHostCall::Invoke { .. })),
+        "nothing may leave this Mac without a credential"
+    );
+}
+
+/// The bearer is attached AFTER path validation, so an unvalidated target would aim
+/// an authenticated request at an attacker-chosen origin.
+#[tokio::test]
+async fn unsafe_fetch_targets_are_refused_before_a_bearer_is_read() {
+    let cases = [
+        "https://evil.example/api/tasks",
+        "//evil.example/api/tasks",
+        "/api/../remote/v1/admin/devices",
+        "api/tasks",
+        "",
+    ];
+    for path in cases {
+        let f = fixture();
+        let (a, _b) = two_paired_environments(&f).await;
+        f.service.set_active_environment(&a).await.expect("activate");
+
+        let error = f
+            .service
+            .fetch(&a, RemoteFetchCall::get(path))
+            .await
+            .expect_err("unsafe fetch target must be refused");
+        assert!(
+            matches!(error, RemoteEnvironmentError::InvalidFetchRequest(_)),
+            "path {path:?} produced {error:?}"
+        );
+        assert!(
+            !f.host
+                .recorded_calls()
+                .iter()
+                .any(|call| matches!(call, RecordedHostCall::Fetch { .. })),
+            "path {path:?} must not reach the wire"
+        );
+    }
+}
+
+/// The webview cannot smuggle headers onto a bearer-carrying request.
+#[tokio::test]
+async fn only_allowlisted_headers_are_forwarded() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service.set_active_environment(&a).await.expect("activate");
+
+    let error = f
+        .service
+        .fetch(
+            &a,
+            RemoteFetchCall {
+                path: "/api/tasks".to_string(),
+                method: "POST".to_string(),
+                headers: vec![("Authorization".to_string(), "Bearer stolen".to_string())],
+                body: None,
+            },
+        )
+        .await
+        .expect_err("Authorization may never be caller-supplied");
+    assert!(matches!(
+        error,
+        RemoteEnvironmentError::InvalidFetchRequest(_)
+    ));
+}
+
+/// A non-2xx from a remounted route is DATA: `backendFetch` rebuilds a `Response` and
+/// the call site reads its own error body, exactly as it does locally.
+#[tokio::test]
+async fn a_non_success_fetch_status_is_returned_not_raised() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service.set_active_environment(&a).await.expect("activate");
+    f.host.script_fetch(422, r#"{"error":"bad input"}"#);
+
+    let outcome = f
+        .service
+        .fetch(&a, RemoteFetchCall::get("/api/tasks"))
+        .await
+        .expect("a 422 is the endpoint's answer, not a transport failure");
+    assert_eq!(outcome.status, 422);
+    assert_eq!(outcome.body, r#"{"error":"bad input"}"#);
+}
+
+/// 401/403 are the exception: they describe the transport's authority, and the
+/// supervisor keys on them (§6.5).
+#[tokio::test]
+async fn fetch_auth_refusals_lift_into_the_taxonomy() {
+    for (status, expected) in [(401, "REMOTE_UNAUTHORIZED"), (403, "REMOTE_FORBIDDEN")] {
+        let f = fixture();
+        let (a, _b) = two_paired_environments(&f).await;
+        f.service.set_active_environment(&a).await.expect("activate");
+        f.host.script_fetch(status, "no");
+
+        let error = f
+            .service
+            .fetch(&a, RemoteFetchCall::get("/api/tasks"))
+            .await
+            .expect_err("an auth refusal is a transport error");
+        assert_eq!(error.code(), expected);
+    }
 }
 
 #[tokio::test]
@@ -363,7 +632,7 @@ async fn non_health_fetch_for_a_background_environment_is_rejected() {
 
     let error = f
         .service
-        .fetch(&b, "/api/tasks")
+        .fetch(&b, RemoteFetchCall::get("/api/tasks"))
         .await
         .expect_err("background env must be health-only");
     assert!(matches!(
@@ -381,15 +650,20 @@ async fn descriptor_probe_for_a_background_environment_succeeds() {
         .await
         .expect("activating A should succeed");
 
-    let value = f
+    let outcome = f
         .service
         .fetch(
             &b,
-            crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH,
+            RemoteFetchCall::get(
+                crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH,
+            ),
         )
         .await
         .expect("health probe for a background env must be allowed");
-    assert_eq!(value["environmentId"], "env-2");
+    assert_eq!(outcome.status, 200);
+    let descriptor: serde_json::Value =
+        serde_json::from_str(&outcome.body).expect("descriptor body should be JSON");
+    assert_eq!(descriptor["environmentId"], "env-2");
 }
 
 #[tokio::test]
@@ -469,7 +743,9 @@ async fn invoke_is_refused_while_the_active_environment_is_mid_re_pair() {
         .service
         .fetch(
             env.id.as_str(),
-            crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH,
+            RemoteFetchCall::get(
+                crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH,
+            ),
         )
         .await;
 

@@ -21,8 +21,12 @@ import {
   remoteEnvironmentsApi,
   type RemoteEnvironmentSummary,
 } from "@/api/remote-environments";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  setTransportEnvironmentId,
+} from "@/lib/remote/active-environment";
 
-export const LOCAL_ENVIRONMENT_ID = "local";
+export { LOCAL_ENVIRONMENT_ID };
 
 /** Canonical supervisor FSM vocabulary (§6.5); "connected" is all local ever is. */
 export type EnvironmentConnectionState =
@@ -158,3 +162,22 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
     }));
   },
 }));
+
+/**
+ * Single writer of the transport's active-environment mirror (PR 2.2).
+ *
+ * Subscribing here rather than calling `setTransportEnvironmentId` beside each
+ * `set({ activeEnvironmentId })` means a future assignment cannot forget to mirror —
+ * every path through this store, including the optimistic switch, its revert, the
+ * removed-environment clamp, and startup hydration, funnels through one listener.
+ *
+ * Ordering note: the optimistic switch mirrors BEFORE the Rust round-trip completes,
+ * so an invoke issued in that window targets the new environment while Rust still
+ * points at the old one. Rust refuses it with `REMOTE_FORBIDDEN` (P-26) — a
+ * fail-closed rejection, never a call served by the wrong environment.
+ */
+useEnvironmentStore.subscribe((state, previous) => {
+  if (state.activeEnvironmentId !== previous.activeEnvironmentId) {
+    setTransportEnvironmentId(state.activeEnvironmentId);
+  }
+});

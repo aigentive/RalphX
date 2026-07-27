@@ -39,7 +39,7 @@ import type {
   WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
-import { backendApiUrl } from "./backend";
+import { backendFetch } from "./backend";
 
 // Re-export types for convenience
 export type {
@@ -445,9 +445,7 @@ export const diffApi = {
     limit: number;
   }): Promise<FileDiffPage> => {
     const { conversationId, path, refKind, offset, limit } = args;
-    const url = backendApiUrl(
-      `agent-workspaces/${encodeURIComponent(conversationId)}/file-diff-page`
-    );
+    const endpoint = `agent-workspaces/${encodeURIComponent(conversationId)}/file-diff-page`;
     const params = new URLSearchParams({
       path,
       ref_kind: refKind.kind,
@@ -457,7 +455,7 @@ export const diffApi = {
     if (refKind.kind === "commit") {
       params.set("sha", refKind.sha);
     }
-    const response = await fetch(`${url}?${params.toString()}`);
+    const response = await backendFetch(`${endpoint}?${params.toString()}`);
     if (!response.ok) {
       throw new Error(`File diff page fetch failed: ${response.status} ${response.statusText}`);
     }
@@ -488,9 +486,7 @@ export const diffApi = {
     to: number;
   }): Promise<RangeLine[]> => {
     const { conversationId, side, path, refKind, from, to } = args;
-    const url = backendApiUrl(
-      `agent-workspaces/${encodeURIComponent(conversationId)}/file-content-range`
-    );
+    const endpoint = `agent-workspaces/${encodeURIComponent(conversationId)}/file-content-range`;
     const params = new URLSearchParams({
       side,
       path,
@@ -501,7 +497,7 @@ export const diffApi = {
     if (refKind.kind === "commit") {
       params.set("sha", refKind.sha);
     }
-    const response = await fetch(`${url}?${params.toString()}`);
+    const response = await backendFetch(`${endpoint}?${params.toString()}`);
     if (!response.ok) {
       throw new Error(
         `File content range fetch failed: ${response.status} ${response.statusText}`

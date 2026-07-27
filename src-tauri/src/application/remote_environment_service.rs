@@ -29,7 +29,8 @@ use crate::domain::repositories::{RemoteEnvironmentRepository, UpsertPairedEnvir
 use crate::domain::services::{SecretStore, SecretStoreError};
 use crate::error::AppError;
 use crate::infrastructure::remote_host_client::{
-    PairWireRequest, RemoteHostClient, RemoteHostClientError, REMOTE_DESCRIPTOR_PATH,
+    InvokeWireRequest, PairWireRequest, RemoteFetchRequest, RemoteHostClient,
+    RemoteHostClientError, RemoteHttpResponse, REMOTE_DESCRIPTOR_PATH,
 };
 
 /// The always-present local environment identity (§6.4). It has no supervisor, no
@@ -73,6 +74,22 @@ pub enum RemoteEnvironmentError {
     PairRejected(String),
     #[error("host unreachable: {0}")]
     Unreachable(String),
+    /// A typed transport outcome carried straight from the protocol taxonomy (§6.3).
+    /// Used for everything the HOST decided (scope refusal, unknown command, dedup
+    /// reservation) plus the two unknown-outcome conditions.
+    #[error("{message}")]
+    Transport {
+        code: ErrorCode,
+        message: String,
+    },
+    /// The webview asked for a fetch the proxy will not perform (bad path shape,
+    /// non-allowlisted method or header). Fail closed: a bearer is attached to this
+    /// request, so an unvalidated target is a credential-forwarding hazard.
+    #[error("invalid remote fetch request: {0}")]
+    InvalidFetchRequest(String),
+    /// No bearer is stored for an environment the registry still lists.
+    #[error("no stored credential for environment {0}")]
+    MissingCredential(String),
     #[error("secret store: {0}")]
     Secret(#[from] SecretStoreError),
     #[error(transparent)]
@@ -96,6 +113,11 @@ impl RemoteEnvironmentError {
             Self::IdentityMismatch { .. } => "HOST_IDENTITY_MISMATCH",
             Self::PairRejected(_) => "PAIRING_REJECTED",
             Self::Unreachable(_) => remote_error_code_str(ErrorCode::RemoteUnreachable),
+            Self::Transport { code, .. } => remote_error_code_str(*code),
+            Self::InvalidFetchRequest(_) => {
+                remote_error_code_str(ErrorCode::RemoteCommandUnavailable)
+            }
+            Self::MissingCredential(_) => remote_error_code_str(ErrorCode::RemoteUnauthorized),
             Self::Secret(_) => "SECRET_STORE_UNAVAILABLE",
             Self::Db(_) => "DATABASE_ERROR",
         }
@@ -120,6 +142,65 @@ fn remote_error_code_str(code: ErrorCode) -> &'static str {
         ErrorCode::RemoteRequestIdReused => "REMOTE_REQUEST_ID_REUSED",
     }
 }
+
+/// Outcome of one proxied command dispatch, as the webview sees it (§6.3).
+///
+/// The discriminant is load-bearing. `Result<Value, String>` alone cannot separate
+/// "the host's command returned `Err(E)`" from "the transport failed": `E` may be any
+/// JSON value, and flattening it into the IPC error string would destroy the shape
+/// existing `catch` paths read over local Tauri IPC. Transport failures travel on the
+/// `Err` channel as `"{CODE}: {message}"`; command failures travel here.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum RemoteInvokeOutcome {
+    Ok { result: serde_json::Value },
+    CommandError { error: serde_json::Value },
+}
+
+/// Outcome of one proxied `/api/…` fetch (§3.5).
+///
+/// Status and body travel separately so `backendFetch` can rebuild a real `Response`
+/// on the JS side — every migrated call site branches on `res.ok`/`res.status` and
+/// then calls `res.json()`, and collapsing a non-2xx into an IPC rejection would
+/// silently change all of them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFetchOutcome {
+    pub status: u16,
+    pub body: String,
+}
+
+/// A validated request for one remounted `/api/…` route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFetchCall {
+    pub path: String,
+    pub method: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+}
+
+impl RemoteFetchCall {
+    /// A bare GET, the shape the health/descriptor probes use.
+    pub fn get(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+}
+
+/// Methods the proxy will forward. Anything else is refused before a bearer is read.
+const ALLOWED_FETCH_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
+
+/// Request headers the webview may set on a proxied fetch.
+///
+/// An allowlist rather than a denylist: the proxy attaches the device bearer, so any
+/// header the webview can inject is a header attached to an authenticated request.
+/// `Authorization` and `Cookie` are not merely absent from this list — the point of
+/// the list is that they can never be added to it by accident.
+const ALLOWED_FETCH_HEADERS: &[&str] = &["content-type", "accept"];
 
 /// What the startup reconciler did, for logs and tests (row ids).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -603,43 +684,301 @@ impl RemoteEnvironmentService {
         Ok(())
     }
 
-    /// Forwards one command invoke to the active environment (HTTP path lands in
-    /// PR 2.2). Active-env-bound: a non-active id is rejected BEFORE any
-    /// transport work, so the binding is proven independently of the stub.
+    /// Forwards one command invoke to the active environment (§6.3).
+    ///
+    /// Active-env-bound: a non-active id is rejected BEFORE any transport work or
+    /// credential read, so the binding holds independently of what the host does.
+    /// `request_id` is passed through verbatim — the host binds it to a `cmd`+args
+    /// hash for mutation dedup (§3.3), so re-minting it here would break the client's
+    /// only defence against a double-applied mutation.
+    ///
+    /// A-5: exactly one request. No retry lives on this path.
     pub async fn invoke(
         &self,
         id: &str,
-        _request_id: &str,
-        _cmd: &str,
-        _args: serde_json::Value,
-    ) -> Result<serde_json::Value, RemoteEnvironmentError> {
-        self.authorize_proxy_target(id, false).await?;
-        Err(RemoteEnvironmentError::NotConnected)
+        request_id: &str,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Result<RemoteInvokeOutcome, RemoteEnvironmentError> {
+        let env = self.authorize_proxy_target(id, false).await?;
+        let token = self.bearer_for(&env).await?;
+        let response = self
+            .host_client
+            .invoke(
+                &env.base_url,
+                &token,
+                &InvokeWireRequest {
+                    request_id: request_id.to_string(),
+                    cmd: cmd.to_string(),
+                    args,
+                },
+            )
+            .await
+            .map_err(transport_error)?;
+        parse_invoke_response(response)
     }
 
-    /// Fetches a host resource. Health paths (descriptor probe, health probe) are
-    /// permitted for background environments; anything else is active-env-bound.
+    /// Performs one proxied request against the host (§3.5).
+    ///
+    /// Health paths (descriptor probe, health probe) are permitted for background
+    /// environments; anything else is active-env-bound. The descriptor path keeps its
+    /// pre-auth shortcut so a background environment can be probed before its bearer
+    /// is usable.
     pub async fn fetch(
         &self,
         id: &str,
-        path: &str,
-    ) -> Result<serde_json::Value, RemoteEnvironmentError> {
+        call: RemoteFetchCall,
+    ) -> Result<RemoteFetchOutcome, RemoteEnvironmentError> {
+        let path = validate_remote_fetch_path(&call.path)?;
+        let method = validate_remote_fetch_method(&call.method)?;
+        let headers = validate_remote_fetch_headers(&call.headers)?;
+
         let health_op = path == REMOTE_DESCRIPTOR_PATH || path == REMOTE_HEALTH_PATH;
         let env = self.authorize_proxy_target(id, health_op).await?;
+
         if path == REMOTE_DESCRIPTOR_PATH {
             let descriptor = self
                 .host_client
                 .fetch_descriptor(&env.base_url)
                 .await
                 .map_err(descriptor_error)?;
-            return serde_json::to_value(&descriptor).map_err(|error| {
+            let body = serde_json::to_string(&descriptor).map_err(|error| {
                 RemoteEnvironmentError::Unreachable(format!(
                     "descriptor serialization failed: {error}"
                 ))
-            });
+            })?;
+            return Ok(RemoteFetchOutcome { status: 200, body });
         }
-        // Authenticated fetch paths need the bearer-holding transport (PR 2.2).
-        Err(RemoteEnvironmentError::NotConnected)
+
+        let token = self.bearer_for(&env).await?;
+        let response = self
+            .host_client
+            .fetch(
+                &env.base_url,
+                &token,
+                &RemoteFetchRequest {
+                    path,
+                    method,
+                    headers,
+                    body: call.body,
+                },
+            )
+            .await
+            .map_err(transport_error)?;
+
+        // A non-2xx is DATA here, not an error: every migrated call site reads
+        // `res.ok`/`res.status` and its own error body. Only 401/403 are lifted into
+        // the taxonomy, because those describe the transport's authority rather than
+        // the endpoint's answer and the supervisor keys on them (§6.5).
+        match response.status {
+            401 => Err(RemoteEnvironmentError::Transport {
+                code: ErrorCode::RemoteUnauthorized,
+                message: format!("host refused this device's credential for {}", call.path),
+            }),
+            403 => Err(RemoteEnvironmentError::Transport {
+                code: ErrorCode::RemoteForbidden,
+                message: format!("this device's scopes do not permit {}", call.path),
+            }),
+            status => Ok(RemoteFetchOutcome {
+                status,
+                body: response.body,
+            }),
+        }
+    }
+
+    /// Reads the environment's bearer from the Keychain.
+    ///
+    /// Fail-closed in both directions: an unreadable Keychain surfaces as a secret
+    /// -store error and a MISSING secret is `REMOTE_UNAUTHORIZED`, never an
+    /// unauthenticated request. The token is returned to this module only — it is
+    /// handed to the host client and never enters any serialized response (P-18).
+    async fn bearer_for(
+        &self,
+        env: &RemoteEnvironment,
+    ) -> Result<String, RemoteEnvironmentError> {
+        self.secret_store
+            .get_secret(&env.token_secret_ref)
+            .await?
+            .ok_or_else(|| RemoteEnvironmentError::MissingCredential(env.id.as_str().to_string()))
+    }
+}
+
+/// Shape-validates a proxied fetch path.
+///
+/// The bearer is attached AFTER this runs, so an unvalidated path is a credential
+/// -forwarding hazard: an absolute or protocol-relative value would aim an
+/// authenticated request at an attacker-chosen origin, and `..` segments would climb
+/// out of the remounted `/api` surface into routes §3.5 deliberately never mounts.
+/// Mirrors `backendApiUrl`'s guards on the local side.
+fn validate_remote_fetch_path(path: &str) -> Result<String, RemoteEnvironmentError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(RemoteEnvironmentError::InvalidFetchRequest(
+            "path must not be empty".to_string(),
+        ));
+    }
+    if !trimmed.starts_with('/') {
+        return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+            "path must be host-relative and start with '/': {path}"
+        )));
+    }
+    if trimmed.starts_with("//") {
+        return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+            "protocol-relative path is not addressable on the paired host: {path}"
+        )));
+    }
+    if trimmed.contains("://") {
+        return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+            "absolute URL is not a host path: {path}"
+        )));
+    }
+    if trimmed.contains("..") {
+        return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+            "path traversal is not permitted: {path}"
+        )));
+    }
+    if trimmed
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+            "path contains control or whitespace characters: {path}"
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_remote_fetch_method(method: &str) -> Result<String, RemoteEnvironmentError> {
+    let upper = method.trim().to_ascii_uppercase();
+    if ALLOWED_FETCH_METHODS.contains(&upper.as_str()) {
+        return Ok(upper);
+    }
+    Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+        "method {method} is not forwardable"
+    )))
+}
+
+fn validate_remote_fetch_headers(
+    headers: &[(String, String)],
+) -> Result<Vec<(String, String)>, RemoteEnvironmentError> {
+    let mut out = Vec::with_capacity(headers.len());
+    for (name, value) in headers {
+        let lower = name.trim().to_ascii_lowercase();
+        if !ALLOWED_FETCH_HEADERS.contains(&lower.as_str()) {
+            return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+                "header {name} may not be forwarded on an authenticated proxy request"
+            )));
+        }
+        if value.chars().any(char::is_control) {
+            return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
+                "header {name} has a control character in its value"
+            )));
+        }
+        out.push((lower, value.clone()));
+    }
+    Ok(out)
+}
+
+/// Maps a client→host wire failure into the transport taxonomy.
+///
+/// `Timeout` is deliberately NOT `REMOTE_UNREACHABLE`: the request was sent, so the
+/// mutation may already be committed host-side. Collapsing it into "unreachable"
+/// would invite a caller to resend something that already ran (§3.3).
+fn transport_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
+    match error {
+        RemoteHostClientError::Timeout(message) => RemoteEnvironmentError::Transport {
+            code: ErrorCode::RemoteTimeoutUnknown,
+            message,
+        },
+        RemoteHostClientError::Unreachable(message) => RemoteEnvironmentError::Transport {
+            code: ErrorCode::RemoteUnreachable,
+            message,
+        },
+        RemoteHostClientError::Rejected { status, message } => {
+            RemoteEnvironmentError::Transport {
+                code: status_error_code(status),
+                message,
+            }
+        }
+        RemoteHostClientError::InvalidResponse(message) => RemoteEnvironmentError::Transport {
+            code: ErrorCode::RemoteVersionMismatch,
+            message,
+        },
+    }
+}
+
+/// HTTP status → taxonomy, for a host that answered without a typed body.
+fn status_error_code(status: u16) -> ErrorCode {
+    match status {
+        401 => ErrorCode::RemoteUnauthorized,
+        403 => ErrorCode::RemoteForbidden,
+        404 | 501 => ErrorCode::RemoteCommandUnavailable,
+        408 | 504 => ErrorCode::RemoteTimeoutUnknown,
+        409 => ErrorCode::RemoteRequestInProgress,
+        422 => ErrorCode::RemoteRequestIdReused,
+        426 | 505 => ErrorCode::RemoteVersionMismatch,
+        _ => ErrorCode::RemoteUnreachable,
+    }
+}
+
+/// Parses a taxonomy code out of a host error body, if it carries one.
+fn body_error_code(body: &serde_json::Value) -> Option<ErrorCode> {
+    let code = body.get("code")?.as_str()?;
+    serde_json::from_value::<ErrorCode>(serde_json::Value::String(code.to_string())).ok()
+}
+
+fn body_error_message(body: &serde_json::Value, fallback: &str) -> String {
+    body.get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Interprets the host's `/remote/v1/invoke` answer (§3.1 / registry expansion
+/// contract (f)/(g)).
+///
+/// Tolerant on purpose: a host that answers with the bare command result is accepted
+/// alongside the `{ok, result}` / `{ok:false, error}` envelope, so the client is not
+/// pinned to a body shape PR 1.3 has not finished landing. What is NOT tolerant is
+/// the error direction — a non-2xx always produces a typed taxonomy code, never a
+/// success with an error-shaped body.
+fn parse_invoke_response(
+    response: RemoteHttpResponse,
+) -> Result<RemoteInvokeOutcome, RemoteEnvironmentError> {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(&response.body).ok();
+
+    if !(200..300).contains(&response.status) {
+        let body = parsed.unwrap_or(serde_json::Value::Null);
+        let code = body_error_code(&body).unwrap_or_else(|| status_error_code(response.status));
+        let message = body_error_message(
+            &body,
+            &format!("host answered {} for this command", response.status),
+        );
+        return Err(RemoteEnvironmentError::Transport { code, message });
+    }
+
+    let Some(body) = parsed else {
+        return Err(RemoteEnvironmentError::Transport {
+            code: ErrorCode::RemoteVersionMismatch,
+            message: "host answered with a body this client cannot parse as JSON".to_string(),
+        });
+    };
+
+    match body.get("ok").and_then(serde_json::Value::as_bool) {
+        Some(false) => Ok(RemoteInvokeOutcome::CommandError {
+            error: body
+                .get("error")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        }),
+        Some(true) => Ok(RemoteInvokeOutcome::Ok {
+            result: body
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        }),
+        // No envelope: the host returned the command result directly.
+        None => Ok(RemoteInvokeOutcome::Ok { result: body }),
     }
 }
 
@@ -674,7 +1013,8 @@ fn client_device_name() -> String {
 
 fn descriptor_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
     match error {
-        RemoteHostClientError::Unreachable(message) => {
+        RemoteHostClientError::Unreachable(message)
+        | RemoteHostClientError::Timeout(message) => {
             RemoteEnvironmentError::Unreachable(message)
         }
         RemoteHostClientError::Rejected { status, message } => {
@@ -690,7 +1030,8 @@ fn descriptor_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
 
 fn pair_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
     match error {
-        RemoteHostClientError::Unreachable(message) => {
+        RemoteHostClientError::Unreachable(message)
+        | RemoteHostClientError::Timeout(message) => {
             RemoteEnvironmentError::Unreachable(message)
         }
         RemoteHostClientError::Rejected { status, message } => {

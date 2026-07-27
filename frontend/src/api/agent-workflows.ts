@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 
 const workflowRunStatusSchema = z.enum([
   "awaiting_approval",
@@ -135,7 +135,7 @@ function transformRun(raw: z.infer<typeof workflowRunSchema>): AgentWorkflowRun 
 }
 
 async function postJson(endpoint: string, body: Record<string, unknown>): Promise<unknown> {
-  const response = await fetch(backendApiUrl(endpoint), {
+  const response = await backendFetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

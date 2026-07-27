@@ -10,7 +10,7 @@ import {
 } from "@/types/artifact";
 import { ArtifactVersionSummarySchema } from "@/types/artifact";
 import type { ArtifactVersionSummary } from "@/types/artifact";
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 
 // ============================================================================
 // Response Schemas (matching Rust backend serialization with snake_case)
@@ -231,8 +231,8 @@ export const artifactApi = {
    * Planning sessions include backend-owned approval state.
    */
   getSessionPlan: async (sessionId: string): Promise<Artifact | null> => {
-    const response = await fetch(
-      backendApiUrl(`get_session_plan/${encodeURIComponent(sessionId)}`),
+    const response = await backendFetch(
+      `get_session_plan/${encodeURIComponent(sessionId)}`,
     );
     return parseHttpArtifactResponse(response);
   },
@@ -251,7 +251,7 @@ export const artifactApi = {
     blueprintArtifactId?: string | undefined;
     blueprintArtifactVersion?: number | undefined;
   }): Promise<Artifact> => {
-    const response = await fetch(backendApiUrl("approve_plan_artifact"), {
+    const response = await backendFetch("approve_plan_artifact", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -278,8 +278,8 @@ export const artifactApi = {
   getPlanComplexityAssessment: async (
     sessionId: string,
   ): Promise<PlanComplexityAssessment | null> => {
-    const response = await fetch(
-      backendApiUrl(`plan_complexity_assessment/${encodeURIComponent(sessionId)}`),
+    const response = await backendFetch(
+      `plan_complexity_assessment/${encodeURIComponent(sessionId)}`,
     );
     if (!response.ok) {
       let message = response.statusText;
