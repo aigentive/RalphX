@@ -85,6 +85,15 @@ fn post_json(path: &str, token: Option<&str>, body: Value) -> Request<Body> {
         .expect("request should build")
 }
 
+fn delete_with_bearer(path: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::DELETE)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("request should build")
+}
+
 /// Mints a pairing code the way `generate_remote_pairing_code` does.
 async fn mint_pairing_code(context: &RemoteAuthContext, scopes: RemoteScopeSet) -> String {
     let raw = generate_pairing_code();
@@ -845,15 +854,100 @@ async fn revocation_invalidates_outstanding_ws_tickets() {
 }
 
 #[tokio::test]
-async fn deleting_the_session_closes_the_callers_own_sessions_only() {
+async fn deleting_a_named_owned_session_closes_only_that_session() {
+    let context = in_memory_auth_context();
+    let (token, device_id) = pair_device(&context, "laptop").await;
+    let named_session_id = RemoteSessionId::new();
+    let surviving_session_id = RemoteSessionId::new();
+    let RemoteSessionAdmission::Admitted(mut named_kill) =
+        context.registry.register(&device_id, &named_session_id)
+    else {
+        panic!("the named session should be admitted");
+    };
+    let RemoteSessionAdmission::Admitted(mut surviving_kill) =
+        context.registry.register(&device_id, &surviving_session_id)
+    else {
+        panic!("the second session should be admitted");
+    };
+
+    let response = router_for(&context)
+        .oneshot(delete_with_bearer(
+            &format!("{SESSION_PATH}?sessionId={named_session_id}"),
+            &token,
+        ))
+        .await
+        .expect("delete should complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["closedSessions"], json!(1));
+    assert_eq!(named_kill.try_recv(), Some(ResetReason::Revoked));
+    assert_eq!(
+        surviving_kill.try_recv(),
+        None,
+        "another session on the same device must stay live"
+    );
+    assert_eq!(
+        context.registry.live_sessions(&device_id),
+        vec![surviving_session_id]
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_session_the_device_does_not_own_returns_404_and_closes_nothing() {
+    let context = in_memory_auth_context();
+    let (token, device_id) = pair_device(&context, "laptop").await;
+    let (_, other_device_id) = pair_device(&context, "phone").await;
+    let own_session_id = RemoteSessionId::new();
+    let other_session_id = RemoteSessionId::new();
+    let RemoteSessionAdmission::Admitted(mut own_kill) =
+        context.registry.register(&device_id, &own_session_id)
+    else {
+        panic!("the caller session should be admitted");
+    };
+    let RemoteSessionAdmission::Admitted(mut other_kill) = context
+        .registry
+        .register(&other_device_id, &other_session_id)
+    else {
+        panic!("the other device session should be admitted");
+    };
+
+    let response = router_for(&context)
+        .oneshot(delete_with_bearer(
+            &format!("{SESSION_PATH}?sessionId={other_session_id}"),
+            &token,
+        ))
+        .await
+        .expect("delete should complete");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(own_kill.try_recv(), None);
+    assert_eq!(other_kill.try_recv(), None);
+    assert_eq!(
+        context.registry.live_sessions(&device_id),
+        vec![own_session_id]
+    );
+    assert_eq!(
+        context.registry.live_sessions(&other_device_id),
+        vec![other_session_id]
+    );
+}
+
+#[tokio::test]
+async fn deleting_without_a_session_id_closes_every_session_on_the_callers_device_only() {
     let context = in_memory_auth_context();
     let (token, device_id) = pair_device(&context, "laptop").await;
     let (_, bystander_id) = pair_device(&context, "phone").await;
-    let RemoteSessionAdmission::Admitted(mut kill) = context
+    let RemoteSessionAdmission::Admitted(mut first_kill) = context
         .registry
         .register(&device_id, &RemoteSessionId::new())
     else {
-        panic!("the session should be admitted");
+        panic!("the first session should be admitted");
+    };
+    let RemoteSessionAdmission::Admitted(mut second_kill) = context
+        .registry
+        .register(&device_id, &RemoteSessionId::new())
+    else {
+        panic!("the second session should be admitted");
     };
     let RemoteSessionAdmission::Admitted(mut bystander_kill) = context
         .registry
@@ -863,20 +957,14 @@ async fn deleting_the_session_closes_the_callers_own_sessions_only() {
     };
 
     let response = router_for(&context)
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri(SESSION_PATH)
-                .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("request should build"),
-        )
+        .oneshot(delete_with_bearer(SESSION_PATH, &token))
         .await
         .expect("delete should complete");
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_json(response).await["closedSessions"], json!(1));
-    assert_eq!(kill.try_recv(), Some(ResetReason::Revoked));
+    assert_eq!(body_json(response).await["closedSessions"], json!(2));
+    assert_eq!(first_kill.try_recv(), Some(ResetReason::Revoked));
+    assert_eq!(second_kill.try_recv(), Some(ResetReason::Revoked));
     assert_eq!(
         bystander_kill.try_recv(),
         None,
