@@ -4144,6 +4144,45 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
 }
 
 #[tokio::test]
+async fn pending_publication_metadata_receipt_workspaces_include_pushing_receipts_only() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut pending = make_workspace(conversation_id.clone());
+    pending.publication_pr_number = Some(97);
+    pending.publication_pr_status = Some("open".to_string());
+    repo.create_or_update(pending).await.unwrap();
+    assert!(repo
+        .claim_publication_metadata_receipt(
+            &conversation_id,
+            metadata_receipt_claim(&conversation_id, "pending-recovery-attempt", 97),
+        )
+        .await
+        .unwrap());
+
+    let pushing_without_receipt_id =
+        ChatConversationId::from_string("abababab-abab-abab-abab-abababababab");
+    seed_conversation(&db, &pushing_without_receipt_id);
+    let mut pushing_without_receipt = make_workspace(pushing_without_receipt_id);
+    pushing_without_receipt.publication_pr_number = Some(98);
+    pushing_without_receipt.publication_pr_status = Some("open".to_string());
+    pushing_without_receipt.publication_push_status = Some("pushing".to_string());
+    repo.create_or_update(pushing_without_receipt)
+        .await
+        .unwrap();
+
+    let workspaces = repo
+        .list_active_pending_publication_metadata_receipt_workspaces()
+        .await
+        .unwrap();
+
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].conversation_id, conversation_id);
+    assert_eq!(
+        workspaces[0].publication_push_status.as_deref(),
+        Some("pushing")
+    );
+}
+
+#[tokio::test]
 async fn pr_supervision_preferences_round_trip() {
     let (_db, repo, conversation_id) = setup_repo();
     let workspace = make_workspace(conversation_id.clone());

@@ -324,6 +324,16 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Lists active workspaces whose current PR metadata receipt still requires recovery.
+    ///
+    /// This is intentionally separate from generic transient publish statuses because receipt
+    /// recovery owns `pushing`, while generic stale recovery must never downgrade it.
+    async fn list_active_pending_publication_metadata_receipt_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(Vec::new())
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,

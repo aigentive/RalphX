@@ -2663,6 +2663,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_publication_metadata_receipt_workspaces_include_pushing_receipts_only() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let mut pending = candidate_workspace("pending-receipt");
+        let conversation_id = pending.conversation_id.clone();
+        pending.publication_pr_number = Some(31);
+        pending.publication_pr_status = Some("open".to_string());
+        repo.create_or_update(pending).await.unwrap();
+        assert!(repo
+            .claim_publication_metadata_receipt(
+                &conversation_id,
+                super::metadata_receipt_claim(&conversation_id, "pending-recovery-attempt", 31),
+            )
+            .await
+            .unwrap());
+
+        let mut pushing_without_receipt = candidate_workspace("pushing-without-receipt");
+        pushing_without_receipt.publication_pr_number = Some(32);
+        pushing_without_receipt.publication_pr_status = Some("open".to_string());
+        pushing_without_receipt.publication_push_status = Some("pushing".to_string());
+        repo.create_or_update(pushing_without_receipt)
+            .await
+            .unwrap();
+
+        let workspaces = repo
+            .list_active_pending_publication_metadata_receipt_workspaces()
+            .await
+            .unwrap();
+
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].conversation_id, conversation_id);
+        assert_eq!(
+            workspaces[0].publication_push_status.as_deref(),
+            Some("pushing")
+        );
+    }
+
+    #[tokio::test]
     async fn pr_poller_recovery_workspaces_include_supervised_ideation_prs() {
         let repo = MemoryAgentConversationWorkspaceRepository::new();
         let mut direct = candidate_workspace("direct");

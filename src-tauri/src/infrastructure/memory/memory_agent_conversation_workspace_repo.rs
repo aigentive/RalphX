@@ -563,6 +563,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_pending_publication_metadata_receipt_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_pending_publication_metadata_receipt_workspace(workspace))
+            .cloned()
+            .collect())
+    }
+
     async fn list_active_direct_external_pr_reconciliation_candidates(
         &self,
         limit: usize,
@@ -2784,4 +2797,22 @@ fn is_stale_transient_publish_status_workspace(
             Some("closed") | Some("merged")
         )
         && workspace.updated_at <= cutoff
+}
+
+fn is_active_pending_publication_metadata_receipt_workspace(
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && matches!(
+            workspace.publication_metadata_phase,
+            Some(
+                AgentWorkspacePublicationMetadataPhase::Prepared
+                    | AgentWorkspacePublicationMetadataPhase::Mutating
+                    | AgentWorkspacePublicationMetadataPhase::Reconciling
+            )
+        )
+        && !matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
 }

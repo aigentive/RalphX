@@ -648,14 +648,14 @@ fn has_nonterminal_publication_metadata_receipt(workspace: &AgentConversationWor
 
 /// Reconciles durable, unfinished existing-PR metadata receipts without retrying a mutation.
 ///
-/// The transient-status candidate query is intentionally shared with generic stale recovery:
-/// receipt-backed candidates are reconciled first, while the generic writer fences itself off.
+/// Receipt candidates are selected independently from generic stale recovery because receipt
+/// preparation owns `pushing`, which the generic stale writer must never downgrade.
 pub async fn recover_pending_agent_workspace_pr_metadata_receipts_for_state(
     state: &AppState,
 ) -> AppResult<u32> {
     let workspaces = state
         .agent_conversation_workspace_repo
-        .list_active_transient_publish_status_workspaces(0)
+        .list_active_pending_publication_metadata_receipt_workspaces()
         .await?;
     let Some(github) = state.github_service.as_ref() else {
         if workspaces

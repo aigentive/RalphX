@@ -1503,6 +1503,24 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn list_active_pending_publication_metadata_receipt_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE status = 'active'
+                       AND publication_metadata_phase IN ('prepared', 'mutating', 'reconciling')
+                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                     ORDER BY publication_metadata_updated_at ASC, updated_at ASC",
+                )?;
+                let rows = stmt.query([])?;
+                collect_workspaces(rows)
+            })
+            .await
+    }
+
     async fn list_active_direct_external_pr_reconciliation_candidates(
         &self,
         limit: usize,

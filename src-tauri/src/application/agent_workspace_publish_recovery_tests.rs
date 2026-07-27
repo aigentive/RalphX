@@ -484,7 +484,7 @@ async fn unreadable_metadata_receipt_readback_remains_nonterminal_and_generic_st
             .expect("workspace exists")
             .publication_push_status
             .as_deref(),
-        Some("describing"),
+        Some("pushing"),
         "generic stale recovery must not downgrade an unfinished receipt"
     );
 }
