@@ -85,6 +85,7 @@ toml = "0.9"
 regex = { version = "1", default-features = false, features = ["std", "perf"] }
 ralphx-domain = { path = "crates/ralphx-domain" }
 ralphx-events = { path = "crates/ralphx-events" }
+ralphx-remote-protocol = { path = "crates/ralphx-remote-protocol" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 hyper-rustls = "0.27"

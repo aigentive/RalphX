@@ -3618,6 +3618,7 @@ dependencies = [
  "portable-pty",
  "ralphx-domain",
  "ralphx-events",
+ "ralphx-remote-protocol",
  "rand 0.8.6",
  "regex",
  "rusqlite",

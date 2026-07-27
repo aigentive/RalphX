@@ -177,6 +177,9 @@ pub(crate) fn run_app_setup(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
 
+    // PR 1.1 replaces this constant-false seam with the persisted remote_host setting.
+    crate::remote_server::capture::install_if_host_mode_configured(app_handle.clone(), false);
+
     configure_bundled_runtime_env(app);
 
     // The native window must be visible before SQLite open/migration work begins.
