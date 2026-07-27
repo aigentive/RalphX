@@ -190,6 +190,7 @@ pub mod question_state;
 pub mod ready_task_scheduler;
 pub mod reconciliation;
 pub mod recovery_queue;
+pub mod remote_environment_service;
 pub mod resume_validator;
 pub mod review_issue_service;
 pub mod review_service;
@@ -362,6 +363,10 @@ pub use question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption, Qu
 pub use ready_task_scheduler::spawn_ready_task_scheduler_if_needed;
 pub use reconciliation::ReconciliationRunner;
 pub use recovery_queue::{ProcessSummary, RecoveryItem, RecoveryPriority, RecoveryQueue};
+pub use remote_environment_service::{
+    RemoteEnvironmentError, RemoteEnvironmentReconcileReport, RemoteEnvironmentService,
+    LOCAL_ENVIRONMENT_ID,
+};
 pub use resume_validator::{ResumeValidationResult, ResumeValidator};
 pub use review_issue_service::{CreateIssueInput, ReviewIssueService};
 pub use review_service::ReviewService;
