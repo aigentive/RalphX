@@ -13,7 +13,7 @@ pub struct EnvironmentDescriptor {
     pub platform: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Scope {
     #[serde(rename = "ui:read")]
     UiRead,

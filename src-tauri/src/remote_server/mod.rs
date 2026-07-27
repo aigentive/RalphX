@@ -5,12 +5,22 @@
 //! pre-auth allowlist, binds only loopback or a validated tailnet address, and never mounts a
 //! :3847 trust-header handler (§2.3, §4.4).
 
+pub mod auth;
+pub mod auth_endpoints;
+#[cfg(test)]
+mod auth_tests;
 pub mod capture;
 pub mod endpoints;
 #[cfg(test)]
 mod endpoints_tests;
 #[cfg(test)]
 mod listener_tests;
+pub mod rate_limit;
+#[cfg(test)]
+mod rate_limit_tests;
+pub mod session_registry;
+#[cfg(test)]
+mod session_registry_tests;
 pub mod settings;
 #[cfg(test)]
 mod settings_tests;
@@ -23,14 +33,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::Request,
+    extract::DefaultBodyLimit,
     http::{header, HeaderValue, Method, StatusCode},
-    middleware::{self, Next},
+    middleware,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
-use ralphx_remote_protocol::ErrorCode;
+use ralphx_remote_protocol::{ErrorCode, ResetReason};
 use serde::Serialize;
 use tauri::Manager;
 use tokio::net::TcpListener;
@@ -40,9 +50,18 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::AppError;
 use crate::infrastructure::tailscale::TailscaleSelfAddressProvider;
+use crate::remote_server::auth::{
+    authenticate_remote_request, enforce_auth_endpoint_rate_limit, strip_trust_headers,
+    RemoteAuthContext,
+};
+use crate::remote_server::auth_endpoints::{
+    pair_handler, session_introspection_handler, session_teardown_handler, ws_ticket_handler,
+    REMOTE_AUTH_BODY_LIMIT_BYTES,
+};
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
 };
+use crate::remote_server::session_registry::RemoteSessionRegistry;
 use crate::remote_server::settings::{
     effective_remote_port, resolve_bind_address, RemoteBindError, RemoteExposureMode,
     RemoteHostSettings, RemoteHostSettingsStore, TailnetSelfAddressProvider,
@@ -50,12 +69,14 @@ use crate::remote_server::settings::{
 
 pub(crate) const DESCRIPTOR_PATH: &str = "/.well-known/ralphx/environment";
 pub(crate) const PAIR_PATH: &str = "/remote/v1/auth/pair";
+pub(crate) const WS_TICKET_PATH: &str = "/remote/v1/auth/ws-ticket";
+pub(crate) const SESSION_PATH: &str = "/remote/v1/session";
 pub(crate) const HEALTH_PATH: &str = "/health";
 
 /// Routes reachable before the bearer check.
 ///
-/// Exactly two: discovery and pairing. PR 1.2 replaces [`remote_auth_slot`]'s body with real
-/// bearer verification but must keep this allowlist unchanged (§4.4, A-2).
+/// Exactly two: discovery and pairing. Everything else — including `/health` — runs behind
+/// [`authenticate_remote_request`]; there is no zero-devices bootstrap pass (§4.4, A-2).
 pub(crate) const PRE_AUTH_ALLOWLIST: &[&str] = &[DESCRIPTOR_PATH, PAIR_PATH];
 
 /// Origins the shipped app itself uses.
@@ -115,13 +136,22 @@ struct ActiveRemoteListener {
 #[derive(Clone)]
 pub(crate) struct RemoteListenerHandle {
     active: Arc<Mutex<Option<ActiveRemoteListener>>>,
+    /// Lives on the handle, not inside the router, so it survives listener restarts and is
+    /// reachable from the host-local revoke commands (§4.4).
+    sessions: RemoteSessionRegistry,
 }
 
 impl RemoteListenerHandle {
     pub(crate) fn new() -> Self {
         Self {
             active: Arc::new(Mutex::new(None)),
+            sessions: RemoteSessionRegistry::new(),
         }
+    }
+
+    /// The process-wide live-session registry.
+    pub(crate) fn sessions(&self) -> &RemoteSessionRegistry {
+        &self.sessions
     }
 
     pub(crate) async fn bound_address(&self) -> Option<SocketAddr> {
@@ -172,11 +202,39 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
             get(environment_descriptor_handler).options(remote_preflight_handler),
         )
         .route(
+            PAIR_PATH,
+            post(pair_handler)
+                .options(remote_preflight_handler)
+                .layer(DefaultBodyLimit::max(REMOTE_AUTH_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            WS_TICKET_PATH,
+            post(ws_ticket_handler)
+                .options(remote_preflight_handler)
+                .layer(DefaultBodyLimit::max(REMOTE_AUTH_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            SESSION_PATH,
+            get(session_introspection_handler)
+                .delete(session_teardown_handler)
+                .options(remote_preflight_handler),
+        )
+        .route(
             HEALTH_PATH,
             get(health_handler).options(remote_preflight_handler),
         )
         .fallback(remote_fallback_handler)
-        .layer(middleware::from_fn(remote_auth_slot))
+        // Layers apply outermost-last: trust headers are stripped before anything else
+        // runs, then pre-auth flood control, then the bearer check.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            authenticate_remote_request,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            enforce_auth_endpoint_rate_limit,
+        ))
+        .layer(middleware::from_fn(strip_trust_headers))
         .with_state(state)
 }
 
@@ -190,24 +248,6 @@ fn remote_cors_layer() -> CorsLayer {
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
-}
-
-/// Global fail-closed middleware slot.
-///
-/// PR 1.2 lands bearer extraction, hashing, device lookup, and header stripping here. Until
-/// then every non-allowlisted route is refused, so no route can accidentally ship unauthenticated.
-async fn remote_auth_slot(request: Request, next: Next) -> Response {
-    if request.method() == Method::OPTIONS {
-        return next.run(request).await;
-    }
-    if PRE_AUTH_ALLOWLIST.contains(&request.uri().path()) {
-        return next.run(request).await;
-    }
-    remote_error_response(
-        StatusCode::UNAUTHORIZED,
-        ErrorCode::RemoteUnauthorized,
-        "Remote authentication is required.",
-    )
 }
 
 async fn remote_preflight_handler() -> Response {
@@ -225,12 +265,16 @@ async fn remote_fallback_handler(method: Method) -> Response {
     )
 }
 
-fn remote_error_response(status: StatusCode, code: ErrorCode, message: &'static str) -> Response {
+pub(crate) fn remote_error_response(
+    status: StatusCode,
+    code: ErrorCode,
+    message: impl Into<String>,
+) -> Response {
     (
         status,
         Json(RemoteErrorBody {
             code,
-            message: message.to_string(),
+            message: message.into(),
         }),
     )
         .into_response()
@@ -290,12 +334,22 @@ pub(crate) async fn start_listener(
     let shutdown = CancellationToken::new();
     let serve_shutdown = shutdown.clone();
     let (stopped_tx, stopped) = oneshot::channel();
-    let router = remote_router(RemoteRouterState::new(settings.environment_id.as_str()));
+    let auth =
+        RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
+    let router = remote_router(RemoteRouterState::new(
+        settings.environment_id.as_str(),
+        auth,
+    ));
 
     tauri::async_runtime::spawn(async move {
-        match axum::serve(listener, router)
-            .with_graceful_shutdown(serve_shutdown.cancelled_owned())
-            .await
+        // Connect info is what lets direct-tailnet mode key rate limiting on the real peer;
+        // under Serve the address is loopback and deliberately ignored (§4.4).
+        match axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(serve_shutdown.cancelled_owned())
+        .await
         {
             Ok(()) => tracing::info!("Remote listener shut down cleanly"),
             Err(error) => tracing::error!(%error, "Remote listener stopped unexpectedly"),
@@ -324,7 +378,16 @@ pub(crate) async fn stop_listener(
     store: &RemoteHostSettingsStore,
 ) -> Result<bool, RemoteListenerError> {
     let mut active = handle.active.lock().await;
+    // Durable intent first, then the teardown effect: a caller that observes `enabled =
+    // false` must never find a live session still attached (§4.4 teardown order).
     store.set_enabled(false).await?;
+    let torn_down = handle.sessions.kill_all(ResetReason::HostDisabled);
+    if torn_down > 0 {
+        tracing::info!(
+            sessions = torn_down,
+            "Remote listener disable tore down live sessions"
+        );
+    }
     let Some(listener) = active.take() else {
         tracing::debug!("Remote listener stop requested while it was not running");
         return Ok(false);

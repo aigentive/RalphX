@@ -57,6 +57,11 @@ impl RemoteHostSettingsStore {
         Self { db }
     }
 
+    /// The connection the remote-access repositories share with this store.
+    pub(crate) fn db(&self) -> DbConnection {
+        self.db.clone()
+    }
+
     /// Returns the singleton settings, creating the disabled default on first access.
     pub(crate) async fn get_or_create(&self) -> AppResult<RemoteHostSettings> {
         self.db
