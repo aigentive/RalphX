@@ -40,6 +40,13 @@
 - It is absent from release module compilation and Tauri command registration via `#[cfg(debug_assertions)]`. This is cfg-gate evidence, not release-build execution evidence; the release-build verification remains the final PR 0.3 task.
 - No desktop, browser, Serve, direct-tailnet, or ATS experiment has been run or concluded by this harness implementation.
 
+## Desktop proxy-stub code evidence (not a WKWebView capture)
+
+- `debug_run_desktop_proxy_stub` is a debug-only Tauri command: a webview invokes local IPC, while its Rust implementation starts the fixture and makes the fixed `POST /remote/v1/invoke` request itself.
+- The stub obtains the request target from its own `127.0.0.1:0` listener bind; command input selects only the two fixture orderings. It accepts no URL, host, bearer, pairing code, or caller-provided path.
+- The sibling behavioral test `desktop_proxy_command_uses_the_loopback_fixture_and_reports_its_result` asserts the loopback-only result schema and the Rust-observed fixture response. This is code/test evidence of the intended boundary, not evidence of actual WKWebView network behavior.
+- E-1 and question (a)'s verdict remain pending until a native WKWebView/devtools capture is collected; no such capture was performed in this task.
+
 ## (a) Does the Rust-proxied desktop transport produce zero WKWebView cross-origin traffic?
 
 ### Question

@@ -2,13 +2,26 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::OnceLock,
+};
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use super::transport_spike::{
     cors_probe_router, start_cors_probe_listener, stop_cors_probe_listener, DebugCorsProbeOrdering,
     DEBUG_CORS_PROBE_ORIGIN,
 };
+use crate::commands::remote_transport_spike_commands::{
+    debug_run_desktop_proxy_stub, DebugDesktopProxyStubInput,
+};
+
+static LISTENER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn listener_test_lock() -> &'static Mutex<()> {
+    LISTENER_TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn preflight_request(origin: &'static str) -> Request<Body> {
     Request::builder()
@@ -79,6 +92,7 @@ async fn options_before_auth_rejects_an_unlisted_origin_without_cors_headers() {
 
 #[tokio::test]
 async fn loopback_probe_binds_an_ephemeral_ipv4_port_and_stops_once() {
+    let _guard = listener_test_lock().lock().await;
     let endpoint = start_cors_probe_listener(DebugCorsProbeOrdering::OptionsBeforeAuth)
         .await
         .expect("loopback probe should bind");
@@ -95,4 +109,23 @@ async fn loopback_probe_binds_an_ephemeral_ipv4_port_and_stops_once() {
     assert_ne!(address.port(), 0);
     assert!(stopped);
     assert!(!stopped_again);
+}
+
+#[tokio::test]
+async fn desktop_proxy_command_uses_the_loopback_fixture_and_reports_its_result() {
+    let _guard = listener_test_lock().lock().await;
+    let result = debug_run_desktop_proxy_stub(DebugDesktopProxyStubInput {
+        ordering: DebugCorsProbeOrdering::OptionsBeforeAuth,
+    })
+    .await
+    .expect("desktop proxy command should reach the fixture");
+
+    assert!(result.fixture_base_url.starts_with("http://127.0.0.1:"));
+    assert_eq!(result.request_path, "/remote/v1/invoke");
+    assert_eq!(result.status_code, StatusCode::UNAUTHORIZED.as_u16());
+    assert_eq!(result.transport, "rustLoopbackHttp");
+    let serialized = serde_json::to_value(&result).expect("result should serialize for Tauri IPC");
+    assert_eq!(serialized["requestPath"], "/remote/v1/invoke");
+    assert_eq!(serialized["statusCode"], StatusCode::UNAUTHORIZED.as_u16());
+    assert_eq!(serialized["transport"], "rustLoopbackHttp");
 }

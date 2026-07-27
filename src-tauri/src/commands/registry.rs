@@ -25,6 +25,8 @@ macro_rules! register_tauri_commands {
             commands::remote_transport_spike_commands::debug_start_remote_transport_cors_probe,
             #[cfg(debug_assertions)]
             commands::remote_transport_spike_commands::debug_stop_remote_transport_cors_probe,
+            #[cfg(debug_assertions)]
+            commands::remote_transport_spike_commands::debug_run_desktop_proxy_stub,
             commands::release_notes_commands::get_current_release_notes,
             commands::release_notes_commands::get_last_seen_release_notes_version,
             commands::release_notes_commands::mark_release_notes_seen,
