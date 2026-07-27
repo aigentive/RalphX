@@ -29,6 +29,18 @@ pub mod transport_spike;
 #[cfg(all(test, debug_assertions))]
 mod transport_spike_tests;
 
+// --- PR 1.3: invoke facade, capability ledger, authority audit (one contiguous block) ---
+pub mod capability_ledger;
+#[cfg(test)]
+mod capability_ledger_tests;
+pub mod invoke;
+#[cfg(test)]
+mod invoke_tests;
+pub mod registry;
+#[cfg(test)]
+mod registry_tests;
+// --- end PR 1.3 block ---
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
