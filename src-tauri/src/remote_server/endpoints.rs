@@ -53,19 +53,17 @@ pub(crate) struct RemoteHealthBody {
 }
 
 // Consumed by PR 1.7's Remote Access pane (endpoint list).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum AdvertisedEndpointKind {
+pub enum AdvertisedEndpointKind {
     LoopbackServe,
     TailnetDirect,
 }
 
 // Consumed by PR 1.7's Remote Access pane (endpoint list).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AdvertisedEndpoint {
+pub struct AdvertisedEndpoint {
     pub kind: AdvertisedEndpointKind,
     pub url: String,
     pub available: bool,
@@ -82,7 +80,6 @@ pub(crate) struct AdvertisedEndpoint {
 /// `port` is the port the listener is actually bound on; callers must pass the bound port, not
 /// the persisted setting, because `RALPHX_REMOTE_PORT` can override it.
 // Consumed by PR 1.7's Remote Access pane (endpoint list).
-#[allow(dead_code)]
 pub(crate) fn advertised_endpoints(
     exposure_mode: RemoteExposureMode,
     port: u16,

@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::domain::entities::{
-    validate_pairing_grant, RemoteAuditAction, RemoteDevice, RemoteDeviceId, RemotePairingCode,
-    RemotePairingCodeId, RemoteScopeSet, RemoteSessionId,
+    validate_pairing_grant, RemoteAuditAction, RemoteAuditEntry, RemoteDevice, RemoteDeviceId,
+    RemotePairingCode, RemotePairingCodeId, RemoteScopeSet, RemoteSessionId,
 };
+use crate::domain::repositories::RemoteAuditLogRepository;
 use crate::domain::services::key_crypto::hash_key;
 use crate::remote_server::auth::{
     expiry_timestamp, generate_pairing_code, now_timestamp, RemoteAuthContext,
@@ -115,6 +116,16 @@ fn device_view(device: &RemoteDevice, live_session_count: usize) -> RemoteDevice
     }
 }
 
+async fn list_audit_entries_from(
+    audit: &dyn RemoteAuditLogRepository,
+    limit: Option<i64>,
+) -> Result<Vec<RemoteAuditEntry>, String> {
+    audit
+        .list_recent(limit)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Mints a single-use pairing code with a 10-minute TTL.
 ///
 /// The grant is validated first: a pairing code can never carry `ui:agent` or `ui:elevated`,
@@ -179,6 +190,17 @@ pub async fn list_remote_pairing_codes(
             expires_at: code.expires_at,
         })
         .collect())
+}
+
+/// Most-recent-first audit entries for host-local remote access activity.
+#[tauri::command]
+pub async fn list_remote_audit_entries(
+    limit: Option<i64>,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<Vec<RemoteAuditEntry>, String> {
+    let context = remote_context(&state, &app);
+    list_audit_entries_from(context.audit.as_ref(), limit).await
 }
 
 /// Cancels an outstanding pairing code before anyone redeems it.
