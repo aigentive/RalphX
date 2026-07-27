@@ -16,6 +16,7 @@
 |---|---|
 | `claude` | Claude harness chat/execution and reserved user-scope `ralphx` MCP registration cleanup |
 | `codex` | Codex harness chat/execution and capability probes |
+| `tailscale` | remote host tailnet discovery and Serve exposure |
 | `gh` | GitHub auth, PR polling, PR/release operations |
 | `git` | repository state, diffs, worktrees, merge/cleanup |
 | `node` | bundled RalphX MCP servers |
