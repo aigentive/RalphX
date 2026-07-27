@@ -87,8 +87,11 @@ vi.mock("@/hooks/useConfirmation", () => ({
 
 import { GitAuthRepairPanel } from "./GitAuthRepairPanel";
 
+const readyUnsubscribe = () => Object.assign(vi.fn(), { ready: Promise.resolve() });
+
 beforeEach(() => {
   mocks.subscribe.mockReset();
+  mocks.subscribe.mockReturnValue(readyUnsubscribe());
   mocks.loginGh.mutateAsync.mockReset();
   mocks.loginGh.mutateAsync.mockResolvedValue(undefined);
   mocks.resumeDeferred.mutateAsync.mockReset();
@@ -124,7 +127,7 @@ beforeEach(() => {
 describe("GitAuthRepairPanel — Sign in", () => {
   it("subscribes to login prompts for the sign-in operation and unsubscribes after it settles", async () => {
     const user = userEvent.setup();
-    const unsubscribe = vi.fn();
+    const unsubscribe = readyUnsubscribe();
     let loginPromptHandler: ((event: { payload: unknown }) => void) | undefined;
     let resolveLogin: (() => void) | undefined;
     mocks.subscribe.mockImplementation((_event, handler) => {
@@ -169,7 +172,7 @@ describe("GitAuthRepairPanel — Sign in", () => {
       listenCallback = (event) => {
         (cb as (payload: unknown) => void)(event.payload);
       };
-      return () => undefined;
+      return readyUnsubscribe();
     });
 
     render(<GitAuthRepairPanel projectId="proj-1" />);
@@ -421,7 +424,7 @@ describe("GitAuthRepairPanel — Sign in", () => {
   it("Sign in mutation failure surfaces an error toast", async () => {
     const user = userEvent.setup();
     const sonner = await import("sonner");
-    mocks.subscribe.mockReturnValue(() => undefined);
+    mocks.subscribe.mockReturnValue(readyUnsubscribe());
     mocks.loginGh.mutateAsync.mockReset();
     mocks.loginGh.mutateAsync.mockRejectedValue(new Error("nope"));
 

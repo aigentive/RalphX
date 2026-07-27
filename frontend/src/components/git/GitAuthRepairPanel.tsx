@@ -18,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
+import type { Unsubscribe } from "@/lib/event-bus";
 import { useEventBus } from "@/providers/EventProvider";
 import {
   useGitAuthDiagnostics,
@@ -242,13 +243,14 @@ export function GitAuthRepairPanel({
 
   const handleLoginGhWithBrowser = async () => {
     setLoginPrompt(null);
-    let unlisten: (() => void) | undefined;
+    let unlisten: Unsubscribe | undefined;
 
     try {
       unlisten = eventBus.subscribe<GhAuthLoginPromptPayload>(
         GH_AUTH_LOGIN_PROMPT_EVENT,
         mergeLoginPrompt,
       );
+      await unlisten.ready;
       await loginGhWithBrowserMutation.mutateAsync();
       toast.success("GitHub CLI signed in");
       await resumeDeferredStartupIfHealthy();
