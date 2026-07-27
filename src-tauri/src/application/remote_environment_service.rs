@@ -226,6 +226,18 @@ impl RemoteEnvironmentService {
             })
             .await?;
 
+        // On a dedup re-pair the same Keychain entry is about to be overwritten;
+        // remember the replaced bearer so it can be revoked on the host after the
+        // staged add completes (otherwise the previous device would stay
+        // valid-but-unreferenced host-side).
+        let replaced_token = self
+            .secret_store
+            .get_secret(&env.token_secret_ref)
+            .await
+            .ok()
+            .flatten()
+            .filter(|previous| previous != &response.device_token);
+
         // 4. Keychain write. On failure the pending_add row stays behind and the
         //    startup reconciler deletes the husk — never a secret without a row.
         self.secret_store
@@ -236,6 +248,23 @@ impl RemoteEnvironmentService {
         self.repo
             .set_status(&env.id, RemoteEnvironmentStatus::Active)
             .await?;
+
+        // 6. Best-effort cleanup of the replaced bearer, only after the new one is
+        //    fully installed (never before — a failed re-pair must not kill the
+        //    working credential).
+        if let Some(previous_token) = replaced_token {
+            if let Err(error) = self
+                .host_client
+                .revoke_token(&env.base_url, &previous_token)
+                .await
+            {
+                tracing::warn!(
+                    environment = env.id.as_str(),
+                    %error,
+                    "Best-effort revoke of the replaced device token failed"
+                );
+            }
+        }
 
         Ok(RemoteEnvironment {
             status: RemoteEnvironmentStatus::Active,

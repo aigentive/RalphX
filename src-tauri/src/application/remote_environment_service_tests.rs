@@ -220,6 +220,46 @@ async fn pairing_the_same_host_via_a_second_url_merges_into_one_environment() {
     );
 }
 
+#[tokio::test]
+async fn re_pairing_revokes_the_replaced_token_after_the_new_one_is_installed() {
+    let f = fixture();
+    f.service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("first pairing should succeed");
+
+    // The host mints a fresh token for the re-pair.
+    let second_token = "rxd_live_fedcba9876543210";
+    {
+        let mut pair_slot = f.host.pair_response.lock().expect("mock");
+        let mut refreshed = pair_response("env-1");
+        refreshed.device_token = second_token.to_string();
+        *pair_slot = Ok(refreshed);
+    }
+
+    let env = f
+        .service
+        .pair(HOST_URL_DIRECT, "rxp_code2", "Mac Studio")
+        .await
+        .expect("re-pair should succeed");
+
+    // The Keychain now holds the fresh bearer…
+    assert_eq!(
+        f.secrets
+            .get_secret(&env.token_secret_ref)
+            .await
+            .expect("secret read")
+            .as_deref(),
+        Some(second_token)
+    );
+    // …and the replaced bearer was revoked host-side (best effort), so the old
+    // device does not linger valid-but-unreferenced.
+    assert!(f.host.recorded_calls().iter().any(|call| matches!(
+        call,
+        RecordedHostCall::Revoke { token, .. } if token == TOKEN
+    )));
+}
+
 // ============================================================================
 // P-18 — the token never reaches JS-serializable surfaces
 // ============================================================================
