@@ -9,10 +9,11 @@ use super::integration_reference_expansion::{
 use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianIntegrationService,
     AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
-    AtlassianResourceKind, AtlassianResourceSummary, EmptyAtlassianApiClient, EmptyLinearApiClient,
-    GranolaApiClient, GranolaApiError, GranolaAuthContext, GranolaIntegrationService,
-    GranolaNoteDetail, GranolaTranscriptEntry, LinearApiClient, LinearAuthContext,
-    LinearIntegrationService, LinearIssueContent, LinearIssueSummary,
+    AtlassianResourceKind, AtlassianResourceSummary, ClickUpIntegrationService,
+    EmptyAtlassianApiClient, EmptyClickUpApiClient, EmptyLinearApiClient, GranolaApiClient,
+    GranolaApiError, GranolaAuthContext, GranolaIntegrationService, GranolaNoteDetail,
+    GranolaTranscriptEntry, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    LinearIssueContent, LinearIssueSummary,
 };
 use crate::domain::integrations::{
     AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
@@ -20,8 +21,9 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 use crate::infrastructure::memory::{
-    MemoryAtlassianIntegrationSettingsRepository, MemoryGranolaIntegrationSettingsRepository,
-    MemoryLinearIntegrationSettingsRepository, MemorySecretStore,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryClickUpIntegrationSettingsRepository,
+    MemoryGranolaIntegrationSettingsRepository, MemoryLinearIntegrationSettingsRepository,
+    MemorySecretStore,
 };
 
 const ATLASSIAN_TOKEN_REF: &str = "integrations/atlassian/default/api-token";
@@ -307,6 +309,26 @@ async fn enabled_granola_service_with_client(
     Arc::new(service)
 }
 
+async fn enabled_clickup_service() -> Arc<ClickUpIntegrationService> {
+    let service = ClickUpIntegrationService::new(
+        Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
+        Arc::new(MemorySecretStore::new()),
+        Arc::new(EmptyClickUpApiClient),
+    );
+    service
+        .save_settings(
+            Some("clickup-token".to_string()),
+            Some("workspace-1".to_string()),
+        )
+        .await
+        .expect("save ClickUp settings");
+    service
+        .validate_and_enable()
+        .await
+        .expect("validate ClickUp settings");
+    Arc::new(service)
+}
+
 fn reference(provider: &str, kind: &str, id: &str) -> ComposerIntegrationReference {
     ComposerIntegrationReference {
         provider: provider.to_string(),
@@ -336,7 +358,10 @@ fn skipped_reason_strings_cover_all_public_log_values() {
             "missing_credentials",
         ),
         (SkippedIntegrationReferenceReason::NotFound, "not_found"),
-        (SkippedIntegrationReferenceReason::RateLimited, "rate_limited"),
+        (
+            SkippedIntegrationReferenceReason::RateLimited,
+            "rate_limited",
+        ),
         (SkippedIntegrationReferenceReason::ApiError, "api_error"),
         (
             SkippedIntegrationReferenceReason::UnsupportedReference,
@@ -354,13 +379,15 @@ fn skipped_reason_strings_cover_all_public_log_values() {
 }
 
 #[tokio::test]
-async fn dispatcher_leaves_atlassian_and_linear_references_unexpanded_when_services_are_absent() {
+async fn dispatcher_reports_every_unavailable_provider_reference() {
     let expansion = expand_integration_references_for_prompt(
         "Base prompt",
         &[
             reference("atlassian", "jira", "RX-42"),
             reference("linear", "linear", "lin-42"),
+            reference("clickup", "task", "cu-42"),
         ],
+        None,
         None,
         None,
         None,
@@ -368,7 +395,10 @@ async fn dispatcher_leaves_atlassian_and_linear_references_unexpanded_when_servi
     .await;
 
     assert_eq!(expansion.rewritten_prompt, "Base prompt");
-    assert!(expansion.skipped_references.is_empty());
+    assert_eq!(expansion.skipped_references.len(), 3);
+    assert!(expansion.skipped_references.iter().all(|skipped| {
+        skipped.reason == SkippedIntegrationReferenceReason::ProviderUnavailable
+    }));
 }
 
 #[tokio::test]
@@ -386,6 +416,7 @@ async fn dispatcher_threads_existing_providers_and_granola_without_duplicate_bas
         Some(enabled_atlassian_service().await),
         Some(enabled_linear_service().await),
         Some(enabled_granola_service().await),
+        Some(enabled_clickup_service().await),
     )
     .await;
 
@@ -424,6 +455,7 @@ async fn dispatcher_keeps_mixed_provider_prompt_within_shared_total_budget() {
             }))
             .await,
         ),
+        Some(enabled_clickup_service().await),
     )
     .await;
 
@@ -474,6 +506,7 @@ async fn dispatcher_caps_large_upstream_provider_output_to_shared_total_budget()
             }))
             .await,
         ),
+        Some(enabled_clickup_service().await),
     )
     .await;
 
@@ -495,7 +528,7 @@ async fn dispatcher_caps_large_upstream_provider_output_to_shared_total_budget()
 }
 
 #[tokio::test]
-async fn dispatcher_passes_clickup_through_and_skips_only_unknown_providers() {
+async fn dispatcher_expands_clickup_and_skips_only_unknown_providers() {
     let expansion = expand_integration_references_for_prompt(
         "Base prompt",
         &[
@@ -505,10 +538,14 @@ async fn dispatcher_passes_clickup_through_and_skips_only_unknown_providers() {
         None,
         None,
         None,
+        Some(enabled_clickup_service().await),
     )
     .await;
 
-    assert_eq!(expansion.rewritten_prompt, "Base prompt");
+    assert!(expansion
+        .rewritten_prompt
+        .contains("expanded user-selected ClickUp tasks"));
+    assert!(expansion.rewritten_prompt.contains("<clickup_task"));
     assert_eq!(expansion.skipped_references.len(), 1);
     assert_eq!(expansion.skipped_references[0].provider, "unknown");
     assert_eq!(
@@ -525,6 +562,7 @@ async fn dispatcher_reports_granola_provider_unavailable_without_failing_prompt(
         None,
         None,
         None,
+        None,
     )
     .await;
 
@@ -534,5 +572,41 @@ async fn dispatcher_reports_granola_provider_unavailable_without_failing_prompt(
     assert_eq!(
         expansion.skipped_references[0].reason,
         SkippedIntegrationReferenceReason::ProviderUnavailable
+    );
+}
+
+#[tokio::test]
+async fn dispatcher_reports_references_beyond_the_global_limit() {
+    let references = (0..10)
+        .map(|index| reference("unknown", "thing", &format!("external-{index}")))
+        .collect::<Vec<_>>();
+
+    let expansion = expand_integration_references_for_prompt(
+        "Base prompt",
+        &references,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        expansion
+            .skipped_references
+            .iter()
+            .filter(|skipped| skipped.reason == SkippedIntegrationReferenceReason::BudgetExceeded)
+            .count(),
+        2
+    );
+    assert_eq!(
+        expansion
+            .skipped_references
+            .iter()
+            .filter(|skipped| {
+                skipped.reason == SkippedIntegrationReferenceReason::UnsupportedReference
+            })
+            .count(),
+        8
     );
 }

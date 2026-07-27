@@ -1351,9 +1351,24 @@ async fn collect_workspace_review_inherited_references(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<WorkspaceReviewInheritedReferences> {
-    let mut inherited = WorkspaceReviewInheritedReferences::default();
+    let inherited_integration_references = crate::application::conversation_reference_inheritance::collect_conversation_inherited_integration_references(
+        state.chat_message_repo.as_ref(),
+        &workspace.conversation_id,
+    )
+    .await?;
+    crate::application::integration_reference_expansion::log_skipped_integration_references(
+        &inherited_integration_references.skipped_references,
+    );
+    let mut inherited = WorkspaceReviewInheritedReferences {
+        integration_references: inherited_integration_references.references,
+        ..WorkspaceReviewInheritedReferences::default()
+    };
     let mut project_seen = BTreeSet::new();
-    let mut integration_seen = BTreeSet::new();
+    let mut integration_seen = inherited
+        .integration_references
+        .iter()
+        .map(workspace_review_integration_reference_identity)
+        .collect();
     let mut artifact_seen = BTreeSet::new();
     let mut resolved_artifact_seen = BTreeSet::new();
 
@@ -1371,7 +1386,7 @@ async fn collect_workspace_review_inherited_references(
                 message.metadata.as_deref(),
                 &mut inherited,
                 &mut project_seen,
-                &mut integration_seen,
+                None,
                 &mut artifact_seen,
             );
         }
@@ -1719,7 +1734,7 @@ fn merge_workspace_review_references_from_metadata(
     metadata: Option<&str>,
     inherited: &mut WorkspaceReviewInheritedReferences,
     project_seen: &mut BTreeSet<String>,
-    integration_seen: &mut BTreeSet<String>,
+    integration_seen: Option<&mut BTreeSet<String>>,
     artifact_seen: &mut BTreeSet<String>,
 ) {
     let Some(metadata) = metadata else {
@@ -1743,10 +1758,12 @@ fn merge_workspace_review_references_from_metadata(
             );
         }
     }
-    if let Some(references) = parse_workspace_review_metadata_references::<
-        ComposerIntegrationReference,
-    >(object.get("composer_integration_references"))
-    {
+    if let (Some(references), Some(integration_seen)) = (
+        parse_workspace_review_metadata_references::<ComposerIntegrationReference>(
+            object.get("composer_integration_references"),
+        ),
+        integration_seen,
+    ) {
         for reference in references {
             push_inherited_integration_reference(
                 &mut inherited.integration_references,
@@ -1929,17 +1946,22 @@ fn push_inherited_integration_reference(
     if references.len() >= WORKSPACE_REVIEW_MAX_INHERITED_INTEGRATION_REFERENCES {
         return;
     }
-    let key = format!(
-        "{}\n{}\n{}\n{}",
-        reference.provider.trim(),
-        reference.kind.trim(),
-        reference.id.trim(),
-        reference.key.as_deref().unwrap_or("").trim()
-    );
+    let key = workspace_review_integration_reference_identity(&reference);
     if key.trim().is_empty() || !seen.insert(key) {
         return;
     }
     references.push(reference);
+}
+
+fn workspace_review_integration_reference_identity(
+    reference: &ComposerIntegrationReference,
+) -> String {
+    format!(
+        "{}\n{}\n{}",
+        reference.provider.trim(),
+        reference.kind.trim(),
+        reference.id.trim()
+    )
 }
 
 fn push_inherited_artifact_reference(
