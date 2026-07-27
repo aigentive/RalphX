@@ -303,6 +303,7 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     backend("proposal:created", EventDelivery::Durable),
     backend("step:created", EventDelivery::Durable),
     backend("plan_artifact:created", EventDelivery::Durable),
+    backend("plan_artifact:approved", EventDelivery::Durable),
     backend("execution:status_changed", EventDelivery::Durable),
     backend("agent:conversation_created", EventDelivery::Durable),
     backend("agent:conversation_forked", EventDelivery::Durable),
@@ -368,6 +369,7 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     backend("execution:stderr", EventDelivery::Transient),
     backend("permission:expired", EventDelivery::Transient),
     backend("permission:request", EventDelivery::Transient),
+    backend("permission:resolved", EventDelivery::Transient),
     EventClassification {
         name: "agent_terminal:event",
         delivery: EventDelivery::Transient,

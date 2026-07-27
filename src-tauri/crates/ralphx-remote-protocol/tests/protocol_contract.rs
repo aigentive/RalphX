@@ -125,6 +125,18 @@ fn event_classification_is_exact_and_snapshotted() {
             .delivery,
         EventDelivery::Durable
     );
+    assert_eq!(
+        EventClassification::find("permission:resolved")
+            .unwrap()
+            .delivery,
+        EventDelivery::Transient
+    );
+    assert_eq!(
+        EventClassification::find("plan_artifact:approved")
+            .unwrap()
+            .delivery,
+        EventDelivery::Durable
+    );
 }
 
 const _: () = assert!(!ralphx_remote_protocol::class_permits(
