@@ -26,6 +26,7 @@ import {
   type RemoteSessionView,
 } from "@/api/remote-host";
 import { Card } from "@/components/ui/card";
+import { CopyableRef } from "@/components/ui/copyable-ref";
 import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
@@ -264,9 +265,11 @@ function ListenerCard({
                         : "var(--status-error, #d55e00)",
                     }}
                   />
-                  <code className="min-w-0 truncate font-mono text-[0.8125rem] text-[var(--text-primary)]">
-                    {endpoint.url}
-                  </code>
+                  <CopyableRef
+                    value={endpoint.url}
+                    ariaLabel="Copy endpoint URL"
+                    testId={`remote-endpoint-${endpoint.kind}`}
+                  />
                   <span className="text-xs text-[var(--text-muted)] shrink-0">
                     {ENDPOINT_KIND_LABELS[endpoint.kind]}
                   </span>
