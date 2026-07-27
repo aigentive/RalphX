@@ -1227,6 +1227,9 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.ui_feature_flags.standalone_conversations =
             matches!(v.to_lowercase().as_str(), "true" | "1");
     }
+    if let Some(v) = lookup("RALPHX_UI_REMOTE_ENVIRONMENTS") {
+        cfg.ui_feature_flags.remote_environments = matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
 }
 
 /// Validate ReconciliationConfig fields and clamp to safe defaults on invalid values (GAP M7).

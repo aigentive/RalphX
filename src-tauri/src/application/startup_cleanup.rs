@@ -31,6 +31,26 @@ pub(crate) async fn run_startup_cleanup(app_state: &AppState) {
     let validation_run_repo = Arc::clone(&app_state.validation_run_repo);
     mark_orphaned_validation_runs_on_startup(validation_run_repo).await;
 
+    // Remote environment registry: resolve staged pending_add/pending_delete rows
+    // left behind by crashes (P-27). Spawned because reconciliation may need the
+    // network (token re-validation, revoke retries) and must not block startup;
+    // the service itself fails closed on unreachable hosts or an unreadable
+    // Keychain, so a partial run only defers work to the next boot.
+    {
+        let remote_environment_service = Arc::clone(&app_state.remote_environment_service);
+        tauri::async_runtime::spawn(async move {
+            let report = remote_environment_service.reconcile_on_startup().await;
+            info!(
+                activated = report.activated.len(),
+                deleted_husks = report.deleted_husks.len(),
+                completed_removals = report.completed_removals.len(),
+                needs_repair = report.needs_repair.len(),
+                deferred = report.deferred.len(),
+                "Remote environment startup reconciliation finished"
+            );
+        });
+    }
+
     // All spawned processes are Tauri children — app restart means they are dead.
     let process_repo = Arc::clone(&app_state.process_repo);
     match process_repo.fail_all_active("app_restart").await {

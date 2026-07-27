@@ -82,6 +82,7 @@ pub mod repository_settings_commands;
 #[cfg(test)]
 mod repository_settings_commands_tests;
 pub mod remote_device_commands;
+pub mod remote_environment_commands;
 pub mod remote_host_commands;
 #[cfg(debug_assertions)]
 pub mod remote_transport_spike_commands;

@@ -37,6 +37,7 @@ use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
 use crate::application::PermissionState;
 use crate::application::QuestionState;
+use crate::application::RemoteEnvironmentService;
 use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
@@ -196,6 +197,9 @@ pub struct AppState {
     pub project_repo: Arc<dyn ProjectRepository>,
     /// API key repository for external API authentication
     pub api_key_repo: Arc<dyn ApiKeyRepository>,
+    /// Client-side remote environment registry, pairing, reconciler, and the
+    /// active-environment authority for the Rust proxy surface (PR 2.1).
+    pub remote_environment_service: Arc<RemoteEnvironmentService>,
     /// Native Atlassian/Jira/Confluence integration service.
     pub atlassian_integration_service: Arc<AtlassianIntegrationService>,
     /// Native Linear integration service.
@@ -571,6 +575,43 @@ impl AppState {
 
     fn mock_agent_clients() -> AgentClientBundle {
         AgentClientBundle::standard_mock_runtime_clients()
+    }
+
+    fn production_remote_environment_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<RemoteEnvironmentService> {
+        let host_client: Arc<dyn crate::infrastructure::RemoteHostClient> =
+            match crate::infrastructure::HyperRemoteHostClient::new() {
+                Ok(client) => Arc::new(client),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Remote host HTTP client unavailable; pairing will fail until TLS roots are available"
+                    );
+                    Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
+                        error,
+                    ))
+                }
+            };
+        Arc::new(RemoteEnvironmentService::new(
+            Arc::new(
+                crate::infrastructure::sqlite::SqliteRemoteEnvironmentRepository::from_shared(
+                    Arc::clone(shared_conn),
+                ),
+            ),
+            Arc::new(MacosKeychainSecretStore::new()),
+            host_client,
+        ))
+    }
+
+    fn memory_remote_environment_service() -> Arc<RemoteEnvironmentService> {
+        Arc::new(RemoteEnvironmentService::new(
+            Arc::new(crate::infrastructure::memory::MemoryRemoteEnvironmentRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
+                "remote host client is not wired in tests",
+            )),
+        ))
     }
 
     fn production_atlassian_integration_service(
@@ -1307,6 +1348,7 @@ impl AppState {
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            remote_environment_service: Self::production_remote_environment_service(&shared_conn),
             atlassian_integration_service: Self::production_atlassian_integration_service(
                 &shared_conn,
             ),
@@ -1619,6 +1661,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
@@ -1812,6 +1855,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
@@ -2015,6 +2059,7 @@ impl AppState {
                 &shared_conn,
             ))),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
@@ -2211,6 +2256,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            remote_environment_service: Self::memory_remote_environment_service(),
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),

@@ -57,6 +57,20 @@ fn get_ui_feature_flags_includes_agent_personas() {
 }
 
 #[test]
+fn get_ui_feature_flags_ships_remote_environments_dark_by_default() {
+    let state = AppState::new_test();
+    let response = ui_feature_flags_response(&state);
+    let json = serde_json::to_value(response).expect("feature flags response should serialize");
+
+    assert_eq!(
+        json.get("remoteEnvironments"),
+        Some(&serde_json::json!(false)),
+        "remoteEnvironments must default OFF — every Phase-2 PR ships dark behind it"
+    );
+    assert!(json.get("remote_environments").is_none());
+}
+
+#[test]
 fn get_ui_feature_flags_reports_the_effective_standalone_value() {
     let state = AppState::new_test();
 

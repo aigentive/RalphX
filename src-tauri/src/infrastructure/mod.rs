@@ -12,6 +12,7 @@ pub(crate) mod jira_agile_client;
 pub mod linear_client;
 pub mod login_shell_env;
 pub mod memory;
+pub mod remote_host_client;
 pub mod services;
 pub mod secret_store;
 pub mod sqlite;
@@ -31,6 +32,9 @@ pub use atlassian_client::HyperAtlassianApiClient;
 pub use clickup_client::HyperClickUpApiClient;
 pub use granola_client::HyperGranolaApiClient;
 pub use linear_client::HyperLinearApiClient;
+pub use remote_host_client::{
+    HyperRemoteHostClient, RemoteHostClient, RemoteHostClientError, UnavailableRemoteHostClient,
+};
 pub use services::GhCliGithubService;
 pub use sqlite::{get_default_db_path, open_connection, open_memory_connection, run_migrations};
 pub use supervisor::{EventBus, EventSubscriber};
