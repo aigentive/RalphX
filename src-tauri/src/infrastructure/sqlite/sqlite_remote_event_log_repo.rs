@@ -99,11 +99,7 @@ pub trait RemoteEventLogStore: Send + Sync {
 /// * prior-epoch rows (`seq <= epoch_floor_seq`) are eligible even when the retention window
 ///   would keep them, because no client can ever replay them (§3.4 DDL note) — still clamped by
 ///   `lease_floor`, so the clamp is the single safety boundary.
-pub fn prune_ceiling(
-    retention_ceiling: u64,
-    epoch_floor_seq: u64,
-    lease_floor: u64,
-) -> u64 {
+pub fn prune_ceiling(retention_ceiling: u64, epoch_floor_seq: u64, lease_floor: u64) -> u64 {
     retention_ceiling.max(epoch_floor_seq).min(lease_floor)
 }
 
@@ -213,7 +209,9 @@ impl RemoteEventLogStore for SqliteRemoteEventLogRepository {
         self.db
             .run(move |conn| {
                 let seq: Option<i64> = conn
-                    .query_row("SELECT MIN(seq) FROM remote_event_log", [], |row| row.get(0))
+                    .query_row("SELECT MIN(seq) FROM remote_event_log", [], |row| {
+                        row.get(0)
+                    })
                     .map_err(|error| AppError::Database(error.to_string()))?;
                 seq.map(seq_from_sql).transpose()
             })
@@ -276,7 +274,10 @@ fn read_high_water(conn: &Connection) -> AppResult<u64> {
         Err(rusqlite::Error::QueryReturnedNoRows) => None,
         Err(error) => return Err(AppError::Database(error.to_string())),
     };
-    stored.map(seq_from_sql).transpose().map(|seq| seq.unwrap_or(0))
+    stored
+        .map(seq_from_sql)
+        .transpose()
+        .map(|seq| seq.unwrap_or(0))
 }
 
 /// SQLite has no unsigned integers; a seq that cannot round-trip is a bug, not a value to clamp.

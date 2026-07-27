@@ -125,6 +125,12 @@ impl RecordingSocket {
         }
     }
 
+    /// A peer that neither sends nor closes — the shape every teardown test needs, because a
+    /// client-initiated close would end the session before the teardown path could.
+    fn silent() -> Self {
+        Self::default()
+    }
+
     fn resets(&self) -> Vec<ResetReason> {
         self.sent
             .iter()
@@ -162,11 +168,9 @@ impl SessionSocket for RecordingSocket {
     async fn recv(&mut self) -> Option<Result<ClientFrame, SocketError>> {
         match self.incoming.pop_front() {
             Some(next) => next,
-            // Park instead of spinning once the script is exhausted.
-            None => {
-                std::future::pending::<()>().await;
-                None
-            }
+            // Park instead of spinning once the script is exhausted, exactly as a live but idle
+            // peer would.
+            None => std::future::pending::<Option<Result<ClientFrame, SocketError>>>().await,
         }
     }
 
@@ -306,8 +310,9 @@ async fn replay_delivers_every_row_above_the_cursor_exactly_once_and_in_order() 
     let log = TestLog::with_rows(epoch.as_str(), &[1, 2, 3, 4, 5]);
     let mut socket = RecordingSocket::default();
 
-    let through =
-        replay_catch_up(log.as_ref(), &mut socket, &epoch, 2, 5).await.expect("replay should succeed");
+    let through = replay_catch_up(log.as_ref(), &mut socket, &epoch, 2, 5)
+        .await
+        .expect("replay should succeed");
 
     assert_eq!(through, 5);
     assert_eq!(
@@ -443,7 +448,14 @@ fn a_durable_frame_evicts_a_transient_rather_than_being_dropped() {
         queue.push(durable(2)),
         SendQueueOutcome::DroppedOldestTransient
     );
-    assert_eq!(queue.pop(), Some(ServerFrame::Event { seq: Some(1), name: "task:created".to_string(), payload: json!({}) }));
+    assert_eq!(
+        queue.pop(),
+        Some(ServerFrame::Event {
+            seq: Some(1),
+            name: "task:created".to_string(),
+            payload: json!({})
+        })
+    );
 }
 
 /// With nothing droppable left, a durable frame reports a gap — the caller kicks the session with
@@ -550,7 +562,7 @@ async fn revocation_tears_down_the_live_socket_with_an_error_frame() {
     let kill = kill_channel(&registry, &device, &session);
     // Revoke before the session runs: the signal is already queued on the kill channel.
     registry.kill_device(&device, ResetReason::Revoked);
-    let mut socket = RecordingSocket::scripted(vec![]);
+    let mut socket = RecordingSocket::silent();
 
     let outcome = run_session(
         &mut socket,
@@ -586,7 +598,7 @@ async fn host_disable_closes_live_sessions_with_a_typed_reset() {
     let session = RemoteSessionId::from_string("session-1");
     let kill = kill_channel(&registry, &device, &session);
     registry.kill_all(ResetReason::HostDisabled);
-    let mut socket = RecordingSocket::scripted(vec![]);
+    let mut socket = RecordingSocket::silent();
 
     let outcome = run_session(
         &mut socket,
@@ -612,7 +624,7 @@ async fn the_heartbeat_device_recheck_closes_a_revoked_session() {
     let device = RemoteDeviceId::from_string("device-1");
     let session = RemoteSessionId::from_string("session-1");
     let kill = kill_channel(&registry, &device, &session);
-    let mut socket = RecordingSocket::scripted(vec![]);
+    let mut socket = RecordingSocket::silent();
 
     let outcome = run_session(
         &mut socket,
@@ -636,7 +648,7 @@ async fn an_unreadable_device_store_closes_the_session_rather_than_trusting_it()
     let device = RemoteDeviceId::from_string("device-1");
     let session = RemoteSessionId::from_string("session-1");
     let kill = kill_channel(&registry, &device, &session);
-    let mut socket = RecordingSocket::scripted(vec![]);
+    let mut socket = RecordingSocket::silent();
 
     let outcome = run_session(
         &mut socket,
@@ -660,16 +672,11 @@ async fn the_server_closes_after_two_unacked_heartbeats() {
     let device = RemoteDeviceId::from_string("device-1");
     let session = RemoteSessionId::from_string("session-1");
     let kill = kill_channel(&registry, &device, &session);
-    let mut socket = RecordingSocket::scripted(vec![]);
+    let mut socket = RecordingSocket::silent();
 
     let outcome = run_session(
         &mut socket,
-        session_context(
-            stream,
-            kill,
-            Arc::new(AlwaysLive),
-            Duration::from_millis(1),
-        ),
+        session_context(stream, kill, Arc::new(AlwaysLive), Duration::from_millis(1)),
     )
     .await;
 
@@ -795,7 +802,9 @@ fn the_upgrade_consumes_the_ticket_then_rechecks_the_device_before_upgrading() {
         .nth(1)
         .expect("handler should exist");
     let consume = body.find("tickets.consume(").expect("ticket consume");
-    let recheck = body.find("auth.devices.get(&device_id)").expect("device recheck");
+    let recheck = body
+        .find("auth.devices.get(&device_id)")
+        .expect("device recheck");
     let admit = body.find("registry.register(").expect("registry admission");
     let upgrade = body.find("upgrade.on_upgrade(").expect("upgrade call");
     assert!(

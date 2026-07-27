@@ -247,7 +247,10 @@ async fn prior_epoch_rows_are_prune_eligible_immediately_but_never_past_a_lease(
         .await
         .unwrap();
 
-    assert_eq!(outcome.deleted, 2, "dead-epoch rows go even inside retention");
+    assert_eq!(
+        outcome.deleted, 2,
+        "dead-epoch rows go even inside retention"
+    );
     assert_eq!(outcome.pruned_floor, 2);
 
     // A lease below the epoch floor still wins.

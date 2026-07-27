@@ -5,7 +5,7 @@
 //! device credential is ever minted, and the raw token appears exactly once — in the
 //! response body, consumed by the client's Rust backend and stored in the Keychain (§4.2).
 
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -13,7 +13,7 @@ use chrono::Utc;
 use ralphx_remote_protocol::{ErrorCode, ResetReason, Scope, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::entities::{RemoteAuditAction, RemoteDeviceId, RemoteScopeSet};
+use crate::domain::entities::{RemoteAuditAction, RemoteDeviceId, RemoteScopeSet, RemoteSessionId};
 use crate::domain::repositories::RemotePairingOutcome;
 use crate::domain::services::key_crypto::hash_key;
 use crate::remote_server::auth::{
@@ -278,15 +278,80 @@ pub(crate) async fn session_introspection_handler(
         .into_response()
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionTeardownQuery {
+    /// The caller's own WS session. Absent over plain HTTP, where the caller has no session
+    /// identity beyond its device.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
 /// Ends the caller's own live sessions without revoking the device.
 ///
-/// PR 1.4 narrows this to the calling WS session once a session id exists at request time;
-/// over plain HTTP the caller has no session identity beyond its device.
+/// Narrowed in PR 1.4: when the caller names a `sessionId` it owns, only that socket is torn
+/// down. Closing every session of a device that merely has several tabs open is a bigger effect
+/// than "log this one out" ever asked for. The all-close form remains the fallback for plain HTTP
+/// callers with no session identity.
+///
+/// The named session is checked against the **registry's live list for this device**, so naming
+/// another device's session id closes nothing — the scoping is by ownership, not by trust in the
+/// client-supplied id.
 pub(crate) async fn session_teardown_handler(
     State(state): State<RemoteRouterState>,
     Extension(identity): Extension<RemoteIdentity>,
+    Query(query): Query<SessionTeardownQuery>,
 ) -> Response {
     let auth = state.auth().clone();
+
+    if let Some(session_id) = query
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        let session_id = RemoteSessionId::from_string(session_id);
+        let owns_session = auth
+            .registry
+            .live_sessions(&identity.device_id)
+            .contains(&session_id);
+        if !owns_session {
+            auth.record_audit(
+                Some(&identity.device_id),
+                RemoteAuditAction::AuthRejected,
+                Some("session teardown named a session this device does not hold"),
+            )
+            .await;
+            return remote_error_response(
+                StatusCode::NOT_FOUND,
+                ErrorCode::RemoteCommandUnavailable,
+                "This device holds no such live session.",
+            );
+        }
+
+        let closed = usize::from(auth.registry.kill_session(
+            &identity.device_id,
+            &session_id,
+            ResetReason::Revoked,
+        ));
+        if let Err(error) = auth.sessions.close(&session_id, &now_timestamp()).await {
+            tracing::warn!(%error, %session_id, "Closing the remote session row failed");
+        }
+        auth.record_audit(
+            Some(&identity.device_id),
+            RemoteAuditAction::SessionClosed,
+            Some("client requested teardown of its own session"),
+        )
+        .await;
+        return (
+            StatusCode::OK,
+            Json(SessionTeardownResponse {
+                closed_sessions: closed,
+            }),
+        )
+            .into_response();
+    }
+
     let closed = auth
         .tear_down_device_sessions(&identity.device_id, ResetReason::Revoked)
         .await;

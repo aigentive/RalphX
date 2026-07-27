@@ -53,7 +53,9 @@ pub(crate) struct StreamEpoch(Arc<str>);
 
 impl StreamEpoch {
     pub(crate) fn mint() -> Self {
-        Self(Arc::from(uuid::Uuid::new_v4().simple().to_string().as_str()))
+        Self(Arc::from(
+            uuid::Uuid::new_v4().simple().to_string().as_str(),
+        ))
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -175,7 +177,12 @@ impl RemoteStreamHandle {
 
     /// Signals a live epoch roll. Safe from sync context — it is a plain unbounded send.
     pub(crate) fn request_epoch_roll(&self, cause: EpochRollCause) {
-        if self.state.control.send(SequencerControl::RollEpoch(cause)).is_err() {
+        if self
+            .state
+            .control
+            .send(SequencerControl::RollEpoch(cause))
+            .is_err()
+        {
             tracing::error!(?cause, "Remote sequencer control channel is closed");
         }
     }
@@ -366,7 +373,10 @@ impl RemoteSequencer {
         };
         // max_seq before the frames: a session that reads `maxSeq` after seeing a frame must
         // never see a high-water below it.
-        self.handle.state.max_seq.fetch_max(last_seq, Ordering::AcqRel);
+        self.handle
+            .state
+            .max_seq
+            .fetch_max(last_seq, Ordering::AcqRel);
         for row in rows {
             let event = SequencedEvent {
                 seq: row.seq,
@@ -413,7 +423,10 @@ impl RemoteSequencer {
 }
 
 /// Transient pump: capture → broadcast, with no seq, no row, and no sequencer involvement (A-4).
-async fn pump_transient(handle: RemoteStreamHandle, mut transient: mpsc::UnboundedReceiver<CapturedEvent>) {
+async fn pump_transient(
+    handle: RemoteStreamHandle,
+    mut transient: mpsc::UnboundedReceiver<CapturedEvent>,
+) {
     while let Some(event) = transient.recv().await {
         let _ = handle.state.frames.send(StreamFrame::Transient {
             name: event.name,

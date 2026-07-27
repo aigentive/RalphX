@@ -48,7 +48,12 @@ impl FakeEventLog {
     }
 
     pub(super) fn seqs(&self) -> Vec<u64> {
-        self.rows.lock().unwrap().iter().map(|row| row.seq).collect()
+        self.rows
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|row| row.seq)
+            .collect()
     }
 
     pub(super) fn names(&self) -> Vec<String> {
@@ -254,7 +259,10 @@ async fn a_commit_failure_rolls_the_epoch_live_and_publishes_nothing() {
         .await;
 
     let after = harness.handle.epoch_window();
-    assert_ne!(before.epoch, after.epoch, "a failed commit must roll the epoch");
+    assert_ne!(
+        before.epoch, after.epoch,
+        "a failed commit must roll the epoch"
+    );
     let frames = drain_frames(&mut harness.frames);
     assert!(
         durable_seqs(&frames).is_empty(),
@@ -266,7 +274,11 @@ async fn a_commit_failure_rolls_the_epoch_live_and_publishes_nothing() {
             .any(|frame| matches!(frame, StreamFrame::EpochRolled)),
         "connected clients must be kicked, not left resuming over the hole"
     );
-    assert_eq!(harness.handle.max_seq(), 0, "the high-water must not advance");
+    assert_eq!(
+        harness.handle.max_seq(),
+        0,
+        "the high-water must not advance"
+    );
     assert!(harness.log.seqs().is_empty());
 }
 
@@ -333,7 +345,11 @@ async fn a_batch_is_allocated_contiguously_committed_then_published() {
         ])
         .await;
 
-    assert_eq!(harness.log.seqs(), vec![1, 2, 3], "allocation is contiguous");
+    assert_eq!(
+        harness.log.seqs(),
+        vec![1, 2, 3],
+        "allocation is contiguous"
+    );
     assert_eq!(harness.handle.max_seq(), 3);
     let frames = drain_frames(&mut harness.frames);
     assert_eq!(
@@ -440,7 +456,10 @@ async fn transient_events_are_broadcast_only_and_never_persisted() {
     assert!(
         matches!(
             published.as_slice(),
-            [StreamFrame::Transient { name: "agent:chunk", .. }]
+            [StreamFrame::Transient {
+                name: "agent:chunk",
+                ..
+            }]
         ),
         "the transient frame must reach the broadcast channel"
     );

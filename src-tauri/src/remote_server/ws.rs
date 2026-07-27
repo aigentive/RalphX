@@ -25,7 +25,7 @@ use axum::response::Response;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use ralphx_remote_protocol::{
-    ClientFrame, ErrorCode, ResetReason, ServerFrame, Scope, PROTOCOL_VERSION,
+    ClientFrame, ErrorCode, ResetReason, Scope, ServerFrame, PROTOCOL_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -36,10 +36,10 @@ use crate::domain::services::key_crypto::hash_key;
 use crate::infrastructure::sqlite::RemoteEventLogStore;
 use crate::remote_server::auth::{now_timestamp, RemoteAuthContext, RemoteAuthRejection};
 use crate::remote_server::endpoints::RemoteRouterState;
+use crate::remote_server::remote_error_response;
 use crate::remote_server::sequencer::{
     parse_payload, EpochWindow, RemoteStreamHandle, SequencedEvent, StreamEpoch, StreamFrame,
 };
-use crate::remote_server::remote_error_response;
 use crate::remote_server::session_registry::{RemoteSessionAdmission, RemoteSessionKillChannel};
 
 #[cfg(test)]
@@ -209,11 +209,7 @@ pub(crate) fn heartbeat_budget_exhausted(unacked: u32) -> bool {
     unacked >= MAX_UNACKED_HEARTBEATS
 }
 
-pub(crate) fn hello_frame(
-    environment_id: &str,
-    window: &EpochWindow,
-    max_seq: u64,
-) -> ServerFrame {
+pub(crate) fn hello_frame(environment_id: &str, window: &EpochWindow, max_seq: u64) -> ServerFrame {
     ServerFrame::Hello {
         protocol_version: PROTOCOL_VERSION,
         environment_id: environment_id.to_string(),
@@ -411,84 +407,81 @@ pub(crate) async fn run_session(
             }
         }
 
-        tokio::select! {
+        // The select only *classifies* the event; every handler runs after it, once the branch
+        // futures are dropped. That is what lets a handler send on the same socket a branch was
+        // reading from, and reassign the subscription a branch was polling.
+        let event = tokio::select! {
             biased;
-            reason = context.kill.recv() => {
-                // A `None` means the sender was dropped without a reason — still a teardown.
-                let reason = reason.unwrap_or(ResetReason::HostDisabled);
-                return close_with_teardown(socket, reason).await;
+            reason = context.kill.recv() => SessionEvent::Kill(reason),
+            incoming = socket.recv() => SessionEvent::Incoming(incoming),
+            frame = recv_stream_frame(frames.as_mut()) => SessionEvent::Live(frame),
+            _ = heartbeat.tick() => SessionEvent::HeartbeatTick,
+        };
+
+        match event {
+            // A `None` reason means the sender was dropped without one — still a teardown.
+            SessionEvent::Kill(reason) => {
+                return close_with_teardown(socket, reason.unwrap_or(ResetReason::HostDisabled))
+                    .await
             }
-            incoming = socket.recv() => {
-                match incoming {
-                    None => return SessionOutcome::ClientClosed,
-                    Some(Err(_)) => return SessionOutcome::SocketError,
-                    Some(Ok(ClientFrame::Subscribe { after_seq, stream_epoch })) => {
-                        match begin_subscription(
-                            socket,
-                            &context.stream,
-                            after_seq,
-                            &stream_epoch,
-                        )
-                        .await
-                        {
-                            Ok(subscription) => {
-                                last_sent = subscription.through_seq;
-                                lease = Some(subscription.lease);
-                                frames = Some(subscription.frames);
-                            }
-                            Err(reason) => {
-                                let _ = socket.send(ServerFrame::Reset { reason }).await;
-                                socket.close().await;
-                                return SessionOutcome::Reset(reason);
-                            }
-                        }
+            SessionEvent::Incoming(None) => return SessionOutcome::ClientClosed,
+            SessionEvent::Incoming(Some(Err(_))) => return SessionOutcome::SocketError,
+            SessionEvent::Incoming(Some(Ok(ClientFrame::Subscribe {
+                after_seq,
+                stream_epoch,
+            }))) => {
+                match begin_subscription(socket, &context.stream, after_seq, &stream_epoch).await {
+                    Ok(subscription) => {
+                        last_sent = subscription.through_seq;
+                        lease = Some(subscription.lease);
+                        frames = Some(subscription.frames);
                     }
-                    Some(Ok(ClientFrame::CursorAck { seq })) => {
-                        // ONLY `cursorAck` moves the retention floor (§3.4 lease lifecycle).
-                        if let Some(lease) = lease.as_ref() {
-                            lease.advance(seq);
-                        }
-                    }
-                    Some(Ok(ClientFrame::HeartbeatAck { .. })) => {
-                        // Liveness only: deliberately does NOT refresh the lease TTL.
-                        unacked_heartbeats = 0;
+                    Err(reason) => {
+                        let _ = socket.send(ServerFrame::Reset { reason }).await;
+                        socket.close().await;
+                        return SessionOutcome::Reset(reason);
                     }
                 }
             }
-            frame = recv_stream_frame(frames.as_mut()) => {
-                match frame {
-                    LiveFrame::Durable(event) => {
-                        // The client already has everything through `through_seq` from the
-                        // replay; the fork deliberately overlaps it (§3.4).
-                        if event.seq > last_sent {
-                            last_sent = event.seq;
-                            if queue.push(QueuedFrame::Durable(event_frame(&event)))
-                                == SendQueueOutcome::DurableGap
-                            {
-                                return close_with_teardown(socket, ResetReason::CursorPruned).await;
-                            }
-                        }
-                    }
-                    LiveFrame::Transient { name, payload } => {
-                        // Transient frames carry no seq (§3.2) and never enter the log (A-4).
-                        queue.push(QueuedFrame::Transient(ServerFrame::Event {
-                            seq: None,
-                            name: name.to_string(),
-                            payload: (*payload).clone(),
-                        }));
-                    }
-                    LiveFrame::EpochRolled => {
-                        return close_with_teardown(socket, ResetReason::EpochChanged).await;
-                    }
-                    LiveFrame::Lagged => {
-                        // The session fell behind the live buffer: a durable gap. Kick it with a
-                        // cursor-resumable reset rather than splice over the missing seqs.
+            SessionEvent::Incoming(Some(Ok(ClientFrame::CursorAck { seq }))) => {
+                // ONLY `cursorAck` moves the retention floor (§3.4 lease lifecycle).
+                if let Some(lease) = lease.as_ref() {
+                    lease.advance(seq);
+                }
+            }
+            SessionEvent::Incoming(Some(Ok(ClientFrame::HeartbeatAck { .. }))) => {
+                // Liveness only: deliberately does NOT refresh the lease TTL.
+                unacked_heartbeats = 0;
+            }
+            SessionEvent::Live(LiveFrame::Durable(event)) => {
+                // The client already has everything through `through_seq` from the replay; the
+                // fork deliberately overlaps it (§3.4).
+                if event.seq > last_sent {
+                    last_sent = event.seq;
+                    if queue.push(QueuedFrame::Durable(event_frame(&event)))
+                        == SendQueueOutcome::DurableGap
+                    {
                         return close_with_teardown(socket, ResetReason::CursorPruned).await;
                     }
-                    LiveFrame::Idle => {}
                 }
             }
-            _ = heartbeat.tick() => {
+            SessionEvent::Live(LiveFrame::Transient { name, payload }) => {
+                // Transient frames carry no seq (§3.2) and never enter the log (A-4).
+                queue.push(QueuedFrame::Transient(ServerFrame::Event {
+                    seq: None,
+                    name: name.to_string(),
+                    payload: (*payload).clone(),
+                }));
+            }
+            SessionEvent::Live(LiveFrame::EpochRolled) => {
+                return close_with_teardown(socket, ResetReason::EpochChanged).await
+            }
+            // The session fell behind the live buffer: a durable gap. Kick it with a
+            // cursor-resumable reset rather than splice over the missing seqs.
+            SessionEvent::Live(LiveFrame::Lagged) => {
+                return close_with_teardown(socket, ResetReason::CursorPruned).await
+            }
+            SessionEvent::HeartbeatTick => {
                 if heartbeat_budget_exhausted(unacked_heartbeats) {
                     socket.close().await;
                     return SessionOutcome::HeartbeatTimeout;
@@ -508,7 +501,9 @@ pub(crate) async fn run_session(
                 }
                 unacked_heartbeats += 1;
                 if socket
-                    .send(ServerFrame::Heartbeat { t: Utc::now().timestamp() as u64 })
+                    .send(ServerFrame::Heartbeat {
+                        t: Utc::now().timestamp() as u64,
+                    })
                     .await
                     .is_err()
                 {
@@ -519,8 +514,19 @@ pub(crate) async fn run_session(
     }
 }
 
+/// What one turn of the session loop observed. Classification only — no effects.
+enum SessionEvent {
+    Kill(Option<ResetReason>),
+    Incoming(Option<Result<ClientFrame, SocketError>>),
+    Live(LiveFrame),
+    HeartbeatTick,
+}
+
 /// Sends the terminal frame for a teardown reason, then closes.
-async fn close_with_teardown(socket: &mut dyn SessionSocket, reason: ResetReason) -> SessionOutcome {
+async fn close_with_teardown(
+    socket: &mut dyn SessionSocket,
+    reason: ResetReason,
+) -> SessionOutcome {
     // Revocation is an `error{revoked}` (P-2); every other teardown is a typed `reset`.
     let outcome = match reason {
         ResetReason::Revoked => {
@@ -614,18 +620,15 @@ pub(crate) enum LiveFrame {
     },
     EpochRolled,
     Lagged,
-    /// No subscription yet (or the sender is gone): the branch must park, not spin.
-    Idle,
 }
 
+/// Before `subscribe` — and after the sequencer is gone — this branch parks forever rather than
+/// resolving, so the select never busy-loops the session task on a branch with nothing to say.
 async fn recv_stream_frame(
     frames: Option<&mut tokio::sync::broadcast::Receiver<StreamFrame>>,
 ) -> LiveFrame {
     let Some(frames) = frames else {
-        // Before `subscribe` there is no live stream to read. Parking forever keeps this branch
-        // from busy-looping the whole session task.
-        std::future::pending::<()>().await;
-        return LiveFrame::Idle;
+        return std::future::pending::<LiveFrame>().await;
     };
     match frames.recv().await {
         Ok(StreamFrame::Durable(event)) => LiveFrame::Durable(event),
@@ -633,8 +636,7 @@ async fn recv_stream_frame(
         Ok(StreamFrame::EpochRolled) => LiveFrame::EpochRolled,
         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => LiveFrame::Lagged,
         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-            std::future::pending::<()>().await;
-            LiveFrame::Idle
+            std::future::pending::<LiveFrame>().await
         }
     }
 }
@@ -724,7 +726,11 @@ pub(crate) async fn ws_events_handler(
     let auth = state.auth().clone();
 
     // 1. Consume the single-use ticket. A replay always loses: `consume` is transactional.
-    let device_id = match auth.tickets.consume(&hash_key(&query.ticket), &now_timestamp()).await {
+    let device_id = match auth
+        .tickets
+        .consume(&hash_key(&query.ticket), &now_timestamp())
+        .await
+    {
         Ok(RemoteWsTicketOutcome::Consumed(device_id)) => device_id,
         Ok(outcome) => {
             auth.record_audit(
@@ -844,7 +850,11 @@ struct SessionGuard {
 }
 
 impl SessionGuard {
-    fn new(auth: RemoteAuthContext, device_id: RemoteDeviceId, session_id: RemoteSessionId) -> Self {
+    fn new(
+        auth: RemoteAuthContext,
+        device_id: RemoteDeviceId,
+        session_id: RemoteSessionId,
+    ) -> Self {
         Self {
             auth,
             device_id,

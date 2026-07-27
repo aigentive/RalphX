@@ -26,11 +26,11 @@ mod session_registry_tests;
 pub mod settings;
 #[cfg(test)]
 mod settings_tests;
-pub mod ws;
 #[cfg(debug_assertions)]
 pub mod transport_spike;
 #[cfg(all(test, debug_assertions))]
 mod transport_spike_tests;
+pub mod ws;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -57,7 +57,6 @@ use crate::infrastructure::tailscale::{
     RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
 };
-use crate::remote_server::retention::RetentionLeaseRegistry;
 use crate::remote_server::auth::{
     authenticate_remote_request, enforce_auth_endpoint_rate_limit, strip_trust_headers,
     RemoteAuthContext,
@@ -69,6 +68,7 @@ use crate::remote_server::auth_endpoints::{
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
 };
+use crate::remote_server::retention::RetentionLeaseRegistry;
 use crate::remote_server::session_registry::RemoteSessionRegistry;
 use crate::remote_server::settings::{
     effective_remote_port, resolve_bind_address, RemoteBindError, RemoteExposureMode,
