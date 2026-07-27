@@ -29,7 +29,10 @@ fn resolves_all_required_receiver_and_wrapper_shapes() {
         "agent:message_queued",
         "review:update",
     ] {
-        assert!(names.iter().any(|name| name == expected), "missing {expected}");
+        assert!(
+            names.iter().any(|name| name == expected),
+            "missing {expected}"
+        );
     }
 }
 
@@ -119,11 +122,8 @@ fn resolves_qualified_constants_across_module_files_and_rejects_bare_leaf() {
 #[test]
 fn production_census_excludes_test_only_emit_sites() {
     let root = tempfile::tempdir().expect("temp root");
-    std::fs::write(
-        root.path().join("production.rs"),
-        "fn no_events() {}",
-    )
-    .expect("production source");
+    std::fs::write(root.path().join("production.rs"), "fn no_events() {}")
+        .expect("production source");
     std::fs::create_dir(root.path().join("tests")).expect("tests directory");
     std::fs::write(
         root.path().join("tests/test_only.rs"),
@@ -132,7 +132,10 @@ fn production_census_excludes_test_only_emit_sites() {
     .expect("test source");
 
     let sites = scan_production_rust_tree(root.path()).expect("scan production tree");
-    assert!(sites.is_empty(), "test-only emit must not enter the production census");
+    assert!(
+        sites.is_empty(),
+        "test-only emit must not enter the production census"
+    );
     let error = verify_unmatched_event_coverage(&["agent:run_started"])
         .expect_err("test-only classified name remains unmatched");
     assert!(error.to_string().contains("no reviewed gap entry"));
@@ -182,7 +185,9 @@ fn rejects_dynamic_event_bus_subscriptions() {
         include_str!("fixtures/dynamic_subscription.ts"),
     )
     .expect_err("dynamic subscription must fail closed");
-    assert!(error.to_string().contains("unresolved EventBus subscription"));
+    assert!(error
+        .to_string()
+        .contains("unresolved EventBus subscription"));
 }
 
 #[test]
@@ -191,9 +196,7 @@ fn renders_reason_coded_reviewed_unmatched_event_gaps() {
     assert_eq!(gaps.len(), 11);
     assert!(gaps.iter().any(|gap| gap.name() == "execution:stderr"));
     let rendered_value = serde_json::to_value(&gaps).expect("gaps serialize");
-    let rendered = rendered_value
-        .as_array()
-        .expect("gap list");
+    let rendered = rendered_value.as_array().expect("gap list");
     assert!(rendered
         .iter()
         .all(|gap| gap.get("reason_code").is_some() && gap.get("reason").is_some()));
