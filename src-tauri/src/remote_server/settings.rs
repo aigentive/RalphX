@@ -1,17 +1,21 @@
-use std::sync::Arc;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use rusqlite::Connection;
-use tokio::sync::Mutex;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
 pub(crate) const DEFAULT_REMOTE_PORT: u16 = 3849;
+/// Dev-parity override for the remote listener port, mirroring `BACKEND_PORT_ENV`.
+pub(crate) const REMOTE_PORT_ENV: &str = "RALPHX_REMOTE_PORT";
 const SETTINGS_ROW_ID: i64 = 1;
+const LOOPBACK_BIND_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RemoteExposureMode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteExposureMode {
     Serve,
     TailnetDirect,
 }
@@ -49,45 +53,246 @@ pub(crate) struct RemoteHostSettingsStore {
 }
 
 impl RemoteHostSettingsStore {
-    pub(crate) fn new(conn: Connection) -> Self {
-        Self {
-            db: DbConnection::new(conn),
-        }
-    }
-
-    pub(crate) fn from_shared(conn: Arc<Mutex<Connection>>) -> Self {
-        Self {
-            db: DbConnection::from_shared(conn),
-        }
+    pub(crate) fn from_db(db: DbConnection) -> Self {
+        Self { db }
     }
 
     /// Returns the singleton settings, creating the disabled default on first access.
     pub(crate) async fn get_or_create(&self) -> AppResult<RemoteHostSettings> {
         self.db
-            .run_transaction(move |conn| {
-                if let Some(settings) = read_settings(conn)? {
-                    return Ok(settings);
-                }
+            .run_transaction(move |conn| ensure_settings_row(conn))
+            .await
+    }
 
-                let environment_id = Uuid::new_v4().to_string();
+    /// Reads the singleton settings without minting them.
+    ///
+    /// Startup auto-start uses this so a host that never configured remote access keeps an
+    /// absent row (and therefore never listens).
+    pub(crate) async fn get(&self) -> AppResult<Option<RemoteHostSettings>> {
+        self.db.run(move |conn| read_settings(conn)).await
+    }
+
+    /// Persists the listener enablement flag, minting the settings row when absent.
+    pub(crate) async fn set_enabled(&self, enabled: bool) -> AppResult<RemoteHostSettings> {
+        self.db
+            .run_transaction(move |conn| {
+                ensure_settings_row(conn)?;
                 conn.execute(
-                    "INSERT INTO remote_host_settings (
-                        id, enabled, exposure_mode, port, environment_id
-                     ) VALUES (?1, 0, ?2, ?3, ?4)",
-                    rusqlite::params![
-                        SETTINGS_ROW_ID,
-                        RemoteExposureMode::Serve.as_db_value(),
-                        i64::from(DEFAULT_REMOTE_PORT),
-                        environment_id,
-                    ],
+                    "UPDATE remote_host_settings SET enabled = ?1 WHERE id = ?2",
+                    rusqlite::params![i64::from(enabled), SETTINGS_ROW_ID],
                 )
                 .map_err(|error| AppError::Database(error.to_string()))?;
-
-                read_settings(conn)?.ok_or_else(|| {
-                    AppError::Database("remote host settings row missing after insert".to_string())
-                })
+                read_settings_row(conn)
             })
             .await
+    }
+
+    /// Persists the exposure mode, minting the settings row when absent.
+    pub(crate) async fn set_exposure_mode(
+        &self,
+        exposure_mode: RemoteExposureMode,
+    ) -> AppResult<RemoteHostSettings> {
+        self.db
+            .run_transaction(move |conn| {
+                ensure_settings_row(conn)?;
+                conn.execute(
+                    "UPDATE remote_host_settings SET exposure_mode = ?1 WHERE id = ?2",
+                    rusqlite::params![exposure_mode.as_db_value(), SETTINGS_ROW_ID],
+                )
+                .map_err(|error| AppError::Database(error.to_string()))?;
+                read_settings_row(conn)
+            })
+            .await
+    }
+}
+
+fn ensure_settings_row(conn: &Connection) -> AppResult<RemoteHostSettings> {
+    if let Some(settings) = read_settings(conn)? {
+        return Ok(settings);
+    }
+
+    let environment_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO remote_host_settings (
+            id, enabled, exposure_mode, port, environment_id
+         ) VALUES (?1, 0, ?2, ?3, ?4)",
+        rusqlite::params![
+            SETTINGS_ROW_ID,
+            RemoteExposureMode::Serve.as_db_value(),
+            i64::from(DEFAULT_REMOTE_PORT),
+            environment_id,
+        ],
+    )
+    .map_err(|error| AppError::Database(error.to_string()))?;
+
+    read_settings_row(conn)
+}
+
+fn read_settings_row(conn: &Connection) -> AppResult<RemoteHostSettings> {
+    read_settings(conn)?
+        .ok_or_else(|| AppError::Database("remote host settings row is missing".to_string()))
+}
+
+/// Failure to read the host's tailnet membership.
+///
+/// The real `tailscale status --json` provider arrives in PR 1.6; this type exists so a
+/// provider failure can never be confused with "this host owns no tailnet address".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum TailnetProviderError {
+    /// Constructed by PR 1.6's `tailscale status --json` provider; the pre-1.6 stub never fails.
+    #[allow(dead_code)]
+    #[error("tailnet status is unavailable: {0}")]
+    Unavailable(String),
+}
+
+/// Typed refusal reasons for the §4.4 bind-address policy.
+///
+/// Every variant is an in-code refusal: the listener never binds a wildcard, LAN, or
+/// unverified address regardless of what the settings row or UI asked for.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum RemoteBindError {
+    #[error("remote listener refuses the wildcard bind address {0}")]
+    WildcardRefused(IpAddr),
+    #[error("remote listener refuses the non-tailnet bind address {0}")]
+    NonTailnetAddressRefused(IpAddr),
+    #[error("remote listener refuses tailnet address {0}, which this host does not own")]
+    ForeignTailnetAddressRefused(IpAddr),
+    #[error("remote listener has no usable tailnet address for direct exposure")]
+    TailnetAddressUnavailable,
+    #[error(transparent)]
+    TailnetStatus(#[from] TailnetProviderError),
+}
+
+/// Source of this host's own tailnet addresses.
+///
+/// PR 1.6 replaces the stub implementation with a `tailscale status --json` provider resolved
+/// through the shared production CLI resolver; the seam exists now so the bind policy is
+/// testable and direct exposure stays refused until that provider lands.
+#[async_trait::async_trait]
+pub(crate) trait TailnetSelfAddressProvider: Send + Sync {
+    async fn self_addresses(&self) -> Result<Vec<IpAddr>, TailnetProviderError>;
+}
+
+/// Stub provider reporting that this host has no tailnet addresses.
+///
+/// Consequence: `RemoteExposureMode::TailnetDirect` is refused until PR 1.6 ships the real
+/// provider. Serve mode (loopback) is unaffected.
+pub(crate) struct UnconfiguredTailnetProvider;
+
+#[async_trait::async_trait]
+impl TailnetSelfAddressProvider for UnconfiguredTailnetProvider {
+    async fn self_addresses(&self) -> Result<Vec<IpAddr>, TailnetProviderError> {
+        Ok(Vec::new())
+    }
+}
+
+/// True when `address` falls inside the tailnet CGNAT range `100.64.0.0/10`.
+pub(crate) fn is_tailnet_cgnat_ipv4(address: Ipv4Addr) -> bool {
+    let octets = address.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+/// Validates a candidate direct-exposure bind address against the §4.4 policy.
+///
+/// Refuses wildcard addresses, anything outside `100.64.0.0/10` (LAN, loopback, IPv6), and
+/// CGNAT addresses this host does not actually own.
+pub(crate) fn validate_tailnet_bind_ip(
+    candidate: IpAddr,
+    self_addresses: &[IpAddr],
+) -> Result<IpAddr, RemoteBindError> {
+    if candidate.is_unspecified() {
+        return Err(RemoteBindError::WildcardRefused(candidate));
+    }
+    let IpAddr::V4(candidate_v4) = candidate else {
+        return Err(RemoteBindError::NonTailnetAddressRefused(candidate));
+    };
+    if !is_tailnet_cgnat_ipv4(candidate_v4) {
+        return Err(RemoteBindError::NonTailnetAddressRefused(candidate));
+    }
+    if !self_addresses.contains(&candidate) {
+        return Err(RemoteBindError::ForeignTailnetAddressRefused(candidate));
+    }
+    Ok(candidate)
+}
+
+/// Computes the socket address the listener may bind for `exposure_mode`.
+///
+/// Serve mode is pinned to loopback; direct mode resolves and re-validates a CGNAT self
+/// address. There is no code path that yields a wildcard or LAN address.
+pub(crate) async fn resolve_bind_address(
+    exposure_mode: RemoteExposureMode,
+    port: u16,
+    provider: &dyn TailnetSelfAddressProvider,
+) -> Result<SocketAddr, RemoteBindError> {
+    match exposure_mode {
+        RemoteExposureMode::Serve => Ok(SocketAddr::from((LOOPBACK_BIND_IP, port))),
+        RemoteExposureMode::TailnetDirect => {
+            let self_addresses = provider.self_addresses().await?;
+            let candidate = self_addresses
+                .iter()
+                .copied()
+                .find(|address| match address {
+                    IpAddr::V4(address) => is_tailnet_cgnat_ipv4(*address),
+                    IpAddr::V6(_) => false,
+                })
+                .ok_or(RemoteBindError::TailnetAddressUnavailable)?;
+            let validated = validate_tailnet_bind_ip(candidate, &self_addresses)?;
+            Ok(SocketAddr::new(validated, port))
+        }
+    }
+}
+
+/// Typed rejection reasons for a malformed `RALPHX_REMOTE_PORT` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum RemotePortOverrideError {
+    #[error("value is empty")]
+    Empty,
+    #[error("value is not a valid u16 port")]
+    NotAPort,
+    #[error("port must be greater than zero")]
+    Zero,
+}
+
+/// Shape-validates a raw `RALPHX_REMOTE_PORT` value before it can reach a bind sink.
+pub(crate) fn parse_remote_port(
+    raw: Option<&str>,
+    configured_port: u16,
+) -> Result<u16, RemotePortOverrideError> {
+    let Some(raw) = raw else {
+        return Ok(configured_port);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(RemotePortOverrideError::Empty);
+    }
+    let port = trimmed
+        .parse::<u16>()
+        .map_err(|_| RemotePortOverrideError::NotAPort)?;
+    if port == 0 {
+        return Err(RemotePortOverrideError::Zero);
+    }
+    Ok(port)
+}
+
+/// Resolves the port the listener should use, honouring a validated env override.
+///
+/// An unparseable override is logged and ignored rather than propagated to the bind sink.
+pub(crate) fn effective_remote_port(configured_port: u16) -> u16 {
+    match std::env::var(REMOTE_PORT_ENV) {
+        Ok(value) => match parse_remote_port(Some(value.as_str()), configured_port) {
+            Ok(port) => port,
+            Err(error) => {
+                tracing::warn!(
+                    env_var = REMOTE_PORT_ENV,
+                    value = %value,
+                    configured_port,
+                    %error,
+                    "Ignoring invalid remote listener port override"
+                );
+                configured_port
+            }
+        },
+        Err(_) => configured_port,
     }
 }
 
