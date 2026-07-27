@@ -412,6 +412,9 @@ pub struct AgentConversationWorkspaceResponse {
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
+    pub publication_metadata_attempt_id: Option<String>,
+    pub publication_metadata_phase: Option<String>,
+    pub publication_metadata_state: Option<String>,
     pub auto_publish_enabled: bool,
     pub auto_publish_initial_pr_enabled: bool,
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
@@ -499,6 +502,13 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             publication_pr_url: workspace.publication_pr_url,
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
+            publication_metadata_attempt_id: workspace.publication_metadata_attempt_id,
+            publication_metadata_phase: workspace
+                .publication_metadata_phase
+                .map(|phase| phase.to_string()),
+            publication_metadata_state: workspace
+                .publication_metadata_state
+                .map(|state| state.to_string()),
             auto_publish_enabled: workspace.auto_publish_enabled,
             auto_publish_initial_pr_enabled: workspace.auto_publish_initial_pr_enabled,
             auto_publish_paused_pr_autofix_enabled: workspace
@@ -1750,6 +1760,7 @@ pub struct AgentConversationWorkspacePublicationEventResponse {
     pub status: String,
     pub summary: String,
     pub classification: Option<String>,
+    pub attempt_id: Option<String>,
     pub created_at: String,
 }
 
@@ -1764,6 +1775,7 @@ impl From<AgentConversationWorkspacePublicationEvent>
             status: event.status,
             summary: event.summary,
             classification: event.classification,
+            attempt_id: event.attempt_id,
             created_at: event.created_at.to_rfc3339(),
         }
     }

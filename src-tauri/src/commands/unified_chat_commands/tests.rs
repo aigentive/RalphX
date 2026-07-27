@@ -245,6 +245,44 @@ fn local_commit_ipc_response_serializes_camel_case_contract_fields() {
     assert!(value.get("currentHeadSha").is_none());
 }
 
+#[test]
+fn workspace_publication_receipt_serializes_for_frontend_consumers() {
+    let conversation_id =
+        ChatConversationId::from_string("receipt-contract-conversation".to_string());
+    let project_id = ProjectId::from_string("receipt-contract-project".to_string());
+    let mut workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+    workspace.publication_metadata_attempt_id = Some("metadata-attempt-1".to_string());
+    workspace.publication_metadata_phase =
+        Some(crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Reconciling);
+    workspace.publication_metadata_state = Some(AgentWorkspacePublicationMetadataState::Unknown);
+
+    let workspace_value = serde_json::to_value(AgentConversationWorkspaceResponse::from(workspace))
+        .expect("workspace response should serialize");
+
+    assert_eq!(
+        workspace_value["publication_metadata_attempt_id"],
+        "metadata-attempt-1"
+    );
+    assert_eq!(workspace_value["publication_metadata_phase"], "reconciling");
+    assert_eq!(workspace_value["publication_metadata_state"], "unknown");
+
+    let mut event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id,
+        "metadata_reconciling",
+        "active",
+        "Verifying linked PR metadata",
+        None,
+    );
+    event.attempt_id = Some("metadata-attempt-1".to_string());
+
+    let event_value = serde_json::to_value(
+        super::AgentConversationWorkspacePublicationEventResponse::from(event),
+    )
+    .expect("publication event response should serialize");
+
+    assert_eq!(event_value["attempt_id"], "metadata-attempt-1");
+}
+
 #[tokio::test]
 async fn agent_conversation_runtime_status_includes_linked_ideation_and_verification() {
     let state = AppState::new_sqlite_test();
@@ -1203,6 +1241,9 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         publication_pr_url: None,
         publication_pr_status: None,
         publication_push_status: None,
+        publication_metadata_attempt_id: None,
+        publication_metadata_phase: None,
+        publication_metadata_state: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,
@@ -1272,6 +1313,9 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
         publication_pr_status: Some("open".to_string()),
         publication_push_status: Some("needs_agent".to_string()),
+        publication_metadata_attempt_id: None,
+        publication_metadata_phase: None,
+        publication_metadata_state: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,
