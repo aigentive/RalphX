@@ -30,6 +30,10 @@ pub mod transport_spike;
 mod transport_spike_tests;
 
 // --- PR 1.3: invoke facade, capability ledger, authority audit (one contiguous block) ---
+#[cfg(test)]
+pub mod authority_audit;
+#[cfg(test)]
+mod authority_audit_tests;
 pub mod capability_ledger;
 #[cfg(test)]
 mod capability_ledger_tests;
