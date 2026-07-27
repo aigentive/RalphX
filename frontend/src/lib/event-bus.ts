@@ -7,6 +7,23 @@
  *
  * This abstraction allows the app to run without Tauri for visual testing
  * and Playwright automation.
+ *
+ * TWO CONSTRAINTS THIS FILE NOW CARRIES:
+ *
+ * 1. This is the SOLE module allowed to import raw `listen`/`once` from
+ *    @tauri-apps/api/event. Enforced in CI by
+ *    scripts/check-raw-tauri-event-listen.mjs. Every other consumer goes through
+ *    `useEventBus()`.
+ * 2. `EventBus` is the swap seam for remote environments: a remote-mode app selects a
+ *    network-backed implementation instead of `TauriEventBus`. Keep the interface
+ *    transport-agnostic — no Tauri-specific semantics in the contract — and keep
+ *    `Unsubscribe` non-throwing with a `ready` that always settles.
+ *
+ * Note for the network implementation: names classified Local-only (host chrome such as
+ * the native-menu updater events) have no remote meaning. They must still reach their
+ * local subscriber when a remote environment is active, so a network bus should route
+ * Local-only names to a wrapped local bus rather than have chrome consumers reach around
+ * `useEventBus()` — reintroducing raw `listen` would erode constraint 1.
  */
 
 import { listen, emit, type UnlistenFn, type Event } from "@tauri-apps/api/event";
@@ -14,7 +31,13 @@ import { isTauriMode } from "./tauri-detection";
 
 /**
  * Unsubscribe function returned by subscribe(). The function must never throw.
- * `ready` resolves once native listener registration has settled, including failure.
+ *
+ * `ready` resolves once the handler is registered with the underlying implementation,
+ * including when registration failed. It is a REGISTRATION barrier only — never a
+ * connectivity or delivery signal. A one-shot promise cannot describe a reconnecting
+ * transport's lifecycle, so an implementation backed by one must resolve `ready` on local
+ * registration (synchronously, like MockEventBus); gating it on "connected" would deadlock
+ * every `await unsubscribe.ready` producer while the transport sits in backoff.
  */
 export type Unsubscribe = (() => void) & { ready: Promise<void> };
 
@@ -28,7 +51,13 @@ export type EventHandler<T = unknown> = (payload: T) => void;
  */
 export interface EventBus {
   /**
-   * Subscribe to an event
+   * Subscribe to an event.
+   *
+   * Every call is an INDEPENDENT subscription, even when passed a handler reference that
+   * is already subscribed, and the returned Unsubscribe removes only that subscription.
+   * (Do not de-duplicate by handler identity: the first unsubscribe would then kill a
+   * sibling's live subscription.)
+   *
    * @param event - Event name to listen for
    * @param handler - Callback function receiving the event payload
    * @returns Unsubscribe function to stop listening
@@ -36,7 +65,21 @@ export interface EventBus {
   subscribe<T = unknown>(event: string, handler: EventHandler<T>): Unsubscribe;
 
   /**
-   * Emit an event (primarily for testing/mock mode)
+   * Emit an event to LOCAL subscribers only.
+   *
+   * Not a test-only affordance: production uses it as the in-app re-broadcast channel
+   * (for example bridging `task:updated` to graph hooks, and `:local`-suffixed synthetics).
+   * An implementation must never write an emit to a network transport.
+   *
+   * Names emitted from the webview must be classified webview-origin/Local-only — use a
+   * `:local` suffix for new synthetics. Backend-classified names are reserved for the Rust
+   * backend, because a host's event capture observes the Tauri bus and cannot tell a
+   * webview emit from a backend one; emitting a durable backend name here would be
+   * recorded and fanned out to remote clients as backend truth.
+   *
+   * Delivery timing is implementation-defined (Tauri is async over IPC, Mock is
+   * synchronous). Do not rely on re-entrancy or same-tick delivery.
+   *
    * @param event - Event name to emit
    * @param payload - Event payload data
    */
@@ -155,19 +198,22 @@ export class TauriEventBus implements EventBus {
  * Provides the same interface but events stay in-browser.
  */
 export class MockEventBus implements EventBus {
-  private listeners: Map<string, Set<EventHandler<unknown>>> = new Map();
+  // Subscriptions, not handlers: storing raw handler references in a Set collapses two
+  // subscriptions of the same function into one, so the first unsubscribe would kill the
+  // survivor — a divergence from TauriEventBus that web mode must not have.
+  private listeners: Map<string, Set<{ handler: EventHandler<unknown> }>> = new Map();
 
   subscribe<T = unknown>(event: string, handler: EventHandler<T>): Unsubscribe {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
     // Cast needed because Map stores EventHandler<unknown>
-    const typedHandler = handler as EventHandler<unknown>;
-    this.listeners.get(event)!.add(typedHandler);
+    const subscription = { handler: handler as EventHandler<unknown> };
+    this.listeners.get(event)!.add(subscription);
 
     // Return unsubscribe function
     const unsubscribe = () => {
-      this.listeners.get(event)?.delete(typedHandler);
+      this.listeners.get(event)?.delete(subscription);
     };
     unsubscribe.ready = Promise.resolve();
     return unsubscribe;
@@ -176,7 +222,9 @@ export class MockEventBus implements EventBus {
   emit<T = unknown>(event: string, payload: T): void {
     const handlers = this.listeners.get(event);
     if (handlers) {
-      handlers.forEach((handler) => {
+      // Snapshot so a handler that subscribes/unsubscribes during dispatch cannot mutate
+      // the set being iterated.
+      [...handlers].forEach(({ handler }) => {
         try {
           handler(payload);
         } catch (err) {

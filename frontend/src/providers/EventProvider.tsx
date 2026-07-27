@@ -55,7 +55,7 @@ const EventBusContext = createContext<EventBus | null>(null);
  *   const bus = useEventBus();
  *
  *   useEffect(() => {
- *     return bus.subscribe('my:event', (payload) => {
+ *     return bus.subscribe('notification:created', (payload) => {
  *       console.log('Received:', payload);
  *     });
  *   }, [bus]);

@@ -1,5 +1,4 @@
 use ralphx_remote_protocol::{EventDelivery, EventOrigin, EVENT_CLASSIFICATIONS};
-use serde_json::Value;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use tauri::{Listener, Runtime};
 
@@ -7,10 +6,19 @@ use tauri::{Listener, Runtime};
 #[path = "capture_tests.rs"]
 mod tests;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedEvent {
     pub name: &'static str,
-    pub payload: Value,
+    /// Raw JSON payload text, exactly as Tauri delivered it.
+    ///
+    /// Deliberately unparsed. Tauri invokes `listen_any` callbacks INLINE on the emitting
+    /// thread (`tauri::event::listener::emit_filter` → `(callback)(Event::new(…))`), so a
+    /// `serde_json` parse here would run on the emit hot path of every classified event —
+    /// including `agent:chunk` streaming. §3.4 pins the opposite contract ("parse cost … off
+    /// the emit hot path"; "capture handlers stay sync and do channel-send"), so parsing
+    /// belongs to the drain side: PR 1.4's sequencer/broadcast actor. `remote_event_log.payload`
+    /// is TEXT, so the durable path stores this string without re-serializing it.
+    pub payload: String,
 }
 
 #[derive(Clone)]
@@ -38,7 +46,17 @@ impl CaptureFeed {
     }
 }
 
-pub trait EventRegistrar: Clone + Send + Sync + 'static {
+/// Which of the two capture seams a classified event feeds.
+///
+/// Deliberately narrower than [`EventDelivery`]: `LocalOnly` is filtered out at registration,
+/// so the handler cannot be handed a delivery class it has no seam for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureSink {
+    Durable,
+    Transient,
+}
+
+pub trait EventRegistrar {
     fn listen(&self, name: &'static str, handler: Box<dyn Fn(&str) + Send + Sync>);
 }
 
@@ -65,27 +83,40 @@ impl RemoteEventCapture {
     }
 
     pub fn install_with_registrar<R: EventRegistrar>(registrar: R, feed: CaptureFeed) {
-        for entry in EVENT_CLASSIFICATIONS
-            .iter()
-            .filter(|entry| entry.origin == EventOrigin::Backend && !entry.excluded_from_v1)
-        {
+        for entry in EVENT_CLASSIFICATIONS.iter().filter(|entry| {
+            // Local-only rows never get a handler, whatever their origin. The webview-origin
+            // filter alone is not enough: §3.4's Local-only category explicitly includes
+            // backend chrome ("window/dock/updater chrome"), and PR 1.4 adds backend-emitted
+            // `remote:session_connected`/`remote:session_closed` as Local-only rows
+            // (02-phase-1-host-mode.md). Filtering on delivery makes the `LocalOnly` arm of the
+            // handler's match structurally unreachable instead of test-enforced.
+            entry.origin == EventOrigin::Backend
+                && entry.delivery != EventDelivery::LocalOnly
+                && !entry.excluded_from_v1
+        }) {
             let name = entry.name;
-            let delivery = entry.delivery;
+            let sink = match entry.delivery {
+                EventDelivery::Durable => CaptureSink::Durable,
+                EventDelivery::Transient => CaptureSink::Transient,
+                // Filtered out above; `continue` rather than `unreachable!` keeps a table edit
+                // from turning into a panic inside a Tauri event-dispatch callback.
+                EventDelivery::LocalOnly => continue,
+            };
             let feed = feed.clone();
             registrar.listen(
                 name,
                 Box::new(move |raw_payload| {
-                    let Ok(payload) = serde_json::from_str(raw_payload) else {
-                        tracing::warn!(
-                            event_name = name,
-                            "Remote event capture dropped malformed JSON payload"
-                        );
-                        return;
+                    let event = CapturedEvent {
+                        name,
+                        payload: raw_payload.to_owned(),
                     };
-                    let event = CapturedEvent { name, payload };
-                    match delivery {
-                        EventDelivery::Durable => match feed.durable.try_send(event) {
+                    match sink {
+                        CaptureSink::Durable => match feed.durable.try_send(event) {
                             Ok(()) => {}
+                            // PR 1.4: a full durable channel must mark the stream unhealthy and
+                            // signal an epoch roll over the unbounded control channel (§3.4 #3)
+                            // so no dropped event is ever silently spliced over. This warn is a
+                            // pre-sequencer placeholder — it must not ship as the final behavior.
                             Err(TrySendError::Full(_)) => tracing::warn!(
                                 event_name = name,
                                 "Remote durable capture feed is full"
@@ -95,7 +126,7 @@ impl RemoteEventCapture {
                                 "Remote durable capture feed is disconnected"
                             ),
                         },
-                        EventDelivery::Transient => {
+                        CaptureSink::Transient => {
                             if feed.transient.send(event).is_err() {
                                 tracing::warn!(
                                     event_name = name,
@@ -103,7 +134,6 @@ impl RemoteEventCapture {
                                 );
                             }
                         }
-                        EventDelivery::LocalOnly => unreachable!("local events are not registered"),
                     }
                 }),
             );
@@ -118,8 +148,14 @@ pub fn install_if_host_mode_configured<R: Runtime>(
     if !configured {
         return;
     }
+    // Bounded so a wedged consumer can never block the emit thread; overflow means an epoch
+    // roll, not backpressure (§3.4 #3).
     let (feed, receivers) = CaptureFeed::channels(1_024);
     RemoteEventCapture::install(app_handle, feed);
+    // Placeholder drains: PR 1.4 replaces both receivers with the durable sequencer actor
+    // (allocate → commit → publish) and the transient live-broadcast channel. Pre-1.4 there is
+    // no sequencer, listener, or client, so discarded events are unobservable
+    // (01-phase-0-foundations.md, Open question 2).
     std::thread::spawn(move || for _ in receivers.durable {});
     std::thread::spawn(move || for _ in receivers.transient {});
 }

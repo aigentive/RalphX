@@ -1,7 +1,8 @@
 use event_manifest_scanner::{
     reviewed_unmatched_events, scan_consumed_source, scan_production_rust_tree, scan_rust_source,
-    verify_unmatched_event_coverage, ScanError,
+    verify_consumed_classification, verify_unmatched_event_coverage, ScanError,
 };
+use ralphx_remote_protocol::EVENT_CLASSIFICATIONS;
 
 fn names(source: &str) -> Vec<String> {
     scan_rust_source("fixture.rs", source)
@@ -217,4 +218,88 @@ fn rejects_new_unreviewed_unmatched_classification() {
     let error = verify_unmatched_event_coverage(&["new:event"])
         .expect_err("unknown unmatched event must fail CI");
     assert!(error.to_string().contains("no reviewed gap entry"));
+}
+
+/// PR 0.1 acceptance #5: removing a UI-consumed name from the classification table must fail.
+#[test]
+fn rejects_consumed_names_absent_from_the_classification_table() {
+    verify_consumed_classification(&["notification:created".to_owned()], EVENT_CLASSIFICATIONS)
+        .expect("a classified consumed name passes");
+
+    let stripped = EVENT_CLASSIFICATIONS
+        .iter()
+        .filter(|entry| entry.name != "notification:created")
+        .copied()
+        .collect::<Vec<_>>();
+    let error = verify_consumed_classification(&["notification:created".to_owned()], &stripped)
+        .expect_err("an unclassified consumed name must fail the manifest");
+    let message = error.to_string();
+    assert!(
+        message.contains("UI-consumed event names are unclassified"),
+        "{message}"
+    );
+    assert!(message.contains("notification:created"), "{message}");
+}
+
+/// Regression: PR 1.8 moved consumers onto the bus with the event-name const living in a feature
+/// module (`api/terminal.ts`), which the lib/events.ts-only resolver could not follow.
+#[test]
+fn resolves_event_name_constants_imported_from_other_frontend_modules() {
+    let root = tempfile::tempdir().expect("temp frontend root");
+    let src = root.path();
+    std::fs::create_dir_all(src.join("lib")).expect("lib dir");
+    std::fs::create_dir_all(src.join("api")).expect("api dir");
+    std::fs::create_dir_all(src.join("components")).expect("components dir");
+    std::fs::write(
+        src.join("lib/events.ts"),
+        "export const SHARED_EVENT = \"notification:created\";\n",
+    )
+    .expect("shared constants");
+    std::fs::write(
+        src.join("api/terminal.ts"),
+        "export const AGENT_TERMINAL_EVENT = \"agent_terminal:event\";\n",
+    )
+    .expect("feature module constants");
+    std::fs::write(
+        src.join("components/Drawer.tsx"),
+        "import { AGENT_TERMINAL_EVENT as TERMINAL } from \"@/api/terminal\";\n\
+         import { SHARED_EVENT } from \"@/lib/events\";\n\
+         bus.subscribe(TERMINAL, () => undefined);\n\
+         bus.subscribe(SHARED_EVENT, () => undefined);\n",
+    )
+    .expect("consumer");
+
+    let names = event_manifest_scanner::scan_consumed_tree(src).expect("consumed scan resolves");
+    assert_eq!(
+        names,
+        vec![
+            "agent_terminal:event".to_owned(),
+            "notification:created".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn rejects_unrecognised_subscribe_receivers() {
+    let error = scan_consumed_source(
+        "renamed_bus.ts",
+        "const events = useEventBus();\nevents.subscribe(\"task:created\", () => undefined);\n",
+    )
+    .expect_err("an unrecognised subscribe receiver must fail closed");
+    let message = error.to_string();
+    assert!(
+        message.contains("unrecognised `.subscribe(` receiver"),
+        "{message}"
+    );
+    assert!(message.contains("events"), "{message}");
+}
+
+#[test]
+fn accepts_the_reviewed_foreign_subscribe_receiver() {
+    let names = scan_consumed_source(
+        "query_cache.ts",
+        "const unsubscribe = queryClient.getQueryCache().subscribe(onStoreChange);\n",
+    )
+    .expect("the reviewed non-event-bus receiver is ignored");
+    assert!(names.is_empty());
 }

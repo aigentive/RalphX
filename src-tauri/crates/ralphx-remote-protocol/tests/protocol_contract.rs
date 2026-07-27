@@ -97,6 +97,47 @@ fn class_permits_rejects_every_capability_for_read_and_operate() {
     ));
 }
 
+/// The negation loop above proves nothing about the classes that DO permit capabilities: a
+/// refactor making `PathScoped` reject its own capability, or `Denied` accept an empty set,
+/// would pass it. PR 1.3's ledger and compile gates build directly on these answers.
+#[test]
+fn class_permits_accepts_exactly_the_capabilities_each_class_owns() {
+    assert!(ralphx_remote_protocol::class_permits(
+        RiskClass::PathScoped,
+        &[Capability::WritesArbitraryPath]
+    ));
+    assert!(!ralphx_remote_protocol::class_permits(
+        RiskClass::PathScoped,
+        &[Capability::WritesArbitraryPath, Capability::SpawnsProcess]
+    ));
+    assert!(ralphx_remote_protocol::class_permits(
+        RiskClass::AgentControl,
+        &[
+            Capability::AgentControl,
+            Capability::SeedsSpawnTriggeringState,
+            Capability::MutatesAgentConsumedContent
+        ]
+    ));
+    assert!(!ralphx_remote_protocol::class_permits(
+        RiskClass::AgentControl,
+        &[Capability::TouchesCredentials]
+    ));
+    assert!(ralphx_remote_protocol::class_permits(
+        RiskClass::Elevated,
+        CAPABILITIES
+    ));
+    assert!(ralphx_remote_protocol::class_permits(RiskClass::Read, &[]));
+    assert!(ralphx_remote_protocol::class_permits(
+        RiskClass::Operate,
+        &[]
+    ));
+    // `Denied` registers nothing, not even a capability-free command.
+    assert!(!ralphx_remote_protocol::class_permits(
+        RiskClass::Denied,
+        &[]
+    ));
+}
+
 #[test]
 fn event_classification_is_exact_and_snapshotted() {
     assert_eq!(
@@ -119,6 +160,17 @@ fn event_classification_is_exact_and_snapshotted() {
         EventClassification::find("task:updated").unwrap().origin,
         EventOrigin::Webview
     );
+    // Backend-emitted host chrome is Local-only with a truthful backend origin; the capture
+    // bank drops it on delivery, so nothing has to lie about where it came from.
+    for chrome in [
+        "ralphx://check-for-updates",
+        "ralphx://show-release-notes",
+        "gh-auth:login_prompt",
+    ] {
+        let entry = EventClassification::find(chrome).unwrap();
+        assert_eq!(entry.delivery, EventDelivery::LocalOnly, "{chrome}");
+        assert_eq!(entry.origin, EventOrigin::Backend, "{chrome}");
+    }
     assert_eq!(
         EventClassification::find("notification:created")
             .unwrap()
@@ -142,6 +194,13 @@ fn event_classification_is_exact_and_snapshotted() {
         "team:message",
         "team:status_changed",
         "automation:run_updated",
+        // Invented chrome names with no emit site and no consumer anywhere in the repo, plus a
+        // JSDoc `@example` string. Local-only rows are exempt from the emit-site assertion, so
+        // only this test keeps the allowlist from accumulating phantoms.
+        "my:event",
+        "window:focus",
+        "dock:updated",
+        "updater:status",
     ] {
         assert!(
             EventClassification::find(stale_name).is_none(),
