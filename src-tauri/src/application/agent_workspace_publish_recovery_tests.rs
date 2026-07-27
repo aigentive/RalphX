@@ -18,6 +18,7 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_transient_publish_statuses, StalePublishRepairRecoveryOutcome,
     STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
+    STALE_TRANSIENT_STATUS_STALE_SECS,
 };
 use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -301,7 +302,7 @@ async fn startup_metadata_recovery_settles_prepared_without_a_github_read_or_pat
     let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
 
     assert_eq!(
-        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
             .await
             .expect("recover prepared receipt"),
         1
@@ -317,6 +318,39 @@ async fn startup_metadata_recovery_settles_prepared_without_a_github_read_or_pat
     assert_eq!(
         receipt.phase,
         crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Settled
+    );
+    assert_eq!(
+        receipt.state,
+        crate::domain::entities::AgentWorkspacePublicationMetadataState::NotAttempted
+    );
+}
+
+#[tokio::test]
+async fn periodic_metadata_recovery_does_not_preempt_a_fresh_prepared_receipt() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(49);
+    let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(
+            &state,
+            STALE_TRANSIENT_STATUS_STALE_SECS,
+        )
+        .await
+        .expect("skip fresh prepared receipt"),
+        0
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(&conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("prepared receipt");
+    assert_eq!(
+        receipt.phase,
+        crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Prepared
     );
     assert_eq!(
         receipt.state,
@@ -353,7 +387,7 @@ async fn startup_metadata_recovery_classifies_mutating_receipts_with_one_read_an
         github.queue_pr_detail(Ok(metadata_recovery_pr_detail(title, body)));
 
         assert_eq!(
-            recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+            recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
                 .await
                 .expect("recover mutating receipt"),
             1
@@ -402,7 +436,7 @@ async fn mutating_metadata_recovery_rejects_an_invalid_recorded_worktree_before_
     )));
 
     assert_eq!(
-        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
             .await
             .expect("invalid path fails closed"),
         0
@@ -431,7 +465,7 @@ async fn unreadable_metadata_receipt_readback_remains_nonterminal_and_generic_st
     github.will_fail_pr_detail("unavailable");
 
     assert_eq!(
-        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
             .await
             .expect("recover unreadable receipt"),
         0
@@ -495,7 +529,7 @@ async fn generic_stale_recovery_recovers_transient_status_after_receipt_settles(
     let conversation_id = conversation_id(48);
     let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
     assert_eq!(
-        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
             .await
             .expect("settle prepared receipt"),
         1
@@ -564,7 +598,7 @@ async fn reconciling_metadata_receipt_reads_once_and_never_repeats_a_patch() {
     )));
 
     assert_eq!(
-        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
             .await
             .expect("recover reconciling receipt"),
         1
@@ -593,7 +627,7 @@ async fn repeated_metadata_recovery_is_idempotent_after_terminal_settlement() {
     let conversation_id = conversation_id(45);
     let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
 
-    recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+    recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
         .await
         .expect("initial recovery");
     let events_after_initial_recovery = state
@@ -602,7 +636,7 @@ async fn repeated_metadata_recovery_is_idempotent_after_terminal_settlement() {
         .await
         .expect("list events");
     assert_eq!(
-        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state)
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
             .await
             .expect("repeated recovery"),
         0

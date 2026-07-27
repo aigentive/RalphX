@@ -565,13 +565,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
 
     async fn list_active_pending_publication_metadata_receipt_workspaces(
         &self,
+        stale_older_than_secs: u64,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
-        Ok(self
-            .workspaces
-            .read()
-            .await
+        let cutoff = Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64);
+        let workspaces = self.workspaces.read().await;
+        let receipts = self.publication_metadata_receipts.read().await;
+        Ok(workspaces
             .values()
-            .filter(|workspace| is_active_pending_publication_metadata_receipt_workspace(workspace))
+            .filter(|workspace| {
+                is_active_pending_publication_metadata_receipt_workspace(workspace)
+                    && receipts
+                        .get(&workspace.conversation_id)
+                        .is_some_and(|receipt| receipt.updated_at <= cutoff)
+            })
             .cloned()
             .collect())
     }

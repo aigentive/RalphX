@@ -652,10 +652,11 @@ fn has_nonterminal_publication_metadata_receipt(workspace: &AgentConversationWor
 /// preparation owns `pushing`, which the generic stale writer must never downgrade.
 pub async fn recover_pending_agent_workspace_pr_metadata_receipts_for_state(
     state: &AppState,
+    stale_older_than_secs: u64,
 ) -> AppResult<u32> {
     let workspaces = state
         .agent_conversation_workspace_repo
-        .list_active_pending_publication_metadata_receipt_workspaces()
+        .list_active_pending_publication_metadata_receipt_workspaces(stale_older_than_secs)
         .await?;
     let Some(github) = state.github_service.as_ref() else {
         if workspaces
@@ -767,7 +768,7 @@ pub async fn recover_pending_agent_workspace_pr_metadata_receipts_for_state(
 pub async fn recover_pending_agent_workspace_pr_metadata_receipts_on_startup_for_state(
     state: &AppState,
 ) {
-    match recover_pending_agent_workspace_pr_metadata_receipts_for_state(state).await {
+    match recover_pending_agent_workspace_pr_metadata_receipts_for_state(state, 0).await {
         Ok(count) if count > 0 => {
             tracing::info!(
                 count,
@@ -794,8 +795,11 @@ pub async fn run_periodic_workspace_publish_recovery(state: AppState) {
             );
         }
 
-        if let Err(err) =
-            recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state).await
+        if let Err(err) = recover_pending_agent_workspace_pr_metadata_receipts_for_state(
+            &state,
+            STALE_TRANSIENT_STATUS_STALE_SECS,
+        )
+        .await
         {
             tracing::warn!(
                 error = %err,

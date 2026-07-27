@@ -1505,7 +1505,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
 
     async fn list_active_pending_publication_metadata_receipt_workspaces(
         &self,
+        stale_older_than_secs: u64,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64))
+            .to_rfc3339();
         self.db
             .run(move |conn| {
                 let mut stmt = conn.prepare(
@@ -1513,9 +1516,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      WHERE status = 'active'
                        AND publication_metadata_phase IN ('prepared', 'mutating', 'reconciling')
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                       AND publication_metadata_updated_at <= ?1
                      ORDER BY publication_metadata_updated_at ASC, updated_at ASC",
                 )?;
-                let rows = stmt.query([])?;
+                let rows = stmt.query([cutoff])?;
                 collect_workspaces(rows)
             })
             .await

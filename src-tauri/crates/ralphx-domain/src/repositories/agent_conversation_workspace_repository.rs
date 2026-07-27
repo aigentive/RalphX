@@ -327,10 +327,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     /// Lists active workspaces whose current PR metadata receipt still requires recovery.
     ///
     /// This is intentionally separate from generic transient publish statuses because receipt
-    /// recovery owns `pushing`, while generic stale recovery must never downgrade it.
+    /// recovery owns `pushing`, while generic stale recovery must never downgrade it. The age
+    /// cutoff prevents periodic recovery from preempting an in-flight metadata mutation.
     async fn list_active_pending_publication_metadata_receipt_workspaces(
         &self,
+        stale_older_than_secs: u64,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = stale_older_than_secs;
         Ok(Vec::new())
     }
 

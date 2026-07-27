@@ -4161,7 +4161,7 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
 }
 
 #[tokio::test]
-async fn pending_publication_metadata_receipt_workspaces_include_pushing_receipts_only() {
+async fn pending_publication_metadata_receipt_workspaces_require_a_stale_receipt() {
     let (db, repo, conversation_id) = setup_repo();
     let mut pending = make_workspace(conversation_id.clone());
     pending.publication_pr_number = Some(97);
@@ -4186,11 +4186,16 @@ async fn pending_publication_metadata_receipt_workspaces_include_pushing_receipt
         .await
         .unwrap();
 
+    assert!(repo
+        .list_active_pending_publication_metadata_receipt_workspaces(300)
+        .await
+        .unwrap()
+        .is_empty());
+
     let workspaces = repo
-        .list_active_pending_publication_metadata_receipt_workspaces()
+        .list_active_pending_publication_metadata_receipt_workspaces(0)
         .await
         .unwrap();
-
     assert_eq!(workspaces.len(), 1);
     assert_eq!(workspaces[0].conversation_id, conversation_id);
     assert_eq!(

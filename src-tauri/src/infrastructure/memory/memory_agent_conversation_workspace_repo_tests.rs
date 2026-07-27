@@ -2663,7 +2663,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_publication_metadata_receipt_workspaces_include_pushing_receipts_only() {
+    async fn pending_publication_metadata_receipt_workspaces_require_a_stale_receipt() {
         let repo = MemoryAgentConversationWorkspaceRepository::new();
         let mut pending = candidate_workspace("pending-receipt");
         let conversation_id = pending.conversation_id.clone();
@@ -2686,11 +2686,16 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(repo
+            .list_active_pending_publication_metadata_receipt_workspaces(300)
+            .await
+            .unwrap()
+            .is_empty());
+
         let workspaces = repo
-            .list_active_pending_publication_metadata_receipt_workspaces()
+            .list_active_pending_publication_metadata_receipt_workspaces(0)
             .await
             .unwrap();
-
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].conversation_id, conversation_id);
         assert_eq!(
