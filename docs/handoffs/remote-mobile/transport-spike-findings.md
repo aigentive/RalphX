@@ -28,8 +28,8 @@
 | ID | Question | Capture required | Location | Status |
 |---|---|---|---|---|
 | E-1 | (a) Desktop Rust-proxy traffic boundary | WKWebView network/devtools capture plus Rust-proxy request log | Pending | Pending |
-| E-2 | (b) Auth-before-`OPTIONS` failure | Request/response capture proving the preflight status and CORS headers | Pending | Pending |
-| E-3 | (b) Pre-auth-`OPTIONS` success | Request/response capture proving restrictive origin behavior and successful preflight | Pending | Pending |
+| E-2 | (b) Auth-before-`OPTIONS` failure | Actual loopback socket request/response | `actual_listener_auth_before_options_returns_401_without_cors_headers` | Captured — Rust socket evidence, not a browser capture |
+| E-3 | (b) Pre-auth-`OPTIONS` success and restrictive rejection | Actual loopback socket request/response | `actual_listener_options_before_auth_returns_restrictive_cors_for_allowed_origin`; `actual_listener_options_before_auth_denies_an_unlisted_origin_without_cors_headers` | Captured — Rust socket evidence, not a browser capture |
 | E-4 | (c) Serve ATS result | Named Apple probe output for HTTPS/WSS through Serve | Pending | Pending |
 | E-5 | (c) Direct-tailnet ATS result | Named Apple probe output for plain tailnet HTTP/WS | Pending | Pending |
 
@@ -46,6 +46,15 @@
 - The stub obtains the request target from its own `127.0.0.1:0` listener bind; command input selects only the two fixture orderings. It accepts no URL, host, bearer, pairing code, or caller-provided path.
 - The sibling behavioral test `desktop_proxy_command_uses_the_loopback_fixture_and_reports_its_result` asserts the loopback-only result schema and the Rust-observed fixture response. This is code/test evidence of the intended boundary, not evidence of actual WKWebView network behavior.
 - E-1 and question (a)'s verdict remain pending until a native WKWebView/devtools capture is collected; no such capture was performed in this task.
+
+## E-2 / E-3 actual listener socket evidence (not a browser capture)
+
+- Probe vehicle: the focused Rust sibling tests named in the evidence index use `tokio::net::TcpStream` against the command's actual ephemeral `127.0.0.1:0` listener. They do not call `Router::oneshot` for this evidence.
+- Request shape: `OPTIONS /remote/v1/invoke` with `Origin`, `Access-Control-Request-Method: POST`, and `Access-Control-Request-Headers: authorization,content-type`. No bearer, pairing code, or remote host is supplied.
+- E-2: with `AuthBeforeOptions`, the actual listener returns `401 Unauthorized` and emits no `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, or `Access-Control-Allow-Headers` header.
+- E-3 allowed origin: with `OptionsBeforeAuth` and `Origin: http://127.0.0.1:1420`, the actual listener returns `204 No Content` with `Access-Control-Allow-Origin` set only to that origin, methods `POST`, headers `authorization,content-type`, and `Vary: Origin`.
+- E-3 unlisted origin: with `OptionsBeforeAuth` and `Origin: https://unlisted.example`, the actual listener returns `403 Forbidden` and emits no CORS allow headers.
+- These are listener/socket assertions recorded by the focused Rust test suite. No browser page, browser network inspector, or WKWebView capture was run, so browser-visible results remain pending.
 
 ## (a) Does the Rust-proxied desktop transport produce zero WKWebView cross-origin traffic?
 
@@ -89,19 +98,19 @@ Against the debug-only direct-path listener, does auth-before-`OPTIONS` reproduc
 
 | Field | Auth-before-`OPTIONS` configuration | Pre-auth-`OPTIONS` configuration |
 |---|---|---|
-| Probe vehicle and version | Pending | Pending |
-| Request origin / method / headers | Pending | Pending |
-| Listener ordering evidence | Pending | Pending |
-| HTTP status | Pending | Pending |
-| CORS response headers | Pending | Pending |
+| Probe vehicle and version | Focused Rust `tokio::net::TcpStream` sibling test (not a browser) | Focused Rust `tokio::net::TcpStream` sibling tests (not a browser) |
+| Request origin / method / headers | `OPTIONS /remote/v1/invoke`; `Origin: http://127.0.0.1:1420`; requested `POST`, `authorization,content-type` | Allowed case: same fixed origin/request; rejected case: `Origin: https://unlisted.example`; same requested method/headers |
+| Listener ordering evidence | `DebugCorsProbeOrdering::AuthBeforeOptions` on actual ephemeral loopback listener | `DebugCorsProbeOrdering::OptionsBeforeAuth` on actual ephemeral loopback listener |
+| HTTP status | `401 Unauthorized` | Allowed: `204 No Content`; unlisted: `403 Forbidden` |
+| CORS response headers | No allow-origin/methods/headers | Allowed: fixed allow-origin, `POST`, `authorization,content-type`, `Vary: Origin`; unlisted: no allow headers |
 | Browser-visible result | Pending | Pending |
-| Evidence IDs | Pending | Pending |
-| Finding / verdict | Pending | Pending |
+| Evidence IDs | E-2 — actual socket test named above | E-3 — actual socket tests named above |
+| Finding / verdict | The modeled auth-before-OPTIONS ordering reproduces the required preflight-401 failure. Browser result remains pending. | The modeled pre-auth OPTIONS ordering has restrictive success for only the fixed origin and rejects an unlisted origin. Browser result remains pending. |
 
 ### Implication slots
 
-- PR 1.1 / C-15 router middleware ordering and restrictive-origin policy: Pending evidence review.
-- Mobile transport specification direct-browser behavior: Pending evidence review.
+- PR 1.1 / C-15 router middleware ordering and restrictive-origin policy: the actual-listener socket evidence supports pre-auth `OPTIONS` and a fixed allowlist; browser evidence is still pending.
+- Mobile transport specification direct-browser behavior: Pending browser evidence review; the socket fixture is not a mobile/browser observation.
 
 ## (c) ATS: does Serve TLS satisfy Apple-client requirements, and does plain tailnet HTTP need exceptions?
 
