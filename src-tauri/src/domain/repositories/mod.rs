@@ -5,6 +5,7 @@ pub mod orphan_worktree_cleanup_marker_repository;
 pub mod permission_repository;
 pub mod question_repository;
 pub mod queued_message_repository;
+pub mod remote_environment_repository;
 pub mod ui_feature_flag_overrides_repository;
 
 pub use orphan_worktree_cleanup_marker_repository::{
@@ -30,4 +31,5 @@ pub use ralphx_domain::repositories::{
     task_dependency_repository, task_proposal_repository, task_qa_repository, task_repository,
     task_step_repository, workflow_repository,
 };
+pub use remote_environment_repository::{RemoteEnvironmentRepository, UpsertPairedEnvironment};
 pub use ui_feature_flag_overrides_repository::UiFeatureFlagOverridesRepository;

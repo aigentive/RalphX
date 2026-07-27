@@ -1,4 +1,5 @@
 pub mod memory_archive_job;
+pub mod remote_environment;
 pub mod ui_feature_flag_overrides;
 
 #[cfg(test)]
@@ -15,4 +16,8 @@ pub use ralphx_domain::entities::{
     task_metadata, task_qa, task_step, team, types, workflow,
 };
 pub use memory_archive_job::{MemoryArchiveJobStatus, MemoryArchiveJobType};
+pub use remote_environment::{
+    remote_environment_token_secret_ref, RemoteEnvironment, RemoteEnvironmentId,
+    RemoteEnvironmentStatus,
+};
 pub use ui_feature_flag_overrides::UiFeatureFlagOverrides;
