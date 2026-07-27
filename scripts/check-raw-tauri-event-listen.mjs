@@ -42,12 +42,12 @@ function sourceFiles(directory) {
   });
 }
 
-function rawListenImports(source) {
-  const importPattern = /import\s+([\s\S]*?)\s+from\s+["']@tauri-apps\/api\/event["']/g;
-  return [...source.matchAll(importPattern)].filter((match) => {
+function rawEventImports(source) {
+  const importOrExportPattern = /(?:import|export)\s+([\s\S]*?)\s+from\s+["']@tauri-apps\/api\/event["']/g;
+  return [...source.matchAll(importOrExportPattern)].filter((match) => {
     const bindings = match[1] ?? "";
-    return /(?:^|[,{\s])listen(?:\s+as\s+[A-Za-z_$][\w$]*)?(?=\s*[,}])/.test(bindings)
-      || /^\s*\*\s+as\s+/.test(bindings);
+    return /(?:^|[,{\s])(?:listen|once)(?:\s+as\s+[A-Za-z_$][\w$]*)?(?=\s*[,}])/.test(bindings)
+      || /^\s*\*/.test(bindings);
   });
 }
 
@@ -64,7 +64,7 @@ for (const filePath of sourceFiles(sourceRoot)) {
   }
 
   const source = fs.readFileSync(filePath, "utf8");
-  for (const match of rawListenImports(source)) {
+  for (const match of rawEventImports(source)) {
     const line = source.slice(0, match.index).split("\n").length;
     violations.push(`${repoPath}:${line}`);
   }
