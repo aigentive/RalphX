@@ -14,7 +14,7 @@
 
 | Field | Required record | Status / value |
 |---|---|---|
-| Host revision | Commit SHA and dirty-tree state used for the probe | Pre-task-6 HEAD `4188b18cc305f3f22cf674ec7e97c324cc3c15cc`; worktree clean. |
+| Host revision | Commit SHA and dirty-tree state used for the probe | Pre-task-6 HEAD `eb67a67451dd0cb5792095a960743839fbfd10cd`; worktree clean. |
 | Debug harness | Exact debug-only command/listener shape and cfg-gate evidence | Resolved: `debug_start_remote_transport_cors_probe` / `debug_stop_remote_transport_cors_probe` control the implemented command-controlled ephemeral `127.0.0.1:0` loopback listener; both command registration and the module are `#[cfg(debug_assertions)]`-gated. This resolves harness shape only, not a transport result. |
 | Tailnet access | Logged-in tailnet identity and evidence that Serve is enabled for the host | Blocked — 2026-07-27 read-only audit found no `tailscale` executable in `PATH`; no logged-in Serve-capable tailnet evidence is available. |
 | Serve endpoint | HTTPS/WSS URL used, without pairing codes, bearers, or other secrets | Blocked — no Serve-capable tailnet or endpoint is available; no request was sent. |
@@ -37,7 +37,7 @@
 
 - The debug-only fixture is isolated in `remote_server::transport_spike`; it binds an ephemeral loopback address only and returns that address to the caller.
 - It models only the two direct-browser preflight orderings: fixed 401-before-preflight and pre-auth `OPTIONS` with the fixed development origin `http://127.0.0.1:1420`. It accepts no bearer, pairing code, or remote-listener configuration.
-- It is absent from release module compilation and Tauri command registration via `#[cfg(debug_assertions)]`. On 2026-07-27, `cargo check --manifest-path src-tauri/Cargo.toml --release --lib` completed successfully from pre-task-7 HEAD `cd410d86e`; this compiles the library/command registry with `debug_assertions` off. No Rust tests ran in that command.
+- It is absent from release module compilation and Tauri command registration via `#[cfg(debug_assertions)]`. On 2026-07-27, `cargo check --manifest-path src-tauri/Cargo.toml --release --lib` completed successfully from the content now at rebased pre-task-7 HEAD `011dccef0`; this compiles the library/command registry with `debug_assertions` off. No Rust tests ran in that command.
 - Apart from the actual-listener Rust socket tests recorded as E-2/E-3 below, no desktop, browser, Serve, direct-tailnet, or ATS experiment has been run or concluded by this harness implementation.
 
 ## Desktop proxy-stub code evidence (not a WKWebView capture)
@@ -66,8 +66,8 @@
 
 ## Release configuration and routing-scope evidence
 
-- Release cfg proof: `cargo check --manifest-path src-tauri/Cargo.toml --release --lib` completed successfully on 2026-07-27 from `cd410d86e`. It compiles the command registry/library with `debug_assertions` off; because the transport-spike module and each registration are `#[cfg(debug_assertions)]`, the release configuration contains no transport-spike code path. A separate source-text guard was not added because this release compilation is the stronger deterministic check.
-- Routing/binding diff proof: `git diff --name-only ab9b47961..cd410d86e -- src-tauri/src/http_server src-tauri/src/utils/backend_endpoint.rs` returned no paths. `ab9b47961` is the pre-0.3 base and `cd410d86e` the pre-task-7 Phase-0.3 HEAD.
+- Release cfg proof: `cargo check --manifest-path src-tauri/Cargo.toml --release --lib` completed successfully on 2026-07-27 from the content now at rebased pre-task-7 HEAD `011dccef0`. It compiles the command registry/library with `debug_assertions` off; because the transport-spike module and each registration are `#[cfg(debug_assertions)]`, the release configuration contains no transport-spike code path. A separate source-text guard was not added because this release compilation is the stronger deterministic check.
+- Routing/binding diff proof: `git diff --name-only 35e8242f7..011dccef0 -- src-tauri/src/http_server src-tauri/src/utils/backend_endpoint.rs` returned no paths. `35e8242f7` is the rebased pre-0.3 base and `011dccef0` the rebased pre-task-7 Phase-0.3 HEAD.
 - Therefore this PR 0.3 diff does not change `src-tauri/src/http_server/**`, `backend_endpoint.rs`, or the production :3847/:3848 routing/binding configuration. The debug fixture remains separate on ephemeral loopback only.
 - The release check started no Rust tests. `cd src-tauri && cargo clean` ran afterward for disk hygiene and removed the generated check artifacts.
 
