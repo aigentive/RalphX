@@ -21,6 +21,10 @@ macro_rules! register_tauri_commands {
             commands::notification_commands::get_unread_notification_count,
             #[cfg(debug_assertions)]
             commands::notification_commands::debug_send_test_notification,
+            #[cfg(debug_assertions)]
+            commands::remote_transport_spike_commands::debug_start_remote_transport_cors_probe,
+            #[cfg(debug_assertions)]
+            commands::remote_transport_spike_commands::debug_stop_remote_transport_cors_probe,
             commands::release_notes_commands::get_current_release_notes,
             commands::release_notes_commands::get_last_seen_release_notes_version,
             commands::release_notes_commands::mark_release_notes_seen,

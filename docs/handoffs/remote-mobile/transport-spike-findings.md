@@ -15,7 +15,7 @@
 | Field | Required record | Status / value |
 |---|---|---|
 | Host revision | Commit SHA and dirty-tree state used for the probe | Pending |
-| Debug harness | Exact debug-only command/listener shape and cfg-gate evidence | Pending — owner decision required before implementation |
+| Debug harness | Exact debug-only command/listener shape and cfg-gate evidence | Implemented: `debug_start_remote_transport_cors_probe` / `debug_stop_remote_transport_cors_probe` control a fixed `127.0.0.1:0` fixture; both command registration and the module are `#[cfg(debug_assertions)]`-gated. This records harness shape only, not an experiment result. |
 | Tailnet access | Logged-in tailnet identity and evidence that Serve is enabled for the host | Pending |
 | Serve endpoint | HTTPS/WSS URL used, without pairing codes, bearers, or other secrets | Pending |
 | Direct-tailnet endpoint | HTTP/WS URL used, without credentials | Pending |
@@ -32,6 +32,13 @@
 | E-3 | (b) Pre-auth-`OPTIONS` success | Request/response capture proving restrictive origin behavior and successful preflight | Pending | Pending |
 | E-4 | (c) Serve ATS result | Named Apple probe output for HTTPS/WSS through Serve | Pending | Pending |
 | E-5 | (c) Direct-tailnet ATS result | Named Apple probe output for plain tailnet HTTP/WS | Pending | Pending |
+
+## Implemented harness boundary
+
+- The debug-only fixture is isolated in `remote_server::transport_spike`; it binds an ephemeral loopback address only and returns that address to the caller.
+- It models only the two direct-browser preflight orderings: fixed 401-before-preflight and pre-auth `OPTIONS` with the fixed development origin `http://127.0.0.1:1420`. It accepts no bearer, pairing code, or remote-listener configuration.
+- It is absent from release module compilation and Tauri command registration via `#[cfg(debug_assertions)]`. This is cfg-gate evidence, not release-build execution evidence; the release-build verification remains the final PR 0.3 task.
+- No desktop, browser, Serve, direct-tailnet, or ATS experiment has been run or concluded by this harness implementation.
 
 ## (a) Does the Rust-proxied desktop transport produce zero WKWebView cross-origin traffic?
 
