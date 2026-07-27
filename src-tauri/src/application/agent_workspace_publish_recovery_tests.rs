@@ -591,6 +591,7 @@ async fn due_recovery_with_an_open_repair_effect_does_not_dispatch_or_append_eve
                 attempt_id: due.id.clone(),
                 generation: due.generation,
                 expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_attempt_updated_at: due.updated_at,
                 effect,
                 compatibility_projection: None,
                 events: Vec::new(),

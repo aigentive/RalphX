@@ -40,13 +40,14 @@ use crate::domain::entities::{
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    ArtifactId, ChatContextType, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, NewNotification, NotificationCategory, NotificationSeverity,
-    NotificationTarget, PlanBranch, PlanBranchId, Project, TaskId,
+    ArtifactId, ChatContextType, ChatConversationId, GitTargetLeaseOwner,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, NewNotification, NotificationCategory,
+    NotificationSeverity, NotificationTarget, PlanBranch, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
-    BranchUpdateRepository, NotificationRepository,
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
+    AgentRunRepository, AgentWorkspaceRepairRepository, BranchUpdateRepository,
+    NotificationRepository,
 };
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
@@ -5342,6 +5343,107 @@ async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
         .await
         .expect("events should list")
         .is_empty());
+}
+
+#[tokio::test]
+async fn busy_pr_conflict_repair_does_not_disable_auto_merge_or_send_a_worker() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "busy-pr-conflict",
+        "project-busy-pr-conflict",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-oid-busy-conflict".to_string());
+    workspace.pr_auto_merge_current = Some(true);
+    let expected_push_status = workspace.publication_push_status.clone();
+    let expected_supervision_status = workspace.pr_supervision_status.clone();
+    let expected_supervision_summary = workspace.pr_supervision_summary.clone();
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let target_identity =
+        GitService::canonical_target_identity(worktree.path(), &workspace.branch_name)
+            .await
+            .expect("resolve canonical target identity");
+    let foreign_owner = GitTargetLeaseOwner::agent_workspace_repair("foreign-conflict-owner");
+    assert!(matches!(
+        branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: target_identity,
+                owner: foreign_owner,
+            })
+            .await
+            .expect("reserve foreign target lease"),
+        AcquireGitTargetLeaseOutcome::Acquired { .. }
+    ));
+
+    let mut health = open_pr_health("busy-conflict-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
+    health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+    health.auto_merge_request = Some(PrAutoMergeRequest {
+        enabled_by: Some("octocat".to_string()),
+        merge_method: Some("squash".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::new());
+
+    let error = super::route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &health,
+        &conversation_id,
+        workspace_repo.clone(),
+        None,
+        Some(repair_repo),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect_err("a foreign target lease must reject the repair dispatch");
+
+    assert!(error.to_string().contains("owned"));
+    assert_eq!(
+        github.state().disable_pr_auto_merge_calls,
+        0,
+        "a Busy dispatch must return before mutating GitHub auto-merge"
+    );
+    assert!(
+        chat.get_sent_messages().await.is_empty(),
+        "a Busy dispatch must not queue a repair worker"
+    );
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list workspace events")
+            .is_empty(),
+        "a Busy dispatch must not append a repair delivery audit event"
+    );
+    let unchanged_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace after Busy dispatch")
+        .expect("workspace remains present");
+    assert_eq!(
+        unchanged_workspace.publication_push_status, expected_push_status,
+        "a Busy dispatch must not project repair publication state"
+    );
+    assert_eq!(
+        unchanged_workspace.pr_supervision_status, expected_supervision_status,
+        "a Busy dispatch must not project PR supervision state"
+    );
+    assert_eq!(
+        unchanged_workspace.pr_supervision_summary, expected_supervision_summary,
+        "a Busy dispatch must not project a repair summary"
+    );
 }
 
 #[tokio::test]

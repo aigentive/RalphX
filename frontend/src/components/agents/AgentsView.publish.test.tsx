@@ -788,6 +788,8 @@ describe("AgentsView publish", () => {
     configurePublishPane({
       workspace: {
         publicationPushStatus: "refreshed",
+        publicationPrNumber: 78,
+        prSupervisionStatus: "blocked",
         maintenanceOperation: {
           operationId: "maintenance-1",
           generation: 1,
@@ -816,6 +818,12 @@ describe("AgentsView publish", () => {
       within(actionbar).getByTestId("agents-publish-maintenance-active"),
     ).toBeDisabled();
     expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+    expect(
+      within(actionbar).queryByTestId("agents-pr-supervision-status"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(actionbar).queryByText("PR supervision blocked"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps exactly one explicit action for ready maintenance", async () => {

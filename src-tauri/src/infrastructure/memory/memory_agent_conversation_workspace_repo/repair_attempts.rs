@@ -378,7 +378,11 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         let Some(current) = attempts.get(&request.attempt_id).cloned() else {
             return Ok(SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Missing);
         };
-        if current.generation != request.generation || current.phase != request.expected_phase {
+        if current.generation != request.generation
+            || current.phase != request.expected_phase
+            || current.updated_at != request.expected_updated_at
+            || current.settled_at.is_some()
+        {
             return Ok(SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Stale(
                 current,
             ));
@@ -462,7 +466,11 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             return Ok(CreateAgentWorkspaceRepairEffectOutcome::Missing);
         };
         validate_repair_events(&current.conversation_id, &request.events)?;
-        if current.generation != request.generation || current.phase != request.expected_phase {
+        if current.generation != request.generation
+            || current.phase != request.expected_phase
+            || current.updated_at != request.expected_attempt_updated_at
+            || current.settled_at.is_some()
+        {
             return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(current));
         }
         if request.effect.attempt_id != current.id {
@@ -561,9 +569,6 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Missing);
         };
         validate_repair_events(&current.conversation_id, &request.events)?;
-        if current.generation != request.generation || current.phase != request.expected_phase {
-            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
-        }
         if request.effect.attempt_id != current.id {
             return Err(AppError::Validation(
                 "repair effect does not belong to its requested attempt".to_string(),
@@ -577,8 +582,17 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
                 "repair effect belongs to another attempt".to_string(),
             ));
         }
-        if existing.completed_at.is_some() {
+        if existing.completed_at.is_some() && existing == request.effect {
             return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(existing));
+        }
+        if current.generation != request.generation
+            || current.phase != request.expected_phase
+            || current.updated_at != request.expected_attempt_updated_at
+            || current.settled_at.is_some()
+            || existing.updated_at != request.expected_effect_updated_at
+            || existing.status != request.expected_effect_status
+        {
+            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
         }
         let workspace = workspaces
             .get_mut(&current.conversation_id)

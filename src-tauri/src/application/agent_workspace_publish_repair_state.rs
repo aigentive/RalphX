@@ -269,6 +269,33 @@ pub(crate) async fn start_or_join_agent_workspace_repair(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     request: AgentWorkspaceRepairStartRequest,
 ) -> AppResult<AgentWorkspaceRepairStartOutcome> {
+    start_or_join_agent_workspace_repair_with_projection(repair_repo, workspace_repo, request, true)
+        .await
+}
+
+/// Starts or joins a durable repair before the caller has acquired the Git target lease. The
+/// caller must reserve dispatch before it projects compatibility state or invokes external
+/// effects, so a foreign target owner cannot make a stale poll look like an active repair.
+pub(crate) async fn start_or_join_agent_workspace_repair_without_projection(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    request: AgentWorkspaceRepairStartRequest,
+) -> AppResult<AgentWorkspaceRepairStartOutcome> {
+    start_or_join_agent_workspace_repair_with_projection(
+        repair_repo,
+        workspace_repo,
+        request,
+        false,
+    )
+    .await
+}
+
+async fn start_or_join_agent_workspace_repair_with_projection(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    request: AgentWorkspaceRepairStartRequest,
+    project_compatibility_state: bool,
+) -> AppResult<AgentWorkspaceRepairStartOutcome> {
     let workspace = workspace_repo
         .get_by_conversation_id(&request.conversation_id)
         .await?
@@ -279,19 +306,21 @@ pub(crate) async fn start_or_join_agent_workspace_repair(
             ))
         })?;
     let attempt = start_attempt_from_workspace(&workspace, &request);
-    let projection = repair_attempt_projection(
-        &attempt,
-        &request.summary,
-        request
-            .auto_merge_current
-            .or(workspace.pr_auto_merge_current),
-    );
+    let projection = project_compatibility_state.then(|| {
+        repair_attempt_projection(
+            &attempt,
+            &request.summary,
+            request
+                .auto_merge_current
+                .or(workspace.pr_auto_merge_current),
+        )
+    });
     let outcome = repair_repo
         .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
             attempt,
             reason: request.reason.clone(),
             verified_newer_base: request.verified_newer_base,
-            compatibility_projection: Some(projection),
+            compatibility_projection: projection,
             events: Vec::new(),
         })
         .await?;
@@ -344,6 +373,7 @@ async fn retry_blocked_agent_workspace_repair(
                 attempt_id: blocked.id.clone(),
                 generation: blocked.generation,
                 expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_updated_at: blocked.updated_at,
                 outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Superseded,
                 settled_at: now,
                 successor: StartOrJoinAgentWorkspaceRepairAttempt {

@@ -32,6 +32,7 @@ export class AgentsPublishPage extends BasePage {
   readonly historyContent: Locator;
   readonly automationTab: Locator;
   readonly automationContent: Locator;
+  readonly prSupervisionStatus: Locator;
 
   constructor(page: Page) {
     super(page);
@@ -51,6 +52,9 @@ export class AgentsPublishPage extends BasePage {
     this.automationTab = page.getByTestId("agents-publish-tab-automation");
     this.automationContent = page.getByTestId(
       "agents-publish-content-automation",
+    );
+    this.prSupervisionStatus = page.getByTestId(
+      "agents-pr-supervision-status",
     );
   }
 

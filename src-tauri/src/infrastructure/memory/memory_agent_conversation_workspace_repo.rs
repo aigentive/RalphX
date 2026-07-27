@@ -40,6 +40,14 @@ mod repair_attempts;
 mod repair_attempts_tests;
 
 #[cfg(test)]
+#[path = "memory_agent_conversation_workspace_repo/repair_attempt_fencing_tests.rs"]
+mod repair_attempt_fencing_tests;
+
+#[cfg(test)]
+#[path = "memory_agent_conversation_workspace_repo/repair_attempt_effect_fencing_tests.rs"]
+mod repair_attempt_effect_fencing_tests;
+
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub enum ForcedCreateAgentWorkspaceRepairEffectOutcome {
     Stale,

@@ -3493,6 +3493,89 @@ async fn seed_ready_command_repair_attempt(
 }
 
 #[tokio::test]
+async fn workspace_response_does_not_recover_a_stranded_repair_inline() {
+    let state = AppState::new_test();
+    let workspace = command_test_workspace();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                workspace.conversation_id.clone(),
+                AgentWorkspaceRepairSource::BaseUpdate,
+                AgentWorkspaceRepairContinuation::Publish,
+                workspace.base_ref.clone(),
+                false,
+                false,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "seed stranded repair for workspace-read regression".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed durable repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair generation should start");
+    };
+    let mut stranded = started.clone();
+    stranded.phase = AgentWorkspaceRepairPhase::Repairing;
+    stranded.updated_at += chrono::Duration::microseconds(1);
+    let stranded = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: stranded,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("mark repair stranded")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected stranded repair attempt, got {outcome:?}"),
+    };
+
+    let response = tokio::time::timeout(
+        Duration::from_millis(100),
+        agent_workspace_response_for_state(&state, workspace.clone()),
+    )
+    .await
+    .expect("workspace read should return without waiting for recovery")
+    .expect("workspace response should succeed");
+
+    assert_eq!(response.conversation_id, workspace.conversation_id.as_str());
+    assert_eq!(
+        state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+            .expect("read durable repair attempt"),
+        Some(stranded),
+        "workspace reads must not reserve, block, or otherwise recover a durable repair inline"
+    );
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("read workspace events")
+            .is_empty(),
+        "workspace reads must not emit recovery compatibility events inline"
+    );
+}
+
+#[tokio::test]
 async fn review_pr_rejects_supervision_and_auto_publish_changes_without_mutation() {
     let state = AppState::new_test();
     let mut workspace = command_test_workspace();

@@ -106,6 +106,9 @@ pub struct SettleAndStartAgentWorkspaceRepairSuccessor {
     pub attempt_id: AgentWorkspaceRepairAttemptId,
     pub generation: u64,
     pub expected_phase: AgentWorkspaceRepairPhase,
+    /// Exact optimistic version observed before settling. A same-phase retry must not settle a
+    /// newer attempt or duplicate a successor after another writer has already settled it.
+    pub expected_updated_at: DateTime<Utc>,
     pub outcome: AgentWorkspaceRepairOutcome,
     pub settled_at: DateTime<Utc>,
     pub successor: StartOrJoinAgentWorkspaceRepairAttempt,
@@ -125,6 +128,8 @@ pub struct CreateAgentWorkspaceRepairEffect {
     pub attempt_id: AgentWorkspaceRepairAttemptId,
     pub generation: u64,
     pub expected_phase: AgentWorkspaceRepairPhase,
+    /// Exact unsettled attempt version that authorizes attaching this effect.
+    pub expected_attempt_updated_at: DateTime<Utc>,
     pub effect: AgentWorkspaceRepairEffect,
     pub compatibility_projection: Option<AgentWorkspaceRepairCompatibilityProjection>,
     pub events: Vec<AgentConversationWorkspacePublicationEvent>,
@@ -143,6 +148,11 @@ pub struct CompleteAgentWorkspaceRepairEffect {
     pub attempt_id: AgentWorkspaceRepairAttemptId,
     pub generation: u64,
     pub expected_phase: AgentWorkspaceRepairPhase,
+    /// Exact unsettled attempt version that authorizes recording this receipt.
+    pub expected_attempt_updated_at: DateTime<Utc>,
+    /// Exact effect version and status observed before this writer changes it.
+    pub expected_effect_updated_at: DateTime<Utc>,
+    pub expected_effect_status: crate::entities::AgentWorkspaceRepairEffectStatus,
     pub effect: AgentWorkspaceRepairEffect,
     pub compatibility_projection: Option<AgentWorkspaceRepairCompatibilityProjection>,
     pub events: Vec<AgentConversationWorkspacePublicationEvent>,

@@ -240,29 +240,7 @@ async fn reconcile_agent_workspace_repair_attempt(
             {
                 Ok(Some(
                     crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Busy,
-                )) => {
-                    let active = match current.reserved_agent_run_id.as_ref() {
-                        Some(run_id) => state
-                            .agent_run_repo
-                            .get_by_id(run_id)
-                            .await?
-                            .is_some_and(|run| {
-                                run.conversation_id == current.conversation_id
-                                    && run.status.is_active()
-                            }),
-                        None => false,
-                    };
-                    if active {
-                        Ok(DurableRepairRecoveryOutcome::Active)
-                    } else {
-                        block_recovery_attempt(
-                            state,
-                            current,
-                            "Workspace repair recovery found an interrupted Git mutation without an active owning run. Retry the blocked operation.",
-                        )
-                        .await
-                    }
-                }
+                )) => Ok(DurableRepairRecoveryOutcome::Active),
                 Ok(Some(
                     crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Stale,
                 )) => Ok(DurableRepairRecoveryOutcome::Stale),
@@ -618,10 +596,7 @@ async fn recover_clean_interrupted_repair(
     .await
     {
         Ok(Some(crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Busy)) => {
-            let error = AppError::Conflict(
-                "workspace repair continuation has an in-flight durable Git mutation".to_string(),
-            );
-            record_continuation_recovery_failure(state, continuation, &error).await
+            Ok(DurableRepairRecoveryOutcome::Active)
         }
         Ok(Some(
             crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Stale,

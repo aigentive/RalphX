@@ -27,8 +27,9 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
-    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
-    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
+    start_or_join_agent_workspace_repair_without_projection, AgentWorkspaceRepairDispatchOutcome,
+    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest,
 };
 use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
@@ -1893,22 +1894,9 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         return Ok(false);
     }
 
-    let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
-        Arc::clone(&github),
-        working_dir,
-        pr_number,
-        conversation_id,
-        health,
-        Arc::clone(&workspace_repo),
-    )
-    .await?
-    else {
-        return Ok(false);
-    };
-
     let repair_summary =
         format!("Auto Publish routed PR #{pr_number} merge conflicts to workspace repair.");
-    let start = start_or_join_agent_workspace_repair(
+    let start = start_or_join_agent_workspace_repair_without_projection(
         Arc::clone(&repair_repo),
         Arc::clone(&workspace_repo),
         AgentWorkspaceRepairStartRequest {
@@ -1920,7 +1908,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
             verified_newer_base: false,
             reason: repair_summary.clone(),
             summary: repair_summary.clone(),
-            auto_merge_current: Some(auto_merge_current),
+            auto_merge_current: workspace.pr_auto_merge_current,
             retry_blocked: false,
         },
     )
@@ -1943,13 +1931,52 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         attempt,
         repair_run_id.clone(),
         &repair_summary,
-        Some(auto_merge_current),
+        workspace.pr_auto_merge_current,
     )
     .await?
     {
         AgentWorkspaceRepairDispatchOutcome::Reserved(attempt) => attempt,
         AgentWorkspaceRepairDispatchOutcome::Stale(_)
         | AgentWorkspaceRepairDispatchOutcome::Missing => {
+            return Ok(false);
+        }
+    };
+    let auto_merge_current = match prepare_agent_workspace_pr_repair_auto_merge_state(
+        Arc::clone(&github),
+        working_dir,
+        pr_number,
+        conversation_id,
+        health,
+        Arc::clone(&workspace_repo),
+    )
+    .await
+    {
+        Ok(Some(auto_merge_current)) => auto_merge_current,
+        Ok(None) => {
+            settle_pr_conflict_repair_dispatch_failure(
+                Arc::clone(&repair_repo),
+                Arc::clone(&branch_update_repo),
+                dispatch,
+                "Workspace repair dispatch was reserved, but GitHub auto-merge could not be disabled.",
+                AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+                workspace.pr_auto_merge_current,
+            )
+            .await?;
+            return Ok(false);
+        }
+        Err(error) => {
+            let summary = format!(
+                "Workspace repair dispatch was reserved, but GitHub auto-merge preparation failed: {error}"
+            );
+            settle_pr_conflict_repair_dispatch_failure(
+                Arc::clone(&repair_repo),
+                Arc::clone(&branch_update_repo),
+                dispatch,
+                &summary,
+                AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+                workspace.pr_auto_merge_current,
+            )
+            .await?;
             return Ok(false);
         }
     };

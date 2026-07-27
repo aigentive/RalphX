@@ -1063,13 +1063,14 @@ pub fn install_agent_workspace_repair_publish_continuation(state: &AppState) {
     ));
 }
 
-pub(crate) async fn agent_workspace_response_for_state(
+#[doc(hidden)]
+pub async fn agent_workspace_response_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    let workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace)
-        .await
-        .map_err(|e| e.to_string())?;
+    // A workspace response is a read boundary. Durable repair reconciliation can fetch, enqueue
+    // an agent, or continue publication, so it is owned by the established background PR
+    // supervision scheduler rather than by the response request.
     schedule_pr_supervision_recovery_for_workspace(
         state,
         &workspace,

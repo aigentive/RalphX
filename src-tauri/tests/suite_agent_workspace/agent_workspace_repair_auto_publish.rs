@@ -17,7 +17,7 @@ use ralphx_lib::application::agent_workspace_review::{
 use ralphx_lib::application::{AppState, GitService};
 use ralphx_lib::commands::{
     unified_chat_commands::{
-        install_agent_workspace_repair_publish_continuation,
+        agent_workspace_response_for_state, install_agent_workspace_repair_publish_continuation,
         publish_agent_conversation_workspace_for_app_state_with_repair_intent,
         set_agent_conversation_workspace_auto_publish_for_state,
         AgentConversationWorkspaceAutoPublishInput,
@@ -563,16 +563,44 @@ async fn terminal_then_startup_recovery_continues_a_clean_durable_repair_once() 
         );
     });
 
-    let recovered = recover_agent_workspace_repair_after_terminal_run(
-        state.app_state.as_ref(),
-        &conversation_id,
-        &run_id,
-    )
-    .await
-    .expect("recover terminal committed repair");
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace for response")
+        .expect("workspace should remain available");
+    let workspace_response =
+        agent_workspace_response_for_state(state.app_state.as_ref(), workspace)
+            .await
+            .expect("workspace response should schedule recovery without waiting for it");
+    assert_eq!(workspace_response.conversation_id, conversation_id.as_str());
+
+    let (recovered, startup_recovered) = tokio::join!(
+        recover_agent_workspace_repair_after_terminal_run(
+            state.app_state.as_ref(),
+            &conversation_id,
+            &run_id,
+        ),
+        recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref()),
+    );
+    let recovered = recovered.expect("recover terminal committed repair");
+    let startup_recovered = startup_recovered.expect("startup recovery should join safely");
+    remote_update.await.expect("remote update joins");
+    let final_recovery =
+        recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
+            .await
+            .expect("final recovery should observe the single durable continuation");
     assert!(
-        recovered,
-        "terminal recovery must continue the clean repair"
+        recovered
+            || startup_recovered > 0
+            || final_recovery > 0
+            || *mock_github
+                .push_branch_with_expected_remote_oid_lease_calls
+                .lock()
+                .expect("exact push counter after concurrent recovery")
+                > 0,
+        "one of the scheduled, terminal, or startup recovery owners must continue the clean repair"
     );
     assert_eq!(
         *mock_github
@@ -580,9 +608,8 @@ async fn terminal_then_startup_recovery_continues_a_clean_durable_repair_once() 
             .lock()
             .expect("exact push counter"),
         1,
-        "terminal recovery must issue one repair-owned push"
+        "workspace, terminal, and startup recovery must share one repair-owned push"
     );
-    remote_update.await.expect("remote update joins");
     assert_eq!(
         mock_github.create_calls(),
         1,

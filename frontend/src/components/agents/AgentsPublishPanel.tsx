@@ -497,6 +497,7 @@ export function AgentPublishPanel({
       canHydratePublishFacts &&
       !!conversationId &&
       !!workspace?.worktreePath &&
+      !blocksGitInspection &&
       baseBlocked,
     staleTime: 10_000,
   });
@@ -790,6 +791,7 @@ export function AgentPublishPanel({
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
     workspace.status !== "missing" &&
+    !isMaintenanceActive &&
     !terminalPublicationStatus;
   const prSupervisionStatusLabel = (() => {
     if (terminalPublicationStatus) return null;
@@ -1119,7 +1121,9 @@ export function AgentPublishPanel({
           reviewQuery.data,
         );
   const publishAutomationStatus =
-    shouldShowPrSupervisionControls && prSupervisionStatusLabel
+    !maintenancePresentation &&
+    shouldShowPrSupervisionControls &&
+    prSupervisionStatusLabel
       ? {
           label: prSupervisionStatusLabel,
           tone:

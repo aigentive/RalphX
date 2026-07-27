@@ -944,6 +944,7 @@ async fn inactive_repair_lease_ready_resume_rejects_open_effect_without_reacquir
                 attempt_id: ready.id.clone(),
                 generation: ready.generation,
                 expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_attempt_updated_at: ready.updated_at,
                 effect,
                 compatibility_projection: None,
                 events: Vec::new(),

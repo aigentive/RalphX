@@ -1,4 +1,5 @@
 use super::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use super::agent_workspace_publish_recovery::recover_agent_workspace_repair_attempts_for_state;
 use super::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION;
 use super::git_mutation_recovery::{
     recover_in_flight_git_mutations_for_state, recover_repair_owned_in_flight_git_mutations,
@@ -326,6 +327,7 @@ async fn state_with_in_flight_repair_push(
             attempt_id: continuing.id.clone(),
             generation: continuing.generation,
             expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: continuing.updated_at,
             effect,
             compatibility_projection: None,
             events: Vec::new(),
@@ -350,6 +352,109 @@ async fn state_with_in_flight_repair_push(
         .expect("persist in-flight repair mutation claim");
 
     (state, continuing, effect)
+}
+
+#[tokio::test]
+async fn busy_repair_push_returns_before_touching_the_workspace_git_path() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (state, continuing, effect) = state_with_in_flight_repair_push(&fixture).await;
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+
+    let outcome = push_agent_workspace_repair_branch(
+        &github_trait,
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        AgentWorkspaceRepairPushRequest {
+            target_worktree_path: Path::new("/definitely-missing-ralphx-repair-worktree"),
+            target_branch_name: &fixture.branch,
+            attempt: continuing,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+        },
+    )
+    .await
+    .expect("the existing durable mutation claim should classify the re-entry as Busy");
+
+    assert_eq!(outcome, AgentWorkspaceRepairPushOutcome::Busy);
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(
+        github
+            .state()
+            .push_branch_with_expected_remote_oid_lease_calls,
+        0
+    );
+    assert!(state
+        .branch_update_repo
+        .get_target_lease(
+            &GitService::canonical_target_identity(
+                Path::new(&fixture.workspace.worktree_path),
+                &fixture.branch,
+            )
+            .await
+            .expect("resolve fixture target identity")
+        )
+        .await
+        .expect("read repair lease")
+        .expect("repair lease should remain present")
+        .active_mutation()
+        .is_some());
+    assert_eq!(
+        state
+            .agent_workspace_repair_repo
+            .get_repair_effect_by_idempotency_key(&repair_push_effect_idempotency_key(&fixture))
+            .await
+            .expect("read repair push effect")
+            .expect("durable repair effect should remain present")
+            .id,
+        effect.id,
+        "a Busy return must preserve the existing owner receipt"
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_leaves_a_busy_repair_continuation_untouched() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (mut state, continuing, _effect) = state_with_in_flight_repair_push(&fixture).await;
+    let github = Arc::new(MockGithubService::new());
+    state.github_service = Some(github.clone());
+    let events_before = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("read workspace events before recovery");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recover durable repair attempts"),
+        0,
+        "a Busy continuation is pending reconciliation, not a completed recovery"
+    );
+    assert_eq!(
+        state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read current repair attempt"),
+        Some(continuing),
+        "a Busy recovery must not block, transition, or otherwise replace the owning attempt"
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.workspace.conversation_id)
+            .await
+            .expect("read workspace events after recovery"),
+        events_before,
+        "a Busy recovery must not append a compatibility event"
+    );
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(
+        github
+            .state()
+            .push_branch_with_expected_remote_oid_lease_calls,
+        0
+    );
 }
 
 fn request<'a>(
@@ -1115,6 +1220,7 @@ async fn wrong_expected_remote_oid_fails_closed_before_the_exact_lease_mutation(
             attempt_id: fixture.attempt.id.clone(),
             generation: fixture.attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_attempt_updated_at: fixture.attempt.updated_at,
             effect,
             compatibility_projection: None,
             events: Vec::new(),
@@ -1165,6 +1271,7 @@ async fn missing_remote_or_oid_expectations_fail_closed_before_any_push() {
             attempt_id: absent_fixture.attempt.id.clone(),
             generation: absent_fixture.attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_attempt_updated_at: absent_fixture.attempt.updated_at,
             effect: absent_effect,
             compatibility_projection: None,
             events: Vec::new(),
@@ -1212,6 +1319,7 @@ async fn missing_remote_or_oid_expectations_fail_closed_before_any_push() {
             attempt_id: oid_fixture.attempt.id.clone(),
             generation: oid_fixture.attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_attempt_updated_at: oid_fixture.attempt.updated_at,
             effect: oid_effect,
             compatibility_projection: None,
             events: Vec::new(),

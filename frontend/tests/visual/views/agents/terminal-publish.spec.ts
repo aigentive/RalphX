@@ -77,6 +77,7 @@ test.describe("Agents terminal publish history", () => {
     const operation = actionbar.getByTestId("agents-publish-maintenance-active");
     await expect(operation).toBeDisabled();
     await expect(actionbar.getByTestId("agents-publish-confirm")).toHaveCount(0);
+    await expect(publish.prSupervisionStatus).toHaveCount(0);
 
     await expect(actionbar).toHaveScreenshot(
       "agents-publish-maintenance-repairing-strip.png",

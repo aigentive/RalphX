@@ -41,6 +41,14 @@ mod repair_attempts;
 #[path = "sqlite_agent_conversation_workspace_repo/repair_attempts_tests.rs"]
 mod repair_attempts_tests;
 
+#[cfg(test)]
+#[path = "sqlite_agent_conversation_workspace_repo/repair_attempt_fencing_tests.rs"]
+mod repair_attempt_fencing_tests;
+
+#[cfg(test)]
+#[path = "sqlite_agent_conversation_workspace_repo/repair_attempt_effect_fencing_tests.rs"]
+mod repair_attempt_effect_fencing_tests;
+
 fn parse_datetime(value: &str) -> DateTime<Utc> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
         return dt.with_timezone(&Utc);

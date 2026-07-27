@@ -840,6 +840,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             attempt_id: attempt.id,
             generation: attempt.generation,
             expected_phase: attempt.phase,
+            expected_updated_at: attempt.updated_at,
             outcome: AgentWorkspaceRepairOutcome::Superseded,
             settled_at: Utc::now(),
             successor: StartOrJoinAgentWorkspaceRepairAttempt {
@@ -1296,6 +1297,7 @@ async fn completion_from_a_superseded_generation_stays_superseded_without_side_e
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
             expected_phase: attempt.phase,
+            expected_updated_at: attempt.updated_at,
             outcome: AgentWorkspaceRepairOutcome::Superseded,
             settled_at: Utc::now(),
             successor: StartOrJoinAgentWorkspaceRepairAttempt {

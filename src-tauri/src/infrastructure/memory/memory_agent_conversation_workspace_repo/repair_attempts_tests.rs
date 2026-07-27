@@ -304,6 +304,7 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
             expected_phase: AgentWorkspaceRepairPhase::Dispatching,
+            expected_attempt_updated_at: dispatching.updated_at,
             effect: effect.clone(),
             compatibility_projection: None,
             events: Vec::new(),
@@ -326,6 +327,9 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
             expected_phase: AgentWorkspaceRepairPhase::Dispatching,
+            expected_attempt_updated_at: dispatching.updated_at,
+            expected_effect_updated_at: effect.updated_at,
+            expected_effect_status: AgentWorkspaceRepairEffectStatus::Pending,
             effect: observed,
             compatibility_projection: None,
             events: Vec::new(),
@@ -369,6 +373,7 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
             expected_phase: AgentWorkspaceRepairPhase::Dispatching,
+            expected_attempt_updated_at: dispatching.updated_at,
             effect: failed,
             compatibility_projection: None,
             events: Vec::new(),
@@ -380,6 +385,7 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
         outcome => panic!("expected failed effect creation, got {outcome:?}"),
     };
     let mut failed = failed;
+    let expected_effect_updated_at = failed.updated_at;
     failed.status = AgentWorkspaceRepairEffectStatus::Failed;
     failed.last_error = Some("ambiguous remote OID".to_string());
     failed.updated_at += Duration::seconds(1);
@@ -388,6 +394,9 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
             expected_phase: AgentWorkspaceRepairPhase::Dispatching,
+            expected_attempt_updated_at: dispatching.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status: AgentWorkspaceRepairEffectStatus::InFlight,
             effect: failed,
             compatibility_projection: None,
             events: Vec::new(),
@@ -418,6 +427,7 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation + 1,
             expected_phase: AgentWorkspaceRepairPhase::Dispatching,
+            expected_updated_at: dispatching.updated_at,
             outcome: AgentWorkspaceRepairOutcome::Superseded,
             settled_at,
             successor: StartOrJoinAgentWorkspaceRepairAttempt {
@@ -465,6 +475,7 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
             expected_phase: AgentWorkspaceRepairPhase::Dispatching,
+            expected_updated_at: dispatching.updated_at,
             outcome: AgentWorkspaceRepairOutcome::Superseded,
             settled_at,
             successor: StartOrJoinAgentWorkspaceRepairAttempt {
@@ -523,6 +534,7 @@ async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
             expected_phase: AgentWorkspaceRepairPhase::Dispatching,
+            expected_updated_at: dispatching.updated_at,
             outcome: AgentWorkspaceRepairOutcome::Succeeded,
             settled_at,
             successor: StartOrJoinAgentWorkspaceRepairAttempt {

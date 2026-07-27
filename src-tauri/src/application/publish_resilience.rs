@@ -532,6 +532,7 @@ async fn prepare_agent_workspace_repair_pr_handoff_effect(
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
             effect,
             compatibility_projection: None,
             events: Vec::new(),
@@ -609,6 +610,8 @@ async fn observe_agent_workspace_repair_pr_handoff_effect(
     if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
         return Ok(effect);
     }
+    let expected_effect_updated_at = effect.updated_at;
+    let expected_effect_status = effect.status;
     let completed_at = Utc::now();
     effect.status = AgentWorkspaceRepairEffectStatus::Observed;
     effect.expected_pr_number = Some(pr_number);
@@ -627,6 +630,9 @@ async fn observe_agent_workspace_repair_pr_handoff_effect(
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status,
             effect: effect.clone(),
             compatibility_projection: None,
             events: Vec::new(),
@@ -780,33 +786,36 @@ pub(crate) async fn push_agent_workspace_repair_branch(
         return Ok(AgentWorkspaceRepairPushOutcome::Stale);
     }
 
-    let workspace_path = request.target_worktree_path;
-    let target_identity =
-        GitService::canonical_target_identity(workspace_path, request.target_branch_name).await?;
     let owner = GitTargetLeaseOwner::agent_workspace_repair(current.id.as_str());
     let has_durable_dispatch_lease = current.reserved_agent_run_id.is_some()
         || current.git_common_dir.is_some()
         || current.target_ref.is_some()
         || current.target_identity_version.is_some()
         || current.target_lease_epoch.is_some();
-    let (fencing_epoch, lease_acquired_here) = if has_durable_dispatch_lease {
+    let workspace_path = request.target_worktree_path;
+    let (target_identity, fencing_epoch, lease_acquired_here) = if has_durable_dispatch_lease {
         let persisted_identity =
             validate_agent_workspace_repair_target_lease(branch_update_repo.as_ref(), &current)
                 .await?;
-        if persisted_identity != target_identity {
+        let expected_ref = format!("refs/heads/{}", request.target_branch_name);
+        if persisted_identity.full_ref() != expected_ref.as_str() {
             return Err(AppError::Conflict(
                 "workspace repair push target differs from its dispatch-acquired canonical lease"
                     .to_string(),
             ));
         }
         (
+            persisted_identity,
             current
                 .target_lease_epoch
                 .expect("validated repair lease has an epoch"),
             false,
         )
     } else {
-        match branch_update_repo
+        let target_identity =
+            GitService::canonical_target_identity(workspace_path, request.target_branch_name)
+                .await?;
+        let (fencing_epoch, lease_acquired_here) = match branch_update_repo
             .acquire_target_lease(AcquireGitTargetLease {
                 identity: target_identity.clone(),
                 owner: owner.clone(),
@@ -824,16 +833,9 @@ pub(crate) async fn push_agent_workspace_repair_branch(
                     active_owner
                 )));
             }
-        }
+        };
+        (target_identity, fencing_epoch, lease_acquired_here)
     };
-
-    let checked_out_branch = GitService::get_current_branch(workspace_path).await?;
-    if checked_out_branch != request.target_branch_name {
-        return Err(AppError::Validation(format!(
-            "workspace repair target is checked out at '{}' instead of '{}'",
-            checked_out_branch, request.target_branch_name
-        )));
-    }
 
     let prepared_attempt = prepare_agent_workspace_repair_push_attempt(
         repair_repo.as_ref(),
@@ -873,16 +875,51 @@ pub(crate) async fn push_agent_workspace_repair_branch(
     let branch_name = local_ref.strip_prefix("refs/heads/").ok_or_else(|| {
         AppError::Validation("workspace repair target is not a local branch ref".to_string())
     })?;
-    let intended_head_oid = GitService::get_head_sha(&workspace_path).await?;
     let idempotency_key = format!(
         "agent_workspace_repair:{}:{}:push_branch",
         attempt.id, attempt.generation
     );
-
-    let effect = match repair_repo
+    let existing_effect = repair_repo
         .get_repair_effect_by_idempotency_key(&idempotency_key)
-        .await?
-    {
+        .await?;
+    let early_claim_id = existing_effect
+        .as_ref()
+        .filter(|effect| effect.status == AgentWorkspaceRepairEffectStatus::InFlight)
+        .map(|effect| format!("{}:push", effect.id));
+    let early_claim_active = if let Some(claim_id) = early_claim_id.as_ref() {
+        match branch_update_repo
+            .begin_git_mutation(crate::domain::repositories::BeginGitMutation {
+                identity: target_identity.clone(),
+                owner: owner.clone(),
+                fencing_epoch,
+                claim_id: claim_id.clone(),
+                kind: GitMutationKind::Push,
+            })
+            .await?
+        {
+            GitAuthorityCasOutcome::Applied { .. } => true,
+            GitAuthorityCasOutcome::MutationInFlight => {
+                return Ok(AgentWorkspaceRepairPushOutcome::Busy);
+            }
+            outcome => {
+                return Err(AppError::Conflict(format!(
+                    "workspace repair push lost Git target authority before mutation: {outcome:?}"
+                )));
+            }
+        }
+    } else {
+        false
+    };
+
+    let checked_out_branch = GitService::get_current_branch(workspace_path).await?;
+    if checked_out_branch != request.target_branch_name {
+        return Err(AppError::Validation(format!(
+            "workspace repair target is checked out at '{}' instead of '{}'",
+            checked_out_branch, request.target_branch_name
+        )));
+    }
+    let intended_head_oid = GitService::get_head_sha(&workspace_path).await?;
+    let effect = match existing_effect {
         Some(effect) => {
             validate_existing_workspace_repair_push_effect(effect, &attempt, &intended_head_oid)?
         }
@@ -903,6 +940,7 @@ pub(crate) async fn push_agent_workspace_repair_branch(
                     attempt_id: attempt.id.clone(),
                     generation: attempt.generation,
                     expected_phase: AgentWorkspaceRepairPhase::Continuing,
+                    expected_attempt_updated_at: attempt.updated_at,
                     effect: effect.clone(),
                     compatibility_projection: None,
                     events: Vec::new(),
@@ -933,8 +971,24 @@ pub(crate) async fn push_agent_workspace_repair_branch(
         }
     };
 
+    let claim_id = early_claim_id.unwrap_or_else(|| format!("{}:push", effect.id));
     let observed_remote_oid = read_origin_branch_oid(&workspace_path, branch_name).await?;
     if observed_remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
+        if early_claim_active {
+            let completion = branch_update_repo
+                .complete_git_mutation(CompleteGitMutation {
+                    identity: target_identity.clone(),
+                    owner: owner.clone(),
+                    fencing_epoch,
+                    claim_id: claim_id.clone(),
+                })
+                .await?;
+            if !matches!(completion, GitAuthorityCasOutcome::Applied { .. }) {
+                return Err(AppError::Conflict(format!(
+                    "workspace repair push lost Git target authority after mutation: {completion:?}"
+                )));
+            }
+        }
         let remote_oid = observed_remote_oid.expect("matching remote OID is present");
         let effect = observe_agent_workspace_repair_push_effect(
             repair_repo.as_ref(),
@@ -970,28 +1024,29 @@ pub(crate) async fn push_agent_workspace_repair_branch(
         )
         .await?
             > 0;
-    let claim_id = format!("{}:push", effect.id);
-    match branch_update_repo
-        .begin_git_mutation(crate::domain::repositories::BeginGitMutation {
-            identity: target_identity.clone(),
-            owner: owner.clone(),
-            fencing_epoch,
-            claim_id: claim_id.clone(),
-            kind: GitMutationKind::Push,
-        })
-        .await?
-    {
-        GitAuthorityCasOutcome::Applied { .. } => {}
-        // The exact current attempt already owns this deterministic mutation claim. A concurrent
-        // live/recovery re-entry must leave that owner and its durable effect unchanged rather
-        // than blocking the generation or issuing a second push.
-        GitAuthorityCasOutcome::MutationInFlight => {
-            return Ok(AgentWorkspaceRepairPushOutcome::Busy);
-        }
-        outcome => {
-            return Err(AppError::Conflict(format!(
-                "workspace repair push lost Git target authority before mutation: {outcome:?}"
-            )));
+    if !early_claim_active {
+        match branch_update_repo
+            .begin_git_mutation(crate::domain::repositories::BeginGitMutation {
+                identity: target_identity.clone(),
+                owner: owner.clone(),
+                fencing_epoch,
+                claim_id: claim_id.clone(),
+                kind: GitMutationKind::Push,
+            })
+            .await?
+        {
+            GitAuthorityCasOutcome::Applied { .. } => {}
+            // The exact current attempt already owns this deterministic mutation claim. A concurrent
+            // live/recovery re-entry must leave that owner and its durable effect unchanged rather
+            // than blocking the generation or issuing a second push.
+            GitAuthorityCasOutcome::MutationInFlight => {
+                return Ok(AgentWorkspaceRepairPushOutcome::Busy);
+            }
+            outcome => {
+                return Err(AppError::Conflict(format!(
+                    "workspace repair push lost Git target authority before mutation: {outcome:?}"
+                )));
+            }
         }
     }
 
@@ -1184,6 +1239,8 @@ async fn observe_agent_workspace_repair_push_effect(
     remote_ref: &str,
     remote_oid: &str,
 ) -> AppResult<AgentWorkspaceRepairEffect> {
+    let expected_effect_updated_at = effect.updated_at;
+    let expected_effect_status = effect.status;
     effect.status = AgentWorkspaceRepairEffectStatus::Observed;
     effect.receipt_json = Some(
         serde_json::json!({
@@ -1200,6 +1257,9 @@ async fn observe_agent_workspace_repair_push_effect(
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status,
             effect,
             compatibility_projection: None,
             events: Vec::new(),

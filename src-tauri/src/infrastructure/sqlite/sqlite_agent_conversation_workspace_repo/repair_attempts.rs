@@ -228,6 +228,8 @@ fn update_repair_attempt(
     conn: &Connection,
     attempt: &AgentWorkspaceRepairAttempt,
     expected_phase: AgentWorkspaceRepairPhase,
+    expected_updated_at: Option<DateTime<Utc>>,
+    require_unsettled: bool,
 ) -> AppResult<bool> {
     let rows = conn.execute(
         "UPDATE agent_workspace_repair_attempts
@@ -253,7 +255,9 @@ fn update_repair_attempt(
              outcome = ?23,
              updated_at = ?24,
              settled_at = ?25
-         WHERE id = ?1 AND generation = ?2 AND phase = ?3",
+         WHERE id = ?1 AND generation = ?2 AND phase = ?3
+           AND (?26 IS NULL OR updated_at = ?26)
+           AND (?27 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -299,6 +303,8 @@ fn update_repair_attempt(
             attempt.outcome.map(|outcome| outcome.to_string()),
             attempt.updated_at.to_rfc3339(),
             attempt.settled_at.map(|value| value.to_rfc3339()),
+            expected_updated_at.map(|value| value.to_rfc3339()),
+            if require_unsettled { 1_i64 } else { 0_i64 },
         ],
     )?;
     Ok(rows == 1)
@@ -444,7 +450,12 @@ fn write_repair_effect(conn: &Connection, effect: &AgentWorkspaceRepairEffect) -
     Ok(())
 }
 
-fn update_repair_effect(conn: &Connection, effect: &AgentWorkspaceRepairEffect) -> AppResult<bool> {
+fn update_repair_effect(
+    conn: &Connection,
+    effect: &AgentWorkspaceRepairEffect,
+    expected_updated_at: DateTime<Utc>,
+    expected_status: AgentWorkspaceRepairEffectStatus,
+) -> AppResult<bool> {
     let rows = conn.execute(
         "UPDATE agent_workspace_repair_effects
          SET kind = ?3,
@@ -458,7 +469,8 @@ fn update_repair_effect(conn: &Connection, effect: &AgentWorkspaceRepairEffect) 
              last_error = ?11,
              updated_at = ?12,
              completed_at = ?13
-         WHERE id = ?1 AND attempt_id = ?2 AND completed_at IS NULL",
+         WHERE id = ?1 AND attempt_id = ?2 AND completed_at IS NULL
+           AND updated_at = ?14 AND status = ?15",
         rusqlite::params![
             effect.id.as_str(),
             effect.attempt_id.as_str(),
@@ -473,6 +485,8 @@ fn update_repair_effect(conn: &Connection, effect: &AgentWorkspaceRepairEffect) 
             effect.last_error,
             effect.updated_at.to_rfc3339(),
             effect.completed_at.map(|value| value.to_rfc3339()),
+            expected_updated_at.to_rfc3339(),
+            expected_status.to_string(),
         ],
     )?;
     Ok(rows == 1)
@@ -592,7 +606,8 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     current.auto_merge_desired = attempt.auto_merge_desired;
                     current.auto_merge_method = attempt.auto_merge_method.clone();
                     current.updated_at = attempt.updated_at;
-                    let updated = update_repair_attempt(conn, &current, current.phase)?;
+                    let updated =
+                        update_repair_attempt(conn, &current, current.phase, None, false)?;
                     debug_assert!(
                         updated,
                         "current repair attempt disappeared inside transaction"
@@ -695,7 +710,13 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 if !request.matches_attempt(&current) {
                     return Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Stale(current));
                 }
-                if !update_repair_attempt(conn, &request.attempt, request.expected_phase)? {
+                if !update_repair_attempt(
+                    conn,
+                    &request.attempt,
+                    request.expected_phase,
+                    Some(request.expected_updated_at),
+                    false,
+                )? {
                     let latest =
                         load_repair_attempt(conn, attempt_id.as_str())?.ok_or_else(|| {
                             AppError::NotFound(format!("repair attempt {attempt_id}"))
@@ -737,7 +758,13 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 current.outcome = Some(request.outcome);
                 current.settled_at = Some(request.settled_at);
                 current.updated_at = request.settled_at;
-                if !update_repair_attempt(conn, &current, request.expected_phase)? {
+                if !update_repair_attempt(
+                    conn,
+                    &current,
+                    request.expected_phase,
+                    Some(request.expected_updated_at),
+                    true,
+                )? {
                     let latest =
                         load_repair_attempt(conn, attempt_id.as_str())?.ok_or_else(|| {
                             AppError::NotFound(format!("repair attempt {attempt_id}"))
@@ -773,6 +800,8 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 };
                 if current.generation != request.generation
                     || current.phase != request.expected_phase
+                    || current.updated_at != request.expected_updated_at
+                    || current.settled_at.is_some()
                 {
                     return Ok(SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Stale(
                         current,
@@ -787,7 +816,13 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 current.outcome = Some(request.outcome);
                 current.settled_at = Some(request.settled_at);
                 current.updated_at = request.settled_at;
-                if !update_repair_attempt(conn, &current, request.expected_phase)? {
+                if !update_repair_attempt(
+                    conn,
+                    &current,
+                    request.expected_phase,
+                    Some(request.expected_updated_at),
+                    true,
+                )? {
                     let latest =
                         load_repair_attempt(conn, attempt_id.as_str())?.ok_or_else(|| {
                             AppError::NotFound(format!("repair attempt {attempt_id}"))
@@ -842,6 +877,8 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 validate_repair_events(&current.conversation_id, &request.events)?;
                 if current.generation != request.generation
                     || current.phase != request.expected_phase
+                    || current.updated_at != request.expected_attempt_updated_at
+                    || current.settled_at.is_some()
                 {
                     return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(current));
                 }
@@ -940,11 +977,6 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Missing);
                 };
                 validate_repair_events(&current.conversation_id, &request.events)?;
-                if current.generation != request.generation
-                    || current.phase != request.expected_phase
-                {
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
-                }
                 if request.effect.attempt_id != current.id {
                     return Err(AppError::Validation(
                         "repair effect does not belong to its requested attempt".to_string(),
@@ -965,10 +997,24 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                         "repair effect belongs to another attempt".to_string(),
                     ));
                 }
-                if existing.completed_at.is_some() {
+                if existing.completed_at.is_some() && existing == request.effect {
                     return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(existing));
                 }
-                if !update_repair_effect(conn, &request.effect)? {
+                if current.generation != request.generation
+                    || current.phase != request.expected_phase
+                    || current.updated_at != request.expected_attempt_updated_at
+                    || current.settled_at.is_some()
+                    || existing.updated_at != request.expected_effect_updated_at
+                    || existing.status != request.expected_effect_status
+                {
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
+                }
+                if !update_repair_effect(
+                    conn,
+                    &request.effect,
+                    request.expected_effect_updated_at,
+                    request.expected_effect_status,
+                )? {
                     let latest = conn
                         .query_row(
                             "SELECT * FROM agent_workspace_repair_effects WHERE id = ?1",
@@ -979,7 +1025,10 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                         .ok_or_else(|| {
                             AppError::NotFound(format!("repair effect {}", request.effect.id))
                         })?;
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(latest));
+                    if latest.completed_at.is_some() && latest == request.effect {
+                        return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(latest));
+                    }
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
                 }
                 apply_compatibility_projection(
                     conn,

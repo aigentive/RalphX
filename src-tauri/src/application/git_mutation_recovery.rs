@@ -518,6 +518,8 @@ async fn observe_repair_push_effect(
     remote_ref: &str,
     remote_oid: &str,
 ) -> AppResult<AgentWorkspaceRepairEffect> {
+    let expected_effect_updated_at = effect.updated_at;
+    let expected_effect_status = effect.status;
     if effect.status != AgentWorkspaceRepairEffectStatus::Observed {
         effect.status = AgentWorkspaceRepairEffectStatus::Observed;
         effect.receipt_json = Some(
@@ -532,6 +534,9 @@ async fn observe_repair_push_effect(
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status,
             effect,
             compatibility_projection: None,
             events: Vec::new(),
@@ -554,6 +559,8 @@ async fn fail_repair_push_effect(
     mut effect: AgentWorkspaceRepairEffect,
     reason: &str,
 ) -> AppResult<AgentWorkspaceRepairEffect> {
+    let expected_effect_updated_at = effect.updated_at;
+    let expected_effect_status = effect.status;
     effect.status = AgentWorkspaceRepairEffectStatus::Failed;
     effect.last_error = Some(reason.to_string());
     effect.updated_at = next_repair_recovery_checkpoint_at(effect.updated_at);
@@ -562,6 +569,9 @@ async fn fail_repair_push_effect(
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
             expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status,
             effect,
             compatibility_projection: None,
             events: Vec::new(),
