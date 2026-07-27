@@ -1180,7 +1180,6 @@ function renderPanel(
     selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn(),
     switchingConversationModeId: null,
-    updatingTeamConversationId: null,
     terminalArchivedReason: null,
     terminalUnavailableReason: null,
     ...overrides,
@@ -3096,7 +3095,7 @@ describe("AgentsActiveConversationPanel", () => {
     expect(onActiveConversationModeChange).toHaveBeenCalledWith("edit");
   });
 
-  it("lets a disabled Team conversation switch back to Defaults", async () => {
+  it("keeps a persisted disabled Team capability visible and lets it switch back to Defaults", async () => {
     const user = userEvent.setup();
     const onActiveCapabilityChange = vi.fn();
 
@@ -3110,8 +3109,16 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(
       screen.getByTestId("agents-conversation-capability-blocked"),
-    ).toBeInTheDocument();
+    ).toHaveTextContent(
+      "This conversation's capability is disabled. Enable it in Settings > Capabilities or switch to Defaults.",
+    );
     await user.click(screen.getByTestId("agents-conversation-capability"));
+    expect(
+      screen.getByTestId("agents-conversation-capability-rx_native_team"),
+    ).toHaveTextContent("Team (disabled)");
+    expect(
+      screen.getByTestId("agents-conversation-capability-rx_native_team"),
+    ).toBeDisabled();
     await user.click(
       screen.getByTestId("agents-conversation-capability-solo"),
     );
