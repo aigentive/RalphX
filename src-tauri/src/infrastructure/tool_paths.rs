@@ -221,6 +221,17 @@ pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
     find_codex_cli_candidates().into_iter().next()
 }
 
+pub(crate) fn find_tailscale_cli_path() -> Option<PathBuf> {
+    find_launchable_cli_path(
+        "tailscale",
+        &[
+            "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            "/usr/local/bin/tailscale",
+        ],
+    )
+}
+
 pub(crate) fn find_codex_cli_candidates() -> Vec<PathBuf> {
     let extra_candidates = javascript_tool_env_candidates("codex");
     let user_candidates = home_local_tool_candidates("codex");
@@ -453,7 +464,7 @@ fn find_cli_path_with_candidate_groups_and_shell(
 }
 
 #[cfg(test)]
-fn find_cli_path_with_candidate_groups_for_test(
+pub(crate) fn find_cli_path_with_candidate_groups_for_test(
     tool_name: &'static str,
     fixed_candidates: &[&'static str],
     extra_candidates: &[PathBuf],

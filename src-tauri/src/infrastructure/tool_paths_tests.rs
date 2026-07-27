@@ -1,6 +1,6 @@
 use super::tool_paths::{
-    find_claude_cli_path, find_codex_cli_path, launchable_cli_path_from_shell_output,
-    TEST_ENV_MUTEX,
+    find_claude_cli_path, find_cli_path_with_candidate_groups_for_test, find_codex_cli_path,
+    find_launchable_cli_path_without_shell, launchable_cli_path_from_shell_output, TEST_ENV_MUTEX,
 };
 use std::ffi::OsStr;
 use std::path::Path;
@@ -78,6 +78,53 @@ fn find_codex_cli_path_uses_home_local_bin_when_path_is_stripped() {
     let _volta_home = EnvGuard::unset("VOLTA_HOME");
 
     assert_eq!(find_codex_cli_path(), Some(local_bin.join("codex")));
+}
+
+#[test]
+fn tailscale_fixed_candidate_is_found_without_shell_fallback() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let app_binary = temp_dir
+        .path()
+        .join("Applications/Tailscale.app/Contents/MacOS/tailscale");
+    std::fs::create_dir_all(app_binary.parent().expect("app binary parent"))
+        .expect("create app binary parent");
+    write_fake_tool(&app_binary);
+    let fixed_candidate: &'static str =
+        Box::leak(app_binary.to_string_lossy().into_owned().into_boxed_str());
+
+    let _home = EnvGuard::set_os("HOME", temp_dir.path());
+    let _path = EnvGuard::set_os("PATH", "");
+    let _nvm_bin = EnvGuard::unset("NVM_BIN");
+    let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+    assert_eq!(
+        find_launchable_cli_path_without_shell("tailscale", &[fixed_candidate]),
+        Some(app_binary)
+    );
+}
+
+#[test]
+fn tailscale_resolution_returns_none_when_all_candidates_are_absent() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let missing = temp_dir.path().join("missing/tailscale");
+    let fixed_candidate: &'static str =
+        Box::leak(missing.to_string_lossy().into_owned().into_boxed_str());
+    let _home = EnvGuard::set_os("HOME", temp_dir.path());
+    let _path = EnvGuard::set_os("PATH", "");
+    let _nvm_bin = EnvGuard::unset("NVM_BIN");
+    let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+    let resolved = find_cli_path_with_candidate_groups_for_test(
+        "tailscale",
+        &[fixed_candidate],
+        &[],
+        &[],
+        |_| None,
+    );
+
+    assert!(resolved.is_empty());
 }
 
 #[test]
