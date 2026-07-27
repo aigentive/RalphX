@@ -15,6 +15,7 @@ use futures::Stream;
 use std::fs;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 
 struct UnavailableCodexAgentClient {
     capabilities: ClientCapabilities,
@@ -104,6 +105,18 @@ async fn test_new_test_creates_empty_repositories() {
     // Project repo should be empty
     let projects = state.project_repo.get_all().await.unwrap();
     assert!(projects.is_empty());
+}
+
+#[test]
+fn test_workspace_and_repair_repositories_share_the_same_concrete_arc() {
+    let state = AppState::new_test();
+    let workspace_repository = Arc::as_ptr(&state.agent_conversation_workspace_repo) as *const ();
+    let repair_repository = Arc::as_ptr(&state.agent_workspace_repair_repo) as *const ();
+
+    assert_eq!(
+        workspace_repository, repair_repository,
+        "workspace and repair repository traits must share one concrete memory repository"
+    );
 }
 
 #[test]

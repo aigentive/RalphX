@@ -5,17 +5,19 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId,
-    ProjectId,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairStateGuard,
-    AgentWorkspaceRepairStateTransition,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
+    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 
 fn pr_review_action(
@@ -814,6 +816,98 @@ async fn repair_state_and_events_are_all_or_nothing_in_memory() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn legacy_repair_cas_cannot_mutate_a_durable_generation() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("repair-state-durable-memory");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    let durable = match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "durable owner".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap()
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected durable attempt, got {outcome:?}"),
+    };
+    assert_eq!(durable.phase, AgentWorkspaceRepairPhase::Requested);
+    let before = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some("pushed".to_string()),
+        pr_supervision_status: Some("publishing".to_string()),
+        pr_supervision_summary: Some("stale legacy success".to_string()),
+        pr_supervision_updated_at: before.pr_supervision_updated_at.unwrap()
+            + chrono::Duration::seconds(1),
+        pr_auto_merge_current: Some(true),
+        base_commit: Some("stale-base".to_string()),
+    };
+    let guard = AgentWorkspaceRepairStateGuard::from_workspace(&before);
+    assert!(!repo
+        .compare_and_set_repair_state(&conversation_id, &guard, &transition)
+        .await
+        .unwrap());
+    assert!(!repo
+        .compare_and_set_repair_state_with_events(
+            &conversation_id,
+            &guard,
+            &transition,
+            vec![AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "legacy_repair_succeeded",
+                "succeeded",
+                "stale legacy success",
+                Some("legacy".to_string()),
+            )],
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    assert!(repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        durable.id
+    );
 }
 
 #[tokio::test]

@@ -198,6 +198,7 @@ async fn workspace_review_unfinished_git_recovery_stops_pr_supervision_before_si
             agent_run_repo: run_repo as Arc<dyn AgentRunRepository>,
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id,
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,

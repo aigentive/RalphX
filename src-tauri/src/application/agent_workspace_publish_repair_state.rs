@@ -1,16 +1,40 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 
+use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_workspace_review::{
+    load_agent_workspace_review_context, load_workspace_review_publish_blocker,
+    review_gate_publish_blocker, AgentWorkspaceReviewStart,
+};
+use crate::application::agent_workspace_review_auto_merge::{
+    start_guarded_agent_workspace_review, WorkspaceReviewStartOrigin,
+};
+use crate::application::chat_service::{ChatServiceError, SendResult};
+use crate::application::publish_resilience::{
+    inspect_publish_branch_freshness_for_source, verify_agent_workspace_repair_completion,
+    AgentWorkspaceRepairCompletionCheck,
+};
+use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunId,
-    ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunId, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
+    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairStateGuard,
-    AgentWorkspaceRepairStateTransition,
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
+    AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairCompatibilityProjection,
+    AgentWorkspaceRepairRepository, AgentWorkspaceRepairStateGuard,
+    AgentWorkspaceRepairStateTransition, BindAgentWorkspaceRepairAttemptRun,
+    BranchUpdateRepository, GitAuthorityCasOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 pub(crate) const REPAIR_REQUESTED_STEP: &str = "repair_requested";
 pub(crate) const REPAIR_DEFERRED_STEP: &str = "repair_deferred";
@@ -24,11 +48,1750 @@ pub(crate) const PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP: &str =
     "pr_autofix_workspace_review_passed";
 pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
 const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
+pub(crate) const AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION: u64 = 1;
+pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
+const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
+const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentWorkspaceRepairClaim {
     pub conversation_id: ChatConversationId,
     pub guard: AgentWorkspaceRepairStateGuard,
+}
+
+/// Backend-owned request to join the one durable repair attempt for a workspace.
+///
+/// `verified_newer_base` is intentionally supplied only by the caller that has already derived
+/// the base target from Git. This coordinator never treats a different SHA string as proof that
+/// it is safe to move the target forward.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentWorkspaceRepairStartRequest {
+    pub conversation_id: ChatConversationId,
+    pub source: AgentWorkspaceRepairSource,
+    pub continuation: AgentWorkspaceRepairContinuation,
+    pub target_base_ref: String,
+    pub target_base_commit: Option<String>,
+    pub verified_newer_base: bool,
+    pub reason: String,
+    pub summary: String,
+    pub auto_merge_current: Option<bool>,
+    pub retry_blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairStartOutcome {
+    Started(AgentWorkspaceRepairAttempt),
+    Joined(AgentWorkspaceRepairAttempt),
+    SuccessorStarted(AgentWorkspaceRepairAttempt),
+    BlockedByCurrent(AgentWorkspaceRepairAttempt),
+}
+
+impl AgentWorkspaceRepairStartOutcome {
+    #[cfg(test)]
+    pub(crate) fn into_attempt(self) -> AgentWorkspaceRepairAttempt {
+        match self {
+            Self::Started(attempt)
+            | Self::Joined(attempt)
+            | Self::SuccessorStarted(attempt)
+            | Self::BlockedByCurrent(attempt) => attempt,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairTransitionOutcome {
+    Applied(AgentWorkspaceRepairAttempt),
+    Stale(AgentWorkspaceRepairAttempt),
+    Missing,
+}
+
+/// Outcome of routing an ordinary publish request through the current durable repair attempt.
+/// A caller must never fall through to the normal publisher after any result other than
+/// `NoAttempt`: the repair attempt remains the sole owner of continuation authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairPublishResumeOutcome {
+    NoAttempt,
+    Continue(AgentWorkspaceRepairAttempt),
+    AwaitingReview,
+    Ready,
+    Blocked,
+    Busy,
+    Stale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairDispatchOutcome {
+    Reserved(AgentWorkspaceRepairAttempt),
+    Stale(AgentWorkspaceRepairAttempt),
+    Missing,
+}
+
+/// The durable settlement of a reserved repair delivery. Retry bookkeeping stays backend-owned;
+/// callers only classify whether a failed delivery can safely be attempted again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairDispatchSettlement {
+    Delivered,
+    RetryableFailure,
+    NonRetryableFailure,
+}
+
+/// Classifies the immediate delivery acknowledgement at the durable repair boundary. A failed
+/// acknowledgement must remain retryable unless the typed chat-service contract proves that the
+/// same reserved repair can never start without changing configuration or trusted context.
+pub(crate) fn classify_agent_workspace_repair_delivery(
+    delivery: Result<&SendResult, &ChatServiceError>,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+) -> AgentWorkspaceRepairDispatchSettlement {
+    match delivery {
+        Ok(result)
+            if !result.was_queued
+                && !result.queued_as_pending
+                && result.conversation_id == conversation_id.as_str()
+                && result.agent_run_id == run_id.as_str() =>
+        {
+            AgentWorkspaceRepairDispatchSettlement::Delivered
+        }
+        Ok(_) => AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+        Err(
+            ChatServiceError::InvalidInput(_)
+            | ChatServiceError::AgentNotAvailable(_)
+            | ChatServiceError::SpawnValidation { .. }
+            | ChatServiceError::ParseError(_)
+            | ChatServiceError::ContextNotFound(_)
+            | ChatServiceError::ConversationNotFound(_)
+            | ChatServiceError::PersonaUnavailable(_),
+        ) => AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure,
+        Err(
+            ChatServiceError::SpawnFailed(_)
+            | ChatServiceError::CommunicationFailed(_)
+            | ChatServiceError::RepositoryError(_)
+            | ChatServiceError::AgentRunFailed(_),
+        ) => AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+    }
+}
+
+pub(crate) fn agent_workspace_repair_dispatch_retry_delay(dispatch_count: u32) -> Duration {
+    let multiplier = 1_i64 << dispatch_count.saturating_sub(1).min(3);
+    Duration::seconds(
+        AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS
+            .saturating_mul(multiplier)
+            .min(AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS),
+    )
+}
+
+pub(crate) fn agent_workspace_repair_dispatch_is_due(
+    attempt: &AgentWorkspaceRepairAttempt,
+    now: DateTime<Utc>,
+) -> bool {
+    attempt.next_dispatch_at.is_none_or(|due_at| due_at <= now)
+}
+
+impl AgentWorkspaceRepairTransitionOutcome {
+    #[cfg(test)]
+    pub(crate) fn is_stale(&self) -> bool {
+        matches!(self, Self::Stale(_))
+    }
+}
+
+fn repair_attempt_projection(
+    attempt: &AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AgentWorkspaceRepairCompatibilityProjection {
+    let (publication_push_status, pr_supervision_status) = match attempt.phase {
+        AgentWorkspaceRepairPhase::Requested
+        | AgentWorkspaceRepairPhase::Dispatching
+        | AgentWorkspaceRepairPhase::Repairing
+        | AgentWorkspaceRepairPhase::Validating => ("needs_agent", "fixing"),
+        AgentWorkspaceRepairPhase::AwaitingReview => ("refreshed", "reviewing"),
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing => {
+            ("refreshed", "publishing")
+        }
+        AgentWorkspaceRepairPhase::Ready => ("refreshed", "paused"),
+        AgentWorkspaceRepairPhase::Blocked => ("failed", "blocked"),
+    };
+    AgentWorkspaceRepairCompatibilityProjection {
+        publication_push_status: Some(publication_push_status.to_string()),
+        pr_supervision_status: Some(pr_supervision_status.to_string()),
+        pr_supervision_summary: Some(summary.to_string()),
+        pr_supervision_updated_at: Some(attempt.updated_at),
+        pr_auto_merge_current: auto_merge_current,
+        // Compatibility projection must retain the Git-verified repair base. Clearing it while
+        // a continuation is still active makes the shared PR publisher fail closed before its
+        // create/update handoff can run.
+        base_commit: attempt.target_base_commit.clone(),
+    }
+}
+
+fn start_attempt_from_workspace(
+    workspace: &AgentConversationWorkspace,
+    request: &AgentWorkspaceRepairStartRequest,
+) -> AgentWorkspaceRepairAttempt {
+    let now = Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        request.conversation_id.clone(),
+        request.source,
+        request.continuation,
+        request.target_base_ref.clone(),
+        false,
+        workspace.auto_publish_enabled,
+        workspace.pr_auto_merge_desired,
+        Some(workspace.pr_auto_merge_method.clone()),
+        now,
+    );
+    attempt.target_base_commit = request.target_base_commit.clone();
+    attempt.summary = Some(request.summary.clone());
+    attempt
+}
+
+fn repair_attempt_transition_outcome(
+    outcome: AgentWorkspaceRepairAttemptTransitionOutcome,
+) -> AgentWorkspaceRepairTransitionOutcome {
+    match outcome {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt)
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(attempt) => {
+            AgentWorkspaceRepairTransitionOutcome::Stale(attempt)
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            AgentWorkspaceRepairTransitionOutcome::Missing
+        }
+    }
+}
+
+/// Starts exactly one repair generation or joins its existing owner. Joining never replaces the
+/// reserved run; continuation upgrades, reasons, verified base advancement, and preferences are
+/// CAS-updated on that same durable generation.
+pub(crate) async fn start_or_join_agent_workspace_repair(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    request: AgentWorkspaceRepairStartRequest,
+) -> AppResult<AgentWorkspaceRepairStartOutcome> {
+    let workspace = workspace_repo
+        .get_by_conversation_id(&request.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            crate::error::AppError::NotFound(format!(
+                "workspace {} for repair attempt",
+                request.conversation_id
+            ))
+        })?;
+    let attempt = start_attempt_from_workspace(&workspace, &request);
+    let projection = repair_attempt_projection(
+        &attempt,
+        &request.summary,
+        request
+            .auto_merge_current
+            .or(workspace.pr_auto_merge_current),
+    );
+    let outcome = repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: request.reason.clone(),
+            verified_newer_base: request.verified_newer_base,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await?;
+
+    match outcome {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) => {
+            Ok(AgentWorkspaceRepairStartOutcome::Started(started))
+        }
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Joined(current) => {
+            if request.retry_blocked && current.phase == AgentWorkspaceRepairPhase::Blocked {
+                retry_blocked_agent_workspace_repair(repair_repo, workspace_repo, request, current)
+                    .await
+            } else {
+                Ok(AgentWorkspaceRepairStartOutcome::Joined(current))
+            }
+        }
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::BlockedByCurrent(current) => {
+            Ok(AgentWorkspaceRepairStartOutcome::BlockedByCurrent(current))
+        }
+    }
+}
+
+async fn retry_blocked_agent_workspace_repair(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    request: AgentWorkspaceRepairStartRequest,
+    blocked: AgentWorkspaceRepairAttempt,
+) -> AppResult<AgentWorkspaceRepairStartOutcome> {
+    let workspace = workspace_repo
+        .get_by_conversation_id(&request.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            crate::error::AppError::NotFound(format!(
+                "workspace {} for blocked repair retry",
+                request.conversation_id
+            ))
+        })?;
+    let successor = start_attempt_from_workspace(&workspace, &request);
+    let successor_projection = repair_attempt_projection(
+        &successor,
+        &request.summary,
+        request
+            .auto_merge_current
+            .or(workspace.pr_auto_merge_current),
+    );
+    let now = next_transition_at(Some(blocked.updated_at));
+    let result = repair_repo
+        .settle_and_start_repair_successor(
+            crate::domain::repositories::SettleAndStartAgentWorkspaceRepairSuccessor {
+                attempt_id: blocked.id.clone(),
+                generation: blocked.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Superseded,
+                settled_at: now,
+                successor: StartOrJoinAgentWorkspaceRepairAttempt {
+                    attempt: successor,
+                    reason: request.reason,
+                    verified_newer_base: request.verified_newer_base,
+                    compatibility_projection: Some(successor_projection),
+                    events: Vec::new(),
+                },
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await?;
+    match result {
+        crate::domain::repositories::SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(
+            successor,
+        ) => Ok(AgentWorkspaceRepairStartOutcome::SuccessorStarted(successor)),
+        crate::domain::repositories::SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Stale(
+            current,
+        ) => Ok(AgentWorkspaceRepairStartOutcome::Joined(current)),
+        crate::domain::repositories::SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Missing => {
+            Ok(AgentWorkspaceRepairStartOutcome::BlockedByCurrent(blocked))
+        }
+    }
+}
+
+/// Applies a phase transition only when the exact durable generation is still in the caller's
+/// expected phase. Stale callers get the current attempt and no compatibility/audit side effect.
+pub(crate) async fn transition_agent_workspace_repair_attempt(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    expected_phase: AgentWorkspaceRepairPhase,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = expected_phase;
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Atomically records an actionable blocker for the exact trusted repair generation. Callers must
+/// classify completion authority first; a stale result writes neither compatibility state nor an
+/// audit event.
+pub(crate) async fn block_agent_workspace_repair_completion(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    blocker: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.summary = Some(summary.to_string());
+    attempt.blocker = Some(blocker.to_string());
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    let projection = repair_attempt_projection(&attempt, blocker, auto_merge_current);
+    let outcome = repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)?;
+    match outcome {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => {
+            release_and_clear_agent_workspace_repair_target_lease(
+                repair_repo.as_ref(),
+                branch_update_repo.as_ref(),
+                attempt,
+            )
+            .await
+        }
+        outcome => Ok(outcome),
+    }
+}
+
+/// Persists Git facts derived by the backend after the trusted run has passed authority checks.
+/// The completion handler reserves the exact attempt into `Validating` before any Git inspection;
+/// this transition only records facts against that reservation.
+pub(crate) async fn record_agent_workspace_repair_validation(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    base_ref: &str,
+    base_commit: &str,
+    repair_head_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Validating;
+    attempt.target_base_ref = base_ref.to_string();
+    attempt.target_base_commit = Some(base_commit.to_string());
+    attempt.repair_head_commit = Some(repair_head_commit.to_string());
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Validating,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Backend-derived Git facts for an exact repair-validation reservation. Both trusted completion
+/// and crash recovery use this one canonical workspace inspection before continuing the attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentWorkspaceRepairValidationFacts {
+    pub(crate) base_ref: String,
+    pub(crate) base_commit: String,
+    pub(crate) repair_head_commit: String,
+    pub(crate) auto_merge_current: Option<bool>,
+}
+
+pub(crate) async fn inspect_agent_workspace_repair_completion(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target_base_ref: &str,
+    target_base_commit: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairValidationFacts> {
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
+    if workspace.is_execution_owned() {
+        return Err(AppError::Validation(
+            "execution-owned workspaces cannot use direct repair publication".to_string(),
+        ));
+    }
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_none()
+    {
+        return Err(AppError::Validation(
+            "ideation workspaces without a linked plan branch cannot use repair publication"
+                .to_string(),
+        ));
+    }
+    let resolved = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await?;
+    let checked_out = GitService::get_current_branch(&resolved.path).await?;
+    if checked_out != resolved.branch_name {
+        return Err(AppError::Validation(format!(
+            "workspace repair validation expected branch '{}' but found '{}'",
+            resolved.branch_name, checked_out
+        )));
+    }
+    if target_base_ref.trim().is_empty() {
+        return Err(AppError::Validation(
+            "workspace repair validation has no durable target base ref".to_string(),
+        ));
+    }
+
+    let freshness = inspect_publish_branch_freshness_for_source(
+        &resolved.path,
+        target_base_ref,
+        &resolved.branch_name,
+        target_base_commit,
+    )
+    .await?;
+    let workspace_head_sha =
+        GitService::get_branch_sha(&resolved.path, &resolved.branch_name).await?;
+    let has_uncommitted_changes = GitService::has_uncommitted_changes(&resolved.path).await?;
+    let unfinished_operation = GitService::unfinished_operation_state(&resolved.path)?;
+    let has_conflict_markers = GitService::has_conflict_markers(&resolved.path).await?;
+    let has_conflict_files = !GitService::get_conflict_files(&resolved.path)
+        .await?
+        .is_empty();
+
+    if unfinished_operation.is_unfinished() {
+        return Err(AppError::Conflict(
+            "workspace repair has an unfinished merge, rebase, cherry-pick, or revert".to_string(),
+        ));
+    }
+    verify_agent_workspace_repair_completion(AgentWorkspaceRepairCompletionCheck {
+        freshness_status: &freshness,
+        workspace_base_ref: target_base_ref,
+        resolved_base_ref: target_base_ref,
+        resolved_base_commit: &freshness.target_base_commit,
+        repair_commit_sha: &workspace_head_sha,
+        workspace_head_sha: &workspace_head_sha,
+        has_uncommitted_changes,
+        is_merge_in_progress: false,
+        is_rebase_in_progress: false,
+        has_conflict_files,
+        has_conflict_markers,
+    })
+    .map_err(AppError::Conflict)?;
+
+    Ok(AgentWorkspaceRepairValidationFacts {
+        base_ref: target_base_ref.to_string(),
+        base_commit: freshness.target_base_commit,
+        repair_head_commit: workspace_head_sha,
+        auto_merge_current: workspace.pr_auto_merge_current,
+    })
+}
+
+/// Atomically moves an authorized repair generation into the validation-owned phase before the
+/// completion handler resolves a target or inspects Git. The `updated_at` guard fences a same
+/// generation join as well as a successor, so callers must treat `Stale` and `Missing` as a
+/// no-Git return path.
+pub(crate) async fn reserve_agent_workspace_repair_completion_validation(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Validating;
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    let projection_summary = attempt
+        .summary
+        .clone()
+        .unwrap_or_else(|| "Validating workspace repair completion.".to_string());
+    let projection = repair_attempt_projection(&attempt, &projection_summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Validating,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Reopens a validation-owned repair after backend Git inspection rejects the completion. This
+/// restores the repair agent's retryable phase instead of leaving an unverified reservation
+/// looking like an accepted completion.
+pub(crate) async fn reopen_agent_workspace_repair_after_validation_failure(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Repairing;
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    let projection_summary = attempt
+        .summary
+        .clone()
+        .unwrap_or_else(|| "Workspace repair needs another validation attempt.".to_string());
+    let projection = repair_attempt_projection(&attempt, &projection_summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Validating,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+fn repair_requested_event_classification(
+    continuation: AgentWorkspaceRepairContinuation,
+) -> &'static str {
+    match continuation {
+        AgentWorkspaceRepairContinuation::Manual | AgentWorkspaceRepairContinuation::UpdateOnly => {
+            "agent_fixable:update_only"
+        }
+        AgentWorkspaceRepairContinuation::Publish
+        | AgentWorkspaceRepairContinuation::ResumePrSupervision => "agent_fixable:publish",
+    }
+}
+
+fn repair_transition_events(
+    attempt: &AgentWorkspaceRepairAttempt,
+    run_id: &AgentRunId,
+    summary: &str,
+) -> Vec<AgentConversationWorkspacePublicationEvent> {
+    vec![
+        AgentConversationWorkspacePublicationEvent::new(
+            attempt.conversation_id.clone(),
+            REPAIR_REQUESTED_STEP,
+            "started",
+            summary,
+            Some(repair_requested_event_classification(attempt.continuation).to_string()),
+        ),
+        AgentConversationWorkspacePublicationEvent::new(
+            attempt.conversation_id.clone(),
+            REPAIR_SENT_STEP,
+            "started",
+            "Starting the durable workspace repair attempt.",
+            Some(repair_run_event_classification(run_id)),
+        ),
+    ]
+}
+
+/// Reserves the trusted agent run and moves a newly-created attempt to dispatching before the
+/// caller invokes the chat service. The canonical target lease is acquired and its exact epoch is
+/// checkpointed on the durable generation before the run can be bound; a stale or already-reserved
+/// generation never reaches send.
+pub(crate) async fn reserve_agent_workspace_repair_dispatch(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    target_identity: GitTargetIdentity,
+    attempt: AgentWorkspaceRepairAttempt,
+    run_id: AgentRunId,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairDispatchOutcome> {
+    if !agent_workspace_repair_dispatch_is_due(&attempt, Utc::now()) {
+        return Ok(AgentWorkspaceRepairDispatchOutcome::Stale(attempt));
+    }
+    if repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::Conflict(
+            "workspace repair dispatch cannot replace an active Git effect".to_string(),
+        ));
+    }
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let (fencing_epoch, lease_acquired_here) = match branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: owner.clone(),
+        })
+        .await?
+    {
+        AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } => (fencing_epoch, true),
+        AcquireGitTargetLeaseOutcome::AlreadyOwned { fencing_epoch } => (fencing_epoch, false),
+        AcquireGitTargetLeaseOutcome::TargetBusy {
+            owner: active_owner,
+            fencing_epoch,
+        } => {
+            return Err(AppError::Conflict(format!(
+                "workspace repair dispatch target is owned by {:?} at fencing epoch {fencing_epoch}",
+                active_owner
+            )));
+        }
+    };
+
+    let checkpointed = checkpoint_agent_workspace_repair_target_lease(
+        repair_repo.as_ref(),
+        attempt,
+        &target_identity,
+        fencing_epoch,
+        AgentWorkspaceRepairPhase::Requested,
+    )
+    .await;
+    let attempt = match checkpointed {
+        Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt)) => attempt,
+        Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Stale(attempt)) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            return Ok(AgentWorkspaceRepairDispatchOutcome::Stale(attempt));
+        }
+        Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Missing) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            return Ok(AgentWorkspaceRepairDispatchOutcome::Missing);
+        }
+        Err(error) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+    let bound = repair_repo
+        .bind_repair_attempt_run(BindAgentWorkspaceRepairAttemptRun {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at: attempt.updated_at,
+            run_id: run_id.clone(),
+            updated_at: next_transition_at(Some(attempt.updated_at)),
+        })
+        .await?;
+    let bound = match bound {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(attempt) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            return Ok(AgentWorkspaceRepairDispatchOutcome::Stale(attempt));
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            return Ok(AgentWorkspaceRepairDispatchOutcome::Missing);
+        }
+    };
+    let mut dispatching = bound.clone();
+    let expected_updated_at = bound.updated_at;
+    dispatching.phase = AgentWorkspaceRepairPhase::Dispatching;
+    dispatching.summary = Some(summary.to_string());
+    dispatching.blocker = None;
+    dispatching.next_dispatch_at = None;
+    dispatching.updated_at = next_transition_at(Some(bound.updated_at));
+    let outcome = repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: dispatching.clone(),
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Dispatching,
+            compatibility_projection: Some(repair_attempt_projection(
+                &dispatching,
+                summary,
+                auto_merge_current,
+            )),
+            events: repair_transition_events(&dispatching, &run_id, summary),
+        })
+        .await?;
+    match outcome {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => {
+            Ok(AgentWorkspaceRepairDispatchOutcome::Reserved(attempt))
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(attempt) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            Ok(AgentWorkspaceRepairDispatchOutcome::Stale(attempt))
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            Ok(AgentWorkspaceRepairDispatchOutcome::Missing)
+        }
+    }
+}
+
+/// Checkpoints exact canonical target authority on the durable attempt with a same-phase CAS.
+/// Dispatch and resumed continuations share this seam so a stale snapshot cannot reuse an old
+/// epoch after a wait boundary has released it.
+async fn checkpoint_agent_workspace_repair_target_lease(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    target_identity: &GitTargetIdentity,
+    fencing_epoch: u64,
+    expected_phase: AgentWorkspaceRepairPhase,
+) -> AppResult<AgentWorkspaceRepairAttemptTransitionOutcome> {
+    let common_dir = target_identity
+        .git_common_dir()
+        .to_string_lossy()
+        .to_string();
+    let target_ref = target_identity.full_ref().to_string();
+    if attempt.git_common_dir.is_some()
+        || attempt.target_ref.is_some()
+        || attempt.target_identity_version.is_some()
+        || attempt.target_lease_epoch.is_some()
+    {
+        if attempt.git_common_dir.as_deref() == Some(common_dir.as_str())
+            && attempt.target_ref.as_deref() == Some(target_ref.as_str())
+            && attempt.target_identity_version
+                == Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION)
+            && attempt.target_lease_epoch == Some(fencing_epoch)
+        {
+            return repair_repo
+                .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                    expected_phase,
+                    expected_updated_at: attempt.updated_at,
+                    next_phase: expected_phase,
+                    attempt,
+                    compatibility_projection: None,
+                    events: Vec::new(),
+                })
+                .await;
+        }
+        return Err(AppError::Conflict(
+            "workspace repair dispatch target lease does not match its durable generation"
+                .to_string(),
+        ));
+    }
+    let expected_updated_at = attempt.updated_at;
+    attempt.git_common_dir = Some(common_dir);
+    attempt.target_ref = Some(target_ref);
+    attempt.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    attempt.target_lease_epoch = Some(fencing_epoch);
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+}
+
+async fn release_new_agent_workspace_repair_dispatch_lease(
+    branch_update_repo: &dyn BranchUpdateRepository,
+    target_identity: &GitTargetIdentity,
+    owner: &GitTargetLeaseOwner,
+    fencing_epoch: u64,
+    lease_acquired_here: bool,
+) -> AppResult<()> {
+    if !lease_acquired_here {
+        return Ok(());
+    }
+    match branch_update_repo
+        .release_target_lease(target_identity, owner, fencing_epoch)
+        .await?
+    {
+        GitAuthorityCasOutcome::Applied { .. } | GitAuthorityCasOutcome::StaleAuthority => Ok(()),
+        outcome => Err(AppError::Conflict(format!(
+            "workspace repair dispatch could not release its uncheckpointed Git target lease: {outcome:?}"
+        ))),
+    }
+}
+
+/// Proves that this exact durable generation still owns its dispatch-acquired canonical target
+/// lease. Call this before completion validation or any repair-owned Git/GitHub effect.
+pub(crate) async fn validate_agent_workspace_repair_target_lease(
+    branch_update_repo: &dyn BranchUpdateRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<GitTargetIdentity> {
+    let (Some(common_dir), Some(target_ref), Some(epoch)) = (
+        attempt.git_common_dir.as_deref(),
+        attempt.target_ref.as_deref(),
+        attempt.target_lease_epoch,
+    ) else {
+        return Err(AppError::Conflict(
+            "workspace repair generation has no durable canonical target lease".to_string(),
+        ));
+    };
+    if attempt.target_identity_version != Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION) {
+        return Err(AppError::Conflict(
+            "workspace repair generation has an unsupported canonical target identity".to_string(),
+        ));
+    }
+    let identity = GitTargetIdentity::new(std::path::PathBuf::from(common_dir), target_ref)
+        .map_err(|error| {
+            AppError::Validation(format!("invalid durable repair lease identity: {error}"))
+        })?;
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let lease = branch_update_repo
+        .get_target_lease(&identity)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict("workspace repair canonical target lease is missing".to_string())
+        })?;
+    if lease.is_released() || lease.owner() != &owner || lease.fencing_epoch() != epoch {
+        return Err(AppError::Conflict(
+            "workspace repair canonical target lease is stale or owned by another workflow"
+                .to_string(),
+        ));
+    }
+    Ok(identity)
+}
+
+/// Releases only the exact persisted repair authority at an inactive boundary. A stale release
+/// is intentionally harmless: another owner or recovery has already settled that lease.
+pub(crate) async fn release_agent_workspace_repair_target_lease(
+    branch_update_repo: &dyn BranchUpdateRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<()> {
+    let identity =
+        match validate_agent_workspace_repair_target_lease(branch_update_repo, attempt).await {
+            Ok(identity) => identity,
+            Err(AppError::Conflict(_)) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let epoch = attempt
+        .target_lease_epoch
+        .expect("validated repair lease has an epoch");
+    match branch_update_repo
+        .release_target_lease(&identity, &owner, epoch)
+        .await?
+    {
+        GitAuthorityCasOutcome::Applied { .. } | GitAuthorityCasOutcome::StaleAuthority => Ok(()),
+        outcome => Err(AppError::Conflict(format!(
+            "workspace repair lease could not settle at an inactive boundary: {outcome:?}"
+        ))),
+    }
+}
+
+fn has_agent_workspace_repair_target_authority(attempt: &AgentWorkspaceRepairAttempt) -> bool {
+    attempt.git_common_dir.is_some()
+        || attempt.target_ref.is_some()
+        || attempt.target_identity_version.is_some()
+        || attempt.target_lease_epoch.is_some()
+}
+
+fn clear_agent_workspace_repair_target_authority(attempt: &mut AgentWorkspaceRepairAttempt) {
+    attempt.git_common_dir = None;
+    attempt.target_ref = None;
+    attempt.target_identity_version = None;
+    attempt.target_lease_epoch = None;
+}
+
+/// An inactive repair boundary may not retain metadata that looks like live Git authority. The
+/// exact branch lease is released first, so a concurrent resume sees stale authority and fails
+/// closed; the immediately following same-phase CAS removes all persisted identity/epoch fields.
+/// A restart encountering the brief released snapshot takes this helper again before it can
+/// resume, so it cannot validate or mutate with the old epoch.
+pub(crate) async fn release_and_clear_agent_workspace_repair_target_lease(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    branch_update_repo: &dyn BranchUpdateRepository,
+    mut attempt: AgentWorkspaceRepairAttempt,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if !has_agent_workspace_repair_target_authority(&attempt) {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Applied(attempt));
+    }
+
+    release_agent_workspace_repair_target_lease(branch_update_repo, &attempt).await?;
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    clear_agent_workspace_repair_target_authority(&mut attempt);
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Reacquires the canonical target for a repair that was durably parked at an inactive boundary.
+/// The current phase and timestamp are checkpointed with the new fencing epoch before a review
+/// pass, manual publish, or downstream publisher can continue.
+async fn reacquire_agent_workspace_repair_target_lease_for_continuation(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    attempt: AgentWorkspaceRepairAttempt,
+    expected_phase: AgentWorkspaceRepairPhase,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let attempt = if has_agent_workspace_repair_target_authority(&attempt) {
+        match release_and_clear_agent_workspace_repair_target_lease(
+            state.agent_workspace_repair_repo.as_ref(),
+            state.branch_update_repo.as_ref(),
+            attempt,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            outcome => return Ok(outcome),
+        }
+    } else {
+        attempt
+    };
+
+    if attempt.phase != expected_phase {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    if state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::Conflict(
+            "workspace repair continuation cannot reacquire its target while an external effect is open"
+                .to_string(),
+        ));
+    }
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "project {} for workspace repair continuation",
+                workspace.project_id
+            ))
+        })?;
+    let target = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await?;
+    let target_identity =
+        GitService::canonical_target_identity(&target.path, &target.branch_name).await?;
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let (fencing_epoch, lease_acquired_here) = match state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: owner.clone(),
+        })
+        .await?
+    {
+        AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } => (fencing_epoch, true),
+        AcquireGitTargetLeaseOutcome::AlreadyOwned { fencing_epoch } => (fencing_epoch, false),
+        AcquireGitTargetLeaseOutcome::TargetBusy {
+            owner: active_owner,
+            fencing_epoch,
+        } => {
+            return Err(AppError::Conflict(format!(
+                "workspace repair continuation target is owned by {:?} at fencing epoch {fencing_epoch}",
+                active_owner
+            )));
+        }
+    };
+    match checkpoint_agent_workspace_repair_target_lease(
+        state.agent_workspace_repair_repo.as_ref(),
+        attempt,
+        &target_identity,
+        fencing_epoch,
+        expected_phase,
+    )
+    .await
+    {
+        Ok(outcome @ AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)) => {
+            Ok(repair_attempt_transition_outcome(outcome))
+        }
+        Ok(outcome @ AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                state.branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            Ok(repair_attempt_transition_outcome(outcome))
+        }
+        Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Missing) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                state.branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            Ok(AgentWorkspaceRepairTransitionOutcome::Missing)
+        }
+        Err(error) => {
+            release_new_agent_workspace_repair_dispatch_lease(
+                state.branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            Err(error)
+        }
+    }
+}
+
+/// Records a classified durable dispatch outcome for every repair delivery path.
+pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    settlement: AgentWorkspaceRepairDispatchSettlement,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    validate_agent_workspace_repair_target_lease(branch_update_repo.as_ref(), &attempt).await?;
+    let retryable = matches!(
+        settlement,
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure
+    );
+    let exhausted =
+        retryable && attempt.dispatch_count >= MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES;
+    let next_phase = match settlement {
+        AgentWorkspaceRepairDispatchSettlement::Delivered => AgentWorkspaceRepairPhase::Repairing,
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => {
+            AgentWorkspaceRepairPhase::Requested
+        }
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure
+        | AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure => {
+            AgentWorkspaceRepairPhase::Blocked
+        }
+    };
+    let expected_phase = AgentWorkspaceRepairPhase::Dispatching;
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = next_phase;
+    attempt.summary = Some(match settlement {
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => format!(
+            "{summary} Retrying delivery {}/{} automatically.",
+            attempt.dispatch_count + 1,
+            MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+        ),
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure => {
+            format!("{summary} Automatic repair delivery retries are exhausted.",)
+        }
+        _ => summary.to_string(),
+    });
+    match settlement {
+        AgentWorkspaceRepairDispatchSettlement::Delivered => {
+            attempt.next_dispatch_at = None;
+            attempt.blocker = None;
+        }
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => {
+            let next_count = attempt.dispatch_count.checked_add(1).ok_or_else(|| {
+                AppError::Validation("workspace repair dispatch retry count overflow".to_string())
+            })?;
+            attempt.dispatch_count = next_count;
+            attempt.next_dispatch_at =
+                Some(Utc::now() + agent_workspace_repair_dispatch_retry_delay(next_count));
+            attempt.reserved_agent_run_id = None;
+            attempt.blocker = None;
+        }
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure
+        | AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure => {
+            attempt.next_dispatch_at = None;
+            attempt.reserved_agent_run_id = None;
+            attempt.blocker = attempt.summary.clone();
+        }
+    }
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    let run_classification = attempt
+        .reserved_agent_run_id
+        .as_ref()
+        .map(repair_run_event_classification);
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        attempt.conversation_id.clone(),
+        REPAIR_SENT_STEP,
+        match settlement {
+            AgentWorkspaceRepairDispatchSettlement::Delivered => "succeeded",
+            AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => "retrying",
+            AgentWorkspaceRepairDispatchSettlement::RetryableFailure
+            | AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure => "failed",
+        },
+        attempt.summary.as_deref().unwrap_or(summary),
+        run_classification,
+    );
+    let projection_summary = attempt
+        .summary
+        .clone()
+        .unwrap_or_else(|| summary.to_string());
+    let outcome = repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: attempt.clone(),
+            expected_phase,
+            expected_updated_at,
+            next_phase,
+            compatibility_projection: Some(repair_attempt_projection(
+                &attempt,
+                &projection_summary,
+                auto_merge_current,
+            )),
+            events: vec![event],
+        })
+        .await
+        .map(repair_attempt_transition_outcome)?;
+    if next_phase != AgentWorkspaceRepairPhase::Blocked {
+        return Ok(outcome);
+    }
+    match outcome {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => {
+            release_and_clear_agent_workspace_repair_target_lease(
+                repair_repo.as_ref(),
+                branch_update_repo.as_ref(),
+                attempt,
+            )
+            .await
+        }
+        outcome => Ok(outcome),
+    }
+}
+
+/// Re-reads the live publish and review gates before moving a repaired attempt out of validation.
+/// A repository/read failure is returned to the caller, so it cannot be mistaken for a clear
+/// review gate or disabled Auto Publish preference.
+pub(crate) type DurableRepairWorkspaceReviewStartFuture<'a> =
+    Pin<Box<dyn Future<Output = AppResult<AgentWorkspaceReviewStart>> + Send + 'a>>;
+
+pub(crate) trait DurableRepairWorkspaceReviewStarter {
+    fn start<'a>(
+        &'a self,
+        state: Arc<AppState>,
+        workspace: &'a AgentConversationWorkspace,
+        force: bool,
+    ) -> DurableRepairWorkspaceReviewStartFuture<'a>;
+}
+
+struct DefaultDurableRepairWorkspaceReviewStarter;
+
+impl DurableRepairWorkspaceReviewStarter for DefaultDurableRepairWorkspaceReviewStarter {
+    fn start<'a>(
+        &'a self,
+        state: Arc<AppState>,
+        workspace: &'a AgentConversationWorkspace,
+        force: bool,
+    ) -> DurableRepairWorkspaceReviewStartFuture<'a> {
+        Box::pin(start_guarded_agent_workspace_review(
+            state,
+            workspace,
+            force,
+            WorkspaceReviewStartOrigin::Automated,
+            None,
+        ))
+    }
+}
+
+pub(crate) async fn continue_agent_workspace_repair_at_boundary(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    expected_phase: AgentWorkspaceRepairPhase,
+    summary: &str,
+    explicit_publish: bool,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    continue_agent_workspace_repair_at_boundary_with_review_starter(
+        state,
+        attempt,
+        expected_phase,
+        summary,
+        explicit_publish,
+        &DefaultDurableRepairWorkspaceReviewStarter,
+    )
+    .await
+}
+
+pub(crate) async fn continue_agent_workspace_repair_at_boundary_with_review_starter<S>(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    expected_phase: AgentWorkspaceRepairPhase,
+    summary: &str,
+    explicit_publish: bool,
+    review_starter: &S,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome>
+where
+    S: DurableRepairWorkspaceReviewStarter + ?Sized,
+{
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            crate::error::AppError::NotFound(format!(
+                "workspace {} for repair continuation",
+                attempt.conversation_id
+            ))
+        })?;
+    let mut attempt = if matches!(
+        expected_phase,
+        AgentWorkspaceRepairPhase::AwaitingReview | AgentWorkspaceRepairPhase::Ready
+    ) {
+        match reacquire_agent_workspace_repair_target_lease_for_continuation(
+            state,
+            &workspace,
+            attempt,
+            expected_phase,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            outcome => return Ok(outcome),
+        }
+    } else {
+        attempt
+    };
+    let review_settings = state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!("Failed to load review settings: {error}"))
+        })?;
+    let review_blocker = load_workspace_review_publish_blocker(state, &workspace).await?;
+    let expected_updated_at = attempt.updated_at;
+
+    attempt.review_required = attempt.review_required || review_settings.require_workspace_review;
+    attempt.auto_publish_enabled = workspace.auto_publish_enabled;
+    attempt.auto_merge_desired = workspace.pr_auto_merge_desired;
+    attempt.auto_merge_method = Some(workspace.pr_auto_merge_method.clone());
+    if explicit_publish
+        && attempt.continuation.priority() < AgentWorkspaceRepairContinuation::Publish.priority()
+    {
+        attempt.continuation = AgentWorkspaceRepairContinuation::Publish;
+    }
+    let next_phase = if review_blocker.is_some() {
+        AgentWorkspaceRepairPhase::AwaitingReview
+    } else if matches!(
+        attempt.continuation,
+        AgentWorkspaceRepairContinuation::Manual | AgentWorkspaceRepairContinuation::UpdateOnly
+    ) || (!workspace.auto_publish_enabled && !explicit_publish)
+    {
+        AgentWorkspaceRepairPhase::Ready
+    } else {
+        AgentWorkspaceRepairPhase::ContinuationPending
+    };
+    attempt.phase = next_phase;
+    attempt.summary = Some(review_blocker.unwrap_or_else(|| summary.to_string()));
+    attempt.updated_at = next_transition_at(Some(attempt.updated_at));
+    let projection = repair_attempt_projection(
+        &attempt,
+        attempt.summary.as_deref().unwrap_or(summary),
+        workspace.pr_auto_merge_current,
+    );
+    let transition = state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)?;
+    match transition {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt)
+            if attempt.phase == AgentWorkspaceRepairPhase::AwaitingReview =>
+        {
+            match release_and_clear_agent_workspace_repair_target_lease(
+                state.agent_workspace_repair_repo.as_ref(),
+                state.branch_update_repo.as_ref(),
+                attempt,
+            )
+            .await?
+            {
+                AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => {
+                    continue_agent_workspace_repair_workspace_review_handoff(
+                        state,
+                        workspace,
+                        attempt,
+                        summary,
+                        explicit_publish,
+                        review_starter,
+                    )
+                    .await
+                }
+                outcome => Ok(outcome),
+            }
+        }
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => {
+            if matches!(
+                attempt.phase,
+                AgentWorkspaceRepairPhase::Ready | AgentWorkspaceRepairPhase::Blocked
+            ) {
+                return release_and_clear_agent_workspace_repair_target_lease(
+                    state.agent_workspace_repair_repo.as_ref(),
+                    state.branch_update_repo.as_ref(),
+                    attempt,
+                )
+                .await;
+            }
+            Ok(AgentWorkspaceRepairTransitionOutcome::Applied(attempt))
+        }
+        outcome => Ok(outcome),
+    }
+}
+
+/// Starts or resumes the existing Workspace Review monitor only after this exact repair
+/// generation has durably reached `AwaitingReview`. The review monitor owns reviewer identity and
+/// is idempotent for an already-running target; the repair attempt remains the sole authority for
+/// resuming its continuation after a pass.
+async fn continue_agent_workspace_repair_workspace_review_handoff<S>(
+    state: &AppState,
+    workspace: AgentConversationWorkspace,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    explicit_publish: bool,
+    review_starter: &S,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome>
+where
+    S: DurableRepairWorkspaceReviewStarter + ?Sized,
+{
+    let current = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&attempt.conversation_id)
+        .await?
+    {
+        Some(current) => current,
+        None => return Ok(AgentWorkspaceRepairTransitionOutcome::Missing),
+    };
+    if current.id != attempt.id
+        || current.generation != attempt.generation
+        || current.updated_at != attempt.updated_at
+        || current.phase != AgentWorkspaceRepairPhase::AwaitingReview
+    {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(current));
+    }
+
+    let review_settings = state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!("Failed to load review settings: {error}"))
+        })?;
+    if !review_settings.require_workspace_review {
+        return Box::pin(
+            continue_agent_workspace_repair_at_boundary_with_review_starter(
+                state,
+                current,
+                AgentWorkspaceRepairPhase::AwaitingReview,
+                summary,
+                explicit_publish,
+                review_starter,
+            ),
+        )
+        .await;
+    }
+
+    let review_context = load_agent_workspace_review_context(state, &workspace).await?;
+    match review_context.monitor.review_gate_status {
+        AgentWorkspaceReviewGateStatus::NotRequired | AgentWorkspaceReviewGateStatus::Passed => {
+            Box::pin(
+                continue_agent_workspace_repair_at_boundary_with_review_starter(
+                    state,
+                    current,
+                    AgentWorkspaceRepairPhase::AwaitingReview,
+                    summary,
+                    explicit_publish,
+                    review_starter,
+                ),
+            )
+            .await
+        }
+        AgentWorkspaceReviewGateStatus::Reviewing => {
+            Ok(AgentWorkspaceRepairTransitionOutcome::Applied(current))
+        }
+        AgentWorkspaceReviewGateStatus::Blocking | AgentWorkspaceReviewGateStatus::Failed => {
+            let blocker = review_gate_publish_blocker(&review_context).unwrap_or_else(|| {
+                "Workspace Review blocks the durable repair continuation".to_string()
+            });
+            block_agent_workspace_repair_completion(
+                Arc::clone(&state.agent_workspace_repair_repo),
+                Arc::clone(&state.branch_update_repo),
+                current,
+                "Workspace Review blocked the durable repair continuation.",
+                &blocker,
+                workspace.pr_auto_merge_current,
+            )
+            .await
+        }
+        AgentWorkspaceReviewGateStatus::Required => {
+            let started = review_starter
+                .start(Arc::new(state.clone()), &workspace, false)
+                .await;
+            let started = match started {
+                Ok(started) => started,
+                Err(error) => {
+                    let blocker = format!(
+                        "Workspace Review could not start for the durable repair continuation: {error}"
+                    );
+                    return block_agent_workspace_repair_completion(
+                        Arc::clone(&state.agent_workspace_repair_repo),
+                        Arc::clone(&state.branch_update_repo),
+                        current,
+                        "Workspace Review could not start the durable repair continuation.",
+                        &blocker,
+                        workspace.pr_auto_merge_current,
+                    )
+                    .await;
+                }
+            };
+            let current = match state
+                .agent_workspace_repair_repo
+                .get_current_repair_attempt(&attempt.conversation_id)
+                .await?
+            {
+                Some(current) => current,
+                None => return Ok(AgentWorkspaceRepairTransitionOutcome::Missing),
+            };
+            if current.id != attempt.id
+                || current.generation != attempt.generation
+                || current.phase != AgentWorkspaceRepairPhase::AwaitingReview
+            {
+                return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(current));
+            }
+            match started.context.monitor.review_gate_status {
+                AgentWorkspaceReviewGateStatus::NotRequired
+                | AgentWorkspaceReviewGateStatus::Passed => {
+                    Box::pin(
+                        continue_agent_workspace_repair_at_boundary_with_review_starter(
+                            state,
+                            current,
+                            AgentWorkspaceRepairPhase::AwaitingReview,
+                            summary,
+                            explicit_publish,
+                            review_starter,
+                        ),
+                    )
+                    .await
+                }
+                AgentWorkspaceReviewGateStatus::Reviewing => {
+                    Ok(AgentWorkspaceRepairTransitionOutcome::Applied(current))
+                }
+                AgentWorkspaceReviewGateStatus::Blocking
+                | AgentWorkspaceReviewGateStatus::Failed => {
+                    let blocker =
+                        review_gate_publish_blocker(&started.context).unwrap_or_else(|| {
+                            "Workspace Review blocks the durable repair continuation".to_string()
+                        });
+                    block_agent_workspace_repair_completion(
+                        Arc::clone(&state.agent_workspace_repair_repo),
+                        Arc::clone(&state.branch_update_repo),
+                        current,
+                        "Workspace Review blocked the durable repair continuation.",
+                        &blocker,
+                        workspace.pr_auto_merge_current,
+                    )
+                    .await
+                }
+                AgentWorkspaceReviewGateStatus::Required => {
+                    let blocker = "Workspace Review did not reserve a current reviewer for the durable repair continuation.";
+                    block_agent_workspace_repair_completion(
+                        Arc::clone(&state.agent_workspace_repair_repo),
+                        Arc::clone(&state.branch_update_repo),
+                        current,
+                        "Workspace Review could not start the durable repair continuation.",
+                        blocker,
+                        workspace.pr_auto_merge_current,
+                    )
+                    .await
+                }
+            }
+        }
+    }
+}
+
+/// A user-selected Commit & Publish resumes the same ready generation. It never creates an
+/// unrelated repair attempt, and a newly-required Review still wins over the explicit action.
+pub(crate) async fn resume_ready_agent_workspace_repair_for_publish(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    continue_agent_workspace_repair_at_boundary(
+        state,
+        attempt,
+        AgentWorkspaceRepairPhase::Ready,
+        summary,
+        true,
+    )
+    .await
+}
+
+/// Re-enters the exact active repair generation before an ordinary publish caller can invoke the
+/// normal publisher. A current repair attempt is authoritative even when its compatibility
+/// projection makes the workspace appear publishable. Ready uses an explicit user request;
+/// review resumption revalidates the persisted Workspace Review gate at the same CAS boundary.
+pub(crate) async fn resume_current_agent_workspace_repair_publish(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    summary: &str,
+    explicit_publish: bool,
+) -> AppResult<AgentWorkspaceRepairPublishResumeOutcome> {
+    let Some(attempt) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?
+    else {
+        return Ok(AgentWorkspaceRepairPublishResumeOutcome::NoAttempt);
+    };
+
+    let transition = match attempt.phase {
+        AgentWorkspaceRepairPhase::Ready => {
+            if !explicit_publish {
+                return Ok(AgentWorkspaceRepairPublishResumeOutcome::Ready);
+            }
+            resume_ready_agent_workspace_repair_for_publish(state, attempt, summary).await?
+        }
+        AgentWorkspaceRepairPhase::AwaitingReview => {
+            let workspace = state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(conversation_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "workspace {} for repair review continuation",
+                        conversation_id
+                    ))
+                })?;
+            continue_agent_workspace_repair_workspace_review_handoff(
+                state,
+                workspace,
+                attempt,
+                summary,
+                explicit_publish,
+                &DefaultDurableRepairWorkspaceReviewStarter,
+            )
+            .await?
+        }
+        // These phases are owned by the live completion/startup recovery publisher. An ordinary
+        // publish request may not join that side-effecting path: it would race its durable
+        // handoff receipt and could replay the downstream PR publisher.
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing => {
+            return Ok(AgentWorkspaceRepairPublishResumeOutcome::Busy);
+        }
+        AgentWorkspaceRepairPhase::Blocked => {
+            return Ok(AgentWorkspaceRepairPublishResumeOutcome::Blocked);
+        }
+        AgentWorkspaceRepairPhase::Requested
+        | AgentWorkspaceRepairPhase::Dispatching
+        | AgentWorkspaceRepairPhase::Repairing
+        | AgentWorkspaceRepairPhase::Validating => {
+            return Ok(AgentWorkspaceRepairPublishResumeOutcome::Busy);
+        }
+    };
+
+    match transition {
+        AgentWorkspaceRepairTransitionOutcome::Applied(next) => match next.phase {
+            AgentWorkspaceRepairPhase::ContinuationPending
+            | AgentWorkspaceRepairPhase::Continuing => {
+                Ok(AgentWorkspaceRepairPublishResumeOutcome::Continue(next))
+            }
+            AgentWorkspaceRepairPhase::AwaitingReview => {
+                Ok(AgentWorkspaceRepairPublishResumeOutcome::AwaitingReview)
+            }
+            AgentWorkspaceRepairPhase::Ready => Ok(AgentWorkspaceRepairPublishResumeOutcome::Ready),
+            AgentWorkspaceRepairPhase::Blocked => {
+                Ok(AgentWorkspaceRepairPublishResumeOutcome::Blocked)
+            }
+            AgentWorkspaceRepairPhase::Requested
+            | AgentWorkspaceRepairPhase::Dispatching
+            | AgentWorkspaceRepairPhase::Repairing
+            | AgentWorkspaceRepairPhase::Validating => {
+                Ok(AgentWorkspaceRepairPublishResumeOutcome::Busy)
+            }
+        },
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            Ok(AgentWorkspaceRepairPublishResumeOutcome::Stale)
+        }
+    }
+}
+
+/// Classifies trusted run completion against the persisted attempt. This primitive is deliberately
+/// side-effect free so the HTTP completion handler can reject stale work before Git inspection.
+pub(crate) async fn classify_agent_workspace_repair_completion_authority(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+) -> AppResult<AgentWorkspaceRepairCompletionAuthority> {
+    let exact = repair_repo
+        .get_repair_attempt_for_run(conversation_id, run_id)
+        .await?;
+    let current = repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?;
+    let Some(exact) = exact else {
+        return Ok(if current.is_some() {
+            AgentWorkspaceRepairCompletionAuthority::Superseded
+        } else {
+            AgentWorkspaceRepairCompletionAuthority::Invalid
+        });
+    };
+    if current
+        .as_ref()
+        .is_some_and(|attempt| attempt.id != exact.id)
+    {
+        return Ok(AgentWorkspaceRepairCompletionAuthority::Superseded);
+    }
+    if exact.settled_at.is_some() {
+        return Ok(
+            if matches!(
+                exact.outcome,
+                Some(crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded)
+            ) {
+                AgentWorkspaceRepairCompletionAuthority::AlreadyCompleted
+            } else {
+                AgentWorkspaceRepairCompletionAuthority::Superseded
+            },
+        );
+    }
+    match exact.phase {
+        AgentWorkspaceRepairPhase::Blocked => {
+            Ok(AgentWorkspaceRepairCompletionAuthority::AlreadyBlocked)
+        }
+        // `Validating` is a durable completion reservation. Re-entering with the same run must
+        // not repeat Git inspection while the first completion owns validation.
+        AgentWorkspaceRepairPhase::Validating
+        | AgentWorkspaceRepairPhase::AwaitingReview
+        | AgentWorkspaceRepairPhase::ContinuationPending
+        | AgentWorkspaceRepairPhase::Continuing
+        | AgentWorkspaceRepairPhase::Ready => {
+            Ok(AgentWorkspaceRepairCompletionAuthority::AlreadyCompleted)
+        }
+        AgentWorkspaceRepairPhase::Requested
+        | AgentWorkspaceRepairPhase::Dispatching
+        | AgentWorkspaceRepairPhase::Repairing => {
+            Ok(AgentWorkspaceRepairCompletionAuthority::Current(exact))
+        }
+    }
 }
 
 pub(crate) fn repair_run_event_classification(run_id: &AgentRunId) -> String {
@@ -148,40 +1911,6 @@ pub(crate) async fn settle_agent_workspace_repair_failure(
     };
     workspace_repo
         .compare_and_set_repair_state(&claim.conversation_id, &claim.guard, &transition)
-        .await
-}
-
-pub(crate) async fn settle_agent_workspace_failure_without_repair(
-    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
-    conversation_id: &ChatConversationId,
-    expected_push_status: &str,
-    summary: &str,
-) -> AppResult<bool> {
-    let Some(workspace) = workspace_repo
-        .get_by_conversation_id(conversation_id)
-        .await?
-    else {
-        return Ok(false);
-    };
-    if workspace.publication_push_status.as_deref() != Some(expected_push_status)
-        || workspace.pr_supervision_status.as_deref() == Some("fixing")
-    {
-        return Ok(false);
-    }
-    let transition = AgentWorkspaceRepairStateTransition {
-        publication_push_status: Some(expected_push_status.to_string()),
-        pr_supervision_status: Some("blocked".to_string()),
-        pr_supervision_summary: Some(summary.to_string()),
-        pr_supervision_updated_at: next_transition_at(workspace.pr_supervision_updated_at),
-        pr_auto_merge_current: None,
-        base_commit: None,
-    };
-    workspace_repo
-        .compare_and_set_repair_state(
-            conversation_id,
-            &AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
-            &transition,
-        )
         .await
 }
 

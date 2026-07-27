@@ -600,19 +600,25 @@ fn team_labels() -> Vec<LinearLabel> {
 
 #[test]
 fn resolve_linear_label_ids_matches_exact_names() {
-    let ids = resolve_linear_label_ids(
-        &["Bug".to_string(), "Feature".to_string()],
-        &team_labels(),
-    )
-    .expect("exact names should resolve");
-    assert_eq!(ids, vec!["label-bug".to_string(), "label-feature".to_string()]);
+    let ids = resolve_linear_label_ids(&["Bug".to_string(), "Feature".to_string()], &team_labels())
+        .expect("exact names should resolve");
+    assert_eq!(
+        ids,
+        vec!["label-bug".to_string(), "label-feature".to_string()]
+    );
 }
 
 #[test]
 fn resolve_linear_label_ids_is_case_insensitive_and_trims() {
-    let ids = resolve_linear_label_ids(&[" bug ".to_string(), "FEATURE".to_string()], &team_labels())
-        .expect("case-insensitive trimmed names should resolve");
-    assert_eq!(ids, vec!["label-bug".to_string(), "label-feature".to_string()]);
+    let ids = resolve_linear_label_ids(
+        &[" bug ".to_string(), "FEATURE".to_string()],
+        &team_labels(),
+    )
+    .expect("case-insensitive trimmed names should resolve");
+    assert_eq!(
+        ids,
+        vec!["label-bug".to_string(), "label-feature".to_string()]
+    );
 }
 
 #[test]
@@ -642,13 +648,20 @@ fn resolve_linear_label_ids_rejects_unknown_names() {
         &team_labels(),
     )
     .expect_err("unknown names should error");
-    assert!(error.contains("Nonexistent"), "error should name the missing label: {error}");
+    assert!(
+        error.contains("Nonexistent"),
+        "error should name the missing label: {error}"
+    );
 }
 
 #[test]
 fn resolve_linear_label_ids_preserves_first_seen_order() {
     let ids = resolve_linear_label_ids(
-        &["Feature".to_string(), "Bug".to_string(), "feature".to_string()],
+        &[
+            "Feature".to_string(),
+            "Bug".to_string(),
+            "feature".to_string(),
+        ],
         &team_labels(),
     )
     .expect("names should resolve");
@@ -661,9 +674,7 @@ fn resolve_linear_label_ids_preserves_first_seen_order() {
 
 /// Saves a token and marks the integration valid+enabled so enabled-context flow
 /// methods can route through the test Linear client.
-async fn enabled_service(
-    client: Arc<TestLinearClient>,
-) -> LinearIntegrationService {
+async fn enabled_service(client: Arc<TestLinearClient>) -> LinearIntegrationService {
     let repo = Arc::new(TestSettingsRepo::default());
     let secrets = Arc::new(MemorySecretStore::new());
     let service = LinearIntegrationService::new(repo, secrets, client);
@@ -841,7 +852,10 @@ async fn set_issue_labels_rejects_unknown_names_without_updating() {
         .await
         .unwrap_err();
 
-    assert!(error.contains("Nonexistent"), "error should name the missing label: {error}");
+    assert!(
+        error.contains("Nonexistent"),
+        "error should name the missing label: {error}"
+    );
     assert!(client.update_issue_labels_calls.lock().await.is_empty());
 }
 
@@ -1016,8 +1030,14 @@ async fn expand_references_truncates_large_issue_body() {
         )
         .await;
 
-    assert!(expanded.contains("truncated=\"true\""), "expected truncation flag: {expanded}");
-    assert!(expanded.contains("bytes=\"71680\""), "original byte count is reported");
+    assert!(
+        expanded.contains("truncated=\"true\""),
+        "expected truncation flag: {expanded}"
+    );
+    assert!(
+        expanded.contains("bytes=\"71680\""),
+        "original byte count is reported"
+    );
 }
 
 #[tokio::test]
@@ -1072,7 +1092,11 @@ async fn empty_client_returns_happy_path_stubs() {
     let auth = auth();
 
     assert!(client.validate(&auth).await.is_ok());
-    assert!(client.search_issues(&auth, "q", 5).await.unwrap().is_empty());
+    assert!(client
+        .search_issues(&auth, "q", 5)
+        .await
+        .unwrap()
+        .is_empty());
     assert!(client
         .list_workflow_states(&auth, Some("team"))
         .await
@@ -1123,7 +1147,10 @@ async fn empty_client_uses_trait_defaults_for_unimplemented_methods() {
 
     assert!(client.list_projects(&auth, 10).await.is_err());
     assert!(client.list_issue_team_labels(&auth, "i").await.is_err());
-    assert!(client.update_issue_labels(&auth, "i", vec![]).await.is_err());
+    assert!(client
+        .update_issue_labels(&auth, "i", vec![])
+        .await
+        .is_err());
 }
 
 // ── UnavailableLinearApiClient propagates its reason everywhere ───────────────
@@ -1153,15 +1180,18 @@ async fn unavailable_client_propagates_reason_across_methods() {
         "Linear is down"
     );
     assert_eq!(
-        client
-            .list_workflow_states(&auth, None)
-            .await
-            .unwrap_err(),
+        client.list_workflow_states(&auth, None).await.unwrap_err(),
         "Linear is down"
     );
-    assert_eq!(client.current_user(&auth).await.unwrap_err(), "Linear is down");
     assert_eq!(
-        client.update_issue_state(&auth, "i", "s").await.unwrap_err(),
+        client.current_user(&auth).await.unwrap_err(),
+        "Linear is down"
+    );
+    assert_eq!(
+        client
+            .update_issue_state(&auth, "i", "s")
+            .await
+            .unwrap_err(),
         "Linear is down"
     );
     assert_eq!(

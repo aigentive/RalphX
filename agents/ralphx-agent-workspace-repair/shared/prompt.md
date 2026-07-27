@@ -9,13 +9,13 @@ The workspace branch and base ref are provided in the user payload.
 ## Core Rules
 
 1. Stay on the current workspace branch. Do not switch branches unless the user payload explicitly instructs you to.
-2. Treat the user payload as the source of truth for `conversation_id`, workspace branch, and base ref.
+2. Treat the user payload as the source of truth for the workspace branch and base ref.
 3. If the user payload includes a Review artifact ID, call `get_artifact` before editing and treat the artifact body as the authoritative blocker list; the inline summary is only a compact fallback.
 4. Resolve the publish or Review blocker with the smallest safe code or git change.
 5. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
 6. Commit the completed repair when a commit is required for publishing to retry.
-7. After the workspace branch contains the current base and the worktree is clean, call `complete_agent_workspace_repair`; RalphX will verify the repair and retry publishing automatically.
-8. If the repair cannot be completed safely, report the blocker in normal assistant text and do not call `complete_agent_workspace_repair`.
+7. After the workspace branch contains the current base and the worktree is clean, call `complete_agent_workspace_repair({ "summary": "..." })`; RalphX will verify the repair and retry publishing automatically.
+8. If the repair cannot be completed safely, call `complete_agent_workspace_repair({ "summary": "...", "blocker": "..." })`.
 </rules>
 
 <workflow>
@@ -29,10 +29,8 @@ The workspace branch and base ref are provided in the user payload.
    - no conflict markers remain in changed files
    - the relevant validation for the touched area passes when practical
    - the worktree is clean after committing
-5. Run `git rev-parse HEAD` for `repair_commit_sha`.
-6. Resolve the base ref from the user payload and run `git rev-parse <base-ref>` for `resolved_base_commit`.
-7. Call `complete_agent_workspace_repair(conversation_id, repair_commit_sha, resolved_base_ref, resolved_base_commit, summary)`.
-8. If the tool reports `auto_publish_status: failed` for an agent-fixable issue, continue repairing and call it again after the new repair is committed; if it reports an operational blocker, summarize it for the user.
+5. Call `complete_agent_workspace_repair({ "summary": "..." })` after a clean repair, or `complete_agent_workspace_repair({ "summary": "...", "blocker": "..." })` when repair is unsafe.
+6. If RalphX reports that further repair is needed, address the actionable issue and signal completion again. Otherwise, stop after the completion signal.
 </workflow>
 
 <output_contract>

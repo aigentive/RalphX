@@ -1,13 +1,24 @@
+use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_workspace_publish_repair_state::{
+    block_agent_workspace_repair_completion, validate_agent_workspace_repair_target_lease,
+    AgentWorkspaceRepairTransitionOutcome,
+};
 use crate::application::git_service::git_cmd;
+use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentRunId, AgentRunStatus, BranchUpdateContinuation, BranchUpdateDirection, BranchUpdatePhase,
+    AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus,
+    AgentWorkspaceRepairPhase, BranchUpdateContinuation, BranchUpdateDirection, BranchUpdatePhase,
     GitMutationClaim, GitTargetLeaseOwnerKind, InternalStatus, TaskId,
 };
 use crate::domain::repositories::{
-    AgentRunRepository, BranchUpdateCasOutcome, BranchUpdateRepository, CompleteGitMutation,
-    GitAuthorityCasOutcome, ProjectRepository, TaskRepository, UnbindBranchUpdateRun,
+    AgentRunRepository, AgentWorkspaceRepairRepository, BranchUpdateCasOutcome,
+    BranchUpdateRepository, CompleteAgentWorkspaceRepairEffect,
+    CompleteAgentWorkspaceRepairEffectOutcome, CompleteGitMutation, GitAuthorityCasOutcome,
+    ProjectRepository, TaskRepository, UnbindBranchUpdateRun,
 };
 use crate::error::{AppError, AppResult};
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -159,6 +170,11 @@ pub async fn recover_in_flight_git_mutations(
     let claims = repository.list_in_flight_mutations().await?;
     let mut outcomes = Vec::with_capacity(claims.len());
     for claim in claims {
+        // Repair-owned claims are reconciled through the durable attempt/effect coordinator.
+        // This generic branch-update loop must not terminate, clear, or downgrade their lease.
+        if claim.owner.kind == GitTargetLeaseOwnerKind::AgentWorkspaceRepair {
+            continue;
+        }
         if let Err(reason) = terminate_process_group(&claim).await {
             outcomes.push(GitMutationRecoveryOutcome::NeedsRepair {
                 claim_id: claim.claim_id,
@@ -179,6 +195,7 @@ pub async fn recover_in_flight_git_mutations(
             | GitTargetLeaseOwnerKind::PublicationRecovery => {
                 inspect_operation_workspace(repository.as_ref(), &claim).await?
             }
+            GitTargetLeaseOwnerKind::AgentWorkspaceRepair => unreachable!("filtered above"),
             GitTargetLeaseOwnerKind::Manual => {
                 Err("manual mutation claims require explicit repair".into())
             }
@@ -210,6 +227,439 @@ pub async fn recover_in_flight_git_mutations(
         }
     }
     Ok(outcomes)
+}
+
+/// Startup and recurring callers use this entry point so repair-owned mutation claims converge
+/// with the same attempt/effect reconciler as live and terminal-run recovery.
+pub async fn recover_in_flight_git_mutations_for_state(
+    state: &AppState,
+) -> AppResult<Vec<GitMutationRecoveryOutcome>> {
+    let mut outcomes = recover_repair_owned_in_flight_git_mutations(state).await?;
+    crate::application::agent_workspace_publish_recovery::
+        recover_agent_workspace_repair_attempts_for_state(state)
+        .await?;
+    outcomes.extend(
+        recover_in_flight_git_mutations(
+            Arc::clone(&state.branch_update_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.project_repo),
+        )
+        .await?,
+    );
+    Ok(outcomes)
+}
+
+/// Reconcile only repair-owned claims before durable continuation recovery reads a `Busy` claim.
+/// The exact attempt, owner, fencing epoch, pre-push remote OID, and intended post-push OID must
+/// agree before this clears a claim or records an observed receipt. This path only fetches and
+/// reads Git state; it never pushes or calls GitHub.
+pub(crate) async fn recover_repair_owned_in_flight_git_mutations(
+    state: &AppState,
+) -> AppResult<Vec<GitMutationRecoveryOutcome>> {
+    let claims = state.branch_update_repo.list_in_flight_mutations().await?;
+    let mut outcomes = Vec::new();
+    for claim in claims
+        .into_iter()
+        .filter(|claim| claim.owner.kind == GitTargetLeaseOwnerKind::AgentWorkspaceRepair)
+    {
+        outcomes.push(recover_repair_owned_git_mutation_claim(state, claim).await?);
+    }
+    Ok(outcomes)
+}
+
+async fn recover_repair_owned_git_mutation_claim(
+    state: &AppState,
+    claim: GitMutationClaim,
+) -> AppResult<GitMutationRecoveryOutcome> {
+    if let Err(reason) = terminate_process_group(&claim).await {
+        return Ok(GitMutationRecoveryOutcome::NeedsRepair {
+            claim_id: claim.claim_id,
+            reason,
+        });
+    }
+
+    let attempt_id = AgentWorkspaceRepairAttemptId::from_string(claim.owner.owner_id.clone());
+    let Some(attempt) = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&attempt_id)
+        .await?
+    else {
+        return Ok(repair_claim_needs_repair(
+            claim,
+            "repair mutation owner has no durable attempt",
+        ));
+    };
+    let Some(current) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&attempt.conversation_id)
+        .await?
+    else {
+        return Ok(repair_claim_needs_repair(
+            claim,
+            "repair mutation owner is no longer the current durable attempt",
+        ));
+    };
+    if current.id != attempt.id
+        || current.generation != attempt.generation
+        || current.updated_at != attempt.updated_at
+        || current.phase != AgentWorkspaceRepairPhase::Continuing
+    {
+        return Ok(repair_claim_needs_repair(
+            claim,
+            "repair mutation claim does not match the current continuing attempt",
+        ));
+    }
+
+    let identity = match validate_agent_workspace_repair_target_lease(
+        state.branch_update_repo.as_ref(),
+        &current,
+    )
+    .await
+    {
+        Ok(identity) if identity == claim.identity => identity,
+        Ok(_) => {
+            return block_repair_claim_recovery(
+                state,
+                current,
+                claim,
+                "repair mutation canonical target differs from its durable attempt",
+            )
+            .await
+        }
+        Err(error) => {
+            return block_repair_claim_recovery(
+                state,
+                current,
+                claim,
+                &format!("repair mutation lease proof failed: {error}"),
+            )
+            .await
+        }
+    };
+    if current.target_lease_epoch != Some(claim.fencing_epoch) {
+        return block_repair_claim_recovery(
+            state,
+            current,
+            claim,
+            "repair mutation fencing epoch differs from its durable attempt",
+        )
+        .await;
+    }
+
+    let effect_key = repair_push_effect_key(&current);
+    let Some(effect) = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&effect_key)
+        .await?
+    else {
+        return block_repair_claim_recovery(
+            state,
+            current,
+            claim,
+            "repair mutation has no durable push-effect checkpoint",
+        )
+        .await;
+    };
+    if let Err(reason) = validate_repair_push_claim(&claim, &current, &effect) {
+        return block_repair_claim_recovery(state, current, claim, &reason).await;
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&current.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "workspace {} for repair mutation recovery",
+                current.conversation_id
+            ))
+        })?;
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "project {} for repair mutation recovery",
+                workspace.project_id
+            ))
+        })?;
+    let target = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await?;
+    let observed_identity =
+        GitService::canonical_target_identity(&target.path, &target.branch_name).await?;
+    if observed_identity != identity {
+        return block_repair_claim_recovery(
+            state,
+            current,
+            claim,
+            "repair mutation workspace no longer resolves to the persisted canonical target",
+        )
+        .await;
+    }
+    let remote_oid = read_repair_origin_branch_oid(&target.path, &target.branch_name).await?;
+    if remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
+        let observed = observe_repair_push_effect(
+            state.agent_workspace_repair_repo.as_ref(),
+            &current,
+            effect,
+            identity.full_ref(),
+            remote_oid
+                .as_deref()
+                .expect("matching intended OID is present"),
+        )
+        .await?;
+        return complete_repair_claim(
+            state.branch_update_repo.as_ref(),
+            claim,
+            observed.id.as_str(),
+        )
+        .await;
+    }
+    if exact_repair_push_precondition(&effect, remote_oid.as_deref()) {
+        return complete_repair_claim(state.branch_update_repo.as_ref(), claim, effect.id.as_str())
+            .await;
+    }
+
+    let reason = "repair push remote OID does not match either the recorded pre-push or intended post-push OID";
+    let failed = fail_repair_push_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &current,
+        effect,
+        reason,
+    )
+    .await?;
+    let cleared =
+        complete_repair_claim(state.branch_update_repo.as_ref(), claim, failed.id.as_str()).await?;
+    let GitMutationRecoveryOutcome::Cleared { claim_id } = cleared else {
+        return Ok(cleared);
+    };
+    block_repair_attempt_after_claim_recovery(state, current, claim_id, reason).await
+}
+
+fn repair_claim_needs_repair(
+    claim: GitMutationClaim,
+    reason: impl Into<String>,
+) -> GitMutationRecoveryOutcome {
+    GitMutationRecoveryOutcome::NeedsRepair {
+        claim_id: claim.claim_id,
+        reason: reason.into(),
+    }
+}
+
+fn repair_push_effect_key(attempt: &AgentWorkspaceRepairAttempt) -> String {
+    format!(
+        "agent_workspace_repair:{}:{}:push_branch",
+        attempt.id, attempt.generation
+    )
+}
+
+fn validate_repair_push_claim(
+    claim: &GitMutationClaim,
+    attempt: &AgentWorkspaceRepairAttempt,
+    effect: &AgentWorkspaceRepairEffect,
+) -> Result<(), String> {
+    if effect.attempt_id != attempt.id
+        || effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
+        || claim.claim_id != format!("{}:push", effect.id)
+    {
+        return Err("repair mutation claim does not match its durable push effect".to_string());
+    }
+    if effect
+        .intended_head_oid
+        .as_deref()
+        .is_none_or(str::is_empty)
+        || (!effect.expected_remote_absent
+            && effect
+                .expected_remote_oid
+                .as_deref()
+                .is_none_or(str::is_empty))
+        || (effect.expected_remote_absent && effect.expected_remote_oid.is_some())
+    {
+        return Err("repair push effect is missing exact remote OID proof".to_string());
+    }
+    if matches!(effect.status, AgentWorkspaceRepairEffectStatus::Failed) {
+        return Err("repair push effect was already marked failed".to_string());
+    }
+    Ok(())
+}
+
+async fn read_repair_origin_branch_oid(
+    workspace_path: &std::path::Path,
+    branch_name: &str,
+) -> AppResult<Option<String>> {
+    GitService::fetch_origin(workspace_path).await?;
+    let remote_ref =
+        crate::application::publish_resilience::remote_tracking_ref_for_publish(branch_name);
+    if !GitService::ref_exists(workspace_path, &remote_ref).await? {
+        return Ok(None);
+    }
+    GitService::get_branch_sha(workspace_path, &remote_ref)
+        .await
+        .map(Some)
+}
+
+fn exact_repair_push_precondition(
+    effect: &AgentWorkspaceRepairEffect,
+    remote_oid: Option<&str>,
+) -> bool {
+    (effect.expected_remote_absent && remote_oid.is_none())
+        || (!effect.expected_remote_absent && remote_oid == effect.expected_remote_oid.as_deref())
+}
+
+async fn observe_repair_push_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+    mut effect: AgentWorkspaceRepairEffect,
+    remote_ref: &str,
+    remote_oid: &str,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    if effect.status != AgentWorkspaceRepairEffectStatus::Observed {
+        effect.status = AgentWorkspaceRepairEffectStatus::Observed;
+        effect.receipt_json = Some(
+            serde_json::json!({ "remote_ref": remote_ref, "remote_oid": remote_oid }).to_string(),
+        );
+        effect.last_error = None;
+        effect.updated_at = next_repair_recovery_checkpoint_at(effect.updated_at);
+        effect.completed_at = Some(effect.updated_at);
+    }
+    match repair_repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
+            "repair push receipt lost current attempt authority during recovery".to_string(),
+        )),
+        CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::NotFound(
+            "repair push effect disappeared during recovery".to_string(),
+        )),
+    }
+}
+
+async fn fail_repair_push_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+    mut effect: AgentWorkspaceRepairEffect,
+    reason: &str,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    effect.status = AgentWorkspaceRepairEffectStatus::Failed;
+    effect.last_error = Some(reason.to_string());
+    effect.updated_at = next_repair_recovery_checkpoint_at(effect.updated_at);
+    match repair_repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
+            "repair push failure lost current attempt authority during recovery".to_string(),
+        )),
+        CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::NotFound(
+            "repair push effect disappeared during recovery".to_string(),
+        )),
+    }
+}
+
+fn next_repair_recovery_checkpoint_at(previous: DateTime<Utc>) -> DateTime<Utc> {
+    let now = Utc::now();
+    if now > previous {
+        now
+    } else {
+        previous + chrono::Duration::microseconds(1)
+    }
+}
+
+async fn complete_repair_claim(
+    repository: &dyn BranchUpdateRepository,
+    claim: GitMutationClaim,
+    effect_id: &str,
+) -> AppResult<GitMutationRecoveryOutcome> {
+    let completion = repository
+        .complete_git_mutation(CompleteGitMutation {
+            identity: claim.identity,
+            owner: claim.owner,
+            fencing_epoch: claim.fencing_epoch,
+            claim_id: claim.claim_id.clone(),
+        })
+        .await?;
+    if matches!(completion, GitAuthorityCasOutcome::Applied { .. }) {
+        Ok(GitMutationRecoveryOutcome::Cleared {
+            claim_id: claim.claim_id,
+        })
+    } else {
+        Ok(GitMutationRecoveryOutcome::NeedsRepair {
+            claim_id: claim.claim_id,
+            reason: format!(
+                "repair push effect {effect_id} lost exact mutation authority during recovery: {completion:?}"
+            ),
+        })
+    }
+}
+
+async fn block_repair_claim_recovery(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    claim: GitMutationClaim,
+    reason: &str,
+) -> AppResult<GitMutationRecoveryOutcome> {
+    block_repair_attempt_after_claim_recovery(state, attempt, claim.claim_id, reason).await
+}
+
+async fn block_repair_attempt_after_claim_recovery(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    claim_id: String,
+    reason: &str,
+) -> AppResult<GitMutationRecoveryOutcome> {
+    let auto_merge_current = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await?
+        .and_then(|workspace| workspace.pr_auto_merge_current);
+    match block_agent_workspace_repair_completion(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        attempt,
+        "Workspace repair recovery is blocked.",
+        reason,
+        auto_merge_current,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
+            Ok(GitMutationRecoveryOutcome::NeedsRepair {
+                claim_id,
+                reason: reason.to_string(),
+            })
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            Ok(GitMutationRecoveryOutcome::NeedsRepair {
+                claim_id,
+                reason:
+                    "repair mutation recovery lost current attempt authority before it could block"
+                        .to_string(),
+            })
+        }
+    }
 }
 
 async fn inspect_merge_attempt_workspaces(

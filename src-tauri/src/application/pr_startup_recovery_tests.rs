@@ -13,23 +13,31 @@ use crate::application::git_service::GitService;
 use crate::application::pr_startup_recovery::{
     cleanup_terminal_agent_workspace_local_artifacts_on_startup,
     cleanup_terminal_plan_branch_local_artifacts_on_startup, recover_agent_workspace_pr_pollers,
+    recover_agent_workspace_pr_pollers_with_notifications,
 };
 use crate::application::services::PrPollerRegistry;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatConversationId, ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceSourcePullRequest, ArtifactId, ChatConversationId, ExecutionPlanId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
+    Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, PlanBranchRepository, ProjectRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    PlanBranchRepository, ProjectRepository, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::domain::services::{
-    github_service::GithubServiceTrait, MemoryRunningAgentRegistry, RunningAgentRegistry,
+    github_service::{
+        GithubServiceTrait, PrHealth, PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
+    },
+    MemoryRunningAgentRegistry, RunningAgentRegistry,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
@@ -479,6 +487,175 @@ async fn startup_agent_workspace_pr_recovery_with_autofix_disabled_skips_review_
     assert!(chat.get_sent_messages().await.is_empty());
     assert!(registry.is_agent_workspace_polling(&conversation_id));
     registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_preserves_active_durable_repair_authority() {
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+    run_git(&repo_path, &["init"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "Test User"]);
+    run_git(&repo_path, &["checkout", "-b", "main"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Startup Durable Repair Poller".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+    project.worktree_parent_directory = Some(
+        temp_dir
+            .path()
+            .join("worktrees")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let conversation_id = ChatConversationId::from_string("abababab-7777-8888-9999-dddddddddddd");
+    let branch_name = "ralphx/test/startup-durable-repair-poller";
+    let workspace = published_workspace(&project, conversation_id.clone(), branch_name);
+    GitService::create_worktree(
+        &repo_path,
+        Path::new(&workspace.worktree_path),
+        branch_name,
+        "main",
+    )
+    .await
+    .expect("create workspace worktree");
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let active_run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active repair run");
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Repairing;
+    attempt.reserved_agent_run_id = Some(active_run.id.clone());
+    let started = repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "existing durable repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed durable repair");
+    let durable_attempt = match started {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a new durable repair, got {outcome:?}"),
+    };
+
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_review_feedback(crate::domain::services::github_service::PrReviewFeedback {
+        review_id: "startup-durable-review".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-07-20T12:00:00Z".to_string()),
+        body: Some("Please address this review.".to_string()),
+        comments: Vec::new(),
+    });
+    github.state().fetch_pr_health_result = Some(Ok(PrHealth {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: Some(PrMergeStateStatus::Clean),
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: branch_name.to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some("durable-repair-head".to_string()),
+            base_ref_oid: None,
+        },
+        review_decision: None,
+        checks: Vec::new(),
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }));
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+    let chat = Arc::new(MockChatService::new());
+    recover_agent_workspace_pr_pollers_with_notifications(
+        workspace_repo.clone(),
+        Arc::clone(&project_repo),
+        Arc::clone(&plan_branch_repo),
+        Arc::clone(&registry),
+        agent_run_repo.clone(),
+        chat.clone(),
+        None,
+        Some(Arc::clone(&repair_repo)),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+    recover_agent_workspace_pr_pollers_with_notifications(
+        workspace_repo.clone(),
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        agent_run_repo,
+        chat.clone(),
+        None,
+        Some(Arc::clone(&repair_repo)),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(
+        !registry.is_agent_workspace_polling(&conversation_id),
+        "an active durable repair must prevent duplicate poller registration"
+    );
+    assert!(workspace_repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .expect("read monitor")
+        .is_none());
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert_eq!(github.state().check_pr_review_feedback_calls, 0);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("read publication events")
+        .is_empty());
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read durable repair")
+        .expect("durable repair should remain current");
+    assert_eq!(current.id, durable_attempt.id);
+    assert_eq!(current.generation, durable_attempt.generation);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert_eq!(current.reserved_agent_run_id, Some(active_run.id));
 }
 
 #[tokio::test]

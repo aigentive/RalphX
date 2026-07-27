@@ -3,6 +3,7 @@
  * Tests agent team coordination features
  */
 
+import { Ajv as AjvValidator } from 'ajv/dist/ajv.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getAllowedToolNames,
@@ -1130,22 +1131,31 @@ describe('agent workspace repair tool', () => {
     expect(tool).toBeDefined();
   });
 
-  it('should require repair verification fields', () => {
+  it('should accept only a completion summary and optional blocker', () => {
     expect(tool?.inputSchema.type).toBe('object');
-    expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
-    expect(tool?.inputSchema.properties).toHaveProperty('repair_commit_sha');
-    expect(tool?.inputSchema.properties).toHaveProperty('resolved_base_ref');
-    expect(tool?.inputSchema.properties).toHaveProperty('resolved_base_commit');
     expect(tool?.inputSchema.properties).toHaveProperty('summary');
-    expect(tool?.inputSchema.required).toEqual(
-      expect.arrayContaining([
-        'conversation_id',
-        'repair_commit_sha',
-        'resolved_base_ref',
-        'resolved_base_commit',
-        'summary',
-      ])
-    );
+    expect(tool?.inputSchema.properties).toHaveProperty('blocker');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('conversation_id');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('repair_commit_sha');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('resolved_base_ref');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('resolved_base_commit');
+    expect(tool?.inputSchema.required).toEqual(['summary']);
+    expect(tool?.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it('accepts valid repair completion objects and rejects model-supplied identity or SHA extras', () => {
+    const validate = new AjvValidator().compile(tool!.inputSchema);
+
+    expect(validate({ summary: 'Resolved conflicts', blocker: 'Needs input' })).toBe(true);
+    for (const [property, value] of Object.entries({
+      conversation_id: 'conversation-from-model',
+      agent_run_id: 'run-from-model',
+      attempt_id: 'attempt-from-model',
+      repair_commit_sha: 'a'.repeat(40),
+      resolved_base_commit: 'b'.repeat(40),
+    })) {
+      expect(validate({ summary: 'Resolved conflicts', [property]: value })).toBe(false);
+    }
   });
 
   it('repair agent allowlist includes review artifact fetch and completion tools', () => {
@@ -2244,10 +2254,8 @@ describe('agent workspace publish tool transport', () => {
       'post',
       'agent-workspaces/conversation-1/complete-repair',
       {
-        repair_commit_sha: 'a'.repeat(40),
-        resolved_base_ref: 'main',
-        resolved_base_commit: 'b'.repeat(40),
         summary: 'Resolved conflicts',
+        blocker: 'Needs maintainer decision',
       },
     ],
     [
@@ -2286,10 +2294,17 @@ describe('agent workspace publish tool transport', () => {
         created_by_run_id: 'run-1',
       };
 
+      const runtimeContext =
+        toolName === 'complete_agent_workspace_repair'
+          ? {
+              agentRunId: 'run-from-runtime',
+              parentConversationId: 'conversation-1',
+              conversationId: 'conversation-1',
+            }
+          : { agentRunId: 'run-from-runtime' };
+
       await expect(
-        callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args, {
-          agentRunId: 'run-from-runtime',
-        })
+        callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args, runtimeContext)
       ).resolves.toEqual({ ok: method });
       expect(isAgentWorkspaceToolName(toolName)).toBe(true);
 
@@ -2297,7 +2312,24 @@ describe('agent workspace publish tool transport', () => {
         expect(callTauriGet).toHaveBeenCalledWith(expectedPath);
         expect(callTauri).not.toHaveBeenCalled();
       } else {
-        expect(callTauri).toHaveBeenCalledWith(expectedPath, expectedBody);
+        const expectedOptions =
+          toolName === 'complete_agent_workspace_repair'
+            ? {
+                headers: {
+                  'x-ralphx-agent-run-id': 'run-from-runtime',
+                  'x-ralphx-conversation-id': 'conversation-1',
+                },
+              }
+            : undefined;
+        if (expectedOptions) {
+          expect(callTauri).toHaveBeenCalledWith(
+            expectedPath,
+            expectedBody,
+            expectedOptions,
+          );
+        } else {
+          expect(callTauri).toHaveBeenCalledWith(expectedPath, expectedBody);
+        }
         expect(callTauriGet).not.toHaveBeenCalled();
       }
     }
@@ -2312,26 +2344,76 @@ describe('agent workspace publish tool transport', () => {
 });
 
 describe('agent workspace repair tool transport', () => {
-  it('routes repair completion to the agent workspace endpoint', async () => {
+  it('binds repair completion to trusted runtime identity', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
 
     await expect(
       callCompleteAgentWorkspaceRepairTool(callTauri, {
-        conversation_id: 'conversation-1',
-        repair_commit_sha: 'a'.repeat(40),
-        resolved_base_ref: 'main',
-        resolved_base_commit: 'b'.repeat(40),
         summary: 'Resolved conflicts',
+        blocker: 'Needs maintainer decision',
+      }, {
+        agentRunId: 'run-1',
+        parentConversationId: 'conversation-1',
+        conversationId: 'conversation-1',
       })
     ).resolves.toEqual({ success: true });
 
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-repair', {
-      repair_commit_sha: 'a'.repeat(40),
-      resolved_base_ref: 'main',
-      resolved_base_commit: 'b'.repeat(40),
       summary: 'Resolved conflicts',
+      blocker: 'Needs maintainer decision',
+    }, {
+      headers: {
+        'x-ralphx-agent-run-id': 'run-1',
+        'x-ralphx-conversation-id': 'conversation-1',
+      },
     });
   });
+
+  it('rejects missing trusted runtime identity before making a request', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompleteAgentWorkspaceRepairTool(callTauri, { summary: 'Resolved conflicts' }, {})
+    ).rejects.toThrow('requires the current agent workspace conversation from runtime context');
+    expect(callTauri).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy null blocker transport compatibility', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompleteAgentWorkspaceRepairTool(
+        callTauri,
+        { summary: 'Resolved conflicts', blocker: null },
+        {
+          agentRunId: 'run-1',
+          parentConversationId: 'conversation-1',
+          conversationId: 'conversation-1',
+        },
+      ),
+    ).resolves.toEqual({ success: true });
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-1/complete-repair',
+      { summary: 'Resolved conflicts', blocker: null },
+      expect.anything(),
+    );
+  });
+
+  it.each(['accepted', 'already_completed', 'superseded', 'blocked'])(
+    'passes through the %s completion status',
+    async (status) => {
+      const response = { success: true, status };
+      const callTauri = vi.fn().mockResolvedValue(response);
+
+      await expect(
+        callCompleteAgentWorkspaceRepairTool(callTauri, { summary: 'Resolved conflicts' }, {
+          agentRunId: 'run-1',
+          parentConversationId: 'conversation-1',
+          conversationId: 'conversation-1',
+        })
+      ).resolves.toEqual(response);
+    }
+  );
 });
 
 // ===========================================================================

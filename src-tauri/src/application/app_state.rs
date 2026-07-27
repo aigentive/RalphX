@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
@@ -62,19 +62,20 @@ use crate::domain::repositories::{
     AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository,
-    AgentWorkflowRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
-    ArtifactFlowRepository, ArtifactRepository, AutomationRepository, AutomationRunRepository,
-    BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
-    ManualRoleDefaultRepository, McpPolicyRepository, MemoryArchiveRepository,
-    MemoryEntryRepository, MemoryEventRepository, MethodologyRepository, NotificationRepository,
-    NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
-    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    AgentWorkflowRepository, AgentWorkspaceRepairRepository, ApiKeyRepository, AppStateRepository,
+    ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository, AutomationRepository,
+    AutomationRunRepository, BranchUpdateRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    ConversationFolderReferenceRepository, DelegatedSessionRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    IdeationSettingsRepository, ManualRoleDefaultRepository, McpPolicyRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
+    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
+    PersonaRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
+    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
     WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
@@ -279,6 +280,17 @@ pub struct AppState {
     pub persona_repo: Arc<dyn PersonaRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    /// Repair-attempt persistence shares the concrete workspace repository instance.
+    pub agent_workspace_repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    /// Command-composed publisher callback used only after a repair-owned push has an observed
+    /// receipt. The handle is shared with the HTTP AppState graph during runtime wiring.
+    pub(crate) agent_workspace_repair_publish_continuation: Arc<
+        RwLock<
+            Option<
+                Arc<dyn crate::application::publish_resilience::AgentWorkspaceRepairPublishContinuation>,
+            >,
+        >,
+    >,
     /// Conversation-owned primary Jira assignment/cache repository
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     /// Conversation-owned primary Linear assignment/cache repository
@@ -404,6 +416,65 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Installs the command-composed normal-publish continuation after the Tauri runtime state is
+    /// available. Replacing an existing continuation is intentional during startup retry.
+    pub(crate) fn install_agent_workspace_repair_publish_continuation(
+        &self,
+        continuation: Arc<
+            dyn crate::application::publish_resilience::AgentWorkspaceRepairPublishContinuation,
+        >,
+    ) {
+        *self
+            .agent_workspace_repair_publish_continuation
+            .write()
+            .expect("repair publish continuation lock") = Some(continuation);
+    }
+
+    /// Returns the command-composed publisher only at the durable post-push boundary. Missing
+    /// runtime composition fails closed before a PR effect receipt is recorded.
+    pub(crate) fn agent_workspace_repair_publish_continuation(
+        &self,
+    ) -> AppResult<
+        Arc<dyn crate::application::publish_resilience::AgentWorkspaceRepairPublishContinuation>,
+    > {
+        self.agent_workspace_repair_publish_continuation
+            .read()
+            .expect("repair publish continuation lock")
+            .clone()
+            .ok_or_else(|| {
+                AppError::Infrastructure(
+                    "workspace repair publish continuation is unavailable in this runtime"
+                        .to_string(),
+                )
+            })
+    }
+
+    fn sqlite_agent_workspace_repositories(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> (
+        Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc<dyn AgentWorkspaceRepairRepository>,
+    ) {
+        let repository = Arc::new(SqliteAgentConversationWorkspaceRepository::from_shared(
+            Arc::clone(shared_conn),
+        ));
+        let workspace_repository: Arc<dyn AgentConversationWorkspaceRepository> =
+            repository.clone();
+        let repair_repository: Arc<dyn AgentWorkspaceRepairRepository> = repository;
+        (workspace_repository, repair_repository)
+    }
+
+    fn memory_agent_workspace_repositories() -> (
+        Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc<dyn AgentWorkspaceRepairRepository>,
+    ) {
+        let repository = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let workspace_repository: Arc<dyn AgentConversationWorkspaceRepository> =
+            repository.clone();
+        let repair_repository: Arc<dyn AgentWorkspaceRepairRepository> = repository;
+        (workspace_repository, repair_repository)
+    }
+
     pub(crate) fn manual_role_default_service(
         &self,
     ) -> crate::application::manual_role_default_service::ManualRoleDefaultService {
@@ -1292,6 +1363,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
 
         let gh_svc: Arc<dyn GithubServiceTrait> = Arc::new(GhCliGithubService::new());
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::sqlite_agent_workspace_repositories(&shared_conn);
 
         let state = Self {
             task_repo: Arc::clone(&task_repo),
@@ -1419,9 +1492,9 @@ impl AppState {
             persona_repo: Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            agent_conversation_workspace_repo: Arc::new(
-                SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1551,6 +1624,9 @@ impl AppState {
         state
             .pr_poller_registry
             .set_notification_service(state.notification_service());
+        state
+            .pr_poller_registry
+            .set_branch_update_repo(Arc::clone(&state.branch_update_repo));
         Ok(state)
     }
 
@@ -1610,6 +1686,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::memory_agent_workspace_repositories();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1690,9 +1768,9 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                MemoryAgentConversationWorkspaceRepository::new(),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
@@ -1803,6 +1881,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::memory_agent_workspace_repositories();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1883,9 +1963,9 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                MemoryAgentConversationWorkspaceRepository::new(),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
@@ -2001,6 +2081,8 @@ impl AppState {
         let app_paths = AppPaths::for_tests();
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::sqlite_agent_workspace_repositories(&shared_conn);
 
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
@@ -2088,9 +2170,9 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2204,6 +2286,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::memory_agent_workspace_repositories();
 
         Self {
             task_repo: Arc::clone(&task_repo),
@@ -2266,9 +2350,9 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                MemoryAgentConversationWorkspaceRepository::new(),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),

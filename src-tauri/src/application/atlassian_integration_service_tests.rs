@@ -461,9 +461,7 @@ impl AtlassianApiClient for TestAtlassianClient {
 
 /// Builds a service whose settings are enabled/valid and whose secret store
 /// holds the API token, so `enabled_auth_context` resolves successfully.
-async fn enabled_service(
-    client: Arc<TestAtlassianClient>,
-) -> AtlassianIntegrationService {
+async fn enabled_service(client: Arc<TestAtlassianClient>) -> AtlassianIntegrationService {
     let repo = Arc::new(TestSettingsRepo::enabled());
     let secrets = Arc::new(MemorySecretStore::new());
     secrets
@@ -595,7 +593,10 @@ async fn jira_writes_are_blocked_when_integration_disabled() {
     // Every write path must fail at the enabled-context gate before any client
     // call is recorded.
     assert_eq!(
-        service.clear_jira_issue_assignee("PROJ-1").await.unwrap_err(),
+        service
+            .clear_jira_issue_assignee("PROJ-1")
+            .await
+            .unwrap_err(),
         "Atlassian integration is not enabled"
     );
     assert_eq!(
@@ -606,7 +607,10 @@ async fn jira_writes_are_blocked_when_integration_disabled() {
         "Atlassian integration is not enabled"
     );
     assert_eq!(
-        service.transition_jira_issue("PROJ-1", "31").await.unwrap_err(),
+        service
+            .transition_jira_issue("PROJ-1", "31")
+            .await
+            .unwrap_err(),
         "Atlassian integration is not enabled"
     );
     assert_eq!(
@@ -765,13 +769,8 @@ async fn resolve_resource_urls_skips_blank_and_handles_url_edge_cases() {
         .expect("url resolution");
 
     assert_eq!(results.len(), 5);
-    assert!(results[..4]
-        .iter()
-        .all(|result| result.resource.is_none()));
-    let resource = results[4]
-        .resource
-        .as_ref()
-        .expect("query pageId resource");
+    assert!(results[..4].iter().all(|result| result.resource.is_none()));
+    let resource = results[4].resource.as_ref().expect("query pageId resource");
     assert_eq!(resource.kind, AtlassianResourceKind::Confluence);
     assert_eq!(resource.id, "7890");
 
@@ -821,7 +820,10 @@ async fn assign_jira_issue_routes_to_client_when_enabled() {
         .await
         .expect("assignment should succeed");
 
-    assert_eq!(client.assigned.lock().await.as_slice(), &["PROJ-1".to_string()]);
+    assert_eq!(
+        client.assigned.lock().await.as_slice(),
+        &["PROJ-1".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -882,11 +884,17 @@ async fn project_listing_methods_require_enabled_settings() {
         "Atlassian integration is not enabled"
     );
     assert_eq!(
-        service.list_jira_project_statuses("PROJ").await.unwrap_err(),
+        service
+            .list_jira_project_statuses("PROJ")
+            .await
+            .unwrap_err(),
         "Atlassian integration is not enabled"
     );
     assert_eq!(
-        service.list_jira_project_issues("PROJ", 10).await.unwrap_err(),
+        service
+            .list_jira_project_issues("PROJ", 10)
+            .await
+            .unwrap_err(),
         "Atlassian integration is not enabled"
     );
     assert_eq!(
@@ -906,7 +914,10 @@ async fn project_listing_methods_require_enabled_settings() {
         "Atlassian integration is not enabled"
     );
     assert_eq!(
-        service.assign_jira_issue_to_current_user("PROJ-1").await.unwrap_err(),
+        service
+            .assign_jira_issue_to_current_user("PROJ-1")
+            .await
+            .unwrap_err(),
         "Atlassian integration is not enabled"
     );
 }
@@ -917,10 +928,7 @@ async fn project_listing_methods_require_enabled_settings() {
 async fn expand_references_returns_message_with_no_references() {
     let client = Arc::new(TestAtlassianClient::default());
     let service = enabled_service(client.clone()).await;
-    assert_eq!(
-        service.expand_references_for_prompt("hi", &[]).await,
-        "hi"
-    );
+    assert_eq!(service.expand_references_for_prompt("hi", &[]).await, "hi");
 }
 
 #[tokio::test]
@@ -1040,9 +1048,7 @@ async fn expand_references_truncates_large_resource_body() {
 
 /// Builds a fresh API-token service with seeded settings/secret so validate flows
 /// can route to the (happy) test client.
-async fn api_token_service(
-    client: Arc<TestAtlassianClient>,
-) -> AtlassianIntegrationService {
+async fn api_token_service(client: Arc<TestAtlassianClient>) -> AtlassianIntegrationService {
     let repo = Arc::new(TestSettingsRepo::enabled());
     let secrets = Arc::new(MemorySecretStore::new());
     secrets
@@ -1060,7 +1066,10 @@ async fn validate_and_enable_marks_valid_on_success() {
     let settings = service.validate_and_enable().await.unwrap();
 
     assert!(settings.enabled);
-    assert_eq!(settings.validation_status, IntegrationValidationStatus::Valid);
+    assert_eq!(
+        settings.validation_status,
+        IntegrationValidationStatus::Valid
+    );
     assert!(settings.jira_available);
     assert!(settings.confluence_available);
     assert!(settings.last_error.is_none());
@@ -1077,7 +1086,10 @@ async fn validate_and_enable_requires_email_for_api_token() {
         settings: RwLock::new(seeded),
     });
     let secrets = Arc::new(MemorySecretStore::new());
-    secrets.put_secret(TEST_TOKEN_REF, "secret-token").await.unwrap();
+    secrets
+        .put_secret(TEST_TOKEN_REF, "secret-token")
+        .await
+        .unwrap();
     let client = Arc::new(TestAtlassianClient::default());
     let service = AtlassianIntegrationService::new(repo, secrets, client);
 
@@ -1118,11 +1130,17 @@ async fn save_settings_normalizes_and_resets_state_for_api_token() {
         .unwrap();
 
     assert!(!saved.enabled);
-    assert_eq!(saved.site_url.as_deref(), Some("https://example.atlassian.net"));
+    assert_eq!(
+        saved.site_url.as_deref(),
+        Some("https://example.atlassian.net")
+    );
     assert_eq!(saved.email.as_deref(), Some("user@example.com"));
     assert!(saved.token_secret_ref.is_some());
     // All three required API-token fields are present → Pending.
-    assert_eq!(saved.validation_status, IntegrationValidationStatus::Pending);
+    assert_eq!(
+        saved.validation_status,
+        IntegrationValidationStatus::Pending
+    );
     assert_eq!(
         secrets.get_secret(TEST_TOKEN_REF).await.unwrap().as_deref(),
         Some("the-token")
@@ -1133,7 +1151,10 @@ async fn save_settings_normalizes_and_resets_state_for_api_token() {
 async fn save_settings_clears_token_when_blank() {
     let repo = Arc::new(TestSettingsRepo::enabled());
     let secrets = Arc::new(MemorySecretStore::new());
-    secrets.put_secret(TEST_TOKEN_REF, "secret-token").await.unwrap();
+    secrets
+        .put_secret(TEST_TOKEN_REF, "secret-token")
+        .await
+        .unwrap();
     let client = Arc::new(TestAtlassianClient::default());
     let service = AtlassianIntegrationService::new(repo, secrets.clone(), client);
 
@@ -1167,21 +1188,30 @@ async fn save_settings_rejects_invalid_redirect_uri() {
         .await
         .unwrap_err();
 
-    assert!(error.contains("loopback"), "redirect URI must be loopback: {error}");
+    assert!(
+        error.contains("loopback"),
+        "redirect URI must be loopback: {error}"
+    );
 }
 
 #[tokio::test]
 async fn disconnect_clears_all_secrets_and_resets() {
     let repo = Arc::new(TestSettingsRepo::enabled());
     let secrets = Arc::new(MemorySecretStore::new());
-    secrets.put_secret(TEST_TOKEN_REF, "secret-token").await.unwrap();
+    secrets
+        .put_secret(TEST_TOKEN_REF, "secret-token")
+        .await
+        .unwrap();
     let client = Arc::new(TestAtlassianClient::default());
     let service = AtlassianIntegrationService::new(repo, secrets.clone(), client);
 
     let cleared = service.disconnect().await.unwrap();
 
     assert!(!cleared.enabled);
-    assert_eq!(cleared.validation_status, IntegrationValidationStatus::NotConfigured);
+    assert_eq!(
+        cleared.validation_status,
+        IntegrationValidationStatus::NotConfigured
+    );
     assert!(cleared.token_secret_ref.is_none());
     assert!(secrets.get_secret(TEST_TOKEN_REF).await.unwrap().is_none());
 }
@@ -1201,7 +1231,10 @@ async fn exchange_oauth_code_applies_token_and_enables_oauth_connection() {
         settings: RwLock::new(seeded),
     });
     let secrets = Arc::new(MemorySecretStore::new());
-    secrets.put_secret(SECRET_REF, "client-secret").await.unwrap();
+    secrets
+        .put_secret(SECRET_REF, "client-secret")
+        .await
+        .unwrap();
 
     let client = Arc::new(TestAtlassianClient::default());
     *client.oauth_token.lock().await = Some(AtlassianOAuthTokenResponse {
@@ -1225,8 +1258,14 @@ async fn exchange_oauth_code_applies_token_and_enables_oauth_connection() {
     // The token response was applied: site URL + cloud id resolved from the
     // accessible resource, and the access token persisted to secure storage.
     assert!(settings.enabled);
-    assert_eq!(settings.validation_status, IntegrationValidationStatus::Valid);
-    assert_eq!(settings.site_url.as_deref(), Some("https://acme.atlassian.net"));
+    assert_eq!(
+        settings.validation_status,
+        IntegrationValidationStatus::Valid
+    );
+    assert_eq!(
+        settings.site_url.as_deref(),
+        Some("https://acme.atlassian.net")
+    );
     assert_eq!(settings.oauth_cloud_id.as_deref(), Some("cloud-abc"));
     assert_eq!(settings.oauth_scopes.as_deref(), Some("read:jira-work"));
     assert!(settings.oauth_access_token_ref.is_some());
@@ -1289,9 +1328,15 @@ async fn build_oauth_authorization_produces_consent_url_with_defaults() {
 
     let authorization = service.build_oauth_authorization().await.unwrap();
 
-    assert!(authorization.authorization_url.contains("auth.atlassian.com/authorize"));
-    assert!(authorization.authorization_url.contains("client_id=my-client"));
-    assert!(authorization.authorization_url.contains("response_type=code"));
+    assert!(authorization
+        .authorization_url
+        .contains("auth.atlassian.com/authorize"));
+    assert!(authorization
+        .authorization_url
+        .contains("client_id=my-client"));
+    assert!(authorization
+        .authorization_url
+        .contains("response_type=code"));
     assert!(!authorization.state.is_empty());
     // The default loopback redirect URI is used.
     assert_eq!(
@@ -1341,23 +1386,44 @@ async fn empty_client_returns_happy_path_stubs() {
         .await
         .unwrap();
     assert_eq!(fetched.id, "PROJ-1");
-    client.assign_jira_issue_to_current_user(&auth, "PROJ-1").await.unwrap();
-    client.clear_jira_issue_assignee(&auth, "PROJ-1").await.unwrap();
+    client
+        .assign_jira_issue_to_current_user(&auth, "PROJ-1")
+        .await
+        .unwrap();
+    client
+        .clear_jira_issue_assignee(&auth, "PROJ-1")
+        .await
+        .unwrap();
     assert!(client
         .list_jira_issue_transitions(&auth, "PROJ-1")
         .await
         .unwrap()
         .is_empty());
-    client.transition_jira_issue(&auth, "PROJ-1", "31").await.unwrap();
-    let comment = client.add_jira_comment(&auth, "PROJ-1", "body").await.unwrap();
+    client
+        .transition_jira_issue(&auth, "PROJ-1", "31")
+        .await
+        .unwrap();
+    let comment = client
+        .add_jira_comment(&auth, "PROJ-1", "body")
+        .await
+        .unwrap();
     assert_eq!(comment.body_markdown, "body");
 
     // Methods the empty client does NOT override fall back to the trait default
     // error impls.
-    assert!(client.set_jira_issue_labels(&auth, "PROJ-1", vec![]).await.is_err());
+    assert!(client
+        .set_jira_issue_labels(&auth, "PROJ-1", vec![])
+        .await
+        .is_err());
     assert!(client.list_jira_projects(&auth, 10).await.is_err());
-    assert!(client.list_jira_project_statuses(&auth, "PROJ").await.is_err());
-    assert!(client.list_jira_project_issues(&auth, "PROJ", 10).await.is_err());
+    assert!(client
+        .list_jira_project_statuses(&auth, "PROJ")
+        .await
+        .is_err());
+    assert!(client
+        .list_jira_project_issues(&auth, "PROJ", 10)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -1365,7 +1431,10 @@ async fn unavailable_client_propagates_reason() {
     let client = UnavailableAtlassianApiClient::new("Atlassian is down");
     let auth = api_token_auth();
 
-    assert_eq!(client.validate(&auth).await.unwrap_err(), "Atlassian is down");
+    assert_eq!(
+        client.validate(&auth).await.unwrap_err(),
+        "Atlassian is down"
+    );
     assert_eq!(
         client
             .search(&auth, AtlassianResourceKind::Confluence, "q", 5)

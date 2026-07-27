@@ -36,9 +36,9 @@ use crate::domain::entities::{
     PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
-    ExecutionPlanRepository, IdeationSessionRepository, PlanBranchRepository, ProjectRepository,
-    TaskRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    ArtifactRepository, ExecutionPlanRepository, IdeationSessionRepository, PlanBranchRepository,
+    ProjectRepository, TaskRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState, PrStatus,
@@ -1100,6 +1100,7 @@ pub async fn recover_agent_workspace_pr_pollers(
         agent_run_repo,
         chat_service,
         None,
+        None,
         blocked_git_project_ids,
     )
     .await;
@@ -1114,6 +1115,7 @@ pub async fn recover_agent_workspace_pr_pollers_with_notifications(
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    agent_workspace_repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let mut workspaces = match workspace_repo
@@ -1176,6 +1178,8 @@ pub async fn recover_agent_workspace_pr_pollers_with_notifications(
                 let agent_run_repo = Arc::clone(&agent_run_repo);
                 let chat_service = Arc::clone(&chat_service);
                 let notification_service = notification_service.as_ref().map(Arc::clone);
+                let agent_workspace_repair_repo =
+                    agent_workspace_repair_repo.as_ref().map(Arc::clone);
                 let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
                 async move {
                     recover_one_agent_workspace_pr_poller(
@@ -1187,6 +1191,7 @@ pub async fn recover_agent_workspace_pr_pollers_with_notifications(
                         agent_run_repo,
                         chat_service,
                         notification_service,
+                        agent_workspace_repair_repo,
                         blocked_git_project_ids,
                     )
                     .await;
@@ -1205,11 +1210,43 @@ async fn recover_one_agent_workspace_pr_poller(
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    agent_workspace_repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let Some(pr_number) = agent_workspace_pr_poller_number(&workspace) else {
         return;
     };
+
+    // The durable attempt is the repair authority. Check it before creating a review monitor,
+    // reading GitHub, or registering a poller so a second startup/periodic pass cannot replay
+    // legacy repair state beside an active leased attempt. A repository read failure is
+    // deliberately fail-closed: the canonical recovery pass will retry it on a later cycle.
+    if let Some(repair_repo) = agent_workspace_repair_repo.as_ref() {
+        match repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+        {
+            Ok(Some(attempt)) => {
+                tracing::info!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    attempt_id = attempt.id.as_str(),
+                    generation = attempt.generation,
+                    phase = ?attempt.phase,
+                    "Agent workspace PR startup recovery: durable repair remains authoritative"
+                );
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace PR startup recovery: durable repair authority could not be read; skipping poller recovery"
+                );
+                return;
+            }
+        }
+    }
 
     let review_pr_monitor = if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
         let existing = match workspace_repo
@@ -1458,17 +1495,43 @@ async fn recover_one_agent_workspace_pr_poller(
     }
 
     if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
-        match pr_poller_registry
-            .process_agent_workspace_review_feedback_once(
-                &workspace.conversation_id,
-                pr_number,
-                &worktree_path,
-                Arc::clone(&workspace_repo),
-                Arc::clone(&agent_run_repo),
-                Arc::clone(&chat_service),
-            )
-            .await
-        {
+        let review_feedback = if let Some(repair_repo) = agent_workspace_repair_repo.as_ref() {
+            pr_poller_registry
+                .process_agent_workspace_review_feedback_once_with_repair_repo(
+                    &workspace.conversation_id,
+                    pr_number,
+                    &worktree_path,
+                    Arc::clone(&workspace_repo),
+                    Arc::clone(&agent_run_repo),
+                    Arc::clone(repair_repo),
+                    Arc::clone(&chat_service),
+                )
+                .await
+        } else {
+            #[cfg(test)]
+            {
+                pr_poller_registry
+                    .process_agent_workspace_review_feedback_once(
+                        &workspace.conversation_id,
+                        pr_number,
+                        &worktree_path,
+                        Arc::clone(&workspace_repo),
+                        Arc::clone(&agent_run_repo),
+                        Arc::clone(&chat_service),
+                    )
+                    .await
+            }
+            #[cfg(not(test))]
+            {
+                tracing::error!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    "Agent workspace PR startup recovery: refusing legacy review-feedback dispatch without durable repair authority"
+                );
+                return;
+            }
+        };
+        match review_feedback {
             Ok(true) => {
                 tracing::info!(
                     conversation_id = workspace.conversation_id.as_str(),
@@ -1489,15 +1552,35 @@ async fn recover_one_agent_workspace_pr_poller(
         }
     }
 
-    pr_poller_registry.start_agent_workspace_polling(
-        workspace.conversation_id,
-        pr_number,
-        project,
-        worktree_path,
-        workspace_repo,
-        agent_run_repo,
-        chat_service,
-    );
+    if let Some(repair_repo) = agent_workspace_repair_repo {
+        pr_poller_registry.start_agent_workspace_polling_with_repair_repo(
+            workspace.conversation_id,
+            pr_number,
+            project,
+            worktree_path,
+            workspace_repo,
+            agent_run_repo,
+            repair_repo,
+            chat_service,
+        );
+    } else {
+        #[cfg(test)]
+        pr_poller_registry.start_agent_workspace_polling(
+            workspace.conversation_id,
+            pr_number,
+            project,
+            worktree_path,
+            workspace_repo,
+            agent_run_repo,
+            chat_service,
+        );
+        #[cfg(not(test))]
+        tracing::error!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_number,
+            "Agent workspace PR startup recovery: refusing legacy poller construction without durable repair authority"
+        );
+    }
 }
 
 fn agent_workspace_pr_poller_number(workspace: &AgentConversationWorkspace) -> Option<i64> {

@@ -10,27 +10,25 @@ use crate::application::agent_conversation_workspace::{
     validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspaceSetupMode,
 };
-use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::app_state::ApplicationExecutionState;
 use crate::application::builder_attachment_materializer::sync_builder_attachments;
+use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
 use crate::application::clickup_git_association::{
     clickup_identity_from_task, resolve_clickup_ticket_start, ClickUpTicketStartResolution,
 };
 use crate::application::external_issue_link_service::TicketConversationLinkInput;
 use crate::application::git_service::GitService;
 use crate::application::personas::PersonaService;
-use crate::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;
 use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
     selected_plan_reference,
 };
+use crate::application::seeded_agent_conversation_abort::abort_seeded_agent_conversation;
 use crate::application::standalone_workspace::{
     create_workspace, remove_workspace_if_present, resolve_workspace,
 };
 use crate::application::{AppState, ChatService, SendResult};
-use crate::application::app_state::ApplicationExecutionState;
-use crate::domain::agents::{
-    AgentHarnessKind, LogicalEffort, ManualServiceTier,
-};
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ManualServiceTier};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,

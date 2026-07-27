@@ -336,7 +336,10 @@ fn skipped_reason_strings_cover_all_public_log_values() {
             "missing_credentials",
         ),
         (SkippedIntegrationReferenceReason::NotFound, "not_found"),
-        (SkippedIntegrationReferenceReason::RateLimited, "rate_limited"),
+        (
+            SkippedIntegrationReferenceReason::RateLimited,
+            "rate_limited",
+        ),
         (SkippedIntegrationReferenceReason::ApiError, "api_error"),
         (
             SkippedIntegrationReferenceReason::UnsupportedReference,

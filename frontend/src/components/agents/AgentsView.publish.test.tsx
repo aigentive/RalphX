@@ -455,6 +455,96 @@ describe("AgentsView publish", () => {
     expect(style).toContain("--status-warning-border");
   });
 
+  it("uses the durable operation to suppress a competing publish action", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "refreshed",
+        maintenanceOperation: {
+          operationId: "maintenance-1",
+          generation: 1,
+          source: "base_update",
+          stage: "repairing",
+          status: "active",
+          summary: "Resolving the base conflict",
+          blocker: null,
+          automaticContinuation: true,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      },
+      changes: [reviewFile],
+    });
+
+    const actionbar = await openPublishPane();
+
+    expect(
+      within(actionbar).getByRole("heading", { name: "Repairing workspace" }),
+    ).toBeInTheDocument();
+    expect(within(actionbar).getByRole("status")).toHaveTextContent(
+      "Will continue automatically.",
+    );
+    expect(
+      within(actionbar).getByTestId("agents-publish-maintenance-active"),
+    ).toBeDisabled();
+    expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+  });
+
+  it("keeps exactly one explicit action for ready maintenance", async () => {
+    configurePublishPane({
+      workspace: {
+        maintenanceOperation: {
+          operationId: "maintenance-1",
+          generation: 1,
+          source: "base_update",
+          stage: "ready",
+          status: "ready",
+          summary: "Base update completed",
+          blocker: null,
+          automaticContinuation: false,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      },
+    });
+
+    const actionbar = await openPublishPane();
+    expect(
+      within(actionbar).getByRole("heading", { name: "Base updated — ready to publish" }),
+    ).toBeInTheDocument();
+    expect(
+      within(actionbar).getByTestId("agents-publish-resume-maintenance"),
+    ).toBeEnabled();
+    expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+
+  });
+
+  it("keeps exactly one explicit recovery action for blocked maintenance", async () => {
+    configurePublishPane({
+      workspace: {
+        maintenanceOperation: {
+          operationId: "maintenance-2",
+          generation: 2,
+          source: "publish",
+          stage: "blocked",
+          status: "blocked",
+          summary: "Repair cannot continue",
+          blocker: "Resolve the protected branch policy.",
+          automaticContinuation: false,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      },
+    });
+    const actionbar = await openPublishPane();
+    expect(
+      within(actionbar).getByRole("heading", { name: "Repair blocked" }),
+    ).toBeInTheDocument();
+    expect(
+      within(actionbar).getByTestId("agents-publish-retry-maintenance"),
+    ).toBeEnabled();
+    expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+  });
+
   it("keeps the actionable Commit & Publish button as the accent CTA", async () => {
     configurePublishPane({ changes: [reviewFile] });
 

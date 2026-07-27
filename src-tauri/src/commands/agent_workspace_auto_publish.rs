@@ -23,6 +23,7 @@ use crate::application::publish_resilience::{
 };
 use crate::application::{AppState, GitService};
 use crate::commands::unified_chat_commands::{
+    install_agent_workspace_repair_publish_continuation,
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
     AgentConversationWorkspacePublishTarget, AgentWorkspacePrFixReviewPublishCommandResumer,
 };
@@ -114,6 +115,9 @@ pub(crate) fn install_agent_workspace_auto_publish_listeners<R>(app_handle: taur
 where
     R: Runtime,
 {
+    if let Some(state) = app_handle.try_state::<AppState>() {
+        install_agent_workspace_repair_publish_continuation(state.inner());
+    }
     start_agent_workspace_auto_publish_freshness_scan(app_handle.clone());
 
     let run_completed_handle = app_handle.clone();
@@ -155,9 +159,17 @@ fn spawn_pr_supervision_recovery_from_run_completed_event<R>(
             return;
         }
     };
-    if payload.context_type != ChatContextType::Project || payload.run_id.is_none() {
+    if payload.context_type != ChatContextType::Project {
         return;
     }
+    let Some(run_id) = payload
+        .run_id
+        .as_deref()
+        .and_then(|value| value.parse::<AgentRunId>().ok())
+    else {
+        return;
+    };
+    let conversation_id = ChatConversationId::from_string(payload.conversation_id.clone());
 
     tauri::async_runtime::spawn(async move {
         let Some(state) = app_handle.try_state::<AppState>() else {
@@ -166,6 +178,23 @@ fn spawn_pr_supervision_recovery_from_run_completed_event<R>(
             );
             return;
         };
+        match crate::application::agent_workspace_publish_recovery::
+            recover_agent_workspace_repair_after_terminal_run(state.inner(), &conversation_id, &run_id)
+            .await
+        {
+            Ok(true) => tracing::info!(
+                conversation_id = conversation_id.as_str(),
+                agent_run_id = %run_id,
+                "Recovered durable workspace repair after terminal agent run"
+            ),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                agent_run_id = %run_id,
+                error = %error,
+                "Durable workspace repair terminal recovery failed closed"
+            ),
+        }
         match is_exact_terminal_pr_autofix_completion(state.inner(), &payload).await {
             Ok(true) => {
                 let Some(deps) = build_pr_supervision_recovery_deps_from_managed_state(&app_handle)
@@ -177,7 +206,7 @@ fn spawn_pr_supervision_recovery_from_run_completed_event<R>(
                 };
                 schedule_agent_workspace_pr_supervision_recovery(
                     deps,
-                    ChatConversationId::from_string(payload.conversation_id),
+                    conversation_id,
                     AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
                     false,
                 );

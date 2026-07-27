@@ -28,7 +28,10 @@ import {
 } from "./agentWorkspacePublishAttempt";
 import {
   agentWorkspaceOperationErrorDetail,
+  agentWorkspaceMaintenanceOperationToastId,
+  maintenanceOperationToastLabel,
 } from "./agentWorkspaceOperationToast";
+import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -238,6 +241,35 @@ export function useAgentWorkspacePublisher({
             void invalidateWorkspaceQueries(queryClient, conversationId);
             return;
           }
+          const terminalStatus = getAgentWorkspaceTerminalPublicationStatus(
+            result.workspace,
+          );
+          if (terminalStatus) {
+            finalizeAttempt(attempt, { kind: "terminal", status: terminalStatus });
+            return;
+          }
+          if (result.workspace.maintenanceOperation?.status === "active") {
+            queryClient.setQueryData(
+              agentWorkspaceKeys.workspace(conversationId),
+              result.workspace,
+            );
+            attempt.controller.update({
+              detail:
+                result.workspace.maintenanceOperation.blocker ??
+                result.workspace.maintenanceOperation.summary,
+              id: agentWorkspaceMaintenanceOperationToastId(
+                conversationId,
+                result.workspace.maintenanceOperation.operationId,
+              ),
+              startedAtMs: new Date(
+                result.workspace.maintenanceOperation.startedAt,
+              ).getTime(),
+              title: maintenanceOperationToastLabel(
+                result.workspace.maintenanceOperation.stage,
+              ),
+            });
+            return;
+          }
           finalizeAttempt(attempt, { kind: "success", workspace: result.workspace });
         } catch (error) {
           if (activeAttemptsRef.current.get(conversationId)?.token !== token) {
@@ -257,6 +289,35 @@ export function useAgentWorkspacePublisher({
           }
           if (activeAttemptsRef.current.get(conversationId)?.token !== token) {
             void invalidateWorkspaceQueries(queryClient, conversationId);
+            return;
+          }
+          const terminalStatus = getAgentWorkspaceTerminalPublicationStatus(
+            refreshedWorkspace,
+          );
+          if (terminalStatus) {
+            finalizeAttempt(attempt, { kind: "terminal", status: terminalStatus });
+            return;
+          }
+          if (refreshedWorkspace?.maintenanceOperation?.status === "active") {
+            queryClient.setQueryData(
+              agentWorkspaceKeys.workspace(conversationId),
+              refreshedWorkspace,
+            );
+            attempt.controller.update({
+              detail:
+                refreshedWorkspace.maintenanceOperation.blocker ??
+                refreshedWorkspace.maintenanceOperation.summary,
+              id: agentWorkspaceMaintenanceOperationToastId(
+                conversationId,
+                refreshedWorkspace.maintenanceOperation.operationId,
+              ),
+              startedAtMs: new Date(
+                refreshedWorkspace.maintenanceOperation.startedAt,
+              ).getTime(),
+              title: maintenanceOperationToastLabel(
+                refreshedWorkspace.maintenanceOperation.stage,
+              ),
+            });
             return;
           }
           const needsAgent =

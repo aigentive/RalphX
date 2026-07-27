@@ -19,19 +19,23 @@ use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::services::PrPollerRegistry;
+use crate::application::AppState;
 use crate::domain::entities::plan_branch::{
     PrPushStatus as PlanPrPushStatus, PrStatus as PlanPrStatus,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunActionKind, AgentRunStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch,
-    PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
+    AgentRunActionKind, AgentRunStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    PlanBranchRepository, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
@@ -151,6 +155,7 @@ fn recovery_deps(
         agent_run_repo,
         app_handle: None,
         pr_fix_review_publish_resumer: None,
+        durable_recovery_state: None,
     }
 }
 
@@ -466,6 +471,7 @@ async fn recovers_blocked_pr_supervision_when_remote_head_matches_local_workspac
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
@@ -543,6 +549,7 @@ async fn matching_remote_head_with_failing_health_stays_blocked_and_never_report
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id,
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
@@ -643,6 +650,7 @@ async fn recovers_linked_plan_pr_supervision_without_workspace_publication_pr() 
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
@@ -741,6 +749,7 @@ async fn marks_terminal_linked_plan_pr_status_and_workspace_authority() {
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
                 app_handle: None,
                 pr_fix_review_publish_resumer: None,
+                durable_recovery_state: None,
             },
             conversation_id.clone(),
             AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
@@ -837,6 +846,7 @@ async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
                 app_handle: None,
                 pr_fix_review_publish_resumer: None,
+                durable_recovery_state: None,
             },
             conversation_id,
             AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
@@ -923,6 +933,97 @@ async fn recovers_stale_needs_agent_repair_without_rearming_pr_supervision() {
 }
 
 #[tokio::test]
+async fn durable_repair_authority_blocks_legacy_pr_supervision_replay() {
+    let (_temp_dir, project, mut workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-durable-authority").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(head_sha);
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let active_run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active repair run");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Repairing;
+    attempt.reserved_agent_run_id = Some(active_run.id.clone());
+    let durable_attempt = match repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "existing durable repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed durable repair")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a new durable repair, got {outcome:?}"),
+    };
+
+    let mut durable_state = AppState::new_test();
+    durable_state.agent_conversation_workspace_repo = workspace_repo.clone();
+    durable_state.agent_workspace_repair_repo = repair_repo.clone();
+    durable_state.agent_run_repo = agent_run_repo.clone();
+    let github = Arc::new(MockGithubService::new());
+    let mut deps = recovery_deps(
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+        Arc::clone(&github),
+        Arc::clone(&agent_run_repo),
+    );
+    deps.durable_recovery_state = Some(Arc::new(durable_state));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("durable authority should recover without legacy replay");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("durable_repair_active")
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("read events")
+        .is_empty());
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read durable attempt")
+        .expect("durable attempt remains current");
+    assert_eq!(current.id, durable_attempt.id);
+    assert_eq!(current.generation, durable_attempt.generation);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert_eq!(current.reserved_agent_run_id, Some(active_run.id));
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+}
+
+#[tokio::test]
 async fn retry_eligible_stale_pr_autofix_settlement_restarts_pr_polling() {
     let (_temp_dir, project, mut workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-retry-eligible").await;
@@ -974,6 +1075,7 @@ async fn retry_eligible_stale_pr_autofix_settlement_restarts_pr_polling() {
             agent_run_repo,
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
@@ -1174,6 +1276,7 @@ async fn exhausted_stale_pr_autofix_stays_blocked_without_pr_polling() {
             agent_run_repo,
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
@@ -1384,6 +1487,7 @@ async fn skips_blocked_pr_supervision_recovery_when_worktree_is_dirty() {
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
@@ -1720,6 +1824,7 @@ async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_rec
         agent_run_repo: Arc::clone(&active_run_repo) as Arc<dyn AgentRunRepository>,
         app_handle: None,
         pr_fix_review_publish_resumer: None,
+        durable_recovery_state: None,
     };
 
     let outcome = recover_agent_workspace_pr_supervision(
@@ -2000,6 +2105,7 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
             ),
+            durable_recovery_state: None,
         },
         Arc::new(HashSet::new()),
     )
@@ -2113,6 +2219,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
             ),
+            durable_recovery_state: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
@@ -2187,6 +2294,7 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         Arc::new(HashSet::new()),
     )

@@ -260,6 +260,49 @@ impl Default for GhCliGithubService {
     }
 }
 
+fn build_exact_force_with_lease_push_args(
+    local_ref: &str,
+    expected_remote_oid: &str,
+) -> AppResult<Vec<String>> {
+    let Some(branch) = local_ref.strip_prefix("refs/heads/") else {
+        return Err(AppError::Validation(
+            "exact force-with-lease requires a fully-qualified local branch ref".to_string(),
+        ));
+    };
+    let invalid_branch = branch.is_empty()
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.ends_with('.')
+        || branch.ends_with(".lock")
+        || branch.contains("..")
+        || branch.contains("@{")
+        || branch.contains("//")
+        || branch
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || "~^:?*[\\".contains(ch));
+    if invalid_branch {
+        return Err(AppError::Validation(
+            "exact force-with-lease requires a valid fully-qualified local branch ref".to_string(),
+        ));
+    }
+    if expected_remote_oid.len() != 40
+        || !expected_remote_oid
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(AppError::Validation(
+            "exact force-with-lease requires a full expected remote OID".to_string(),
+        ));
+    }
+
+    Ok(vec![
+        "push".to_string(),
+        "origin".to_string(),
+        format!("--force-with-lease={local_ref}:{expected_remote_oid}"),
+        format!("{local_ref}:{local_ref}"),
+    ])
+}
+
 fn build_create_pr_args(
     base: &str,
     head: &str,
@@ -950,6 +993,16 @@ impl GithubServiceTrait for GhCliGithubService {
     async fn push_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()> {
         // git push origin <branch> — fire-and-forget style (stdout null, stderr piped for safety)
         let args = vec!["push".to_string(), "origin".to_string(), branch.to_string()];
+        self.runner.run_git(working_dir, &args).await
+    }
+
+    async fn push_branch_with_expected_remote_oid_lease(
+        &self,
+        working_dir: &Path,
+        local_ref: &str,
+        expected_remote_oid: &str,
+    ) -> AppResult<()> {
+        let args = build_exact_force_with_lease_push_args(local_ref, expected_remote_oid)?;
         self.runner.run_git(working_dir, &args).await
     }
 

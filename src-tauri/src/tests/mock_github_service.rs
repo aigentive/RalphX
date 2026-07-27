@@ -43,6 +43,11 @@ pub struct MockGithubState {
     pub disable_pr_auto_merge_delay_ms: u64,
     pub disable_pr_auto_merge_followup_health_result: Option<AppResult<PrHealth>>,
     pub push_branch_result: Option<AppResult<()>>,
+    pub push_branch_delay_ms: u64,
+    pub push_branch_started: Option<Arc<tokio::sync::Notify>>,
+    pub push_branch_with_expected_remote_oid_lease_result: Option<AppResult<()>>,
+    pub push_branch_with_expected_remote_oid_lease_delay_ms: u64,
+    pub push_branch_with_expected_remote_oid_lease_started: Option<Arc<tokio::sync::Notify>>,
     pub close_pr_result: Option<AppResult<()>>,
     pub delete_remote_branch_result: Option<AppResult<()>>,
     pub fetch_remote_result: Option<AppResult<()>>,
@@ -74,6 +79,7 @@ pub struct MockGithubState {
     pub enable_pr_auto_merge_calls: u32,
     pub disable_pr_auto_merge_calls: u32,
     pub push_branch_calls: u32,
+    pub push_branch_with_expected_remote_oid_lease_calls: u32,
     pub close_pr_calls: u32,
     pub delete_remote_branch_calls: u32,
     pub fetch_remote_calls: u32,
@@ -108,6 +114,7 @@ pub struct MockGithubState {
     pub last_disable_pr_auto_merge_number: Option<i64>,
     pub last_disable_pr_auto_merge_working_dir: Option<String>,
     pub last_push_branch_name: Option<String>,
+    pub last_push_branch_with_expected_remote_oid_lease_args: Option<(String, String)>,
     pub last_close_pr_number: Option<i64>,
     pub last_delete_remote_branch_name: Option<String>,
     /// All branches passed to delete_remote_branch (accumulated across all calls).
@@ -578,10 +585,53 @@ impl GithubServiceTrait for MockGithubService {
     }
 
     async fn push_branch(&self, _working_dir: &Path, branch: &str) -> AppResult<()> {
-        let mut s = self.state.lock().expect("lock poisoned");
-        s.push_branch_calls += 1;
-        s.last_push_branch_name = Some(branch.to_string());
-        s.push_branch_result.take().unwrap_or(Ok(()))
+        let (delay_ms, result) = {
+            let mut state = self.state.lock().expect("lock poisoned");
+            state.push_branch_calls += 1;
+            state.last_push_branch_name = Some(branch.to_string());
+            if let Some(started) = state.push_branch_started.as_ref() {
+                started.notify_one();
+            }
+            (
+                state.push_branch_delay_ms,
+                state.push_branch_result.take().unwrap_or(Ok(())),
+            )
+        };
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        result
+    }
+
+    async fn push_branch_with_expected_remote_oid_lease(
+        &self,
+        _working_dir: &Path,
+        local_ref: &str,
+        expected_remote_oid: &str,
+    ) -> AppResult<()> {
+        let (delay_ms, result) = {
+            let mut state = self.state.lock().expect("lock poisoned");
+            state.push_branch_with_expected_remote_oid_lease_calls += 1;
+            state.last_push_branch_with_expected_remote_oid_lease_args =
+                Some((local_ref.to_string(), expected_remote_oid.to_string()));
+            if let Some(started) = state
+                .push_branch_with_expected_remote_oid_lease_started
+                .as_ref()
+            {
+                started.notify_one();
+            }
+            (
+                state.push_branch_with_expected_remote_oid_lease_delay_ms,
+                state
+                    .push_branch_with_expected_remote_oid_lease_result
+                    .take()
+                    .unwrap_or(Ok(())),
+            )
+        };
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        result
     }
 
     async fn close_pr(&self, _working_dir: &Path, pr_number: i64) -> AppResult<()> {

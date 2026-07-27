@@ -1,15 +1,34 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use chrono::{DateTime, Duration, Utc};
+
+use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_workspace_publish_repair_state::{
+    validate_agent_workspace_repair_target_lease, AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+};
+use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspace, ChatConversation, IdeationAnalysisBaseRefKind,
+    AgentConversationWorkspace, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, ChatConversation, ChatConversationId,
+    GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+};
+use crate::domain::repositories::{
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
+    BranchUpdateRepository, CompleteAgentWorkspaceRepairEffect,
+    CompleteAgentWorkspaceRepairEffectOutcome, CompleteGitMutation,
+    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
+    GitAuthorityCasOutcome, SettleAgentWorkspaceRepairAttempt,
+    SettleAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::domain::services::GithubServiceTrait;
 use crate::domain::state_machine::transition_handler::{
     classify_commit_hook_failure_text, update_plan_from_main_isolated, update_source_from_target,
     CommitHookFailureKind, PlanUpdateResult, SourceUpdateResult,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::{application::AppState, application::GitService, domain::entities::Project};
 use tauri::Manager;
 
@@ -46,6 +65,38 @@ pub struct PublishBranchFreshnessStatus {
     pub captured_base_commit: Option<String>,
     pub target_base_commit: String,
     pub is_base_ahead: bool,
+}
+
+/// The exact local/remote postconditions established by a repair-owned push. The normal
+/// publisher may reuse the push, but it must prove these durable OIDs again before it can mutate
+/// local state or hand the branch to PR creation, update, or monitoring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentWorkspaceRepairPrHandoff {
+    pub target_base_ref: String,
+    pub target_base_commit: String,
+    pub expected_head_oid: String,
+}
+
+/// Command composition owns the normal publisher, while repair orchestration owns the durable
+/// attempt, effect receipt, and lease. This callback keeps that composition dependency at the
+/// edge: application recovery and HTTP completion can continue the same attempt without
+/// depending outward on Tauri commands.
+#[async_trait::async_trait]
+pub(crate) trait AgentWorkspaceRepairPublishContinuation: Send + Sync {
+    async fn publish_after_repair_push(
+        &self,
+        state: &AppState,
+        conversation_id: ChatConversationId,
+        repair_handoff: AgentWorkspaceRepairPrHandoff,
+    ) -> Result<AgentWorkspaceRepairPrHandoffResult, String>;
+}
+
+/// The normal publisher's durable PR handoff receipt. Keep it application-local so the repair
+/// coordinator records only the postcondition it needs, rather than depending on a command DTO.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentWorkspaceRepairPrHandoffResult {
+    pub pr_number: i64,
+    pub pr_url: Option<String>,
 }
 
 pub fn classify_publish_failure(error: &str) -> PublishFailureClass {
@@ -150,6 +201,1026 @@ pub async fn push_publish_branch(
     branch: &str,
 ) -> AppResult<()> {
     github.push_branch(repo_path, branch).await
+}
+
+/// Continues only an already-persisted repair publication. The durable attempt snapshot remains
+/// the single writer: the downstream push re-reads it before acquiring Git authority, creating an
+/// effect receipt, or mutating the remote ref.
+pub(crate) async fn continue_agent_workspace_repair_publish(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+) -> AppResult<Option<AgentWorkspaceRepairPushOutcome>> {
+    if !matches!(
+        attempt.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+    ) || !matches!(
+        attempt.continuation,
+        AgentWorkspaceRepairContinuation::Publish
+            | AgentWorkspaceRepairContinuation::ResumePrSupervision
+    ) {
+        return Ok(None);
+    }
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "workspace {} for repair publication",
+                attempt.conversation_id
+            ))
+        })?;
+    if workspace.conversation_id != attempt.conversation_id {
+        return Err(AppError::Conflict(
+            "workspace repair publication does not match its persisted conversation".to_string(),
+        ));
+    }
+    // A crash after the normal publisher has started supervision but before this continuation
+    // records its own receipt must never push or create/update the PR again. The durable receipt
+    // is the sole proof that the downstream owner is live; it is also safe to release the exact
+    // repair lease before settling because a restart will take this branch again without Git.
+    if has_observed_agent_workspace_repair_pr_handoff(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+    )
+    .await?
+    {
+        release_agent_workspace_repair_lease_after_pr_handoff(state, &attempt).await?;
+        settle_agent_workspace_repair_after_pr_handoff(state, attempt).await?;
+        return Ok(Some(AgentWorkspaceRepairPushOutcome::PrHandoffObserved));
+    }
+
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "project {} for workspace repair publication",
+                workspace.project_id
+            ))
+        })?;
+    let linked_plan_pr_number =
+        if let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() {
+            let plan_branch = state
+                .plan_branch_repo
+                .get_by_id(plan_branch_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "linked plan branch {} for workspace repair publication",
+                        plan_branch_id
+                    ))
+                })?;
+            Some(plan_branch.pr_number.ok_or_else(|| {
+                AppError::Conflict(
+                    "linked plan repair publication cannot continue without its pull request"
+                        .to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+    let Some(github) = state.github_service.as_ref() else {
+        let error = "GitHub integration is unavailable for workspace repair publication";
+        block_agent_workspace_repair_pr_handoff(state, attempt, error).await?;
+        return Err(AppError::Conflict(error.to_string()));
+    };
+    let target = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await?;
+    let expected_phase = attempt.phase;
+    let push_outcome = push_agent_workspace_repair_branch(
+        github,
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        AgentWorkspaceRepairPushRequest {
+            target_worktree_path: &target.path,
+            target_branch_name: &target.branch_name,
+            attempt: attempt.clone(),
+            expected_phase,
+        },
+    )
+    .await?;
+    if !matches!(
+        push_outcome,
+        AgentWorkspaceRepairPushOutcome::Observed { .. }
+    ) {
+        return Ok(Some(push_outcome));
+    }
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&attempt.id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "repair attempt {} disappeared after its push receipt",
+                attempt.id
+            ))
+        })?;
+    if current.generation != attempt.generation
+        || current.phase != AgentWorkspaceRepairPhase::Continuing
+        || current.settled_at.is_some()
+    {
+        return Ok(Some(AgentWorkspaceRepairPushOutcome::Stale));
+    }
+
+    let handoff = match repair_pr_handoff_from_observed_push(&current, &push_outcome) {
+        Ok(handoff) => handoff,
+        Err(error) => {
+            block_agent_workspace_repair_pr_handoff(state, current, &error).await?;
+            return Err(AppError::Conflict(error));
+        }
+    };
+    if let Err(error) = verify_agent_workspace_repair_pr_handoff(
+        &target.path,
+        &target.branch_name,
+        &workspace.base_ref,
+        &handoff,
+    )
+    .await
+    {
+        let error = error.to_string();
+        block_agent_workspace_repair_pr_handoff(state, current, &error).await?;
+        return Err(AppError::Conflict(error));
+    }
+
+    let mut pr_effect = prepare_agent_workspace_repair_pr_handoff_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &current,
+        &workspace,
+        linked_plan_pr_number,
+    )
+    .await?;
+    if pr_effect.status != AgentWorkspaceRepairEffectStatus::Observed {
+        if let Some((pr_number, pr_url)) =
+            reconcile_linked_plan_agent_workspace_repair_pr_handoff(state, &workspace, &pr_effect)
+                .await?
+        {
+            pr_effect = observe_agent_workspace_repair_pr_handoff_effect(
+                state.agent_workspace_repair_repo.as_ref(),
+                &current,
+                pr_effect,
+                pr_number,
+                pr_url.as_deref(),
+            )
+            .await?;
+        }
+    }
+    if pr_effect.status != AgentWorkspaceRepairEffectStatus::Observed {
+        let continuation = match state.agent_workspace_repair_publish_continuation() {
+            Ok(continuation) => continuation,
+            Err(error) => {
+                let error = error.to_string();
+                block_agent_workspace_repair_pr_handoff(state, current, &error).await?;
+                return Err(AppError::Conflict(error));
+            }
+        };
+        match continuation
+            .publish_after_repair_push(state, attempt.conversation_id.clone(), handoff)
+            .await
+        {
+            Ok(result) => {
+                observe_agent_workspace_repair_pr_handoff_effect(
+                    state.agent_workspace_repair_repo.as_ref(),
+                    &current,
+                    pr_effect,
+                    result.pr_number,
+                    result.pr_url.as_deref(),
+                )
+                .await?;
+            }
+            Err(error) => {
+                block_agent_workspace_repair_pr_handoff(state, current, &error).await?;
+                return Err(AppError::Conflict(error));
+            }
+        }
+    }
+
+    // Release first, while the durable receipt means a crash can re-enter the early handoff
+    // branch above without reacquiring Git authority. This prevents a settled attempt from
+    // orphaning the repair-owned exact lease.
+    release_agent_workspace_repair_lease_after_pr_handoff(state, &current).await?;
+    settle_agent_workspace_repair_after_pr_handoff(state, current).await?;
+    Ok(Some(push_outcome))
+}
+
+fn repair_pr_handoff_from_observed_push(
+    attempt: &AgentWorkspaceRepairAttempt,
+    push_outcome: &AgentWorkspaceRepairPushOutcome,
+) -> Result<AgentWorkspaceRepairPrHandoff, String> {
+    let AgentWorkspaceRepairPushOutcome::Observed {
+        effect, remote_oid, ..
+    } = push_outcome
+    else {
+        return Err("workspace repair push did not produce an observed remote receipt".to_string());
+    };
+    let target_base_commit = attempt.target_base_commit.as_deref().ok_or_else(|| {
+        "workspace repair push handoff is missing its exact target base commit".to_string()
+    })?;
+    if effect.intended_head_oid.as_deref() != Some(remote_oid.as_str())
+        || attempt.repair_head_commit.as_deref() != Some(remote_oid.as_str())
+    {
+        return Err(
+            "workspace repair push handoff does not match its exact durable head receipt"
+                .to_string(),
+        );
+    }
+
+    Ok(AgentWorkspaceRepairPrHandoff {
+        target_base_ref: attempt.target_base_ref.clone(),
+        target_base_commit: target_base_commit.to_string(),
+        expected_head_oid: remote_oid.clone(),
+    })
+}
+
+async fn has_observed_agent_workspace_repair_pr_handoff(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<bool> {
+    let mut in_flight = false;
+    for kind in [
+        AgentWorkspaceRepairEffectKind::CreatePr,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    ] {
+        let idempotency_key = format!(
+            "agent_workspace_repair:{}:{}:{}",
+            attempt.id, attempt.generation, kind
+        );
+        let Some(effect) = repair_repo
+            .get_repair_effect_by_idempotency_key(&idempotency_key)
+            .await?
+        else {
+            continue;
+        };
+        if effect.attempt_id != attempt.id || effect.kind != kind {
+            return Err(AppError::Conflict(
+                "repair PR handoff receipt does not match the current attempt".to_string(),
+            ));
+        }
+        if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
+            return Ok(true);
+        }
+        in_flight = true;
+    }
+    if in_flight {
+        return Ok(false);
+    }
+    Ok(false)
+}
+
+async fn prepare_agent_workspace_repair_pr_handoff_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+    existing_pr_number: Option<i64>,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    for existing_kind in [
+        AgentWorkspaceRepairEffectKind::CreatePr,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    ] {
+        let existing_key = format!(
+            "agent_workspace_repair:{}:{}:{}",
+            attempt.id, attempt.generation, existing_kind
+        );
+        if let Some(effect) = repair_repo
+            .get_repair_effect_by_idempotency_key(&existing_key)
+            .await?
+        {
+            if effect.attempt_id != attempt.id || effect.kind != existing_kind {
+                return Err(AppError::Conflict(
+                    "repair PR handoff receipt does not match the current attempt".to_string(),
+                ));
+            }
+            return Ok(effect);
+        }
+    }
+
+    let expected_pr_number = existing_pr_number.or(workspace.publication_pr_number);
+    let kind = if expected_pr_number.is_some() {
+        AgentWorkspaceRepairEffectKind::UpdatePr
+    } else {
+        AgentWorkspaceRepairEffectKind::CreatePr
+    };
+    let idempotency_key = format!(
+        "agent_workspace_repair:{}:{}:{}",
+        attempt.id, attempt.generation, kind
+    );
+    if let Some(effect) = repair_repo
+        .get_repair_effect_by_idempotency_key(&idempotency_key)
+        .await?
+    {
+        if effect.attempt_id != attempt.id || effect.kind != kind {
+            return Err(AppError::Conflict(
+                "repair PR handoff receipt does not match the current attempt".to_string(),
+            ));
+        }
+        return Ok(effect);
+    }
+
+    let mut effect =
+        AgentWorkspaceRepairEffect::new(attempt.id.clone(), kind, idempotency_key, Utc::now());
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = attempt.repair_head_commit.clone();
+    effect.expected_pr_number = expected_pr_number;
+    match repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect)
+        | CreateAgentWorkspaceRepairEffectOutcome::OpenEffectExists(effect) => Ok(effect),
+        CreateAgentWorkspaceRepairEffectOutcome::Stale(_)
+        | CreateAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
+            "repair attempt lost authority before the PR handoff checkpoint".to_string(),
+        )),
+    }
+}
+
+/// The linked-plan publisher owns the plan PR projection and monitor startup. On replay, that
+/// projection is the target-aware postcondition for an already-in-flight durable handoff, so the
+/// repair coordinator can record its receipt without repeating the publisher's Git or PR work.
+async fn reconcile_linked_plan_agent_workspace_repair_pr_handoff(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    effect: &AgentWorkspaceRepairEffect,
+) -> AppResult<Option<(i64, Option<String>)>> {
+    let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+        return Ok(None);
+    };
+    let expected_pr_number = effect.expected_pr_number.ok_or_else(|| {
+        AppError::Conflict(
+            "linked plan repair handoff is missing its expected pull-request number".to_string(),
+        )
+    })?;
+    let plan_branch = state
+        .plan_branch_repo
+        .get_by_id(plan_branch_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "linked plan branch {} for repair handoff reconciliation",
+                plan_branch_id
+            ))
+        })?;
+    if plan_branch.pr_number != Some(expected_pr_number) {
+        return Err(AppError::Conflict(
+            "linked plan repair handoff no longer matches its pull-request target".to_string(),
+        ));
+    }
+    if plan_branch.pr_push_status != PrPushStatus::Pushed {
+        return Ok(None);
+    }
+    let current_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "workspace {} for linked-plan repair handoff reconciliation",
+                workspace.conversation_id
+            ))
+        })?;
+    if current_workspace.publication_pr_number != Some(expected_pr_number)
+        || current_workspace.publication_push_status.as_deref() != Some("pushed")
+    {
+        return Ok(None);
+    }
+    Ok(Some((expected_pr_number, plan_branch.pr_url)))
+}
+
+async fn observe_agent_workspace_repair_pr_handoff_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+    mut effect: AgentWorkspaceRepairEffect,
+    pr_number: i64,
+    pr_url: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
+        return Ok(effect);
+    }
+    let completed_at = Utc::now();
+    effect.status = AgentWorkspaceRepairEffectStatus::Observed;
+    effect.expected_pr_number = Some(pr_number);
+    effect.receipt_json = Some(
+        serde_json::json!({
+            "pr_number": pr_number,
+            "pr_url": pr_url,
+            "monitoring_handoff": true,
+        })
+        .to_string(),
+    );
+    effect.completed_at = Some(completed_at);
+    effect.updated_at = completed_at;
+    match repair_repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            effect: effect.clone(),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
+        | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
+            "repair attempt lost authority before recording the PR handoff receipt".to_string(),
+        )),
+    }
+}
+
+async fn block_agent_workspace_repair_pr_handoff(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    error: &str,
+) -> AppResult<()> {
+    let auto_merge_current = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await?
+        .and_then(|workspace| workspace.pr_auto_merge_current);
+    let blocker = format!(
+        "Pull-request continuation could not complete: {error}. Retry the blocked operation."
+    );
+    let _ = crate::application::agent_workspace_publish_repair_state::block_agent_workspace_repair_completion(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        attempt,
+        "Workspace repair publish continuation is blocked.",
+        &blocker,
+        auto_merge_current,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn settle_agent_workspace_repair_after_pr_handoff(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+) -> AppResult<()> {
+    match state
+        .agent_workspace_repair_repo
+        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+            attempt_id: attempt.id,
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_updated_at: attempt.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Succeeded,
+            settled_at: Utc::now(),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_) => Ok(()),
+        SettleAgentWorkspaceRepairAttemptOutcome::Stale(_)
+        | SettleAgentWorkspaceRepairAttemptOutcome::Missing => Err(AppError::Conflict(
+            "repair attempt lost authority before its PR monitoring handoff settled".to_string(),
+        )),
+    }
+}
+
+/// A post-PR receipt proves the repair branch no longer owns a Git mutation. Release only the
+/// exact canonical lease persisted by that attempt; mismatched/newer owners are untouched.
+async fn release_agent_workspace_repair_lease_after_pr_handoff(
+    state: &AppState,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<()> {
+    if state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::Conflict(
+            "cannot release a repair lease while a durable repair effect is open".to_string(),
+        ));
+    }
+    let (Some(common_dir), Some(target_ref), Some(epoch)) = (
+        attempt.git_common_dir.as_deref(),
+        attempt.target_ref.as_deref(),
+        attempt.target_lease_epoch,
+    ) else {
+        return Ok(());
+    };
+    let identity = GitTargetIdentity::new(std::path::PathBuf::from(common_dir), target_ref)
+        .map_err(|error| {
+            AppError::Validation(format!("invalid durable repair lease identity: {error}"))
+        })?;
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let _ = state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, epoch)
+        .await?;
+    Ok(())
+}
+
+/// The only safe outcomes of an attempt-scoped branch publication.
+///
+/// `Observed` means origin was freshly read and matched the intended local head. It may be the
+/// direct result of this call, or a durable receipt recovered after an ambiguous prior call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairPushOutcome {
+    Observed {
+        effect: AgentWorkspaceRepairEffect,
+        remote_oid: String,
+        reconciled_after_push_error: bool,
+    },
+    /// The repair-owned push was already observed and the durable PR monitoring handoff was
+    /// reconciled after a crash/replay, so no Git or GitHub mutation was retried.
+    PrHandoffObserved,
+    /// Another invocation of this exact attempt currently owns the deterministic Git mutation
+    /// claim. The caller must leave the attempt unchanged and let that owner settle its receipt.
+    Busy,
+    Stale,
+}
+
+/// Trusted inputs for a repair-owned branch publication. The caller resolves this target from
+/// persisted workspace/project/plan metadata, never from model-provided branch or remote strings.
+pub(crate) struct AgentWorkspaceRepairPushRequest<'a> {
+    pub target_worktree_path: &'a Path,
+    pub target_branch_name: &'a str,
+    pub attempt: AgentWorkspaceRepairAttempt,
+    pub expected_phase: AgentWorkspaceRepairPhase,
+}
+
+/// Publish a repaired workspace branch with an exact lease only when its remote history was
+/// rewritten. First and fast-forward pushes keep the existing normal push path.
+///
+/// The durable effect is written before the Git mutation. Every re-entry reads that effect and a
+/// freshly fetched origin ref before it can issue another push, which prevents an observed receipt
+/// from becoming a second overwrite.
+pub(crate) async fn push_agent_workspace_repair_branch(
+    github: &Arc<dyn GithubServiceTrait>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    request: AgentWorkspaceRepairPushRequest<'_>,
+) -> AppResult<AgentWorkspaceRepairPushOutcome> {
+    let current = repair_repo.get_repair_attempt(&request.attempt.id).await?;
+    let Some(current) = current else {
+        return Ok(AgentWorkspaceRepairPushOutcome::Stale);
+    };
+    if current.id != request.attempt.id
+        || current.generation != request.attempt.generation
+        || current.phase != request.expected_phase
+        || current.updated_at != request.attempt.updated_at
+    {
+        return Ok(AgentWorkspaceRepairPushOutcome::Stale);
+    }
+
+    let workspace_path = request.target_worktree_path;
+    let target_identity =
+        GitService::canonical_target_identity(workspace_path, request.target_branch_name).await?;
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(current.id.as_str());
+    let has_durable_dispatch_lease = current.reserved_agent_run_id.is_some()
+        || current.git_common_dir.is_some()
+        || current.target_ref.is_some()
+        || current.target_identity_version.is_some()
+        || current.target_lease_epoch.is_some();
+    let (fencing_epoch, lease_acquired_here) = if has_durable_dispatch_lease {
+        let persisted_identity =
+            validate_agent_workspace_repair_target_lease(branch_update_repo.as_ref(), &current)
+                .await?;
+        if persisted_identity != target_identity {
+            return Err(AppError::Conflict(
+                "workspace repair push target differs from its dispatch-acquired canonical lease"
+                    .to_string(),
+            ));
+        }
+        (
+            current
+                .target_lease_epoch
+                .expect("validated repair lease has an epoch"),
+            false,
+        )
+    } else {
+        match branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: target_identity.clone(),
+                owner: owner.clone(),
+            })
+            .await?
+        {
+            AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } => (fencing_epoch, true),
+            AcquireGitTargetLeaseOutcome::AlreadyOwned { fencing_epoch } => (fencing_epoch, false),
+            AcquireGitTargetLeaseOutcome::TargetBusy {
+                owner: active_owner,
+                fencing_epoch,
+            } => {
+                return Err(AppError::Conflict(format!(
+                    "workspace repair push target is owned by {:?} at fencing epoch {fencing_epoch}",
+                    active_owner
+                )));
+            }
+        }
+    };
+
+    let checked_out_branch = GitService::get_current_branch(workspace_path).await?;
+    if checked_out_branch != request.target_branch_name {
+        return Err(AppError::Validation(format!(
+            "workspace repair target is checked out at '{}' instead of '{}'",
+            checked_out_branch, request.target_branch_name
+        )));
+    }
+
+    let prepared_attempt = prepare_agent_workspace_repair_push_attempt(
+        repair_repo.as_ref(),
+        current,
+        request.expected_phase,
+        &target_identity,
+        fencing_epoch,
+    )
+    .await;
+    let attempt = match prepared_attempt {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => {
+            release_new_workspace_repair_push_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            return Ok(AgentWorkspaceRepairPushOutcome::Stale);
+        }
+        Err(error) => {
+            release_new_workspace_repair_push_lease(
+                branch_update_repo.as_ref(),
+                &target_identity,
+                &owner,
+                fencing_epoch,
+                lease_acquired_here,
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+
+    let local_ref = target_identity.full_ref().to_string();
+    let branch_name = local_ref.strip_prefix("refs/heads/").ok_or_else(|| {
+        AppError::Validation("workspace repair target is not a local branch ref".to_string())
+    })?;
+    let intended_head_oid = GitService::get_head_sha(&workspace_path).await?;
+    let idempotency_key = format!(
+        "agent_workspace_repair:{}:{}:push_branch",
+        attempt.id, attempt.generation
+    );
+
+    let effect = match repair_repo
+        .get_repair_effect_by_idempotency_key(&idempotency_key)
+        .await?
+    {
+        Some(effect) => {
+            validate_existing_workspace_repair_push_effect(effect, &attempt, &intended_head_oid)?
+        }
+        None => {
+            let observed_remote_oid = read_origin_branch_oid(&workspace_path, branch_name).await?;
+            let mut effect = AgentWorkspaceRepairEffect::new(
+                attempt.id.clone(),
+                AgentWorkspaceRepairEffectKind::PushBranch,
+                idempotency_key,
+                Utc::now(),
+            );
+            effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+            effect.intended_head_oid = Some(intended_head_oid.clone());
+            effect.expected_remote_oid = observed_remote_oid.clone();
+            effect.expected_remote_absent = observed_remote_oid.is_none();
+            match repair_repo
+                .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                    attempt_id: attempt.id.clone(),
+                    generation: attempt.generation,
+                    expected_phase: AgentWorkspaceRepairPhase::Continuing,
+                    effect: effect.clone(),
+                    compatibility_projection: None,
+                    events: Vec::new(),
+                })
+                .await?
+            {
+                CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+                CreateAgentWorkspaceRepairEffectOutcome::OpenEffectExists(effect) => {
+                    validate_existing_workspace_repair_push_effect(
+                        effect,
+                        &attempt,
+                        &intended_head_oid,
+                    )?
+                }
+                CreateAgentWorkspaceRepairEffectOutcome::Stale(_)
+                | CreateAgentWorkspaceRepairEffectOutcome::Missing => {
+                    release_new_workspace_repair_push_lease(
+                        branch_update_repo.as_ref(),
+                        &target_identity,
+                        &owner,
+                        fencing_epoch,
+                        lease_acquired_here,
+                    )
+                    .await?;
+                    return Ok(AgentWorkspaceRepairPushOutcome::Stale);
+                }
+            }
+        }
+    };
+
+    let observed_remote_oid = read_origin_branch_oid(&workspace_path, branch_name).await?;
+    if observed_remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
+        let remote_oid = observed_remote_oid.expect("matching remote OID is present");
+        let effect = observe_agent_workspace_repair_push_effect(
+            repair_repo.as_ref(),
+            &attempt,
+            effect,
+            &local_ref,
+            &remote_oid,
+        )
+        .await?;
+        return Ok(AgentWorkspaceRepairPushOutcome::Observed {
+            effect,
+            remote_oid,
+            reconciled_after_push_error: false,
+        });
+    }
+
+    if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
+        return Err(AppError::Conflict(
+            "observed workspace repair push no longer matches its verified remote receipt"
+                .to_string(),
+        ));
+    }
+    verify_workspace_repair_push_remote_precondition(&effect, observed_remote_oid.as_deref())?;
+
+    let uses_exact_lease = effect.expected_remote_oid.is_some()
+        && GitService::count_commits_not_on_branch(
+            &workspace_path,
+            effect
+                .expected_remote_oid
+                .as_deref()
+                .expect("checked expected remote OID"),
+            &local_ref,
+        )
+        .await?
+            > 0;
+    let claim_id = format!("{}:push", effect.id);
+    match branch_update_repo
+        .begin_git_mutation(crate::domain::repositories::BeginGitMutation {
+            identity: target_identity.clone(),
+            owner: owner.clone(),
+            fencing_epoch,
+            claim_id: claim_id.clone(),
+            kind: GitMutationKind::Push,
+        })
+        .await?
+    {
+        GitAuthorityCasOutcome::Applied { .. } => {}
+        // The exact current attempt already owns this deterministic mutation claim. A concurrent
+        // live/recovery re-entry must leave that owner and its durable effect unchanged rather
+        // than blocking the generation or issuing a second push.
+        GitAuthorityCasOutcome::MutationInFlight => {
+            return Ok(AgentWorkspaceRepairPushOutcome::Busy);
+        }
+        outcome => {
+            return Err(AppError::Conflict(format!(
+                "workspace repair push lost Git target authority before mutation: {outcome:?}"
+            )));
+        }
+    }
+
+    let push_result = if uses_exact_lease {
+        github
+            .push_branch_with_expected_remote_oid_lease(
+                &workspace_path,
+                &local_ref,
+                effect
+                    .expected_remote_oid
+                    .as_deref()
+                    .expect("exact lease requires expected remote OID"),
+            )
+            .await
+    } else {
+        github.push_branch(&workspace_path, branch_name).await
+    };
+    let postcondition = read_origin_branch_oid(&workspace_path, branch_name).await;
+    let completion = branch_update_repo
+        .complete_git_mutation(CompleteGitMutation {
+            identity: target_identity,
+            owner,
+            fencing_epoch,
+            claim_id,
+        })
+        .await?;
+    if !matches!(completion, GitAuthorityCasOutcome::Applied { .. }) {
+        return Err(AppError::Conflict(format!(
+            "workspace repair push lost Git target authority after mutation: {completion:?}"
+        )));
+    }
+
+    let observed_remote_oid = postcondition?;
+    if observed_remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
+        let remote_oid = observed_remote_oid.expect("matching remote OID is present");
+        let effect = observe_agent_workspace_repair_push_effect(
+            repair_repo.as_ref(),
+            &attempt,
+            effect,
+            &local_ref,
+            &remote_oid,
+        )
+        .await?;
+        return Ok(AgentWorkspaceRepairPushOutcome::Observed {
+            effect,
+            remote_oid,
+            reconciled_after_push_error: push_result.is_err(),
+        });
+    }
+    if let Err(error) = push_result {
+        return Err(error);
+    }
+    Err(AppError::Conflict(
+        "workspace repair push finished without its expected remote postcondition".to_string(),
+    ))
+}
+
+async fn release_new_workspace_repair_push_lease(
+    branch_update_repo: &dyn BranchUpdateRepository,
+    target_identity: &crate::domain::entities::GitTargetIdentity,
+    owner: &GitTargetLeaseOwner,
+    fencing_epoch: u64,
+    lease_acquired_here: bool,
+) -> AppResult<()> {
+    if !lease_acquired_here {
+        return Ok(());
+    }
+    match branch_update_repo
+        .release_target_lease(target_identity, owner, fencing_epoch)
+        .await?
+    {
+        GitAuthorityCasOutcome::Applied { .. } => Ok(()),
+        outcome => Err(AppError::Conflict(format!(
+            "workspace repair push could not release its uncheckpointed Git target lease: {outcome:?}"
+        ))),
+    }
+}
+
+async fn prepare_agent_workspace_repair_push_attempt(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    expected_phase: AgentWorkspaceRepairPhase,
+    target_identity: &crate::domain::entities::GitTargetIdentity,
+    fencing_epoch: u64,
+) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+    let common_dir = target_identity
+        .git_common_dir()
+        .to_string_lossy()
+        .to_string();
+    let target_ref = target_identity.full_ref().to_string();
+    let has_durable_dispatch_lease = attempt.reserved_agent_run_id.is_some()
+        || attempt.git_common_dir.is_some()
+        || attempt.target_ref.is_some()
+        || attempt.target_identity_version.is_some()
+        || attempt.target_lease_epoch.is_some();
+    if has_durable_dispatch_lease {
+        if attempt.git_common_dir.as_deref() != Some(common_dir.as_str())
+            || attempt.target_ref.as_deref() != Some(target_ref.as_str())
+            || attempt.target_identity_version
+                != Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION)
+            || attempt.target_lease_epoch != Some(fencing_epoch)
+        {
+            return Err(AppError::Conflict(
+                "workspace repair target lease does not match its durable canonical identity"
+                    .to_string(),
+            ));
+        }
+    }
+    if matches!(attempt.phase, AgentWorkspaceRepairPhase::Continuing) {
+        return Ok(Some(attempt));
+    }
+    if attempt.phase != AgentWorkspaceRepairPhase::ContinuationPending
+        || expected_phase != AgentWorkspaceRepairPhase::ContinuationPending
+    {
+        return Ok(None);
+    }
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    if !has_durable_dispatch_lease {
+        attempt.git_common_dir = Some(common_dir);
+        attempt.target_ref = Some(target_ref);
+        attempt.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+        attempt.target_lease_epoch = Some(fencing_epoch);
+    }
+    let expected_updated_at = attempt.updated_at;
+    attempt.updated_at = next_effect_checkpoint_at(expected_updated_at);
+    match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => Ok(Some(attempt)),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairAttemptTransitionOutcome::Missing => Ok(None),
+    }
+}
+
+fn validate_existing_workspace_repair_push_effect(
+    effect: AgentWorkspaceRepairEffect,
+    attempt: &AgentWorkspaceRepairAttempt,
+    intended_head_oid: &str,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    if effect.attempt_id != attempt.id
+        || effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
+        || effect.intended_head_oid.as_deref() != Some(intended_head_oid)
+    {
+        return Err(AppError::Conflict(
+            "workspace repair push receipt does not match the current attempt target".to_string(),
+        ));
+    }
+    Ok(effect)
+}
+
+fn verify_workspace_repair_push_remote_precondition(
+    effect: &AgentWorkspaceRepairEffect,
+    remote_oid: Option<&str>,
+) -> AppResult<()> {
+    if effect.expected_remote_absent {
+        if remote_oid.is_none() {
+            return Ok(());
+        }
+    } else if remote_oid == effect.expected_remote_oid.as_deref() {
+        return Ok(());
+    }
+    Err(AppError::Conflict(
+        "workspace repair push remote state drifted from its durable expected OID".to_string(),
+    ))
+}
+
+async fn read_origin_branch_oid(repo_path: &Path, branch_name: &str) -> AppResult<Option<String>> {
+    GitService::fetch_origin(repo_path).await?;
+    let remote_ref = remote_tracking_ref_for_publish(branch_name);
+    if !GitService::ref_exists(repo_path, &remote_ref).await? {
+        return Ok(None);
+    }
+    GitService::get_branch_sha(repo_path, &remote_ref)
+        .await
+        .map(Some)
+}
+
+async fn observe_agent_workspace_repair_push_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+    mut effect: AgentWorkspaceRepairEffect,
+    remote_ref: &str,
+    remote_oid: &str,
+) -> AppResult<AgentWorkspaceRepairEffect> {
+    effect.status = AgentWorkspaceRepairEffectStatus::Observed;
+    effect.receipt_json = Some(
+        serde_json::json!({
+            "remote_ref": remote_ref,
+            "remote_oid": remote_oid,
+        })
+        .to_string(),
+    );
+    effect.last_error = None;
+    effect.updated_at = next_effect_checkpoint_at(effect.updated_at);
+    effect.completed_at = Some(effect.updated_at);
+    match repair_repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
+        | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
+            "workspace repair push receipt lost current attempt authority".to_string(),
+        )),
+    }
+}
+
+fn next_effect_checkpoint_at(previous: DateTime<Utc>) -> DateTime<Utc> {
+    let now = Utc::now();
+    if now > previous {
+        now
+    } else {
+        previous + Duration::microseconds(1)
+    }
 }
 
 /// Lazily publish an automation run's local-only base branch to origin before the
@@ -329,6 +1400,61 @@ pub async fn inspect_publish_branch_freshness_for_source_after_fetch(
         false,
     )
     .await
+}
+
+/// Re-prove the immutable repair-owned push receipt before the normal publisher may reuse it.
+/// This intentionally fetches and only reads refs: a repaired branch that no longer matches its
+/// exact local, remote, or base OID must re-enter durable repair rather than being locally
+/// refreshed while the normal branch push is suppressed.
+pub(crate) async fn verify_agent_workspace_repair_pr_handoff(
+    repo_path: &Path,
+    source_branch: &str,
+    base_ref: &str,
+    handoff: &AgentWorkspaceRepairPrHandoff,
+) -> AppResult<PublishBranchFreshnessStatus> {
+    if base_ref != handoff.target_base_ref {
+        return Err(AppError::Conflict(format!(
+            "workspace repair push handoff base ref changed from '{}' to '{}'",
+            handoff.target_base_ref, base_ref
+        )));
+    }
+
+    GitService::fetch_origin(repo_path).await?;
+    let target_ref = resolve_publish_freshness_target(repo_path, base_ref).await;
+    let target_base_commit = GitService::get_branch_sha(repo_path, &target_ref).await?;
+    if target_base_commit != handoff.target_base_commit {
+        return Err(AppError::Conflict(format!(
+            "workspace repair push handoff base advanced from '{}' to '{}'",
+            handoff.target_base_commit, target_base_commit
+        )));
+    }
+
+    let local_head_oid = GitService::get_head_sha(repo_path).await?;
+    let local_branch_oid = GitService::get_branch_sha(repo_path, source_branch).await?;
+    let remote_ref = remote_tracking_ref_for_publish(source_branch);
+    if !GitService::ref_exists(repo_path, &remote_ref).await? {
+        return Err(AppError::Conflict(format!(
+            "workspace repair push handoff remote ref '{}' is missing",
+            remote_ref
+        )));
+    }
+    let remote_head_oid = GitService::get_branch_sha(repo_path, &remote_ref).await?;
+    if local_head_oid != handoff.expected_head_oid
+        || local_branch_oid != handoff.expected_head_oid
+        || remote_head_oid != handoff.expected_head_oid
+    {
+        return Err(AppError::Conflict(format!(
+            "workspace repair push handoff head no longer matches its exact remote receipt '{}'",
+            handoff.expected_head_oid
+        )));
+    }
+
+    Ok(PublishBranchFreshnessStatus {
+        target_ref,
+        captured_base_commit: Some(handoff.target_base_commit.clone()),
+        target_base_commit,
+        is_base_ahead: false,
+    })
 }
 
 async fn inspect_publish_branch_freshness_for_source_with_fetch(
@@ -645,380 +1771,4 @@ fn is_operational_failure(normalized: &str) -> bool {
     ];
 
     PATTERNS.iter().any(|pattern| normalized.contains(pattern))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-    use std::process::Command;
-
-    fn git(repo: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .output()
-            .expect("git command should spawn");
-        assert!(
-            output.status.success(),
-            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
-            args,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    }
-
-    fn setup_repo(repo: &Path) -> String {
-        std::fs::create_dir_all(repo).expect("repo should be created");
-        git(repo, &["init", "-b", "main"]);
-        git(repo, &["config", "user.email", "test@example.com"]);
-        git(repo, &["config", "user.name", "Test User"]);
-        std::fs::write(repo.join("README.md"), "base\n").expect("fixture should be written");
-        git(repo, &["add", "."]);
-        git(repo, &["commit", "-m", "base"]);
-        git(repo, &["rev-parse", "HEAD"])
-    }
-
-    #[test]
-    fn plan_update_outcome_maps_current_states_to_freshness_results() {
-        assert_eq!(
-            publish_branch_freshness_outcome_from_plan_update(
-                PlanUpdateResult::AlreadyUpToDate,
-                "main",
-                "base-sha",
-            ),
-            PublishBranchFreshnessOutcome::AlreadyFresh {
-                base_commit: "base-sha".to_string(),
-                target_ref: "main".to_string(),
-            }
-        );
-        assert_eq!(
-            publish_branch_freshness_outcome_from_plan_update(
-                PlanUpdateResult::NotPlanBranch,
-                "main",
-                "base-sha",
-            ),
-            PublishBranchFreshnessOutcome::AlreadyFresh {
-                base_commit: "base-sha".to_string(),
-                target_ref: "main".to_string(),
-            }
-        );
-        assert_eq!(
-            publish_branch_freshness_outcome_from_plan_update(
-                PlanUpdateResult::Updated,
-                "origin/main",
-                "new-base",
-            ),
-            PublishBranchFreshnessOutcome::Updated {
-                base_commit: "new-base".to_string(),
-                target_ref: "origin/main".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn plan_update_outcome_maps_conflicts_and_errors() {
-        let conflict = publish_branch_freshness_outcome_from_plan_update(
-            PlanUpdateResult::Conflicts {
-                conflict_files: vec![PathBuf::from("src/lib.rs")],
-            },
-            "main",
-            "base-sha",
-        );
-        assert_eq!(
-            conflict,
-            PublishBranchFreshnessOutcome::NeedsAgent {
-                message: "Merge conflict updating plan branch from main: src/lib.rs".to_string(),
-                conflict_files: vec!["src/lib.rs".to_string()],
-                base_commit: "base-sha".to_string(),
-                target_ref: "main".to_string(),
-            }
-        );
-        assert_eq!(
-            publish_branch_freshness_outcome_from_plan_update(
-                PlanUpdateResult::Conflicts {
-                    conflict_files: Vec::new(),
-                },
-                "main",
-                "base-sha",
-            ),
-            PublishBranchFreshnessOutcome::NeedsAgent {
-                message: "Merge conflict updating plan branch from main: unknown files".to_string(),
-                conflict_files: Vec::new(),
-                base_commit: "base-sha".to_string(),
-                target_ref: "main".to_string(),
-            }
-        );
-
-        assert_eq!(
-            publish_branch_freshness_outcome_from_plan_update(
-                PlanUpdateResult::Error("git failed".to_string()),
-                "main",
-                "base-sha",
-            ),
-            PublishBranchFreshnessOutcome::OperationalError {
-                message: "git failed".to_string(),
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn ensure_plan_publish_branch_fresh_reports_already_fresh() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let repo = temp.path().join("repo");
-        let worktrees = temp.path().join("worktrees");
-        let main_sha = setup_repo(&repo);
-        git(&repo, &["branch", "feature/plan"]);
-        let mut project = Project::new(
-            "Plan freshness".to_string(),
-            repo.to_string_lossy().to_string(),
-        );
-        project.base_branch = Some("main".to_string());
-        project.worktree_parent_directory = Some(worktrees.to_string_lossy().to_string());
-
-        let outcome = ensure_plan_publish_branch_fresh(
-            &repo,
-            &project,
-            "feature/plan",
-            "main",
-            "conversation-plan-freshness",
-            None,
-        )
-        .await;
-
-        assert_eq!(
-            outcome,
-            PublishBranchFreshnessOutcome::AlreadyFresh {
-                base_commit: main_sha,
-                target_ref: "main".to_string(),
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn ensure_plan_publish_branch_fresh_reports_missing_base_ref() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let repo = temp.path().join("repo");
-        let worktrees = temp.path().join("worktrees");
-        setup_repo(&repo);
-        git(&repo, &["branch", "feature/plan"]);
-        let mut project = Project::new(
-            "Plan freshness".to_string(),
-            repo.to_string_lossy().to_string(),
-        );
-        project.base_branch = Some("main".to_string());
-        project.worktree_parent_directory = Some(worktrees.to_string_lossy().to_string());
-
-        let outcome = ensure_plan_publish_branch_fresh(
-            &repo,
-            &project,
-            "feature/plan",
-            "missing-base",
-            "conversation-plan-freshness",
-            None,
-        )
-        .await;
-
-        match outcome {
-            PublishBranchFreshnessOutcome::OperationalError { message } => {
-                assert!(message.contains("Failed to resolve publish base ref 'missing-base'"));
-            }
-            other => panic!("expected operational error, got {other:?}"),
-        }
-    }
-
-    fn automation_publish_fixture(
-        base_ref: &str,
-        kind: IdeationAnalysisBaseRefKind,
-        automation: bool,
-    ) -> (ChatConversation, AgentConversationWorkspace) {
-        use crate::domain::entities::{AgentConversationWorkspaceMode, AutomationId, ProjectId};
-        let project_id = ProjectId::from_string("project-b1".to_string());
-        let mut conversation = ChatConversation::new_project(project_id.clone());
-        if automation {
-            conversation.automation_id = Some(AutomationId::from_string("automation-b1"));
-        }
-        let workspace = AgentConversationWorkspace::new(
-            conversation.id.clone(),
-            project_id,
-            AgentConversationWorkspaceMode::Edit,
-            kind,
-            base_ref.to_string(),
-            Some(base_ref.to_string()),
-            Some("0".repeat(40)),
-            "ralphx/ralphx/head-branch".to_string(),
-            "/tmp/b1-worktree".to_string(),
-        );
-        (conversation, workspace)
-    }
-
-    #[tokio::test]
-    async fn ensure_publish_base_pushed_pushes_local_automation_base_when_origin_absent() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo = temp.path().join("repo");
-        setup_repo(&repo);
-        let base = "ralphx/ralphx/automation-abc";
-        git(&repo, &["branch", base]);
-        let (conversation, workspace) =
-            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
-        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-
-        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
-            .await
-            .expect("base push succeeds");
-
-        let state = github.state();
-        assert_eq!(
-            state.push_branch_calls, 1,
-            "automation base should be pushed once"
-        );
-        assert_eq!(state.last_push_branch_name.as_deref(), Some(base));
-    }
-
-    #[tokio::test]
-    async fn ensure_publish_base_pushed_is_idempotent_when_origin_present() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo = temp.path().join("repo");
-        setup_repo(&repo);
-        let base = "ralphx/ralphx/automation-present";
-        git(&repo, &["branch", base]);
-        // Seed the remote-tracking ref so origin/<base> already exists.
-        git(
-            &repo,
-            &["update-ref", &format!("refs/remotes/origin/{base}"), "HEAD"],
-        );
-        let (conversation, workspace) =
-            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
-        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-
-        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
-            .await
-            .expect("idempotent skip succeeds");
-
-        assert_eq!(
-            github.state().push_branch_calls,
-            0,
-            "present origin base must not be re-pushed"
-        );
-    }
-
-    #[tokio::test]
-    async fn ensure_publish_base_pushed_skips_non_automation_local_branch() {
-        // Scope belt: a non-automation Edit workspace on a local-only branch must
-        // NOT be pushed as a base branch even when origin/<base> is absent.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo = temp.path().join("repo");
-        setup_repo(&repo);
-        let base = "feature/local-only";
-        git(&repo, &["branch", base]);
-        let (conversation, workspace) =
-            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, false);
-        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-
-        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
-            .await
-            .expect("no-op succeeds");
-
-        assert_eq!(
-            github.state().push_branch_calls,
-            0,
-            "non-automation base must not be pushed"
-        );
-    }
-
-    #[tokio::test]
-    async fn ensure_publish_base_pushed_skips_project_default_base() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo = temp.path().join("repo");
-        setup_repo(&repo);
-        let (conversation, workspace) =
-            automation_publish_fixture("main", IdeationAnalysisBaseRefKind::ProjectDefault, true);
-        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-
-        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
-            .await
-            .expect("no-op succeeds");
-
-        assert_eq!(github.state().push_branch_calls, 0);
-    }
-
-    #[tokio::test]
-    async fn ensure_publish_base_pushed_fails_closed_on_push_error() {
-        // B5: a base-push failure surfaces as an error so the caller aborts the
-        // publish — it must never silently retarget to main.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo = temp.path().join("repo");
-        setup_repo(&repo);
-        let base = "ralphx/ralphx/automation-fail";
-        git(&repo, &["branch", base]);
-        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        github.state().push_branch_result = Some(Err(crate::error::AppError::Infrastructure(
-            "push denied".to_string(),
-        )));
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-        let (conversation, workspace) =
-            automation_publish_fixture(base, IdeationAnalysisBaseRefKind::LocalBranch, true);
-
-        let result =
-            ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace).await;
-
-        assert!(result.is_err(), "push failure must surface as an error");
-        assert_eq!(github.state().push_branch_calls, 1);
-    }
-
-    #[tokio::test]
-    async fn ensure_publish_base_pushed_skips_already_remote_pr_head_stacked_base() {
-        // B6: a pr_head_stacked successor bases on the previous run's pushed pr_head
-        // branch, which already lives on origin — no extra push.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let repo = temp.path().join("repo");
-        setup_repo(&repo);
-        let head_base = "ralphx/ralphx/task-run1-head";
-        git(&repo, &["branch", head_base]);
-        git(
-            &repo,
-            &[
-                "update-ref",
-                &format!("refs/remotes/origin/{head_base}"),
-                "HEAD",
-            ],
-        );
-        let (conversation, workspace) =
-            automation_publish_fixture(head_base, IdeationAnalysisBaseRefKind::LocalBranch, true);
-        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
-
-        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
-            .await
-            .expect("idempotent skip succeeds");
-
-        assert_eq!(github.state().push_branch_calls, 0);
-    }
-
-    #[tokio::test]
-    async fn inspect_publish_branch_freshness_after_fetch_uses_existing_refs() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let repo = temp.path().join("repo");
-        let main_sha = setup_repo(&repo);
-        git(&repo, &["branch", "feature/current"]);
-
-        let status = inspect_publish_branch_freshness_for_source_after_fetch(
-            &repo,
-            "main",
-            "feature/current",
-            Some("old-base"),
-        )
-        .await
-        .expect("freshness should inspect without fetching");
-
-        assert_eq!(status.target_ref, "main");
-        assert_eq!(status.target_base_commit, main_sha.as_str());
-        assert!(!status.is_base_ahead);
-        assert_eq!(status.captured_base_commit, Some(main_sha));
-    }
 }

@@ -11,6 +11,7 @@ import type {
 import { createTestQueryClient } from "@/test/store-utils";
 
 import {
+  agentWorkspaceMaintenanceOperationToastId,
   agentWorkspaceOperationToastId,
 } from "./agentWorkspaceOperationToast";
 import { conversationFixture, conversationWorkspaceFixture } from "./agentsTestFixtures";
@@ -218,6 +219,195 @@ describe("useAgentWorkspacePublisher", () => {
     });
 
     expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the publish toast attached to an active durable maintenance operation", async () => {
+    const queryClient = createTestQueryClient();
+    const workspace = conversationWorkspaceFixture({ mode: "edit" });
+    const repairingWorkspace = conversationWorkspaceFixture({
+      mode: "edit",
+      maintenanceOperation: {
+        operationId: "maintenance-1",
+        generation: 1,
+        source: "publish",
+        stage: "repairing",
+        status: "active",
+        summary: "Resolving the base conflict",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([]);
+    getAgentConversationWorkspaceMock.mockResolvedValue(repairingWorkspace);
+    publishAgentConversationWorkspaceMock.mockResolvedValue({
+      workspace: repairingWorkspace,
+      commitSha: null,
+      pushed: false,
+      createdPr: false,
+      prNumber: null,
+      prUrl: null,
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: workspace,
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1");
+    });
+
+    await waitFor(() =>
+      expect(toastLoadingMock).toHaveBeenLastCalledWith(
+        "Repairing workspace",
+        expect.objectContaining({
+          id: agentWorkspaceMaintenanceOperationToastId(
+            "conversation-1",
+            "maintenance-1",
+          ),
+        }),
+      ),
+    );
+    expect(result.current.publishAttemptsByConversationId["conversation-1"]).toEqual(
+      expect.objectContaining({ conversationId: "conversation-1" }),
+    );
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("settles a direct publish response when a terminal PR accompanies stale active maintenance", async () => {
+    const queryClient = createTestQueryClient();
+    const workspace = conversationWorkspaceFixture({ mode: "edit" });
+    const terminalWorkspace = conversationWorkspaceFixture({
+      mode: "edit",
+      publicationPrStatus: "merged",
+      maintenanceOperation: {
+        operationId: "maintenance-1",
+        generation: 1,
+        source: "publish",
+        stage: "repairing",
+        status: "active",
+        summary: "Stale repair",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([]);
+    publishAgentConversationWorkspaceMock.mockResolvedValue({
+      workspace: terminalWorkspace,
+      commitSha: null,
+      pushed: false,
+      createdPr: false,
+      prNumber: null,
+      prUrl: null,
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: workspace,
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    await act(async () => {
+      await result.current.handlePublishWorkspace("conversation-1");
+    });
+
+    expect(result.current.publishAttemptsByConversationId["conversation-1"]).toBeUndefined();
+    expect(toastInfoMock).toHaveBeenCalledWith(
+      "Publish stopped because the pull request was merged",
+      expect.objectContaining({
+        id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+      }),
+    );
+    expect(toastLoadingMock).not.toHaveBeenCalledWith(
+      "Repairing workspace",
+      expect.anything(),
+    );
+  });
+
+  it("stops publish polling on a terminal PR before stale active maintenance", async () => {
+    const queryClient = createTestQueryClient();
+    const baseline = publicationEvent({ id: "baseline" });
+    const progress = publicationEvent({
+      id: "progress",
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+    const terminalWorkspace = conversationWorkspaceFixture({
+      publicationPrStatus: "closed",
+      maintenanceOperation: {
+        operationId: "maintenance-1",
+        generation: 1,
+        source: "publish",
+        stage: "repairing",
+        status: "active",
+        summary: "Stale repair",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([baseline]);
+    publishAgentConversationWorkspaceMock.mockReturnValue(new Promise(() => undefined));
+    getAgentConversationWorkspaceMock.mockResolvedValue(terminalWorkspace);
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspacePublisher({
+          activeWorkspace: conversationWorkspaceFixture(),
+          findConversationById: () => conversationFixture(),
+          invalidateProjectConversations: () => Promise.resolve(),
+          optimisticWorkspacesByConversationId: {},
+          queryClient,
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    let completed = false;
+    act(() => {
+      void result.current.handlePublishWorkspace("conversation-1").then(() => {
+        completed = true;
+      });
+    });
+    await waitFor(() => expect(publishAgentConversationWorkspaceMock).toHaveBeenCalled());
+    act(() => {
+      queryClient.setQueryData(
+        ["agents", "conversation-workspace-publication-events", "conversation-1"],
+        [baseline, progress],
+      );
+    });
+
+    await waitFor(() => expect(completed).toBe(true));
+    expect(result.current.publishAttemptsByConversationId["conversation-1"]).toBeUndefined();
+    expect(toastInfoMock).toHaveBeenCalledWith(
+      "Publish stopped because the pull request was closed",
+      expect.objectContaining({
+        id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+      }),
+    );
+    expect(toastLoadingMock).not.toHaveBeenCalledWith(
+      "Repairing workspace",
+      expect.anything(),
+    );
   });
 
   it("starts the owned toast before baseline fetch and RPC invocation", async () => {

@@ -3949,6 +3949,27 @@ async fn blocking_repair_message_injects_review_artifact_and_keeps_fetch_optiona
     assert!(message.contains("<workspace_goal_context>"));
     assert!(message.contains("Remove workspace path constraints."));
     assert!(message.contains("Fix the missing review artifact access."));
+    assert!(message.contains("call `complete_agent_workspace_repair` with a concise summary"));
+    assert!(message.contains("summary and blocker"));
+    for transport_owned_detail in [
+        "Conversation ID:",
+        "Review target scope:",
+        "Review diff fingerprint:",
+        "Review child conversation:",
+        "Review run ID:",
+        "repair commit SHA",
+        "resolved base ref",
+        "resolved base commit",
+        "attempt ID",
+        "orchestration ID",
+        "timestamp",
+        "rescue",
+    ] {
+        assert!(
+            !message.contains(transport_owned_detail),
+            "repair prompt must not request or expose transport-owned detail: {transport_owned_detail}"
+        );
+    }
 }
 
 #[tokio::test]

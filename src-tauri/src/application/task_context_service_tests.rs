@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::entities::{
-    create_artifact_content_preview, Artifact, ArtifactId, ArtifactRelation,
-    ArtifactRelationType, ArtifactType, InternalStatus, Priority, ProjectId, ProposalCategory,
-    Task, TaskProposal, TaskProposalId, TaskStep, TaskStepId,
+    create_artifact_content_preview, Artifact, ArtifactId, ArtifactRelation, ArtifactRelationType,
+    ArtifactType, InternalStatus, Priority, ProjectId, ProposalCategory, Task, TaskProposal,
+    TaskProposalId, TaskStep, TaskStepId,
 };
 use crate::domain::repositories::{
     ArtifactRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
@@ -237,7 +237,12 @@ impl TaskRepository for MockTaskRepository {
     async fn get_status_history_batch(
         &self,
         _task_ids: &[crate::domain::entities::TaskId],
-    ) -> AppResult<HashMap<crate::domain::entities::TaskId, Vec<crate::domain::repositories::StatusTransition>>> {
+    ) -> AppResult<
+        HashMap<
+            crate::domain::entities::TaskId,
+            Vec<crate::domain::repositories::StatusTransition>,
+        >,
+    > {
         Ok(HashMap::new())
     }
 }

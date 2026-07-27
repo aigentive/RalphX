@@ -1,21 +1,50 @@
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
-    claim_agent_workspace_repair, complete_agent_workspace_pr_fix_claim,
-    complete_agent_workspace_repair_claim, current_agent_workspace_repair_claim_for_completion,
-    reconcile_active_agent_workspace_repair, repair_event_authorizes_active_run,
-    settle_agent_workspace_repair_failure, terminal_run_authorizes_repair_recovery,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    claim_agent_workspace_repair, classify_agent_workspace_repair_completion_authority,
+    classify_agent_workspace_repair_delivery, complete_agent_workspace_pr_fix_claim,
+    complete_agent_workspace_repair_claim, continue_agent_workspace_repair_at_boundary,
+    continue_agent_workspace_repair_at_boundary_with_review_starter,
+    current_agent_workspace_repair_claim_for_completion, reconcile_active_agent_workspace_repair,
+    repair_event_authorizes_active_run, reserve_agent_workspace_repair_dispatch,
+    resume_current_agent_workspace_repair_publish, settle_agent_workspace_repair_dispatch_outcome,
+    settle_agent_workspace_repair_failure, start_or_join_agent_workspace_repair,
+    terminal_run_authorizes_repair_recovery, transition_agent_workspace_repair_attempt,
+    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
+    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    DurableRepairWorkspaceReviewStartFuture, DurableRepairWorkspaceReviewStarter,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
 };
+use crate::application::agent_workspace_review::{
+    load_agent_workspace_review_context, AgentWorkspaceReviewStart,
+};
+use crate::application::chat_service::{ChatServiceError, SendResult};
+use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRun, ChatConversationId,
-    IdeationAnalysisBaseRefKind, ProjectId,
+    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunId, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId, GitTargetIdentity,
+    GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
+use crate::domain::repositories::{
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
+    AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
+    BranchUpdateRepository, CreateAgentWorkspaceRepairEffect,
+    CreateAgentWorkspaceRepairEffectOutcome,
+};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
+    MemoryBranchUpdateRepository,
 };
 
 fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -33,6 +62,1552 @@ fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWor
     workspace.publication_push_status = Some("needs_agent".to_string());
     workspace.pr_supervision_status = Some("blocked".to_string());
     workspace
+}
+
+#[test]
+fn repair_delivery_classifier_blocks_deterministic_errors_and_retries_uncertain_delivery() {
+    let conversation_id = ChatConversationId::from_string("repair-delivery-classifier");
+    let run_id = AgentRunId::from_string("repair-delivery-classifier-run");
+
+    for error in [
+        ChatServiceError::InvalidInput("invalid repair configuration".to_string()),
+        ChatServiceError::AgentNotAvailable("repair agent is unavailable".to_string()),
+        ChatServiceError::SpawnValidation {
+            harness: crate::domain::agents::AgentHarnessKind::Claude,
+            model: "unsupported-model".to_string(),
+            reason: "unsupported repair role".to_string(),
+        },
+        ChatServiceError::ParseError("invalid repair launch configuration".to_string()),
+        ChatServiceError::ContextNotFound("workspace context is missing".to_string()),
+        ChatServiceError::ConversationNotFound("workspace conversation is missing".to_string()),
+        ChatServiceError::PersonaUnavailable("repair persona is unavailable".to_string()),
+    ] {
+        assert_eq!(
+            classify_agent_workspace_repair_delivery(Err(&error), &conversation_id, &run_id),
+            AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure,
+            "{error} must block the exact generation because retrying cannot change it"
+        );
+    }
+
+    for error in [
+        ChatServiceError::SpawnFailed("process start interrupted".to_string()),
+        ChatServiceError::CommunicationFailed("provider connection reset".to_string()),
+        ChatServiceError::RepositoryError("temporary database error".to_string()),
+        ChatServiceError::AgentRunFailed("launch observation is incomplete".to_string()),
+    ] {
+        assert_eq!(
+            classify_agent_workspace_repair_delivery(Err(&error), &conversation_id, &run_id),
+            AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+            "{error} is delivery-uncertain and must retain Task 38 retry semantics"
+        );
+    }
+
+    let mismatched = SendResult {
+        conversation_id: "another-conversation".to_string(),
+        agent_run_id: run_id.as_str().to_string(),
+        ..Default::default()
+    };
+    assert_eq!(
+        classify_agent_workspace_repair_delivery(Ok(&mismatched), &conversation_id, &run_id),
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+        "a mismatched acknowledgement leaves delivery uncertain"
+    );
+}
+
+fn review_boundary_git(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+struct RecordingDurableRepairWorkspaceReviewStarter {
+    starts: Arc<AtomicUsize>,
+}
+
+impl RecordingDurableRepairWorkspaceReviewStarter {
+    fn new() -> Self {
+        Self {
+            starts: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn starts(&self) -> usize {
+        self.starts.load(Ordering::SeqCst)
+    }
+}
+
+impl DurableRepairWorkspaceReviewStarter for RecordingDurableRepairWorkspaceReviewStarter {
+    fn start<'a>(
+        &'a self,
+        state: Arc<AppState>,
+        workspace: &'a AgentConversationWorkspace,
+        _force: bool,
+    ) -> DurableRepairWorkspaceReviewStartFuture<'a> {
+        let starts = Arc::clone(&self.starts);
+        let workspace = workspace.clone();
+        Box::pin(async move {
+            starts.fetch_add(1, Ordering::SeqCst);
+            let mut monitor = load_agent_workspace_review_context(state.as_ref(), &workspace)
+                .await?
+                .monitor;
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+            monitor.last_run_id = Some("durable-reviewer-run".to_string());
+            state
+                .agent_conversation_workspace_repo
+                .upsert_workspace_review_monitor(monitor)
+                .await?;
+            state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    workspace.conversation_id.clone(),
+                    "workspace_review",
+                    "reviewing",
+                    "Started the reviewer for the durable repair generation.",
+                    None,
+                ))
+                .await?;
+            let context = load_agent_workspace_review_context(state.as_ref(), &workspace).await?;
+            Ok(AgentWorkspaceReviewStart {
+                context,
+                started: true,
+                skipped_reason: None,
+                was_queued: false,
+            })
+        })
+    }
+}
+
+async fn workspace_review_boundary_context(
+    state: &AppState,
+    root: &std::path::Path,
+    require_workspace_review: bool,
+) -> AgentWorkspaceRepairAttempt {
+    let repo = root.join("workspace-review-boundary");
+    std::fs::create_dir_all(&repo).expect("review boundary repository should be created");
+    review_boundary_git(&repo, &["init", "-b", "main"]);
+    review_boundary_git(&repo, &["config", "user.email", "test@example.com"]);
+    review_boundary_git(&repo, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.join("README.md"), "base\n").expect("base file should be written");
+    review_boundary_git(&repo, &["add", "README.md"]);
+    review_boundary_git(&repo, &["commit", "-m", "base"]);
+    let base_commit = review_boundary_git(&repo, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("repair.md"), "repair complete\n")
+        .expect("repair file should be written");
+    review_boundary_git(&repo, &["add", "repair.md"]);
+    review_boundary_git(&repo, &["commit", "-m", "repair"]);
+
+    let mut project = Project::new(
+        "Durable repair review boundary".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(root.join("worktrees").to_string_lossy().to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("review boundary project should persist");
+    let conversation_id = ChatConversationId::from_string("repair-review-boundary");
+    let branch_name = "ralphx/repair-review-boundary".to_string();
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("review boundary workspace path should resolve");
+    GitService::create_worktree(&repo, &workspace_path, &branch_name, "main")
+        .await
+        .expect("review boundary worktree should be created");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some(base_commit.clone()),
+        branch_name,
+        workspace_path.to_string_lossy().to_string(),
+    );
+    workspace.auto_publish_enabled = true;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("review boundary workspace should persist");
+    state
+        .review_settings_repo
+        .update_settings(&crate::domain::review::ReviewSettings {
+            require_workspace_review,
+            ..crate::domain::review::ReviewSettings::default()
+        })
+        .await
+        .expect("review boundary settings should persist");
+    let mut request = repair_start_request(
+        conversation_id,
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::Publish,
+        "base update repaired",
+    );
+    request.target_base_commit = Some(base_commit);
+    start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        request,
+    )
+    .await
+    .expect("review boundary repair attempt should start")
+    .into_attempt()
+}
+
+async fn checkpoint_workspace_review_boundary_lease(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+) -> (AgentWorkspaceRepairAttempt, GitTargetIdentity, u64) {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await
+        .expect("review boundary workspace should load")
+        .expect("review boundary workspace should exist");
+    let identity = GitService::canonical_target_identity(
+        std::path::Path::new(&workspace.worktree_path),
+        &workspace.branch_name,
+    )
+    .await
+    .expect("review boundary target identity should resolve");
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: identity.clone(),
+            owner,
+        })
+        .await
+        .expect("review boundary repair lease should acquire")
+    else {
+        panic!("review boundary repair lease should be newly acquired");
+    };
+    let mut checkpointed = attempt.clone();
+    checkpointed.git_common_dir = Some(identity.git_common_dir().to_string_lossy().into_owned());
+    checkpointed.target_ref = Some(identity.full_ref().to_string());
+    checkpointed.target_identity_version = Some(
+        crate::application::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+    );
+    checkpointed.target_lease_epoch = Some(fencing_epoch);
+    checkpointed.updated_at += chrono::Duration::microseconds(1);
+    let checkpointed = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: checkpointed,
+            expected_phase: attempt.phase,
+            expected_updated_at: attempt.updated_at,
+            next_phase: attempt.phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("review boundary lease should checkpoint on the exact attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected review boundary lease checkpoint, got {outcome:?}"),
+    };
+    (checkpointed, identity, fencing_epoch)
+}
+
+fn assert_repair_target_authority_is_cleared(attempt: &AgentWorkspaceRepairAttempt) {
+    assert!(attempt.git_common_dir.is_none());
+    assert!(attempt.target_ref.is_none());
+    assert!(attempt.target_identity_version.is_none());
+    assert!(attempt.target_lease_epoch.is_none());
+}
+
+fn repair_start_request(
+    conversation_id: ChatConversationId,
+    source: AgentWorkspaceRepairSource,
+    continuation: AgentWorkspaceRepairContinuation,
+    reason: &str,
+) -> AgentWorkspaceRepairStartRequest {
+    AgentWorkspaceRepairStartRequest {
+        conversation_id,
+        source,
+        continuation,
+        target_base_ref: "main".to_string(),
+        target_base_commit: Some("base-a".to_string()),
+        verified_newer_base: false,
+        reason: reason.to_string(),
+        summary: "Repair requested.".to_string(),
+        auto_merge_current: None,
+        retry_blocked: false,
+    }
+}
+
+#[tokio::test]
+async fn explicit_attempt_coalesces_concurrent_starts_without_duplicate_audit_events() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-attempt-coalesce");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let first = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::BaseUpdate,
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            "base update",
+        ),
+    );
+    let second = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "publish failure",
+        ),
+    );
+    let (first, second) = tokio::join!(first, second);
+    let outcomes = [first.unwrap(), second.unwrap()];
+
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, AgentWorkspaceRepairStartOutcome::Started(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, AgentWorkspaceRepairStartOutcome::Joined(_)))
+            .count(),
+        1
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .unwrap()
+        .expect("one coalesced repair attempt");
+    assert_eq!(current.generation, 1);
+    assert_eq!(
+        current.continuation,
+        AgentWorkspaceRepairContinuation::Publish
+    );
+    assert_eq!(current.pending_reasons.len(), 2);
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn stale_phase_transition_cannot_mutate_projection_or_append_audit_events() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-attempt-stale-transition");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let started = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::BaseUpdate,
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            "base update",
+        ),
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+    let before_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace");
+
+    let outcome = transition_agent_workspace_repair_attempt(
+        Arc::clone(&repair_repo),
+        started,
+        AgentWorkspaceRepairPhase::Dispatching,
+        "late dispatch",
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(outcome.is_stale());
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace")
+            .pr_supervision_updated_at,
+        before_workspace.pr_supervision_updated_at
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn join_upgrades_continuation_and_re_reads_current_publish_preferences() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-attempt-preferences");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.auto_publish_enabled = false;
+    workspace.pr_auto_merge_desired = false;
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::BaseUpdate,
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            "base update",
+        ),
+    )
+    .await
+    .unwrap();
+
+    let mut changed = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace");
+    changed.auto_publish_enabled = true;
+    changed.pr_auto_merge_desired = true;
+    changed.pr_auto_merge_method = "squash".to_string();
+    workspace_repo.create_or_update(changed).await.unwrap();
+
+    let joined = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "manual publish",
+        ),
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+
+    assert_eq!(
+        joined.continuation,
+        AgentWorkspaceRepairContinuation::Publish
+    );
+    assert!(joined.auto_publish_enabled);
+    assert!(joined.auto_merge_desired);
+    assert_eq!(joined.auto_merge_method.as_deref(), Some("squash"));
+    assert_eq!(
+        joined.pending_reasons,
+        vec!["base update", "manual publish"]
+    );
+}
+
+#[tokio::test]
+async fn continuation_boundary_re_reads_auto_publish_preference_before_leaving_repair() {
+    let state = AppState::new_test();
+    let mut review_settings = state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .expect("review settings should load");
+    review_settings.require_workspace_review = false;
+    state
+        .review_settings_repo
+        .update_settings(&review_settings)
+        .await
+        .expect("review settings should update");
+
+    let conversation_id = ChatConversationId::from_string("repair-attempt-continuation-gate");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "publish failure",
+        ),
+    )
+    .await
+    .expect("attempt should start")
+    .into_attempt();
+
+    let mut changed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    changed.auto_publish_enabled = true;
+    changed.pr_auto_merge_desired = true;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(changed)
+        .await
+        .expect("changed preferences should persist");
+
+    let outcome = continue_agent_workspace_repair_at_boundary(
+        &state,
+        attempt,
+        AgentWorkspaceRepairPhase::Requested,
+        "repair completed",
+        false,
+    )
+    .await
+    .expect("continuation boundary should use current preferences");
+    let crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairTransitionOutcome::Applied(
+        continued,
+    ) = outcome
+    else {
+        panic!("continuation should own the requested attempt");
+    };
+    assert_eq!(
+        continued.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending
+    );
+    assert!(continued.auto_publish_enabled);
+    assert!(continued.auto_merge_desired);
+}
+
+#[tokio::test]
+async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
+    let temp = tempfile::tempdir().expect("review boundary tempdir should be created");
+    let state = AppState::new_test();
+    let attempt = workspace_review_boundary_context(&state, temp.path(), true).await;
+    let (attempt, target_identity, initial_epoch) =
+        checkpoint_workspace_review_boundary_lease(&state, attempt).await;
+    let starter = RecordingDurableRepairWorkspaceReviewStarter::new();
+
+    let outcome = continue_agent_workspace_repair_at_boundary_with_review_starter(
+        &state,
+        attempt.clone(),
+        AgentWorkspaceRepairPhase::Requested,
+        "repair completed",
+        false,
+        &starter,
+    )
+    .await
+    .expect("current repair generation should start Workspace Review");
+    let AgentWorkspaceRepairTransitionOutcome::Applied(awaiting_review) = outcome else {
+        panic!("current repair generation should retain durable review authority");
+    };
+    assert_eq!(
+        awaiting_review.phase,
+        AgentWorkspaceRepairPhase::AwaitingReview
+    );
+    assert_repair_target_authority_is_cleared(&awaiting_review);
+    let released_lease = state
+        .branch_update_repo
+        .get_target_lease(&target_identity)
+        .await
+        .expect("review boundary lease should load")
+        .expect("review boundary lease should remain durable");
+    assert!(released_lease.is_released());
+    assert_eq!(released_lease.fencing_epoch(), initial_epoch);
+    assert_eq!(
+        starter.starts(),
+        1,
+        "the current repair starts one reviewer"
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&attempt.conversation_id)
+            .await
+            .expect("review events should load")
+            .into_iter()
+            .filter(|event| event.step == "workspace_review" && event.status == "reviewing")
+            .count(),
+        1,
+        "the reviewer start must have one durable audit event"
+    );
+
+    let replay = continue_agent_workspace_repair_at_boundary_with_review_starter(
+        &state,
+        awaiting_review.clone(),
+        AgentWorkspaceRepairPhase::AwaitingReview,
+        "recovery replay",
+        false,
+        &starter,
+    )
+    .await
+    .expect("replaying an active review handoff should be safe");
+    assert!(matches!(
+        replay,
+        AgentWorkspaceRepairTransitionOutcome::Applied(_)
+    ));
+    assert_eq!(
+        starter.starts(),
+        1,
+        "recovery replay must reuse the reviewer owned by the same generation"
+    );
+
+    let review_context = load_agent_workspace_review_context(
+        &state,
+        &state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&awaiting_review.conversation_id)
+            .await
+            .expect("review boundary workspace should reload")
+            .expect("review boundary workspace should remain"),
+    )
+    .await
+    .expect("review monitor should reload");
+    let review_target = review_context
+        .target
+        .expect("started Workspace Review should retain its current target");
+    let mut monitor = review_context.monitor;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("durable-repair-review-artifact"));
+    monitor.reviewed_target_scope = Some(review_target.scope);
+    monitor.reviewed_head_sha = review_target.head_sha.clone();
+    monitor.reviewed_diff_fingerprint = Some(review_target.diff_fingerprint.clone());
+    monitor.current_target_scope = Some(review_target.scope);
+    monitor.current_diff_fingerprint = Some(review_target.diff_fingerprint.clone());
+    monitor.workspace_head_sha = review_target.head_sha;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("passed review should persist");
+    let resumed = resume_current_agent_workspace_repair_publish(
+        &state,
+        &awaiting_review.conversation_id,
+        "resume after persisted review pass",
+        false,
+    )
+    .await
+    .expect("passed review must reacquire the canonical target before continuation");
+    let AgentWorkspaceRepairPublishResumeOutcome::Continue(resumed) = resumed else {
+        panic!("passed review should continue the existing durable generation: {resumed:?}");
+    };
+    assert_eq!(
+        resumed.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending
+    );
+    assert_eq!(
+        resumed.git_common_dir.as_deref(),
+        Some(target_identity.git_common_dir().to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        resumed.target_ref.as_deref(),
+        Some(target_identity.full_ref())
+    );
+    assert_eq!(
+        resumed.target_identity_version,
+        Some(
+            crate::application::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION
+        )
+    );
+    let resumed_epoch = resumed
+        .target_lease_epoch
+        .expect("resumed continuation should checkpoint a new lease epoch");
+    assert!(resumed_epoch > initial_epoch);
+    let duplicate_resume = resume_current_agent_workspace_repair_publish(
+        &state,
+        &resumed.conversation_id,
+        "duplicate resume after persisted review pass",
+        false,
+    )
+    .await
+    .expect("duplicate review resume should remain side-effect free");
+    assert_eq!(
+        duplicate_resume,
+        AgentWorkspaceRepairPublishResumeOutcome::Busy
+    );
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&resumed.id)
+            .await
+            .expect("repair effects should load")
+            .is_none(),
+        "review restart/pass must not create a Git or publication effect before the publisher owns it"
+    );
+
+    let stale = continue_agent_workspace_repair_at_boundary_with_review_starter(
+        &state,
+        attempt,
+        AgentWorkspaceRepairPhase::Requested,
+        "stale completion",
+        false,
+        &starter,
+    )
+    .await
+    .expect("stale completion should be rejected without reviewer side effects");
+    assert!(matches!(
+        stale,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+    ));
+    assert_eq!(
+        starter.starts(),
+        1,
+        "a stale repair generation cannot start a second reviewer"
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&ChatConversationId::from_string("repair-review-boundary"))
+            .await
+            .expect("review events should remain stable")
+            .into_iter()
+            .filter(|event| event.step == "workspace_review" && event.status == "reviewing")
+            .count(),
+        1,
+        "duplicate and stale completions must not append a second reviewer event"
+    );
+}
+
+#[tokio::test]
+async fn inactive_repair_lease_ready_manual_publish_reacquires_before_continuation() {
+    let temp = tempfile::tempdir().expect("ready boundary tempdir should be created");
+    let state = AppState::new_test();
+    let attempt = workspace_review_boundary_context(&state, temp.path(), false).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await
+        .expect("ready boundary workspace should load")
+        .expect("ready boundary workspace should exist");
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("ready boundary should persist disabled Auto Publish");
+    let (attempt, target_identity, released_epoch) =
+        checkpoint_workspace_review_boundary_lease(&state, attempt).await;
+
+    let ready = continue_agent_workspace_repair_at_boundary(
+        &state,
+        attempt,
+        AgentWorkspaceRepairPhase::Requested,
+        "repair is ready for user-selected publication",
+        false,
+    )
+    .await
+    .expect("disabled Auto Publish should park the exact repair generation at Ready");
+    let AgentWorkspaceRepairTransitionOutcome::Applied(ready) = ready else {
+        panic!("ready boundary should retain the current durable repair generation");
+    };
+    assert_eq!(
+        ready.phase,
+        AgentWorkspaceRepairPhase::Ready,
+        "disabled Auto Publish should park Ready: {ready:?}"
+    );
+    assert_repair_target_authority_is_cleared(&ready);
+    assert!(
+        state
+            .branch_update_repo
+            .get_target_lease(&target_identity)
+            .await
+            .expect("ready boundary lease should load")
+            .expect("ready boundary lease should exist")
+            .is_released(),
+        "parking at Ready must release its exact canonical target lease"
+    );
+
+    let resumed = resume_current_agent_workspace_repair_publish(
+        &state,
+        &ready.conversation_id,
+        "user selected Commit & Publish",
+        true,
+    )
+    .await
+    .expect("manual publication should reacquire its canonical target authority");
+    let AgentWorkspaceRepairPublishResumeOutcome::Continue(resumed) = resumed else {
+        panic!("manual publication should continue the same durable repair generation");
+    };
+    assert_eq!(
+        resumed.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending
+    );
+    assert_eq!(
+        resumed.target_ref.as_deref(),
+        Some(target_identity.full_ref())
+    );
+    let resumed_epoch = resumed
+        .target_lease_epoch
+        .expect("manual publication should checkpoint its newly acquired lease epoch");
+    assert!(resumed_epoch > released_epoch);
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&target_identity)
+        .await
+        .expect("resumed lease should load")
+        .expect("resumed lease should exist");
+    assert!(!lease.is_released());
+    assert_eq!(
+        lease.owner(),
+        &GitTargetLeaseOwner::agent_workspace_repair(resumed.id.as_str())
+    );
+    assert_eq!(lease.fencing_epoch(), resumed_epoch);
+
+    let duplicate = resume_current_agent_workspace_repair_publish(
+        &state,
+        &resumed.conversation_id,
+        "duplicate manual Commit & Publish",
+        true,
+    )
+    .await
+    .expect("duplicate manual publish must not take a second target lease or effect");
+    assert_eq!(duplicate, AgentWorkspaceRepairPublishResumeOutcome::Busy);
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&resumed.id)
+            .await
+            .expect("manual publish effects should load")
+            .is_none(),
+        "a duplicated manual resume must not create a Git/GitHub effect before the publisher owns it"
+    );
+}
+
+#[tokio::test]
+async fn inactive_repair_lease_ready_resume_rejects_open_effect_without_reacquiring() {
+    let temp = tempfile::tempdir().expect("open effect boundary tempdir should be created");
+    let state = AppState::new_test();
+    let attempt = workspace_review_boundary_context(&state, temp.path(), false).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await
+        .expect("open effect workspace should load")
+        .expect("open effect workspace should exist");
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("open effect boundary should persist disabled Auto Publish");
+    let (attempt, target_identity, released_epoch) =
+        checkpoint_workspace_review_boundary_lease(&state, attempt).await;
+    let ready = continue_agent_workspace_repair_at_boundary(
+        &state,
+        attempt,
+        AgentWorkspaceRepairPhase::Requested,
+        "repair is ready while a previous external effect remains unresolved",
+        false,
+    )
+    .await
+    .expect("ready boundary should settle before the open effect is observed");
+    let AgentWorkspaceRepairTransitionOutcome::Applied(ready) = ready else {
+        panic!("open-effect fixture should retain the current durable generation");
+    };
+    assert_eq!(ready.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_repair_target_authority_is_cleared(&ready);
+
+    let effect = AgentWorkspaceRepairEffect::new(
+        ready.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "open-effect-blocks-ready-resume",
+        chrono::Utc::now(),
+    );
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: ready.id.clone(),
+                generation: ready.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                effect,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("open repair effect should persist"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+
+    let error = resume_current_agent_workspace_repair_publish(
+        &state,
+        &ready.conversation_id,
+        "manual publish must not overtake an open effect",
+        true,
+    )
+    .await
+    .expect_err("an open effect must block Ready resume before target reacquisition");
+    assert!(error.to_string().contains("effect"));
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&ready.conversation_id)
+        .await
+        .expect("open effect repair should reload")
+        .expect("open effect repair should remain current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_repair_target_authority_is_cleared(&current);
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&current.id)
+            .await
+            .expect("open effect should remain durable")
+            .is_some(),
+        "Ready resume must not replace or settle an external effect it does not own"
+    );
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&target_identity)
+        .await
+        .expect("released target lease should remain readable")
+        .expect("released target lease should remain durable");
+    assert!(lease.is_released());
+    assert_eq!(lease.fencing_epoch(), released_epoch);
+}
+
+#[tokio::test]
+async fn inactive_repair_lease_ready_resume_fails_closed_for_successor_target() {
+    let temp = tempfile::tempdir().expect("busy ready boundary tempdir should be created");
+    let state = AppState::new_test();
+    let attempt = workspace_review_boundary_context(&state, temp.path(), false).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await
+        .expect("busy ready workspace should load")
+        .expect("busy ready workspace should exist");
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("busy ready boundary should persist disabled Auto Publish");
+    let (attempt, target_identity, _) =
+        checkpoint_workspace_review_boundary_lease(&state, attempt).await;
+    let ready = continue_agent_workspace_repair_at_boundary(
+        &state,
+        attempt,
+        AgentWorkspaceRepairPhase::Requested,
+        "repair is ready for user-selected publication",
+        false,
+    )
+    .await
+    .expect("ready boundary should settle before the foreign writer arrives");
+    let AgentWorkspaceRepairTransitionOutcome::Applied(ready) = ready else {
+        panic!("ready boundary should retain the current durable repair generation");
+    };
+    assert_eq!(
+        ready.phase,
+        AgentWorkspaceRepairPhase::Ready,
+        "disabled Auto Publish should park Ready: {ready:?}"
+    );
+    let foreign_owner = GitTargetLeaseOwner::branch_update("successor-task", "successor-update");
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: target_identity.clone(),
+                owner: foreign_owner.clone(),
+            })
+            .await
+            .expect("successor should acquire the released canonical target"),
+        AcquireGitTargetLeaseOutcome::Acquired { .. }
+    ));
+
+    let error = resume_current_agent_workspace_repair_publish(
+        &state,
+        &ready.conversation_id,
+        "manual publish must not overtake a successor",
+        true,
+    )
+    .await
+    .expect_err("a busy canonical target must block the stale Ready resume before effects");
+    assert!(error.to_string().contains("owned") || error.to_string().contains("busy"));
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&ready.conversation_id)
+        .await
+        .expect("ready repair should reload")
+        .expect("ready repair should remain current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_repair_target_authority_is_cleared(&current);
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&current.id)
+            .await
+            .expect("busy resume effects should load")
+            .is_none(),
+        "a busy target must prevent push, PR, review, and effect creation"
+    );
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&target_identity)
+        .await
+        .expect("successor lease should load")
+        .expect("successor lease should remain");
+    assert_eq!(lease.owner(), &foreign_owner);
+    assert!(!lease.is_released());
+}
+
+#[tokio::test]
+async fn verified_base_advance_updates_one_active_generation_without_replacing_run_owner() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-attempt-base-advance");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let started = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::BaseUpdate,
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            "base update",
+        ),
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+    let run_id = AgentRunId::from_string("repair-owner-run");
+    let bound = crate::domain::repositories::BindAgentWorkspaceRepairAttemptRun {
+        attempt_id: started.id.clone(),
+        generation: started.generation,
+        expected_phase: AgentWorkspaceRepairPhase::Requested,
+        expected_updated_at: started.updated_at,
+        run_id: run_id.clone(),
+        updated_at: chrono::Utc::now(),
+    };
+    repair_repo.bind_repair_attempt_run(bound).await.unwrap();
+
+    let mut newer = repair_start_request(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "newer base",
+    );
+    newer.target_base_commit = Some("base-b".to_string());
+    newer.verified_newer_base = true;
+    let joined = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        newer,
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+
+    assert_eq!(joined.id, started.id);
+    assert_eq!(joined.generation, started.generation);
+    assert_eq!(joined.target_base_commit.as_deref(), Some("base-b"));
+    assert_eq!(joined.reserved_agent_run_id, Some(run_id));
+}
+
+#[tokio::test]
+async fn blocked_retry_coalesces_to_one_successor_generation_and_projects_requested_state() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-state-common"),
+        "refs/heads/ralphx/repair-state",
+    )
+    .expect("valid canonical repair target identity");
+    let conversation_id = ChatConversationId::from_string("repair-attempt-blocked-retry");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let started = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "publish failure",
+        ),
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        target_identity.clone(),
+        started,
+        AgentRunId::from_string("repair-attempt-blocked-retry-run"),
+        "dispatching repair",
+        None,
+    )
+    .await
+    .unwrap();
+    let AgentWorkspaceRepairDispatchOutcome::Reserved(dispatch) = dispatch else {
+        panic!("first repair generation should reserve a run");
+    };
+    settle_agent_workspace_repair_dispatch_outcome(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        dispatch,
+        AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure,
+        "repair dispatch failed",
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        branch_update_repo
+            .get_target_lease(&target_identity)
+            .await
+            .expect("read dispatched repair lease")
+            .expect("dispatch should acquire a lease")
+            .is_released(),
+        "a failed dispatch must release the exact durable repair lease"
+    );
+
+    let mut retry = repair_start_request(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "retry publish repair",
+    );
+    retry.retry_blocked = true;
+    let left = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        retry.clone(),
+    );
+    let right = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        retry,
+    );
+    let (left, right) = tokio::join!(left, right);
+    let outcomes = [left.unwrap(), right.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(
+                outcome,
+                AgentWorkspaceRepairStartOutcome::SuccessorStarted(_)
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, AgentWorkspaceRepairStartOutcome::Joined(_)))
+            .count(),
+        1
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .unwrap()
+        .expect("retry should leave one successor current");
+    assert_eq!(current.generation, 2);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Requested);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("retry should retain its workspace projection");
+    assert_eq!(
+        workspace.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(workspace.pr_supervision_status.as_deref(), Some("fixing"));
+}
+
+#[tokio::test]
+async fn retryable_dispatch_failure_persists_one_due_retry_and_blocks_not_due_replay() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let conversation_id = ChatConversationId::from_string("repair-dispatch-due-retry");
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-dispatch-due-retry"),
+        "refs/heads/ralphx/repair-state",
+    )
+    .expect("valid canonical repair target identity");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist repair workspace");
+    let started = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "delivery failed",
+        ),
+    )
+    .await
+    .expect("start repair attempt")
+    .into_attempt();
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        target_identity.clone(),
+        started,
+        AgentRunId::from_string("repair-dispatch-due-retry-first"),
+        "dispatch repair",
+        None,
+    )
+    .await
+    .expect("reserve first repair delivery");
+    let AgentWorkspaceRepairDispatchOutcome::Reserved(dispatch) = dispatch else {
+        panic!("first repair delivery must reserve its run");
+    };
+    let before_schedule = chrono::Utc::now();
+    let scheduled = settle_agent_workspace_repair_dispatch_outcome(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        dispatch,
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+        "repair delivery transport failed",
+        None,
+    )
+    .await
+    .expect("schedule retryable repair delivery");
+    let AgentWorkspaceRepairTransitionOutcome::Applied(scheduled) = scheduled else {
+        panic!("exact first delivery failure must schedule one retry");
+    };
+    assert_eq!(scheduled.phase, AgentWorkspaceRepairPhase::Requested);
+    assert_eq!(scheduled.dispatch_count, 1);
+    assert!(scheduled.reserved_agent_run_id.is_none());
+    assert!(scheduled.next_dispatch_at.expect("retry due time") > before_schedule);
+    assert!(
+        !branch_update_repo
+            .get_target_lease(&target_identity)
+            .await
+            .expect("load durable retry lease")
+            .expect("retry keeps exact target lease")
+            .is_released(),
+        "a due retry must retain its original canonical repair authority"
+    );
+    let before_events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load retry events");
+    let replay = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        target_identity,
+        scheduled.clone(),
+        AgentRunId::from_string("repair-dispatch-due-retry-replay"),
+        "must not dispatch before due",
+        None,
+    )
+    .await
+    .expect("not-due replay is a harmless stale outcome");
+    assert!(matches!(
+        replay,
+        AgentWorkspaceRepairDispatchOutcome::Stale(ref attempt)
+            if attempt.id == scheduled.id && attempt.updated_at == scheduled.updated_at
+    ));
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("reload retry events"),
+        before_events,
+        "not-due replay must not append another repair delivery event"
+    );
+}
+
+#[tokio::test]
+async fn exhausted_or_nonretryable_dispatch_failure_blocks_once_and_releases_lease() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let conversation_id = ChatConversationId::from_string("repair-dispatch-exhaustion");
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-dispatch-exhaustion"),
+        "refs/heads/ralphx/repair-state",
+    )
+    .expect("valid canonical repair target identity");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist repair workspace");
+    let mut current = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "delivery exhaustion",
+        ),
+    )
+    .await
+    .expect("start repair attempt")
+    .into_attempt();
+
+    for retry in 0..=MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES {
+        if current.next_dispatch_at.is_some() {
+            let expected_updated_at = current.updated_at;
+            current.next_dispatch_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+            current.updated_at += chrono::Duration::microseconds(1);
+            let due = repair_repo
+                .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                    attempt: current,
+                    expected_phase: AgentWorkspaceRepairPhase::Requested,
+                    expected_updated_at,
+                    next_phase: AgentWorkspaceRepairPhase::Requested,
+                    compatibility_projection: None,
+                    events: Vec::new(),
+                })
+                .await
+                .expect("make the durable retry due");
+            let AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) = due else {
+                panic!("due checkpoint must preserve current retry authority");
+            };
+            current = attempt;
+        }
+        let dispatch = reserve_agent_workspace_repair_dispatch(
+            Arc::clone(&repair_repo),
+            Arc::clone(&branch_update_repo),
+            target_identity.clone(),
+            current,
+            AgentRunId::from_string(format!("repair-dispatch-exhaustion-{retry}")),
+            "dispatch repair",
+            None,
+        )
+        .await
+        .expect("reserve due retry delivery");
+        let AgentWorkspaceRepairDispatchOutcome::Reserved(dispatch) = dispatch else {
+            panic!("due retry must reserve exactly one run");
+        };
+        let settled = settle_agent_workspace_repair_dispatch_outcome(
+            Arc::clone(&repair_repo),
+            Arc::clone(&branch_update_repo),
+            dispatch,
+            AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+            "delivery remained unavailable",
+            None,
+        )
+        .await
+        .expect("settle retry attempt");
+        let AgentWorkspaceRepairTransitionOutcome::Applied(next) = settled else {
+            panic!("exact retry settlement must apply");
+        };
+        current = next;
+    }
+
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(
+        current.dispatch_count, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+        "exhaustion must not increment beyond the bounded budget"
+    );
+    assert!(current.next_dispatch_at.is_none());
+    let events_before_replay = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load exhausted events");
+    let duplicate = settle_agent_workspace_repair_dispatch_outcome(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        current.clone(),
+        AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+        "duplicate exhausted retry",
+        None,
+    )
+    .await;
+    assert!(
+        duplicate.is_err(),
+        "released target lease rejects stale replay"
+    );
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("reload exhausted events"),
+        events_before_replay,
+        "exhaustion must record its blocker once"
+    );
+    assert!(
+        branch_update_repo
+            .get_target_lease(&target_identity)
+            .await
+            .expect("load exhausted lease")
+            .expect("lease exists")
+            .is_released(),
+        "terminal dispatch exhaustion releases only the exact repair lease"
+    );
+}
+
+#[tokio::test]
+async fn foreign_canonical_target_owner_rejects_repair_dispatch_before_run_binding_or_events() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let conversation_id = ChatConversationId::from_string("repair-dispatch-foreign-owner");
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-dispatch-foreign-owner"),
+        "refs/heads/ralphx/repair-state",
+    )
+    .expect("valid canonical repair target identity");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let started = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "publish failure",
+        ),
+    )
+    .await
+    .expect("repair attempt should start")
+    .into_attempt();
+    let foreign_owner = GitTargetLeaseOwner::branch_update("foreign-task", "foreign-update");
+    assert!(matches!(
+        branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: target_identity.clone(),
+                owner: foreign_owner.clone(),
+            })
+            .await
+            .expect("foreign lease acquisition"),
+        AcquireGitTargetLeaseOutcome::Acquired { .. }
+    ));
+
+    let error = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        target_identity.clone(),
+        started.clone(),
+        AgentRunId::from_string("repair-dispatch-foreign-owner-run"),
+        "dispatching repair",
+        None,
+    )
+    .await
+    .expect_err("a foreign canonical target owner must reject repair dispatch");
+    assert!(error.to_string().contains("owned"));
+
+    let current = repair_repo
+        .get_repair_attempt(&started.id)
+        .await
+        .expect("repair attempt should load")
+        .expect("started repair attempt should remain");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Requested);
+    assert!(current.reserved_agent_run_id.is_none());
+    assert!(current.target_lease_epoch.is_none());
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("publication events should load")
+            .is_empty(),
+        "foreign authority must stop repair dispatch before any repair-send event"
+    );
+    let lease = branch_update_repo
+        .get_target_lease(&target_identity)
+        .await
+        .expect("foreign lease should load")
+        .expect("foreign lease should remain");
+    assert_eq!(lease.owner(), &foreign_owner);
+    assert!(!lease.is_released());
+}
+
+#[tokio::test]
+async fn exact_run_authority_distinguishes_current_stale_completed_and_blocked_attempts() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-attempt-authority");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "autofix",
+        ),
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+    let owner_run = AgentRunId::new();
+    repair_repo
+        .bind_repair_attempt_run(
+            crate::domain::repositories::BindAgentWorkspaceRepairAttemptRun {
+                attempt_id: attempt.id.clone(),
+                generation: attempt.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at: attempt.updated_at,
+                run_id: owner_run.clone(),
+                updated_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        classify_agent_workspace_repair_completion_authority(
+            Arc::clone(&repair_repo),
+            &conversation_id,
+            &owner_run,
+        )
+        .await
+        .unwrap(),
+        AgentWorkspaceRepairCompletionAuthority::Current(_)
+    ));
+    assert_eq!(
+        classify_agent_workspace_repair_completion_authority(
+            repair_repo,
+            &conversation_id,
+            &AgentRunId::new(),
+        )
+        .await
+        .unwrap(),
+        AgentWorkspaceRepairCompletionAuthority::Superseded
+    );
 }
 
 #[test]

@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
+    recover_agent_workspace_repair_after_terminal_run,
     recover_stale_agent_workspace_publish_repairs,
     recover_stale_agent_workspace_publish_repairs_for_state,
     recover_stale_agent_workspace_publish_repairs_on_startup,
@@ -15,20 +20,32 @@ use crate::application::agent_workspace_publish_recovery::{
     STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
 };
+use crate::application::agent_workspace_publish_repair_state::{
+    reserve_agent_workspace_repair_dispatch, AgentWorkspaceRepairDispatchOutcome,
+};
 use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
 };
 use crate::application::AppState;
+use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunActionKind,
+    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunActionKind, AgentRunId,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect,
+    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId,
-    IdeationAnalysisBaseRefKind, ProjectId,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
+    ChatConversationId, GitTargetIdentity, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository,
+    AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+};
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentProviderSettingsRepository,
+    MemoryAgentRunRepository,
 };
 
 fn conversation_id(suffix: u8) -> ChatConversationId {
@@ -37,6 +54,31 @@ fn conversation_id(suffix: u8) -> ChatConversationId {
 
 fn project_id() -> ProjectId {
     ProjectId::from_string("project-publish-recovery".to_string())
+}
+
+#[cfg(unix)]
+struct TestEnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+#[cfg(unix)]
+impl TestEnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TestEnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
 }
 
 fn needs_agent_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -150,6 +192,531 @@ async fn startup_recovery_wrappers_finish_on_empty_repositories() {
 }
 
 #[tokio::test]
+async fn startup_recovery_schedules_one_due_retry_for_an_interrupted_repair_delivery() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(93);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed durable repair workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "interrupted delivery".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair attempt must start");
+    };
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-recovery-dispatch"),
+        "refs/heads/ralphx/test/publish-recovery",
+    )
+    .expect("valid canonical target identity");
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        target_identity,
+        started,
+        AgentRunId::from_string("interrupted-repair-delivery-run"),
+        "dispatch durable repair",
+        None,
+    )
+    .await
+    .expect("reserve interrupted repair delivery");
+    assert!(matches!(
+        dispatch,
+        AgentWorkspaceRepairDispatchOutcome::Reserved(_)
+    ));
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(&state)
+            .await
+            .expect("startup recovery schedules due repair retry"),
+        1
+    );
+    let scheduled = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load scheduled repair retry")
+        .expect("repair remains current");
+    assert_eq!(scheduled.phase, AgentWorkspaceRepairPhase::Requested);
+    assert_eq!(scheduled.dispatch_count, 1);
+    assert!(scheduled.next_dispatch_at.is_some());
+    assert!(scheduled.reserved_agent_run_id.is_none());
+    let retry_events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load recovery retry events");
+    assert_eq!(
+        retry_events
+            .iter()
+            .filter(|event| event.step == "repair_sent" && event.status == "retrying")
+            .count(),
+        1
+    );
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(&state)
+            .await
+            .expect("not-due startup replay is harmless"),
+        0
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("reload retry events"),
+        retry_events,
+        "not-due restart recovery must not dispatch or emit a duplicate repair message"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn due_startup_recovery_redelivers_once_and_binds_the_replacement_run() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let mut state = AppState::new_test();
+    let worktree_parent = tempfile::tempdir().expect("create repair worktree parent");
+    let project_dir = tempfile::tempdir().expect("create repair project directory");
+    let cli_path = project_dir.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"repair started"}]},"session_id":"durable-retry-session"}'
+printf '%s\n' '{"type":"result","session_id":"durable-retry-session","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .expect("write fake repair CLI");
+    std::fs::set_permissions(&cli_path, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake repair CLI executable");
+    state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    provider.enabled = true;
+    provider.is_default = true;
+    provider.custom_binary_enabled = true;
+    provider.custom_binary_path = Some(cli_path.display().to_string());
+    state
+        .agent_provider_settings_repo
+        .upsert(&provider)
+        .await
+        .expect("enable fake Claude provider");
+    let conversation_id = conversation_id(95);
+    let mut project = Project::new(
+        "repair recovery project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    project.id = project_id();
+    project.worktree_parent_directory = Some(worktree_parent.path().display().to_string());
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("derive exact workspace path");
+    std::fs::create_dir_all(workspace_path.join(".git")).expect("seed test workspace marker");
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed retry project");
+    let mut conversation = ChatConversation::new_project(project_id());
+    conversation.id = conversation_id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed retry conversation");
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.worktree_path = workspace_path.display().to_string();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed durable retry workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "retry delivery".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair attempt must start");
+    };
+    let target_identity =
+        GitTargetIdentity::new(workspace_path, "refs/heads/ralphx/test/publish-recovery")
+            .expect("valid canonical target identity");
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        target_identity,
+        started,
+        AgentRunId::from_string("due-retry-initial-run"),
+        "reserve retry delivery",
+        None,
+    )
+    .await
+    .expect("reserve retry delivery");
+    let AgentWorkspaceRepairDispatchOutcome::Reserved(dispatch) = dispatch else {
+        panic!("first delivery must reserve its run");
+    };
+    let scheduled = crate::application::agent_workspace_publish_repair_state::settle_agent_workspace_repair_dispatch_outcome(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        dispatch,
+        crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+        "retryable delivery failure",
+        None,
+    )
+    .await
+    .expect("schedule durable retry");
+    let crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairTransitionOutcome::Applied(mut scheduled) = scheduled else {
+        panic!("first delivery failure must schedule a retry");
+    };
+    let expected_updated_at = scheduled.updated_at;
+    scheduled.next_dispatch_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+    scheduled.updated_at += chrono::Duration::microseconds(1);
+    let due = state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: scheduled,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Requested,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("make durable retry due");
+    assert!(matches!(
+        due,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(&state)
+            .await
+            .expect("due recovery redelivers repair"),
+        1
+    );
+    let delivered = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load repaired attempt")
+        .expect("repair remains current");
+    assert_eq!(
+        delivered.phase,
+        AgentWorkspaceRepairPhase::Repairing,
+        "due retry should bind a replacement run instead of rescheduling: {delivered:?}"
+    );
+    assert_eq!(delivered.dispatch_count, 1);
+    assert!(delivered.next_dispatch_at.is_none());
+    let replacement_run = delivered
+        .reserved_agent_run_id
+        .clone()
+        .expect("successful due delivery binds exactly one replacement run");
+    assert!(
+        state
+            .agent_run_repo
+            .get_by_id(&replacement_run)
+            .await
+            .expect("load replacement run")
+            .is_some(),
+        "due recovery must create the bound replacement run through the chat service"
+    );
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load retry events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "repair_sent" && event.status == "succeeded")
+            .count(),
+        1,
+        "due recovery must settle exactly one delivery event"
+    );
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(&state)
+            .await
+            .expect("duplicate recovery is suppressed"),
+        0
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("reload retry events"),
+        events,
+        "duplicate recovery must not send another repair message or append another event"
+    );
+}
+
+#[tokio::test]
+async fn due_recovery_with_an_open_repair_effect_does_not_dispatch_or_append_events() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(96);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed durable retry workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "effect-owned retry".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start durable repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair attempt must start");
+    };
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-recovery-effect"),
+        "refs/heads/ralphx/test/publish-recovery",
+    )
+    .expect("valid canonical target identity");
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        target_identity,
+        started,
+        AgentRunId::from_string("effect-owned-retry-initial-run"),
+        "reserve retry delivery",
+        None,
+    )
+    .await
+    .expect("reserve retry delivery");
+    let AgentWorkspaceRepairDispatchOutcome::Reserved(dispatch) = dispatch else {
+        panic!("first delivery must reserve its run");
+    };
+    let scheduled = crate::application::agent_workspace_publish_repair_state::settle_agent_workspace_repair_dispatch_outcome(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        dispatch,
+        crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+        "retryable delivery failure",
+        None,
+    )
+    .await
+    .expect("schedule durable retry");
+    let crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairTransitionOutcome::Applied(mut scheduled) = scheduled else {
+        panic!("first delivery failure must schedule a retry");
+    };
+    let expected_updated_at = scheduled.updated_at;
+    scheduled.next_dispatch_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+    scheduled.updated_at += chrono::Duration::microseconds(1);
+    let due = state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: scheduled,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Requested,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("make retry due");
+    let AgentWorkspaceRepairAttemptTransitionOutcome::Applied(due) = due else {
+        panic!("due checkpoint must preserve retry authority");
+    };
+    let effect = AgentWorkspaceRepairEffect::new(
+        due.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "effect-owned-retry",
+        chrono::Utc::now(),
+    );
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: due.id.clone(),
+                generation: due.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                effect,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("record active repair effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+    let events_before = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load events before suppressed retry");
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(&state)
+            .await
+            .expect("effect-owned retry recovery is harmless"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load suppressed retry")
+        .expect("repair remains current");
+    assert_eq!(current.id, due.id);
+    assert_eq!(current.updated_at, due.updated_at);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Requested);
+    assert!(current.reserved_agent_run_id.is_none());
+    assert!(
+        state
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation_id)
+            .await
+            .expect("load replacement run")
+            .is_none(),
+        "effect ownership must suppress replacement agent-run creation"
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("reload events after suppressed retry"),
+        events_before,
+        "effect ownership must not append retry delivery events"
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_keeps_a_live_reserved_repair_run_authoritative() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(94);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed durable repair workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "live delivery".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair attempt must start");
+    };
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed live reserved repair run");
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        GitTargetIdentity::new(
+            PathBuf::from("/tmp/ralphx-repair-recovery-live-run"),
+            "refs/heads/ralphx/test/publish-recovery",
+        )
+        .expect("valid canonical target identity"),
+        started,
+        run.id,
+        "dispatch durable repair",
+        None,
+    )
+    .await
+    .expect("reserve live repair delivery");
+    assert!(matches!(
+        dispatch,
+        AgentWorkspaceRepairDispatchOutcome::Reserved(_)
+    ));
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(&state)
+            .await
+            .expect("live repair recovery is a no-op"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load live repair")
+        .expect("repair remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Dispatching);
+    assert_eq!(current.dispatch_count, 0);
+    assert_eq!(current.reserved_agent_run_id, Some(run.id));
+}
+
+#[tokio::test]
 async fn failed_exact_pr_autofix_is_classified_as_retry_eligible() {
     let state = AppState::new_test();
     let conversation_id = conversation_id(31);
@@ -206,8 +773,8 @@ async fn state_recovery_recovers_terminal_needs_agent_workspace_and_reloads_it()
         .await
         .expect("list events");
     assert!(events.iter().any(|event| {
-        event.step == "stale_repair_recovered"
-            && event.classification.as_deref() == Some("stale_needs_agent")
+        event.step == "legacy_repair_import_blocked"
+            && event.classification.as_deref() == Some("legacy_repair_import_ambiguous")
     }));
 }
 
@@ -569,6 +1136,7 @@ mod extracted_inline_tests {
         workspace.publication_pr_number = Some(42);
         workspace.publication_pr_status = Some("failed".to_string());
         workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.pr_supervision_status = Some("fixing".to_string());
         workspace
     }
 
@@ -1039,5 +1607,291 @@ mod extracted_inline_tests {
         .expect("recover transient statuses");
 
         assert_eq!(recovered, 4);
+    }
+
+    #[tokio::test]
+    async fn imports_only_exact_legacy_repair_provenance_then_blocks_its_terminal_run() {
+        let state = AppState::new_test();
+        let conversation_id = conversation_id(91);
+        let workspace = needs_agent_workspace(conversation_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+        let run = state
+            .agent_run_repo
+            .create(AgentRun::new(conversation_id.clone()))
+            .await
+            .expect("seed exact legacy run");
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "repair_requested",
+                "started",
+                "legacy publish repair requested",
+                Some("agent_fixable:publish".to_string()),
+            ))
+            .await
+            .expect("seed continuation provenance");
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "repair_sent",
+                "succeeded",
+                "legacy repair dispatched",
+                Some(format!("agent_fixable:run:{}", run.id)),
+            ))
+            .await
+            .expect("seed run provenance");
+
+        assert_eq!(
+            recover_stale_agent_workspace_publish_repairs_for_state(&state)
+                .await
+                .expect("import exact legacy repair"),
+            0
+        );
+        let imported = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load durable attempt")
+            .expect("exact provenance should import");
+        assert_eq!(imported.source, AgentWorkspaceRepairSource::Legacy);
+        assert_eq!(
+            imported.continuation,
+            AgentWorkspaceRepairContinuation::Publish
+        );
+        assert_eq!(imported.phase, AgentWorkspaceRepairPhase::Repairing);
+        assert_eq!(imported.reserved_agent_run_id, Some(run.id));
+        let imported_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("reload imported compatibility projection")
+            .expect("workspace remains present");
+        let imported_events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("load import audit events");
+
+        // Startup/recovery may re-enter after a crash. The exact legacy import is one-time:
+        // it joins the same durable generation and replays neither projection nor audit events.
+        assert_eq!(
+            recover_stale_agent_workspace_publish_repairs_for_state(&state)
+                .await
+                .expect("repeat exact legacy import"),
+            0
+        );
+        assert_eq!(
+            state
+                .agent_workspace_repair_repo
+                .get_current_repair_attempt(&conversation_id)
+                .await
+                .expect("reload durable attempt")
+                .expect("attempt remains current")
+                .id,
+            imported.id
+        );
+        assert_eq!(
+            state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&conversation_id)
+                .await
+                .expect("reload compatibility projection")
+                .expect("workspace remains present"),
+            imported_workspace
+        );
+        assert_eq!(
+            state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&conversation_id)
+                .await
+                .expect("reload import audit events"),
+            imported_events
+        );
+
+        state
+            .agent_run_repo
+            .fail(&run.id, "repair process stopped")
+            .await
+            .expect("terminalize run");
+        assert!(recover_agent_workspace_repair_after_terminal_run(
+            &state,
+            &conversation_id,
+            &run.id
+        )
+        .await
+        .expect("recover exact terminal run"));
+        let blocked = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load blocked attempt")
+            .expect("attempt remains visible for retry");
+        assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+        assert!(blocked.blocker.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_ignores_exact_legacy_provenance_when_a_durable_attempt_exists() {
+        let state = AppState::new_test();
+        let conversation_id = conversation_id(92);
+        let workspace = needs_agent_workspace(conversation_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed legacy projection");
+        let run = state
+            .agent_run_repo
+            .create(AgentRun::new(conversation_id.clone()))
+            .await
+            .expect("seed active durable run");
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "repair_requested",
+                "started",
+                "legacy publish repair requested",
+                Some("agent_fixable:publish".to_string()),
+            ))
+            .await
+            .expect("seed exact legacy continuation provenance");
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "repair_sent",
+                "succeeded",
+                "legacy repair dispatched",
+                Some(format!("agent_fixable:run:{}", run.id)),
+            ))
+            .await
+            .expect("seed exact legacy run provenance");
+
+        let mut durable_attempt = AgentWorkspaceRepairAttempt::new(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::BaseUpdate,
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            "main",
+            false,
+            false,
+            false,
+            None,
+            chrono::Utc::now(),
+        );
+        durable_attempt.phase = AgentWorkspaceRepairPhase::Repairing;
+        durable_attempt.reserved_agent_run_id = Some(run.id.clone());
+        let durable_attempt = match state
+            .agent_workspace_repair_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: durable_attempt,
+                reason: "durable repair already owns this conversation".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("start durable repair")
+        {
+            StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+            outcome => panic!("expected a new durable repair, got {outcome:?}"),
+        };
+        let before_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load compatibility projection")
+            .expect("workspace remains present");
+        let before_events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("load legacy events");
+
+        assert_eq!(
+            recover_stale_agent_workspace_publish_repairs_for_state(&state)
+                .await
+                .expect("recover with durable authority"),
+            0
+        );
+
+        assert_eq!(
+            state
+                .agent_workspace_repair_repo
+                .get_current_repair_attempt(&conversation_id)
+                .await
+                .expect("reload durable repair")
+                .expect("durable repair remains current")
+                .id,
+            durable_attempt.id
+        );
+        assert_eq!(
+            state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&conversation_id)
+                .await
+                .expect("reload compatibility projection")
+                .expect("workspace remains present"),
+            before_workspace
+        );
+        assert_eq!(
+            state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&conversation_id)
+                .await
+                .expect("reload legacy events"),
+            before_events
+        );
+        assert!(state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&durable_attempt.id)
+            .await
+            .expect("load durable effects")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn ambiguous_legacy_repair_fails_closed_without_guessing_run_or_continuation() {
+        let state = AppState::new_test();
+        let conversation_id = conversation_id(92);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(needs_agent_workspace(conversation_id.clone()))
+            .await
+            .expect("seed ambiguous legacy workspace");
+
+        assert_eq!(
+            recover_stale_agent_workspace_publish_repairs_for_state(&state)
+                .await
+                .expect("block ambiguous legacy repair"),
+            1
+        );
+        let attempt = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load blocked legacy attempt")
+            .expect("ambiguous legacy state must remain observable");
+        assert_eq!(attempt.source, AgentWorkspaceRepairSource::Legacy);
+        assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Blocked);
+        assert_eq!(
+            attempt.continuation,
+            AgentWorkspaceRepairContinuation::Manual
+        );
+        assert!(attempt.reserved_agent_run_id.is_none());
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load compatibility projection")
+            .expect("workspace exists");
+        assert_eq!(workspace.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(workspace.pr_supervision_status.as_deref(), Some("blocked"));
     }
 }

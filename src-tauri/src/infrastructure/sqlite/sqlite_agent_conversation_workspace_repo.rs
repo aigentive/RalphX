@@ -31,6 +31,12 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::sqlite::DbConnection;
 
+mod repair_attempts;
+
+#[cfg(test)]
+#[path = "sqlite_agent_conversation_workspace_repo/repair_attempts_tests.rs"]
+mod repair_attempts_tests;
+
 fn parse_datetime(value: &str) -> DateTime<Utc> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
         return dt.with_timezone(&Utc);
@@ -1515,7 +1521,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      WHERE conversation_id = ?1
                        AND publication_push_status IS ?8
                        AND pr_supervision_status IS ?9
-                       AND pr_supervision_updated_at IS ?10",
+                       AND pr_supervision_updated_at IS ?10
+                       AND NOT EXISTS (
+                           SELECT 1 FROM agent_workspace_repair_attempts
+                           WHERE conversation_id = ?1
+                       )",
                     rusqlite::params![
                         conversation_id,
                         push_status,
@@ -1592,7 +1602,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      WHERE conversation_id = ?1
                        AND publication_push_status IS ?8
                        AND pr_supervision_status IS ?9
-                       AND pr_supervision_updated_at IS ?10",
+                       AND pr_supervision_updated_at IS ?10
+                       AND NOT EXISTS (
+                           SELECT 1 FROM agent_workspace_repair_attempts
+                           WHERE conversation_id = ?1
+                       )",
                     rusqlite::params![
                         conversation_id,
                         push_status,

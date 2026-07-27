@@ -12,6 +12,10 @@ import {
   getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceDescriptionFailurePresentation,
+  getAgentWorkspaceMaintenancePresentation,
+  isAgentWorkspaceMaintenanceActive,
+  blocksAgentWorkspaceGitInspection,
+  canResumeAgentWorkspacePublish,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
@@ -51,6 +55,32 @@ describe("getAgentWorkspaceReviewActionBlocker", () => {
     });
   });
 
+  it("blocks Review actions for an active maintenance operation before refreshed legacy fields", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          maintenanceOperation: {
+            operationId: "maintenance-1",
+            generation: 2,
+            source: "base_update",
+            stage: "repairing",
+            status: "active",
+            summary: "Resolving the base conflict",
+            blocker: null,
+            automaticContinuation: true,
+            startedAt: "2026-07-25T10:00:00Z",
+            updatedAt: "2026-07-25T10:01:00Z",
+          },
+          publicationPushStatus: "refreshed",
+          prSupervisionStatus: "monitoring",
+        }),
+      ),
+    ).toEqual({
+      kind: "repair",
+      message: "Finish or abort the current repair, then retry Review.",
+    });
+  });
+
   it("blocks Review actions for a recovered unresolved conflict", () => {
     expect(
       getAgentWorkspaceReviewActionBlocker(
@@ -75,6 +105,89 @@ describe("getAgentWorkspaceReviewActionBlocker", () => {
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("maintenance operation presentation", () => {
+  const maintenanceOperation = {
+    operationId: "maintenance-1",
+    generation: 2,
+    source: "base_update" as const,
+    stage: "repairing" as const,
+    status: "active" as const,
+    summary: "Resolving the base conflict",
+    blocker: null,
+    automaticContinuation: true,
+    startedAt: "2026-07-25T10:00:00Z",
+    updatedAt: "2026-07-25T10:01:00Z",
+  };
+
+  it("prefers the active durable operation over legacy publish state", () => {
+    const current = workspace({
+      maintenanceOperation,
+      publicationPushStatus: "refreshed",
+    });
+
+    expect(isAgentWorkspaceMaintenanceActive(current)).toBe(true);
+    expect(blocksAgentWorkspaceGitInspection(current)).toBe(true);
+    expect(getAgentWorkspaceMaintenancePresentation(current)).toMatchObject({
+      title: "Repairing workspace",
+      action: "none",
+      automaticContinuation: "Will continue automatically.",
+      busy: true,
+    });
+  });
+
+  it("keeps Reviewing inspectable while automation remains active", () => {
+    const current = workspace({
+      maintenanceOperation: { ...maintenanceOperation, stage: "reviewing" },
+    });
+
+    expect(isAgentWorkspaceMaintenanceActive(current)).toBe(true);
+    expect(blocksAgentWorkspaceGitInspection(current)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(current)?.title).toBe(
+      "Workspace Review in progress",
+    );
+  });
+
+  it("provides one explicit ready or blocked recovery action", () => {
+    const ready = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "ready",
+        status: "ready",
+        automaticContinuation: false,
+      },
+    });
+    const blocked = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "blocked",
+        status: "blocked",
+        blocker: "Resolve the protected branch policy.",
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(ready)).toBe(true);
+    expect(getAgentWorkspaceMaintenancePresentation(ready)).toMatchObject({
+      title: "Base updated — ready to publish",
+      action: "publish",
+    });
+    expect(getAgentWorkspaceMaintenancePresentation(blocked)).toMatchObject({
+      title: "Repair blocked",
+      summary: "Resolve the protected branch policy.",
+      action: "retry",
+    });
+  });
+
+  it("does not let stale maintenance data mask a terminal pull request", () => {
+    const current = workspace({
+      maintenanceOperation,
+      publicationPrStatus: "merged",
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)).toBeNull();
+    expect(isAgentWorkspaceMaintenanceActive(current)).toBe(false);
   });
 });
 

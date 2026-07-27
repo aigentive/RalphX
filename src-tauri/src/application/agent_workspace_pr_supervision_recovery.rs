@@ -13,6 +13,8 @@ use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
 };
 use crate::application::agent_workspace_pr_autofix_attempt::load_pr_autofix_attempt_decision;
+use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+#[cfg(any(test, feature = "test-utils"))]
 use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
     StalePublishRepairRecoveryOutcome,
@@ -82,6 +84,10 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub app_handle: Option<AppHandle>,
     pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
+    /// Production recovery reuses AppState so one canonical durable repair reconciler owns
+    /// legacy import, attempt fencing, and continuation settlement before PR supervision.
+    /// `None` exists only for focused legacy compatibility tests.
+    pub durable_recovery_state: Option<Arc<AppState>>,
 }
 
 pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
@@ -103,6 +109,7 @@ pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
         agent_run_repo: Arc::clone(&state.agent_run_repo),
         app_handle,
         pr_fix_review_publish_resumer,
+        durable_recovery_state: Some(Arc::new(state.clone())),
     })
 }
 
@@ -211,49 +218,79 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         ));
     }
 
-    if workspace.mode == AgentConversationWorkspaceMode::Edit
-        && matches!(
-            (
-                workspace.publication_push_status.as_deref(),
-                workspace.pr_supervision_status.as_deref(),
-            ),
-            (Some("needs_agent"), _) | (Some("refreshed"), Some("fixing" | "reviewing"))
-        )
-    {
-        let (recovered_workspace, repair_outcome) =
-            recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
-                Arc::clone(&deps.workspace_repo),
-                Arc::clone(&deps.agent_run_repo),
-                Arc::clone(&deps.project_repo),
-                workspace,
-            )
-            .await?;
-        workspace = recovered_workspace;
-        match repair_outcome {
-            StalePublishRepairRecoveryOutcome::RetryEligible => {}
-            StalePublishRepairRecoveryOutcome::ActiveReplacement => {
-                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-                    "active_pr_autofix_replacement",
-                ));
-            }
-            StalePublishRepairRecoveryOutcome::ActiveRepairReconciled => {
-                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-                    "active_agent_run",
-                ));
-            }
-            StalePublishRepairRecoveryOutcome::HandoffPreserved => {}
-            StalePublishRepairRecoveryOutcome::Manual => {
-                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-                    "stale_repair_manual",
-                ));
-            }
-            StalePublishRepairRecoveryOutcome::TerminalRecovered => {
-                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-                    "stale_repair_recovered",
-                ));
-            }
-            StalePublishRepairRecoveryOutcome::Noop => {}
+    #[cfg(not(any(test, feature = "test-utils")))]
+    if deps.durable_recovery_state.is_none() {
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            "Agent workspace PR supervision recovery: refusing legacy repair authority without durable state"
+        );
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "durable_repair_authority_unavailable",
+        ));
+    }
+
+    if let Some(state) = deps.durable_recovery_state.as_deref() {
+        workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace).await?;
+        if state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await?
+            .is_some()
+        {
+            return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "durable_repair_active",
+            ));
         }
+    } else {
+        #[cfg(any(test, feature = "test-utils"))]
+        if workspace.mode == AgentConversationWorkspaceMode::Edit
+            && matches!(
+                (
+                    workspace.publication_push_status.as_deref(),
+                    workspace.pr_supervision_status.as_deref(),
+                ),
+                (Some("needs_agent"), _) | (Some("refreshed"), Some("fixing" | "reviewing"))
+            )
+        {
+            let (recovered_workspace, repair_outcome) =
+                recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
+                    Arc::clone(&deps.workspace_repo),
+                    Arc::clone(&deps.agent_run_repo),
+                    Arc::clone(&deps.project_repo),
+                    workspace,
+                )
+                .await?;
+            workspace = recovered_workspace;
+            match repair_outcome {
+                StalePublishRepairRecoveryOutcome::RetryEligible => {}
+                StalePublishRepairRecoveryOutcome::ActiveReplacement => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "active_pr_autofix_replacement",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::ActiveRepairReconciled => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "active_agent_run",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::HandoffPreserved => {}
+                StalePublishRepairRecoveryOutcome::Manual => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "stale_repair_manual",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::TerminalRecovered => {
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "stale_repair_recovered",
+                    ));
+                }
+                StalePublishRepairRecoveryOutcome::Noop => {}
+            }
+        }
+        #[cfg(not(any(test, feature = "test-utils")))]
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "durable_repair_authority_unavailable",
+        ));
     }
 
     if workspace.publication_push_status.as_deref() == Some("refreshed")
@@ -763,15 +800,35 @@ fn start_recovered_pr_polling(
     let Some(chat_service) = deps.chat_service.as_ref() else {
         return;
     };
-    registry.start_agent_workspace_polling(
-        conversation_id.clone(),
-        target.pr_number,
-        project.clone(),
-        target.worktree_path.clone(),
-        Arc::clone(&deps.workspace_repo),
-        Arc::clone(&deps.agent_run_repo),
-        Arc::clone(chat_service),
-    );
+    if let Some(state) = deps.durable_recovery_state.as_ref() {
+        registry.start_agent_workspace_polling_with_repair_repo(
+            conversation_id.clone(),
+            target.pr_number,
+            project.clone(),
+            target.worktree_path.clone(),
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
+            Arc::clone(chat_service),
+        );
+    } else {
+        #[cfg(test)]
+        registry.start_agent_workspace_polling(
+            conversation_id.clone(),
+            target.pr_number,
+            project.clone(),
+            target.worktree_path.clone(),
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Arc::clone(chat_service),
+        );
+        #[cfg(not(test))]
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            pr_number = target.pr_number,
+            "Agent workspace PR supervision recovery: refusing legacy poller construction without durable repair authority"
+        );
+    }
 }
 
 pub(crate) async fn recover_recent_agent_workspace_pr_supervision_on_startup(

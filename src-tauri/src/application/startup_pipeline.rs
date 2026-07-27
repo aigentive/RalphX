@@ -282,10 +282,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     // Authority cleanup must precede the Tasks drain: a crash-persisted mutation claim
     // deliberately prevents branch-operation pause until its process and Git state are proven safe.
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
-    match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(
-        Arc::clone(&app_state.branch_update_repo),
-        Arc::clone(&task_repo),
-        Arc::clone(&project_repo),
+    match crate::application::git_mutation_recovery::recover_in_flight_git_mutations_for_state(
+        &app_state,
     )
     .await
     {
@@ -589,6 +587,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         .await;
     }
 
+    // Reconcile durable repair attempts before any startup PR poller can inspect reviews or
+    // construct a monitor. This preserves the attempt repository as the sole repair authority
+    // across a restart instead of allowing the poller to replay legacy workspace state first.
+    let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
+    recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&app_state).await;
+    startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
+
     let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::recover_pr_pollers(
         Arc::clone(&task_repo),
@@ -674,6 +679,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
         Some(app_state.notification_service()),
+        Some(Arc::clone(&app_state.agent_workspace_repair_repo)),
         Arc::clone(&blocked_git_project_ids),
     )
     .await;
@@ -697,6 +703,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
+                agent_workspace_repair_repo: Some(Arc::clone(&app_state.agent_workspace_repair_repo)),
                 plan_branch_repo: Arc::clone(&plan_branch_repo),
                 app_handle: Some(app_handle.clone()),
             };
@@ -866,10 +873,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         "workspace_review_auto_merge_guard_reconciliation",
         phase_started_at,
     );
-
-    let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
-    recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&app_state).await;
-    startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
 
     if startup_background::try_start_recurring_service("workspace_publish_recovery") {
         let periodic_app_state = app_state.clone();

@@ -3074,7 +3074,7 @@ fn workspace_review_fixer_request_metadata(
 fn build_workspace_review_blocking_repair_message(
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
-    target: &AgentWorkspaceReviewTarget,
+    _target: &AgentWorkspaceReviewTarget,
     goal_context: &AgentWorkspaceReviewGoalContext,
     review_artifact_context: Option<&AgentWorkspaceReviewResolvedArtifactContext>,
 ) -> String {
@@ -3103,25 +3103,10 @@ fn build_workspace_review_blocking_repair_message(
     [
         "Workspace Review found blocking issues for this agent workspace.".to_string(),
         String::new(),
-        "Please fix the workspace changes described by the Review artifact. After the repair is complete, continue normally; RalphX will run a fresh local workspace Review before publishing can proceed.".to_string(),
+        "Please fix the workspace changes described by the Review artifact. After the repair is committed, call `complete_agent_workspace_repair` with a concise summary. If the repair cannot be completed safely, call it with a concise summary and blocker. RalphX will run a fresh local workspace Review before publishing can proceed.".to_string(),
         String::new(),
-        format!("Conversation ID: {}", workspace.conversation_id),
         format!("Workspace branch: {}", workspace.branch_name),
         format!("Review artifact: {artifact}"),
-        format!("Review target scope: {}", target.scope),
-        format!("Review diff fingerprint: {}", target.diff_fingerprint),
-        format!(
-            "Review child conversation: {}",
-            monitor
-                .review_conversation_id
-                .as_ref()
-                .map(ChatConversationId::as_str)
-                .unwrap_or_else(|| "not recorded".to_string())
-        ),
-        format!(
-            "Review run ID: {}",
-            monitor.last_run_id.as_deref().unwrap_or("not recorded")
-        ),
         String::new(),
         render_workspace_review_goal_context(goal_context),
         String::new(),

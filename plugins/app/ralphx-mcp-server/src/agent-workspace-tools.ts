@@ -6,8 +6,13 @@
 
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
+import type { TauriCallOptions } from "./tauri-client.js";
 
-type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknown>;
+type TauriPost = (
+  path: string,
+  body: Record<string, unknown>,
+  options?: TauriCallOptions,
+) => Promise<unknown>;
 type TauriGet = (
   path: string,
   options?: { headers?: Record<string, string> },
@@ -527,39 +532,24 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "complete_agent_workspace_repair",
     description:
-      "Signal that an agent workspace publish/update repair has been committed, then let RalphX verify the repair and continue the original workflow. " +
-      "Call this only after the workspace branch contains the current base, the repair is committed, and the worktree is clean.",
+      "Signal that an agent workspace publish/update repair is complete, then let RalphX verify the workspace and continue the original workflow. " +
+      "Provide a blocker instead when the repair cannot be completed safely.",
     inputSchema: {
       type: "object",
       properties: {
-        conversation_id: {
-          type: "string",
-          description: "The agent workspace conversation ID from the repair prompt",
-        },
-        repair_commit_sha: {
-          type: "string",
-          description: "Full 40-character SHA of the current workspace HEAD (from `git rev-parse HEAD`)",
-        },
-        resolved_base_ref: {
-          type: "string",
-          description: "The base ref that was resolved into the workspace branch",
-        },
-        resolved_base_commit: {
-          type: "string",
-          description: "Full 40-character SHA of the resolved base ref",
-        },
         summary: {
           type: "string",
+          minLength: 1,
           description: "Brief summary of the repair performed",
         },
+        blocker: {
+          type: "string",
+          minLength: 1,
+          description: "Optional human-readable blocker when the repair cannot be completed safely",
+        },
       },
-      required: [
-        "conversation_id",
-        "repair_commit_sha",
-        "resolved_base_ref",
-        "resolved_base_commit",
-        "summary",
-      ],
+      required: ["summary"],
+      additionalProperties: false,
     },
   },
   {
@@ -652,7 +642,7 @@ export async function callAgentWorkspaceTool(
     case "complete_agent_workspace_pr_fix":
       return callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext);
     case "complete_agent_workspace_repair":
-      return callCompleteAgentWorkspaceRepairTool(callTauri, args);
+      return callCompleteAgentWorkspaceRepairTool(callTauri, args, runtimeContext);
     case "submit_agent_workspace_pr_description":
       return callSubmitAgentWorkspacePrDescriptionTool(callTauri, args);
     default:
@@ -1057,28 +1047,31 @@ export async function callCompleteAgentWorkspacePrFixTool(
 
 export async function callCompleteAgentWorkspaceRepairTool(
   callTauri: TauriPost,
-  args: unknown
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext,
 ): Promise<unknown> {
-  const {
-    conversation_id,
-    repair_commit_sha,
-    resolved_base_ref,
-    resolved_base_commit,
-    summary,
-  } = args as {
-    conversation_id: string;
-    repair_commit_sha: string;
-    resolved_base_ref: string;
-    resolved_base_commit: string;
+  const { summary, blocker } = (args && typeof args === "object" ? args : {}) as {
     summary: string;
+    blocker?: string;
   };
+  const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
+    "complete_agent_workspace_repair",
+    runtimeContext,
+  );
+  const headers = buildRuntimeIdentityTransportHeaders({
+    agentRunId: runtimeContext?.agentRunId,
+    conversationId: runtimeContext?.conversationId,
+  });
+  if (!headers) {
+    throw new Error(
+      "complete_agent_workspace_repair requires trusted agent run and conversation identity from runtime context",
+    );
+  }
 
   return callTauri(`agent-workspaces/${conversation_id}/complete-repair`, {
-    repair_commit_sha,
-    resolved_base_ref,
-    resolved_base_commit,
     summary,
-  });
+    blocker,
+  }, { headers });
 }
 
 export async function callSubmitAgentWorkspacePrDescriptionTool(

@@ -63,6 +63,7 @@ import {
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
+  AgentConversationWorkspaceResponseSchema,
 } from "./chat";
 import type { ConversationActiveStateResponse } from "./chat";
 import { backendApiUrl } from "./backend";
@@ -1606,6 +1607,18 @@ describe("chat api", () => {
         publication_pr_url: null,
         publication_pr_status: null,
         publication_push_status: null,
+        maintenance_operation: {
+          operation_id: "maintenance-1",
+          generation: 2,
+          source: "base_update",
+          stage: "repairing",
+          status: "active",
+          summary: "Resolving the base conflict",
+          blocker: null,
+          automatic_continuation: true,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
         auto_publish_enabled: true,
         auto_publish_paused_pr_autofix_enabled: null,
         auto_publish_paused_pr_auto_merge_desired: null,
@@ -1626,7 +1639,41 @@ describe("chat api", () => {
       projectId: "project-1",
       branchName: "ralphx/demo/agent-conversation-1",
       autoPublishInitialPrEnabled: false,
+      maintenanceOperation: {
+        operationId: "maintenance-1",
+        generation: 2,
+        stage: "repairing",
+        status: "active",
+        automaticContinuation: true,
+      },
     });
+  });
+
+  it("keeps a missing maintenance operation compatible with older backends", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
+        .maintenance_operation,
+    ).toBeNull();
+  });
+
+  it("rejects an unknown maintenance operation stage", () => {
+    expect(() =>
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-1",
+          generation: 1,
+          source: "base_update",
+          stage: "not_a_stage",
+          status: "active",
+          summary: null,
+          blocker: null,
+          automatic_continuation: true,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }),
+    ).toThrow();
   });
 
   it("opens an agent conversation workspace when Tauri returns null for Rust unit", async () => {

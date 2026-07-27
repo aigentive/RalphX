@@ -29,8 +29,8 @@ use crate::domain::entities::{
     ChatConversationId, Project, ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
-    ProjectRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    PlanBranchRepository, ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -69,6 +69,9 @@ pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    /// Every live reconciliation, including startup, supplies this repository so the poller
+    /// cannot fall back to legacy repair authority.
+    pub agent_workspace_repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub app_handle: Option<AppHandle>,
 }
@@ -186,6 +189,8 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::NotFound);
     };
 
+    require_durable_live_pr_poller(&deps, matches!(&pr.status, PrStatus::Open))?;
+
     let pr_status = pr.publication_status();
     deps.workspace_repo
         .update_publication(
@@ -209,20 +214,14 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
     )
     .await;
 
-    if matches!(pr.status, PrStatus::Open) {
-        if let (Some(registry), Some(chat_service)) =
-            (deps.pr_poller_registry.as_ref(), deps.chat_service.as_ref())
-        {
-            registry.start_agent_workspace_polling(
-                conversation_id.clone(),
-                pr.number,
-                project.clone(),
-                Path::new(&project.working_directory).to_path_buf(),
-                Arc::clone(&deps.workspace_repo),
-                Arc::clone(&deps.agent_run_repo),
-                Arc::clone(chat_service),
-            );
-        }
+    if matches!(&pr.status, PrStatus::Open) {
+        start_agent_workspace_pr_poller(
+            &deps,
+            conversation_id.clone(),
+            pr.number,
+            project.clone(),
+            Path::new(&project.working_directory).to_path_buf(),
+        );
     } else {
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
@@ -261,6 +260,7 @@ async fn reconcile_linked_agent_workspace_pr(
         .check_pr_status(Path::new(&project.working_directory), pr_number)
         .await?;
     let pr_status = publication_status_for_pr_status(&status);
+    require_durable_live_pr_poller(&deps, matches!(&status, PrStatus::Open))?;
     reconcile_clickup_ticket_for_workspace_pr(
         &deps,
         workspace,
@@ -271,19 +271,13 @@ async fn reconcile_linked_agent_workspace_pr(
     )
     .await;
     if matches!(status, PrStatus::Open) {
-        if let (Some(registry), Some(chat_service)) =
-            (deps.pr_poller_registry.as_ref(), deps.chat_service.as_ref())
-        {
-            registry.start_agent_workspace_polling(
-                workspace.conversation_id.clone(),
-                pr_number,
-                project.clone(),
-                Path::new(&workspace.worktree_path).to_path_buf(),
-                Arc::clone(&deps.workspace_repo),
-                Arc::clone(&deps.agent_run_repo),
-                Arc::clone(chat_service),
-            );
-        }
+        start_agent_workspace_pr_poller(
+            &deps,
+            workspace.conversation_id.clone(),
+            pr_number,
+            project.clone(),
+            Path::new(&workspace.worktree_path).to_path_buf(),
+        );
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
             "linked_pr_not_terminal",
         ));
@@ -326,6 +320,50 @@ async fn reconcile_linked_agent_workspace_pr(
         pr_number,
         pr_status: pr_status.to_string(),
     })
+}
+
+fn require_durable_live_pr_poller(
+    deps: &AgentWorkspaceExternalPrReconciliationDeps,
+    pr_is_open: bool,
+) -> AppResult<()> {
+    if pr_is_open
+        && deps.pr_poller_registry.is_some()
+        && deps.chat_service.is_some()
+        && deps.agent_workspace_repair_repo.is_none()
+    {
+        return Err(AppError::Infrastructure(
+            "Live external PR reconciliation requires the durable workspace repair repository"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn start_agent_workspace_pr_poller(
+    deps: &AgentWorkspaceExternalPrReconciliationDeps,
+    conversation_id: ChatConversationId,
+    pr_number: i64,
+    project: Project,
+    working_dir: std::path::PathBuf,
+) {
+    let (Some(registry), Some(chat_service)) =
+        (deps.pr_poller_registry.as_ref(), deps.chat_service.as_ref())
+    else {
+        return;
+    };
+
+    if let Some(repair_repo) = deps.agent_workspace_repair_repo.as_ref() {
+        registry.start_agent_workspace_polling_with_repair_repo(
+            conversation_id,
+            pr_number,
+            project,
+            working_dir,
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Arc::clone(repair_repo),
+            Arc::clone(chat_service),
+        );
+    }
 }
 
 async fn reconcile_clickup_ticket_for_workspace_pr(

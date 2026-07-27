@@ -93,6 +93,7 @@ import {
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { AgentsPublishRepairState } from "./AgentsPublishRepairState";
 import {
+  blocksAgentWorkspaceGitInspection,
   canInspectAgentWorkspaceBaseFreshness,
   canInspectAgentWorkspacePublishDiffs,
   isAgentWorkspaceAutoMergeDeferred,
@@ -102,8 +103,10 @@ import {
   getAgentWorkspaceTerminalPublicationLabel,
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
+  getAgentWorkspaceMaintenancePresentation,
   hasPublishedWorkspacePr,
   isAgentWorkspacePublishActive,
+  isAgentWorkspaceMaintenanceActive,
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
@@ -309,6 +312,9 @@ export function AgentPublishPanel({
       current?.conversationId === conversationId ? current : null,
     );
   }, [conversationId]);
+  const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
+  const isMaintenanceActive = isAgentWorkspaceMaintenanceActive(workspace);
+  const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isPublishingWorkspace =
     publishAttempt !== null || isAgentWorkspacePublishActive(workspace);
   const publishStartedAtMs = publishAttempt?.startedAtMs ?? null;
@@ -316,11 +322,17 @@ export function AgentPublishPanel({
     publishDialogState?.conversationId === conversationId ? publishDialogState : null;
   const publishDialogOpen = currentPublishDialogState?.open ?? false;
   const publishDialogPhase = currentPublishDialogState?.phase ?? "confirm";
-  const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate({
-    conversationTitle,
-  });
+  const {
+    isUpdatingFromBase,
+    runUpdateFromBase,
+    syncMaintenanceOperation,
+  } = useAgentWorkspaceBaseUpdate({ conversationTitle });
+  useEffect(() => {
+    syncMaintenanceOperation(workspace);
+  }, [syncMaintenanceOperation, workspace]);
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
   const isRepairPending =
+    !workspace?.maintenanceOperation &&
     workspace?.publicationPushStatus === "needs_agent" &&
     !getAgentWorkspaceTerminalPublicationStatus(workspace);
   const hasPublishedPr = hasPublishedWorkspacePr(workspace);
@@ -363,7 +375,7 @@ export function AgentPublishPanel({
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
-      !isRepairPending &&
+      !blocksGitInspection &&
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
@@ -375,7 +387,7 @@ export function AgentPublishPanel({
       canHydratePublishFacts &&
       !!conversationId &&
       inlineDiffsCandidate &&
-      !isRepairPending &&
+      !blocksGitInspection &&
       !terminalPublicationStatus,
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
@@ -385,14 +397,14 @@ export function AgentPublishPanel({
       chatApi.listAgentConversationWorkspacePublicationEvents(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 0,
-    refetchInterval: isPublishingWorkspace ? 1_500 : false,
+    refetchInterval: isPublishingWorkspace || isMaintenanceActive ? 1_500 : false,
   });
   const prAnnotationsQuery = useQuery({
     queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspacePrAnnotations(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId && hasPublishedPr,
     staleTime: 30_000,
-    refetchInterval: isPublishingWorkspace ? 5_000 : false,
+    refetchInterval: isPublishingWorkspace || isMaintenanceActive ? 5_000 : false,
   });
   const workspaceReviewHunkAnnotationsQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
@@ -401,10 +413,10 @@ export function AgentPublishPanel({
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
-      !isRepairPending &&
+      !blocksGitInspection &&
       (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
-    refetchInterval: isPublishingWorkspace ? 5_000 : false,
+    refetchInterval: isPublishingWorkspace || isMaintenanceActive ? 5_000 : false,
   });
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
@@ -438,7 +450,7 @@ export function AgentPublishPanel({
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
-      !isRepairPending &&
+      !blocksGitInspection &&
       canInspectBaseFreshness &&
       !terminalPublicationStatus,
   });
@@ -512,7 +524,7 @@ export function AgentPublishPanel({
       !workspace ||
       !conversationId ||
       !shouldAutoRefreshFromBase ||
-      isRepairPending ||
+      blocksGitInspection ||
       isPublishingWorkspace ||
       isUpdatingFromBase
     ) {
@@ -539,6 +551,7 @@ export function AgentPublishPanel({
   }, [
     conversationId,
     freshness,
+    blocksGitInspection,
     isPublishingWorkspace,
     isRepairPending,
     isUpdatingFromBase,
@@ -639,7 +652,8 @@ export function AgentPublishPanel({
     !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
   const isPublishingThisWorkspace = isPublishingWorkspace;
-  const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
+  const effectivePublishing =
+    isPublishingThisWorkspace || isUpdatingFromBase || isMaintenanceActive;
   const publishHistoryCount = selectPublishHistory(
     publicationEvents,
     effectivePublishing,
@@ -737,7 +751,7 @@ export function AgentPublishPanel({
   const shouldShowAutoMergeDeferred =
     isAgentWorkspaceAutoMergeDeferred(autoMergeArgs);
   const shouldShowPublishPipeline =
-    !isRepairPending &&
+      !blocksGitInspection &&
     (effectivePublishing ||
       workspace.publicationPushStatus === "description_failed" ||
       shouldShowAutoMergeProgress ||
@@ -766,9 +780,13 @@ export function AgentPublishPanel({
     if (isPublishCurrent) return "PR is up to date";
     return "Commit & Publish";
   })();
-  const canClosePr = hasPublishedPr && !isRepairPending && !terminalPublicationStatus;
+  const canClosePr =
+    hasPublishedPr &&
+    !isRepairPending &&
+    !isMaintenanceActive &&
+    !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
-  const shouldShowPublishNotices = !isRepairPending;
+  const shouldShowPublishNotices = !isRepairPending && !maintenancePresentation;
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
     workspace.status !== "missing" &&
@@ -816,6 +834,17 @@ export function AgentPublishPanel({
         title: "Pull Request Closed",
         summary: `${terminalPrLabel} is closed. By continuing this conversation, a new workspace branch will be created automatically.`,
         tone: "neutral" as const,
+      };
+    }
+    if (maintenancePresentation) {
+      return {
+        ...maintenancePresentation,
+        summary: [
+          maintenancePresentation.summary,
+          maintenancePresentation.automaticContinuation,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" "),
       };
     }
     if (isRepairPending) {
@@ -955,6 +984,14 @@ export function AgentPublishPanel({
       tone: "neutral" as const,
     };
   })();
+  const maintenanceLiveAnnouncement =
+    maintenancePresentation && workspace.maintenanceOperation
+      ? {
+          operationKey: `${workspace.maintenanceOperation.operationId}:${workspace.maintenanceOperation.generation}:${workspace.maintenanceOperation.stage}`,
+          title: publishPresentation.title,
+          summary: publishPresentation.summary,
+        }
+      : null;
   const confirmUpdateFromBase = () => {
     void confirm({
       title: "Update from base branch?",
@@ -1075,7 +1112,7 @@ export function AgentPublishPanel({
   };
   const changedFileCount = reviewQuery.isSuccess ? changes.length : null;
   const publishChangeFacts =
-    terminalPublicationStatus || isRepairPending
+    terminalPublicationStatus || blocksGitInspection
       ? null
       : getAgentWorkspaceChangeFacts(
           changeSummaryQuery.data,
@@ -1122,9 +1159,44 @@ export function AgentPublishPanel({
             presentation={publishPresentation}
             changeFacts={publishChangeFacts}
             automationStatus={publishAutomationStatus}
+            liveAnnouncement={maintenanceLiveAnnouncement}
             primaryAction={
               <>
-              {isRepairPending ? (
+              {maintenancePresentation?.action === "none" ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={`${primaryActionClassName} ${STATUS_ACTION_BUTTON_CLASSNAME}`}
+                  style={statusActionButtonStyle(maintenancePresentation.tone)}
+                  disabled
+                  data-testid="agents-publish-maintenance-active"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {maintenancePresentation.title}
+                </Button>
+              ) : maintenancePresentation?.action === "retry" ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={confirmPublishWorkspace}
+                  disabled={!onPublishWorkspace || isManagedByTaskPipeline}
+                  data-testid="agents-publish-retry-maintenance"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Retry repair
+                </Button>
+              ) : maintenancePresentation?.action === "publish" ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={confirmPublishWorkspace}
+                  disabled={!onPublishWorkspace || isManagedByTaskPipeline}
+                  data-testid="agents-publish-resume-maintenance"
+                >
+                  <GitPullRequestArrow className="h-3.5 w-3.5" />
+                  Commit & Publish
+                </Button>
+              ) : isRepairPending ? (
                 <Button
                   type="button"
                   variant="ghost"

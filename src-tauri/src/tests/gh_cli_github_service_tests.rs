@@ -983,6 +983,10 @@ mod mock_roundtrip {
         fn gh_calls(&self) -> Vec<Vec<String>> {
             self.gh_calls.lock().unwrap().clone()
         }
+
+        fn git_calls(&self) -> Vec<Vec<String>> {
+            self.git_calls.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -1310,6 +1314,63 @@ mod mock_roundtrip {
         assert_eq!(
             s.last_delete_remote_branch_name.as_deref(),
             Some("feat/foo")
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_force_with_lease_push_uses_a_fully_qualified_ref_and_expected_oid() {
+        let runner = Arc::new(MockGhCliRunner::default());
+        let service = GhCliGithubService::with_runner(runner.clone());
+        let expected_oid = "a".repeat(40);
+
+        service
+            .push_branch_with_expected_remote_oid_lease(
+                Path::new("/tmp"),
+                "refs/heads/ralphx/project/workspace",
+                &expected_oid,
+            )
+            .await
+            .expect("exact lease push should reach git");
+
+        assert_eq!(
+            runner.git_calls(),
+            vec![vec![
+                "push".to_string(),
+                "origin".to_string(),
+                format!("--force-with-lease=refs/heads/ralphx/project/workspace:{expected_oid}"),
+                "refs/heads/ralphx/project/workspace:refs/heads/ralphx/project/workspace"
+                    .to_string(),
+            ]]
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_force_with_lease_push_rejects_non_local_refs_and_invalid_expected_oids() {
+        let runner = Arc::new(MockGhCliRunner::default());
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let foreign_ref = service
+            .push_branch_with_expected_remote_oid_lease(
+                Path::new("/tmp"),
+                "refs/tags/v1.0.0",
+                &"a".repeat(40),
+            )
+            .await
+            .expect_err("non-branch ref must be rejected before git mutation");
+        assert!(foreign_ref.to_string().contains("local branch ref"));
+
+        let invalid_oid = service
+            .push_branch_with_expected_remote_oid_lease(
+                Path::new("/tmp"),
+                "refs/heads/ralphx/project/workspace",
+                "not-an-oid",
+            )
+            .await
+            .expect_err("invalid expected OID must be rejected before git mutation");
+        assert!(invalid_oid.to_string().contains("expected remote OID"));
+        assert!(
+            runner.git_calls().is_empty(),
+            "invalid exact-lease requests must not invoke git"
         );
     }
 
