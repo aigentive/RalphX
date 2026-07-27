@@ -68,8 +68,9 @@ fn fixture_with_host(host: MockRemoteHostClient) -> Fixture {
     }
 }
 
-use crate::domain::repositories::RemoteEnvironmentRepository as _;
-use crate::domain::services::SecretStore as _;
+// Trait methods on the concrete test doubles resolve through the imports the
+// service module already provides via `use super::*` (RemoteEnvironmentRepository,
+// SecretStore) — no extra trait imports needed here.
 
 // ============================================================================
 // Pairing against the mock host
