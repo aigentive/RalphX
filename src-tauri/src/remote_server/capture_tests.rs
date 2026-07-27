@@ -1,6 +1,5 @@
 use super::{CaptureFeed, CapturedEvent, EventRegistrar, RemoteEventCapture};
 use ralphx_remote_protocol::{EventClassification, EventDelivery, EVENT_CLASSIFICATIONS};
-use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -34,14 +33,16 @@ impl RecordingRegistrar {
 }
 
 #[test]
-fn installs_once_for_each_backend_non_excluded_event_only() {
+fn installs_once_for_each_backend_non_excluded_non_local_event_only() {
     let registrar = RecordingRegistrar::default();
     let (feed, _receivers) = CaptureFeed::channels(16);
     RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
 
     for entry in EVENT_CLASSIFICATIONS {
         let expected = usize::from(
-            entry.origin == ralphx_remote_protocol::EventOrigin::Backend && !entry.excluded_from_v1,
+            entry.origin == ralphx_remote_protocol::EventOrigin::Backend
+                && entry.delivery != EventDelivery::LocalOnly
+                && !entry.excluded_from_v1,
         );
         assert_eq!(registrar.count(entry.name), expected, "{}", entry.name);
     }
@@ -49,8 +50,38 @@ fn installs_once_for_each_backend_non_excluded_event_only() {
     assert_eq!(registrar.count("task:updated"), 0);
 }
 
+/// Backend-origin Local-only rows exist today (native-menu/gh chrome) and PR 1.4 adds more
+/// (`remote:session_connected`/`remote:session_closed`). None may reach a capture seam.
 #[test]
-fn routes_parsed_payloads_to_the_classified_sync_channel() {
+fn backend_origin_local_only_entries_register_no_handler() {
+    let registrar = RecordingRegistrar::default();
+    let (feed, receivers) = CaptureFeed::channels(16);
+    RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
+
+    let backend_local_names = EVENT_CLASSIFICATIONS
+        .iter()
+        .filter(|entry| {
+            entry.delivery == EventDelivery::LocalOnly
+                && entry.origin == ralphx_remote_protocol::EventOrigin::Backend
+        })
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    assert!(
+        backend_local_names.contains(&"ralphx://check-for-updates"),
+        "expected the native-menu chrome events to be classified backend + local-only"
+    );
+
+    for name in backend_local_names {
+        assert_eq!(registrar.count(name), 0, "{name}");
+        // Emitting is a no-op precisely because nothing registered a handler.
+        registrar.emit(name, "{}");
+    }
+    assert!(receivers.durable.try_recv().is_err());
+    assert!(receivers.transient.try_recv().is_err());
+}
+
+#[test]
+fn routes_raw_payloads_to_the_classified_sync_channel() {
     let registrar = RecordingRegistrar::default();
     let (feed, receivers) = CaptureFeed::channels(16);
     RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
@@ -62,25 +93,26 @@ fn routes_parsed_payloads_to_the_classified_sync_channel() {
         receivers.durable.try_recv().unwrap(),
         CapturedEvent {
             name: "notification:created",
-            payload: json!({"id":"n-1"})
+            payload: r#"{"id":"n-1"}"#.to_string()
         }
     );
     assert_eq!(
         receivers.transient.try_recv().unwrap(),
         CapturedEvent {
             name: "agent:chunk",
-            payload: json!({"text":"hi"})
+            payload: r#"{"text":"hi"}"#.to_string()
         }
     );
 }
 
+/// The handler is channel-send-only (§3.4): it never parses on the emitting thread, so payload
+/// validation is the drain side's job (PR 1.4's sequencer). What it must still guarantee is that
+/// a full durable channel drops instead of blocking the emit thread.
 #[test]
-fn malformed_payload_and_full_durable_channel_fail_closed_without_blocking() {
+fn full_durable_channel_drops_without_blocking_the_emit_thread() {
     let registrar = RecordingRegistrar::default();
     let (feed, receivers) = CaptureFeed::channels(1);
     RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
-    registrar.emit("notification:created", "not-json");
-    assert!(receivers.durable.try_recv().is_err());
     registrar.emit("notification:created", "{}");
     registrar.emit("notification:created", "{}");
     assert!(receivers.durable.try_recv().is_ok());
@@ -88,13 +120,10 @@ fn malformed_payload_and_full_durable_channel_fail_closed_without_blocking() {
 }
 
 #[test]
-fn table_has_no_duplicate_names_and_local_entries_are_not_backend_origin() {
+fn table_has_no_duplicate_names() {
     let mut names = std::collections::HashSet::new();
     for entry in EVENT_CLASSIFICATIONS {
         assert!(names.insert(entry.name), "duplicate {}", entry.name);
-        if entry.delivery == EventDelivery::LocalOnly {
-            assert_ne!(entry.origin, ralphx_remote_protocol::EventOrigin::Backend);
-        }
     }
     assert!(EventClassification::find("notification:created").is_some());
 }

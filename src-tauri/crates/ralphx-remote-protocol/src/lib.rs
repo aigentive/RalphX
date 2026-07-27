@@ -84,6 +84,15 @@ pub const CAPABILITIES: &[Capability] = &[
 
 /// Compile-time class/capability consistency gate used by the remote registry.
 ///
+/// Proof shape for "every forbidden capability under `Read`/`Operate` is compile-rejected"
+/// (phase-0 PR 0.2 acceptance #3 / P-17(b)): the doctest below proves the `const`-assert
+/// MECHANISM rejects a forbidden pair at compile time, and
+/// `class_permits_rejects_every_capability_for_read_and_operate` in `tests/protocol_contract.rs`
+/// exhaustively proves the `const fn` returns `false` for all 11 capabilities under both
+/// classes. Because the assert is `const`, `false` for a pair is exactly a compile rejection
+/// for that pair — the two together are equivalent to 22 individual `compile_fail` fixtures
+/// without paying 22 rustc invocations.
+///
 /// ```compile_fail
 /// use ralphx_remote_protocol::{class_permits, Capability, RiskClass};
 /// const _: () = assert!(class_permits(
@@ -269,10 +278,35 @@ const fn webview(name: &'static str) -> EventClassification {
         excluded_from_v1: false,
     }
 }
+/// Backend-emitted host chrome that must never fan out to remote clients (§3.4 Local-only:
+/// "window/dock/updater chrome"). `origin` stays truthful — these really are Rust emits — and
+/// the capture bank drops every `LocalOnly` row structurally, so a truthful origin costs nothing.
+const fn local_backend(name: &'static str) -> EventClassification {
+    EventClassification {
+        name,
+        delivery: EventDelivery::LocalOnly,
+        origin: EventOrigin::Backend,
+        excluded_from_v1: false,
+    }
+}
 
 // Exact names only. PR 0.1 mechanically audits this table against live emit and subscribe sites.
 // PR 0.2 decision: render deltas (tool_call/message/hook) are transient; queue and recovery
 // lifecycle invalidations are durable because clients must refetch authoritative state after replay.
+// PR 0.2 decision (gates): `permission:request`/`permission:resolved`/`permission:expired` and
+// `agent:ask_user_question` are wire-Transient, which is NOT a contradiction of §3.4's
+// "permission / question gates are NOT transient" line. That line rejects treating gates as
+// fire-and-forget: §3.4's resolution hydrates pending-gate truth via
+// `list_pending_permission_gates` / `list_pending_question_gates` on every connect/reset,
+// "without a durable event log for it". So the gate lifecycle is durable-gate-hydrated while the
+// live nudge stays a transient frame — these names must never enter `remote_event_log`.
+// PR 1.8 decision (local-only chrome): the three backend-emitted names below are host-owned UI
+// chrome with no remote meaning. `ralphx://check-for-updates` / `ralphx://show-release-notes`
+// come from the native menu (`application/native_menu.rs`) and act on the host binary.
+// `gh-auth:login_prompt` (`commands/project_commands.rs`) surfaces the host owner's `gh` device
+// -code prompt; relaying it would be worse than useless because its command surface
+// (`login_gh_with_browser`, the whole `project_commands` git/gh module) is Denied remotely
+// (§3.3 module-deny list) — a remote client could see the prompt but never complete it.
 pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     backend("task:created", EventDelivery::Durable),
     backend("task:status_changed", EventDelivery::Durable),
@@ -373,8 +407,7 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
         excluded_from_v1: true,
     },
     webview("task:updated"),
-    webview("my:event"),
-    webview("window:focus"),
-    webview("dock:updated"),
-    webview("updater:status"),
+    local_backend("ralphx://check-for-updates"),
+    local_backend("ralphx://show-release-notes"),
+    local_backend("gh-auth:login_prompt"),
 ];
