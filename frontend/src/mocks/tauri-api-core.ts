@@ -1183,6 +1183,51 @@ function mockNotificationPage(args: Record<string, unknown>) {
 /**
  * Command handlers map - routes Tauri commands to mock implementations
  */
+// Remote Access mock host state (PR 1.7) — one paired device with one live
+// session so device/session journeys work out of the box; listener disabled
+// until the journey enables it.
+const mockRemoteHost = {
+  status: {
+    enabled: false,
+    exposureMode: "serve" as "serve" | "tailnetDirect",
+    port: 3849,
+    environmentId: "env-mock-1",
+    running: false,
+    bindAddress: null as string | null,
+    serveActive: false,
+    serveDegradedReason: null as string | null,
+  },
+  devices: [
+    {
+      id: "dev-mock-1",
+      name: "Mock iPhone",
+      tokenPrefix: "rxd_live_MoCk",
+      scopes: ["ui:read", "ui:operate"] as string[],
+      agentControlGranted: false,
+      createdAt: "2026-07-20T10:00:00.000Z",
+      lastSeenAt: "2026-07-27T09:00:00.000Z",
+      revokedAt: null as string | null,
+    },
+  ],
+  sessions: [
+    {
+      id: "sess-mock-1",
+      deviceId: "dev-mock-1",
+      connectedAt: "2026-07-27T09:00:00.000Z",
+      lastActiveAt: "2026-07-27T09:30:00.000Z",
+      remoteAddr: "100.64.0.9:52001",
+      live: true,
+    },
+  ],
+  pairingCodes: [] as {
+    id: string;
+    scopes: string[];
+    createdAt: string;
+    expiresAt: string;
+  }[],
+  codeCounter: 0,
+};
+
 const commandHandlers: Record<
   string,
   (args: Record<string, unknown>) => Promise<unknown>
@@ -1347,6 +1392,158 @@ const commandHandlers: Record<
       ...overrides,
     };
   },
+  // Remote Access mock host (PR 1.7) — backs the Settings → Remote Access pane
+  // and the Playwright pairing journey. Mirrors the PR 1.1/1.2 command shapes;
+  // list_remote_advertised_endpoints anticipates the PR 1.6 surface.
+  get_remote_listener_status: async () => ({ ...mockRemoteHost.status }),
+  start_remote_listener: async () => {
+    Object.assign(mockRemoteHost.status, {
+      enabled: true,
+      running: true,
+      bindAddress:
+        mockRemoteHost.status.exposureMode === "serve"
+          ? "127.0.0.1:3849"
+          : "100.64.0.7:3849",
+      serveActive: mockRemoteHost.status.exposureMode === "serve",
+      serveDegradedReason: null,
+    });
+    return { ...mockRemoteHost.status };
+  },
+  stop_remote_listener: async () => {
+    Object.assign(mockRemoteHost.status, {
+      enabled: false,
+      running: false,
+      bindAddress: null,
+      serveActive: false,
+      serveDegradedReason: null,
+    });
+    mockRemoteHost.sessions = [];
+    return { ...mockRemoteHost.status };
+  },
+  set_remote_exposure_mode: async (args) => {
+    const input = args.input as { exposureMode: "serve" | "tailnetDirect" };
+    mockRemoteHost.status.exposureMode = input.exposureMode;
+    if (mockRemoteHost.status.running) {
+      mockRemoteHost.status.bindAddress =
+        input.exposureMode === "serve" ? "127.0.0.1:3849" : "100.64.0.7:3849";
+    }
+    mockRemoteHost.status.serveActive =
+      input.exposureMode === "serve" && mockRemoteHost.status.running;
+    return { ...mockRemoteHost.status };
+  },
+  generate_remote_pairing_code: async () => {
+    mockRemoteHost.codeCounter += 1;
+    const id = `pc-mock-${mockRemoteHost.codeCounter}`;
+    const createdAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 600_000).toISOString();
+    mockRemoteHost.pairingCodes.push({
+      id,
+      scopes: ["ui:read", "ui:operate"],
+      createdAt,
+      expiresAt,
+    });
+    return {
+      id,
+      code: "rxp_MOCKCODEMOCKCODEMOCKCODEMOCKCODE",
+      scopes: ["ui:read", "ui:operate"],
+      createdAt,
+      expiresAt,
+      expiresInSecs: 600,
+    };
+  },
+  list_remote_pairing_codes: async () =>
+    mockRemoteHost.pairingCodes.map((code) => ({ ...code })),
+  revoke_remote_pairing_code: async (args) => {
+    const input = args.input as { id: string };
+    const before = mockRemoteHost.pairingCodes.length;
+    mockRemoteHost.pairingCodes = mockRemoteHost.pairingCodes.filter(
+      (code) => code.id !== input.id,
+    );
+    return mockRemoteHost.pairingCodes.length < before;
+  },
+  list_remote_devices: async () =>
+    mockRemoteHost.devices.map((device) => ({
+      ...device,
+      liveSessionCount: mockRemoteHost.sessions.filter(
+        (session) => session.deviceId === device.id,
+      ).length,
+    })),
+  set_remote_device_agent_control: async (args) => {
+    const input = args.input as { deviceId: string; enabled: boolean };
+    const device = mockRemoteHost.devices.find((d) => d.id === input.deviceId);
+    if (!device) {
+      throw new Error("This remote device no longer exists.");
+    }
+    device.agentControlGranted = input.enabled;
+    device.scopes = input.enabled
+      ? ["ui:read", "ui:operate", "ui:agent"]
+      : ["ui:read", "ui:operate"];
+    if (!input.enabled) {
+      mockRemoteHost.sessions = mockRemoteHost.sessions.filter(
+        (session) => session.deviceId !== device.id,
+      );
+    }
+    return {
+      ...device,
+      liveSessionCount: mockRemoteHost.sessions.filter(
+        (session) => session.deviceId === device.id,
+      ).length,
+    };
+  },
+  revoke_remote_device: async (args) => {
+    const input = args.input as { deviceId: string };
+    const device = mockRemoteHost.devices.find((d) => d.id === input.deviceId);
+    if (!device) {
+      throw new Error("This remote device no longer exists.");
+    }
+    device.revokedAt = new Date().toISOString();
+    mockRemoteHost.sessions = mockRemoteHost.sessions.filter(
+      (session) => session.deviceId !== device.id,
+    );
+    return { ...device, liveSessionCount: 0 };
+  },
+  list_remote_sessions: async () =>
+    mockRemoteHost.sessions.map((session) => ({ ...session })),
+  disconnect_remote_session: async (args) => {
+    const input = args.input as { sessionId: string };
+    const before = mockRemoteHost.sessions.length;
+    mockRemoteHost.sessions = mockRemoteHost.sessions.filter(
+      (session) => session.id !== input.sessionId,
+    );
+    return mockRemoteHost.sessions.length < before;
+  },
+  list_remote_advertised_endpoints: async () =>
+    mockRemoteHost.status.exposureMode === "serve"
+      ? [
+          {
+            kind: "loopbackServe",
+            url: "https://ralphx-host.tailnet.ts.net",
+            available: mockRemoteHost.status.serveActive,
+          },
+        ]
+      : [
+          {
+            kind: "tailnetDirect",
+            url: "http://100.64.0.7:3849",
+            available: mockRemoteHost.status.running,
+          },
+        ],
+  list_remote_audit_entries: async () => [
+    {
+      id: 2,
+      deviceId: "dev-mock-1",
+      action: "session_opened",
+      detail: null,
+      createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+    },
+    {
+      id: 1,
+      deviceId: "dev-mock-1",
+      action: "pairing_succeeded",
+      detail: null,
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+    },
+  ],
   get_atlassian_integration_settings: async () =>
     mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {
