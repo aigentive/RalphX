@@ -6333,10 +6333,11 @@ async fn publish_workspace_reconciles_ambiguous_existing_metadata_patch_after_re
         .pr_poller_registry
         .stop_agent_workspace_polling(&conversation_id);
 
-    let github_state = github.state();
-    assert_eq!(github_state.patch_pr_metadata_calls, 1);
-    assert_eq!(github_state.fetch_pr_detail_calls, 3);
-    drop(github_state);
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.patch_pr_metadata_calls, 1);
+        assert_eq!(github_state.fetch_pr_detail_calls, 3);
+    }
     let stored = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
