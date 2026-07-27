@@ -16,10 +16,10 @@
 |---|---|---|
 | Host revision | Commit SHA and dirty-tree state used for the probe | Pending |
 | Debug harness | Exact debug-only command/listener shape and cfg-gate evidence | Implemented: `debug_start_remote_transport_cors_probe` / `debug_stop_remote_transport_cors_probe` control a fixed `127.0.0.1:0` fixture; both command registration and the module are `#[cfg(debug_assertions)]`-gated. This records harness shape only, not an experiment result. |
-| Tailnet access | Logged-in tailnet identity and evidence that Serve is enabled for the host | Pending |
-| Serve endpoint | HTTPS/WSS URL used, without pairing codes, bearers, or other secrets | Pending |
-| Direct-tailnet endpoint | HTTP/WS URL used, without credentials | Pending |
-| Apple probe vehicle | Named macOS `URLSession`/WKWebView harness and, if available, iOS Simulator harness; OS/runtime version | Pending — required before ATS conclusion |
+| Tailnet access | Logged-in tailnet identity and evidence that Serve is enabled for the host | Blocked — 2026-07-27 read-only audit found no `tailscale` executable in `PATH`; no logged-in Serve-capable tailnet evidence is available. |
+| Serve endpoint | HTTPS/WSS URL used, without pairing codes, bearers, or other secrets | Blocked — no Serve-capable tailnet or endpoint is available; no request was sent. |
+| Direct-tailnet endpoint | HTTP/WS URL used, without credentials | Blocked — no tailnet endpoint is available; no request was sent. |
+| Apple probe vehicle | Named macOS `URLSession`/WKWebView harness and, if available, iOS Simulator harness; OS/runtime version | macOS 15.7.4 (24G517), Xcode 26.3 (17C529), and an available iOS 26.3 `iPhone 17 Pro` simulator were observed on 2026-07-27. The simulator remained shut down and no URLSession, WKWebView, or simulator probe was run. |
 | Browser probe vehicle | Browser/version and origin used for direct-path CORS tests | Pending |
 | Evidence storage | Stable tracked artifact links or redacted command output paths | Pending |
 
@@ -30,8 +30,8 @@
 | E-1 | (a) Desktop Rust-proxy traffic boundary | WKWebView network/devtools capture plus Rust-proxy request log | Pending | Pending |
 | E-2 | (b) Auth-before-`OPTIONS` failure | Actual loopback socket request/response | `actual_listener_auth_before_options_returns_401_without_cors_headers` | Captured — Rust socket evidence, not a browser capture |
 | E-3 | (b) Pre-auth-`OPTIONS` success and restrictive rejection | Actual loopback socket request/response | `actual_listener_options_before_auth_returns_restrictive_cors_for_allowed_origin`; `actual_listener_options_before_auth_denies_an_unlisted_origin_without_cors_headers` | Captured — Rust socket evidence, not a browser capture |
-| E-4 | (c) Serve ATS result | Named Apple probe output for HTTPS/WSS through Serve | Pending | Pending |
-| E-5 | (c) Direct-tailnet ATS result | Named Apple probe output for plain tailnet HTTP/WS | Pending | Pending |
+| E-4 | (c) Serve ATS result | Named Apple probe output for HTTPS/WSS through Serve | Blocked — no logged-in Serve-capable tailnet or endpoint | Not executed; insufficient evidence |
+| E-5 | (c) Direct-tailnet ATS result | Named Apple probe output for plain tailnet HTTP/WS | Blocked — no direct-tailnet endpoint | Not executed; insufficient evidence |
 
 ## Implemented harness boundary
 
@@ -55,6 +55,14 @@
 - E-3 allowed origin: with `OptionsBeforeAuth` and `Origin: http://127.0.0.1:1420`, the actual listener returns `204 No Content` with `Access-Control-Allow-Origin` set only to that origin, methods `POST`, headers `authorization,content-type`, and `Vary: Origin`.
 - E-3 unlisted origin: with `OptionsBeforeAuth` and `Origin: https://unlisted.example`, the actual listener returns `403 Forbidden` and emits no CORS allow headers.
 - These are listener/socket assertions recorded by the focused Rust test suite. No browser page, browser network inspector, or WKWebView capture was run, so browser-visible results remain pending.
+
+## E-4 / E-5 ATS prerequisite audit — blocked (no transport result)
+
+- Audit date: 2026-07-27. This was read-only environment inspection; it did not install software, start the simulator, configure Serve, or send a network request.
+- The `tailscale` command was unavailable in `PATH`. Therefore this worktree has no verified logged-in tailnet identity, Serve capability, Serve HTTPS/WSS endpoint, or direct-tailnet HTTP/WS endpoint for the required probes.
+- The host was macOS 15.7.4 (build 24G517) with Xcode 26.3 (build 17C529). An iOS 26.3 `iPhone 17 Pro` simulator is available for a future named vehicle, but it was shutdown and was not started.
+- A future actual run must use a named macOS `URLSession`/WKWebView probe and, if selected, that iOS Simulator vehicle, after a logged-in Serve-capable tailnet supplies redacted Serve and direct-tailnet endpoints.
+- E-4 and E-5 are **not executed** and the ATS/direct-tailnet outcomes are **not inferred**. This task is blocked with insufficient evidence rather than a Serve-only verdict.
 
 ## (a) Does the Rust-proxied desktop transport produce zero WKWebView cross-origin traffic?
 
@@ -126,8 +134,8 @@ For each named Apple probe vehicle, does HTTPS/WSS through Tailscale Serve work 
 
 | Probe vehicle | Serve HTTPS/WSS result | Direct-tailnet HTTP/WS result | ATS exception required | Evidence IDs | Finding |
 |---|---|---|---|---|---|
-| macOS `URLSession` / WKWebView | Pending | Pending | Pending | Pending | Pending |
-| iOS Simulator, if available | Pending | Pending | Pending | Pending | Pending |
+| macOS `URLSession` / WKWebView | Not executed — no Serve endpoint | Not executed — no direct-tailnet endpoint | Insufficient evidence | E-4/E-5 blocked prerequisite audit | Preserve as a future named probe vehicle |
+| iOS 26.3 `iPhone 17 Pro` Simulator (available, shutdown) | Not executed — no Serve endpoint | Not executed — no direct-tailnet endpoint | Insufficient evidence | E-4/E-5 blocked prerequisite audit | Preserve as a future named probe vehicle; simulator was not started |
 
 ### Implication slots
 
@@ -156,9 +164,9 @@ For each named Apple probe vehicle, does HTTPS/WSS through Tailscale Serve work 
 | Decision / follow-up | Owner | Needed before | Status |
 |---|---|---|---|
 | Choose the debug harness shape: command only or command-controlled throwaway listener | Pending | PR 0.3 harness implementation | Open |
-| Name the Apple ATS probe vehicle(s) and record availability | Pending | ATS experiment | Open |
-| Provide a Serve-capable logged-in tailnet environment | Pending | Serve experiment | Open |
-| Record the Serve-only verdict from captured evidence | Pending | PR 0.3 completion; informational input to PR 1.1 | Open |
+| Name the Apple ATS probe vehicle(s) and record availability | Future macOS `URLSession`/WKWebView vehicle; iOS 26.3 `iPhone 17 Pro` Simulator observed available and shutdown on 2026-07-27 | ATS experiment | Open — named vehicles were not run |
+| Provide a Serve-capable logged-in tailnet environment | Pending | Serve experiment | Blocked — `tailscale` unavailable in `PATH`; no endpoint to probe |
+| Record the Serve-only verdict from captured evidence | Pending | PR 0.3 completion; informational input to PR 1.1 | Blocked — E-4/E-5 not executed, insufficient evidence |
 
 ## Completion checklist
 
