@@ -729,7 +729,11 @@ function getCurrentTurnProviderMessageId(
   const latestProviderMessage = latestMessageByCreatedAt(
     messages,
     (message) => {
-      if (!isProviderRole(message.role) || isPersistedTimelineToolCallMessage(message)) {
+      if (
+        !isProviderRole(message.role)
+        || message.timelineSequence != null
+        || isPersistedTimelineToolCallMessage(message)
+      ) {
         return false;
       }
       if (!latestUserMessage) {
@@ -1190,24 +1194,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const timeline = useMemo((): TimelineItem[] => {
       const items: TimelineItem[] = [];
 
-      const suppressedProviderMessage = suppressedProviderMessageId
-        ? messages.find((msg) => msg.id === suppressedProviderMessageId)
-        : null;
-      const suppressedTimelineParentId =
-        suppressedProviderMessage?.timelineSequence != null
-          ? suppressedProviderMessage.parentMessageId
-          : null;
       const filteredMessages = suppressedProviderMessageId
-        ? messages.filter((msg) => {
-          if (msg.id === suppressedProviderMessageId) {
-            return false;
-          }
-          return !(
-            suppressedTimelineParentId &&
-            msg.timelineSequence != null &&
-            msg.parentMessageId === suppressedTimelineParentId
-          );
-        })
+        ? messages.filter((msg) => msg.id !== suppressedProviderMessageId)
         : messages;
       const filteredMessageIds = new Set(filteredMessages.map((message) => message.id));
       const teamFilteredMessages = delegationProjection.messages.filter((message) =>

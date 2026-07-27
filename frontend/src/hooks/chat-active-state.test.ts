@@ -5,8 +5,10 @@ import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import {
   mergeActiveStreamingContentBlocks,
+  mergePersistedStreamingAnchors,
   mergeActiveStreamingTasks,
   mergeActiveStreamingToolCalls,
+  removePersistedStreamingPrefix,
 } from "./chat-active-state";
 
 describe("chat-active-state helpers", () => {
@@ -192,6 +194,40 @@ describe("chat-active-state helpers", () => {
         },
       },
       { type: "task", toolUseId: "toolu_delegate" },
+    ]);
+  });
+
+  it("keeps recovered text segments on their original sides of an interleaved tool call", () => {
+    const previous: StreamingContentBlock[] = [
+      { type: "text", text: "Inspecting the active state. " },
+      {
+        type: "tool_use",
+        toolCall: {
+          id: "toolu_read",
+          name: "Read",
+          arguments: { file_path: "src/chat.ts" },
+        },
+      },
+      { type: "text", text: "Patching the recovery path." },
+    ];
+
+    const next = mergeActiveStreamingContentBlocks(previous, {
+      partial_text: "Inspecting the active state. Patching the recovery path. Keeping the tool order.",
+      streaming_tasks: [],
+      tool_calls: [],
+    });
+
+    expect(next).toEqual([
+      { type: "text", text: "Inspecting the active state. " },
+      {
+        type: "tool_use",
+        toolCall: {
+          id: "toolu_read",
+          name: "Read",
+          arguments: { file_path: "src/chat.ts" },
+        },
+      },
+      { type: "text", text: "Patching the recovery path. Keeping the tool order." },
     ]);
   });
 
@@ -419,6 +455,75 @@ describe("chat-active-state helpers", () => {
     ]);
     expect(prefix).toEqual([
       { type: "text", text: "I read the existing chat hooks and kept streaming" },
+    ]);
+  });
+
+  it("renders only the active-state tail beyond persisted streaming anchors", () => {
+    const persisted: StreamingContentBlock[] = [
+      { type: "text", text: "Opening. " },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_grep", name: "Grep", arguments: {} },
+      },
+      { type: "text", text: "After grep. " },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_delegate", name: "delegate_start", arguments: {} },
+      },
+    ];
+    const recovered: StreamingContentBlock[] = [
+      ...persisted,
+      { type: "task", toolUseId: "toolu_delegate" },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_edit", name: "Edit", arguments: {} },
+      },
+    ];
+
+    expect(removePersistedStreamingPrefix(recovered, persisted)).toEqual([
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_edit", name: "Edit", arguments: {} },
+      },
+    ]);
+    expect(removePersistedStreamingPrefix(
+      [
+        { type: "text", text: "Opening. " },
+        { type: "text", text: "After grep. Done." },
+      ],
+      [
+        { type: "text", text: "Opening. " },
+        { type: "text", text: "After grep. " },
+      ],
+    )).toEqual([{ type: "text", text: "Done." }]);
+  });
+
+  it("keeps a live tail that arrives before persisted-anchor hydration", () => {
+    const persisted: StreamingContentBlock[] = [
+      { type: "text", text: "Opening. " },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_grep", name: "Grep", arguments: {} },
+      },
+      { type: "text", text: "After grep. " },
+    ];
+
+    expect(mergePersistedStreamingAnchors(
+      persisted,
+      [
+        { type: "text", text: "Late tail." },
+        {
+          type: "tool_use",
+          toolCall: { id: "toolu_edit", name: "Edit", arguments: {} },
+        },
+      ],
+    )).toEqual([
+      ...persisted,
+      { type: "text", text: "Late tail." },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_edit", name: "Edit", arguments: {} },
+      },
     ]);
   });
 });

@@ -1,4 +1,8 @@
-import { parseToolCalls, type ActiveStreamingTaskResponse } from "@/api/chat";
+import {
+  parseToolCalls,
+  type ActiveStreamingTaskResponse,
+  type ChatMessageResponse,
+} from "@/api/chat";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import {
   extractDelegationMetadata,
@@ -7,6 +11,111 @@ import {
   reconcileDelegationTaskMarkers,
 } from "@/components/Chat/delegation-tool-calls";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
+
+/**
+ * Project durable streaming timeline rows into the same ordered block shape as
+ * live events. Recovery uses these rows as anchors before merging the
+ * cumulative active-state cache, so persisted text/tool interleave stays
+ * canonical across a remount.
+ */
+export function projectPersistedStreamingContentBlocks(
+  messages: readonly ChatMessageResponse[],
+): StreamingContentBlock[] {
+  return messages.flatMap((message) => {
+    if (message.timelineStatus !== "streaming") return [];
+    const seq = message.timelineSequence ?? undefined;
+    return (message.contentBlocks ?? []).flatMap((block): StreamingContentBlock[] => {
+      if (block.type === "text") {
+        return [{ type: "text", text: block.text ?? "", ...(seq != null ? { seq } : {}) }];
+      }
+      if (block.type !== "tool_use") return [];
+
+      const persistedToolCall = message.toolCalls?.find((toolCall) => toolCall.id === block.id);
+      const toolCall: ToolCall = persistedToolCall ?? {
+        id: block.id ?? `tool:${block.name ?? "unknown"}`,
+        name: block.name ?? "unknown",
+        arguments: block.arguments ?? {},
+        ...(block.result !== undefined ? { result: block.result } : {}),
+        ...(block.diffContext !== undefined ? { diffContext: block.diffContext } : {}),
+      };
+      return [{ type: "tool_use", toolCall, ...(seq != null ? { seq } : {}) }];
+    });
+  });
+}
+
+/**
+ * Remove the durable prefix from the recovered live projection. Persisted rows
+ * remain the rendered authority; only cache content newer than that checkpoint
+ * is returned as the supplementary live tail.
+ */
+export function removePersistedStreamingPrefix(
+  liveBlocks: readonly StreamingContentBlock[],
+  persistedBlocks: readonly StreamingContentBlock[],
+): StreamingContentBlock[] {
+  const persistedToolIds = new Set(persistedBlocks.flatMap((block) =>
+    block.type === "tool_use" ? [block.toolCall.id] : []
+  ));
+  const persistedTexts = persistedBlocks.flatMap((block) =>
+    block.type === "text" ? [block.text] : []
+  );
+  let persistedTextIndex = 0;
+
+  return liveBlocks.flatMap((block): StreamingContentBlock[] => {
+    if (block.type === "tool_use" && persistedToolIds.has(block.toolCall.id)) {
+      return [];
+    }
+    if (block.type === "task" && persistedToolIds.has(block.toolUseId)) {
+      return [];
+    }
+    if (block.type !== "text") {
+      return [block];
+    }
+
+    const persistedText = persistedTexts[persistedTextIndex];
+    if (persistedText == null || !block.text.startsWith(persistedText)) {
+      return [block];
+    }
+    persistedTextIndex += 1;
+    const tail = block.text.slice(persistedText.length);
+    return tail.length > 0 ? [{ ...block, text: tail }] : [];
+  });
+}
+
+/** Seed recovery with durable anchors without discarding events received first. */
+export function mergePersistedStreamingAnchors(
+  persistedBlocks: readonly StreamingContentBlock[],
+  liveBlocks: readonly StreamingContentBlock[],
+): StreamingContentBlock[] {
+  if (persistedBlocks.length === 0) return [...liveBlocks];
+  const next = [...persistedBlocks];
+
+  for (const block of liveBlocks) {
+    if (block.type === "text") {
+      if (!next.some((existing) => existing.type === "text" && existing.text === block.text)) {
+        next.push(block);
+      }
+      continue;
+    }
+    if (block.type === "task") {
+      if (!next.some((existing) =>
+        existing.type === "task" && existing.toolUseId === block.toolUseId
+      )) {
+        next.push(block);
+      }
+      continue;
+    }
+
+    const existingIndex = next.findIndex((existing) =>
+      existing.type === "tool_use" && existing.toolCall.id === block.toolCall.id
+    );
+    if (existingIndex >= 0) {
+      next[existingIndex] = block;
+    } else {
+      next.push(block);
+    }
+  }
+  return next;
+}
 
 function parseBackendTimestamp(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -306,13 +415,62 @@ function mergePartialTextBlock(
     return [...next, { type: "text", text: partialText }];
   }
 
-  const existing = next[textIndex] as Extract<StreamingContentBlock, { type: "text" }>;
+  const textIndexes = next.flatMap((block, index) => block.type === "text" ? [index] : []);
+  const hasInterleavedContent = textIndexes.some((currentIndex, position) => {
+    if (position === 0) return false;
+    const previousTextIndex = textIndexes[position - 1]!;
+    return next
+      .slice(previousTextIndex + 1, currentIndex)
+      .some((block) => block.type !== "text");
+  });
+
+  if (!hasInterleavedContent) {
+    return mergePartialTextIntoBlock(next, textIndex, partialText);
+  }
+
+  const mergedText = mergeStreamingTextSnapshot(
+    partialText,
+    textIndexes
+      .map((index) => (next[index] as Extract<StreamingContentBlock, { type: "text" }>).text)
+      .join(""),
+  );
+  const textStarts: number[] = [];
+  let searchFrom = 0;
+
+  for (const index of textIndexes) {
+    const text = (next[index] as Extract<StreamingContentBlock, { type: "text" }>).text;
+    const start = mergedText.indexOf(text, searchFrom);
+    if (start < 0) {
+      return mergePartialTextIntoBlock(next, textIndex, partialText);
+    }
+    textStarts.push(start);
+    searchFrom = start + text.length;
+  }
+
+  for (const [position, index] of textIndexes.entries()) {
+    const existing = next[index] as Extract<StreamingContentBlock, { type: "text" }>;
+    const start = textStarts[position]!;
+    const end = textStarts[position + 1] ?? mergedText.length;
+    const text = mergedText.slice(start, end);
+    if (text !== existing.text) {
+      next[index] = { ...existing, text };
+    }
+  }
+  return next;
+}
+
+function mergePartialTextIntoBlock(
+  blocks: StreamingContentBlock[],
+  textIndex: number,
+  partialText: string,
+): StreamingContentBlock[] {
+  const existing = blocks[textIndex] as Extract<StreamingContentBlock, { type: "text" }>;
 
   const mergedText = mergeStreamingTextSnapshot(partialText, existing.text);
   if (mergedText !== existing.text) {
-    next[textIndex] = { ...existing, text: mergedText };
+    blocks[textIndex] = { ...existing, text: mergedText };
   }
-  return next;
+  return blocks;
 }
 
 export function mergeStreamingTextSnapshot(snapshotText: string, liveText: string): string {
