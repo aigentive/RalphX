@@ -10,13 +10,29 @@ use crate::application::clickup_integration_service::{
     ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace, EmptyClickUpApiClient,
     UnavailableClickUpApiClient,
 };
+use crate::application::integration_reference_expansion::{
+    SkippedIntegrationReferenceReason, MAX_INTEGRATION_REFERENCES,
+};
 use crate::domain::integrations::{
     ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
 };
-use crate::domain::services::{SecretStore, SecretStoreError};
+use crate::domain::services::{ComposerIntegrationReference, SecretStore, SecretStoreError};
 use crate::infrastructure::memory::MemoryClickUpIntegrationSettingsRepository;
 
 const TOKEN_REF_PREFIX: &str = "integrations/clickup/default/api-token";
+
+fn clickup_reference(id: impl Into<String>) -> ComposerIntegrationReference {
+    ComposerIntegrationReference {
+        provider: "clickup".to_string(),
+        kind: "task".to_string(),
+        id: id.into(),
+        key: None,
+        title: None,
+        url: None,
+        summary_excerpt: None,
+        include_transcript: None,
+    }
+}
 
 /// In-memory `SecretStore` that records the keys it stores and deletes so tests
 /// can assert the write → read-back → delete-prior token lifecycle.
@@ -559,6 +575,132 @@ fn build_service(
     let secret = Arc::new(RecordingSecretStore::default());
     let service = ClickUpIntegrationService::new(repo.clone(), secret.clone(), client);
     (service, repo, secret)
+}
+
+#[tokio::test]
+async fn prompt_expansion_renders_clickup_task_and_reports_zero_budget() {
+    let client = Arc::new(TestClickUpClient::default());
+    let (service, _repo, _secret) = build_service(client);
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+    let reference = ComposerIntegrationReference {
+        provider: "clickup".to_string(),
+        kind: "task".to_string(),
+        id: "task-1".to_string(),
+        key: None,
+        title: None,
+        url: None,
+        summary_excerpt: None,
+        include_transcript: None,
+    };
+
+    let rendered = service
+        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 4096)
+        .await;
+    assert!(rendered.rewritten_prompt.contains("<clickup_task"));
+    assert!(rendered.rewritten_prompt.contains("Fix login"));
+    assert!(rendered.skipped_references.is_empty());
+
+    let exhausted = service
+        .expand_references_for_prompt_with_budget("Base", &[reference], 0)
+        .await;
+    assert_eq!(exhausted.rewritten_prompt, "Base");
+    assert_eq!(exhausted.skipped_references.len(), 1);
+    assert_eq!(
+        exhausted.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::BudgetExceeded
+    );
+}
+
+#[tokio::test]
+async fn budgeted_expansion_reports_typed_budget_auth_and_fetch_skips() {
+    let client = Arc::new(TestClickUpClient::default());
+    let (service, repo, secret) = build_service(client.clone());
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+    let reference = clickup_reference("task-1");
+
+    let zero_budget = service
+        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 0)
+        .await;
+    assert_eq!(zero_budget.rewritten_prompt, "Base");
+    assert_eq!(
+        zero_budget.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::BudgetExceeded
+    );
+
+    let capped_references = (0..=MAX_INTEGRATION_REFERENCES)
+        .map(|index| clickup_reference(format!("task-{index}")))
+        .collect::<Vec<_>>();
+    let capped = service
+        .expand_references_for_prompt_with_budget("Base", &capped_references, 16 * 1024)
+        .await;
+    assert!(capped.rewritten_prompt.contains("<clickup_task"));
+    assert!(capped.skipped_references.iter().any(|skipped| {
+        skipped.id == format!("task-{MAX_INTEGRATION_REFERENCES}")
+            && skipped.reason == SkippedIntegrationReferenceReason::BudgetExceeded
+    }));
+
+    let one = service
+        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 16 * 1024)
+        .await;
+    let one_reference_budget = one.rewritten_prompt.len() - "Base".len();
+    let starved = service
+        .expand_references_for_prompt_with_budget(
+            "Base",
+            &[reference.clone(), clickup_reference("task-2")],
+            one_reference_budget,
+        )
+        .await;
+    assert!(starved.rewritten_prompt.contains("task-1"));
+    assert!(starved.skipped_references.iter().any(|skipped| {
+        skipped.id == "task-2"
+            && skipped.reason == SkippedIntegrationReferenceReason::BudgetExceeded
+    }));
+
+    let (disabled_service, _disabled_repo, _disabled_secret) =
+        build_service(Arc::new(TestClickUpClient::default()));
+    let disabled = disabled_service
+        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 4096)
+        .await;
+    assert_eq!(
+        disabled.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::IntegrationDisabled
+    );
+
+    let settings = repo.get().await.unwrap();
+    secret
+        .delete_secret(settings.token_secret_ref.as_deref().unwrap())
+        .await
+        .unwrap();
+    let missing_credentials = service
+        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 4096)
+        .await;
+    assert_eq!(
+        missing_credentials.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::MissingCredentials
+    );
+
+    let failing_client = Arc::new(TestClickUpClient::with_fetch_task_failure("123456789"));
+    let (failing_service, _failing_repo, _failing_secret) = build_service(failing_client);
+    failing_service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    failing_service.validate_and_enable().await.unwrap();
+    let fetch_failure = failing_service
+        .expand_references_for_prompt_with_budget("Base", &[clickup_reference("123456789")], 4096)
+        .await;
+    assert_eq!(
+        fetch_failure.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::ApiError
+    );
 }
 
 #[tokio::test]
