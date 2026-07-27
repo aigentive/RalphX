@@ -1,4 +1,5 @@
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path as StdPath, PathBuf};
     use std::pin::Pin;
     use std::process::Command;
@@ -3550,6 +3551,49 @@
         std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
         git(repo.path(), &["add", "README.md"]);
         git(repo.path(), &["commit", "-m", "base"]);
+        let fake_remote = worktrees.path().join("github-remote.git");
+        git(
+            repo.path(),
+            &[
+                "clone",
+                "--bare",
+                repo.path().to_str().expect("repo path should be UTF-8"),
+                fake_remote.to_str().expect("remote path should be UTF-8"),
+            ],
+        );
+        let fake_ssh = worktrees.path().join("fake-github-ssh");
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-G\" ]; then exit 0; fi\ncase \"$*\" in\n  *git-upload-pack*) exec git-upload-pack '{}' ;;\n  *git-receive-pack*) exec git-receive-pack '{}' ;;\nesac\nexit 2\n",
+                fake_remote.display(),
+                fake_remote.display(),
+            ),
+        )
+        .expect("fake GitHub SSH transport should be written");
+        let mut permissions = std::fs::metadata(&fake_ssh)
+            .expect("fake GitHub SSH transport metadata should load")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_ssh, permissions)
+            .expect("fake GitHub SSH transport should be executable");
+        git(
+            repo.path(),
+            &[
+                "config",
+                "core.sshCommand",
+                fake_ssh.to_str().expect("SSH path should be UTF-8"),
+            ],
+        );
+        git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:ralphx/test-repository.git",
+            ],
+        );
         let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
 
         let github = Arc::new(MockGithubService::new());
@@ -3572,6 +3616,7 @@
         );
         project.base_branch = Some("main".to_string());
         project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        project.github_pr_enabled = true;
         app_state
             .project_repo
             .create(project.clone())

@@ -38,6 +38,7 @@ import {
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
+  commitAgentConversationWorkspaceLocally,
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
@@ -1926,6 +1927,67 @@ describe("chat api", () => {
       status: "ready",
       cacheStatus: "miss",
       reason: null,
+    });
+  });
+
+  it("commits a workspace locally with the exact review receipt and transforms its result", async () => {
+    mockInvoke.mockResolvedValue({
+      workspace: {
+        conversation_id: "conversation-1",
+        project_id: "project-1",
+        mode: "edit",
+        base_ref_kind: "project_default",
+        base_ref: "main",
+        base_display_name: "Project default (main)",
+        base_commit: "base",
+        branch_name: "ralphx/demo/agent-conversation-1",
+        worktree_path: "/tmp/ralphx/conversation-1",
+        linked_ideation_session_id: null,
+        linked_plan_branch_id: null,
+        publication_pr_number: null,
+        publication_pr_url: null,
+        publication_pr_status: null,
+        publication_push_status: null,
+        status: "active",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+      },
+      outcome: "committed_local",
+      branch_name: "ralphx/demo/agent-conversation-1",
+      previous_head_sha: "abcdef0",
+      commit_sha: "1234567890abcdef",
+      had_changes: true,
+      attempt_token: "attempt-7",
+    });
+
+    const result = await commitAgentConversationWorkspaceLocally("conversation-1", {
+      expectedHeadSha: "abcdef0",
+      reviewArtifactId: "artifact-1",
+      reviewArtifactVersion: 3,
+      reviewedHeadSha: "abcdef0",
+      reviewedDiffFingerprint: "fingerprint-1",
+      attemptToken: "attempt-7",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "commit_agent_conversation_workspace_locally",
+      {
+        input: {
+          conversationId: "conversation-1",
+          expectedHeadSha: "abcdef0",
+          reviewArtifactId: "artifact-1",
+          reviewArtifactVersion: 3,
+          reviewedHeadSha: "abcdef0",
+          reviewedDiffFingerprint: "fingerprint-1",
+          attemptToken: "attempt-7",
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      outcome: "committed_local",
+      commitSha: "1234567890abcdef",
+      attemptToken: "attempt-7",
+      workspace: { conversationId: "conversation-1" },
     });
   });
 

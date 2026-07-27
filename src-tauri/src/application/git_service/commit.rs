@@ -11,6 +11,11 @@ struct StageSelection {
     skipped_generated_artifacts: Vec<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct GitIndexSnapshot {
+    tree: String,
+}
+
 fn normalize_git_status_path(path: &str) -> String {
     path.trim_start_matches("./").replace('\\', "/")
 }
@@ -190,6 +195,66 @@ impl GitService {
             path, message
         );
 
+        Self::stage_all_including_deletions(path).await?;
+        Self::commit_staged_changes(path, message).await
+    }
+
+    /// Stage all commit-eligible changes and retain the prior index tree so a
+    /// caller can reject a later validation without leaking staged changes.
+    pub(crate) async fn stage_all_including_deletions_with_index_snapshot(
+        path: &Path,
+    ) -> AppResult<GitIndexSnapshot> {
+        let index_tree = git_cmd::run(&["write-tree"], path).await?;
+        if !index_tree.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "Failed to snapshot Git index before staging: {}",
+                String::from_utf8_lossy(&index_tree.stderr).trim()
+            )));
+        }
+        let tree = String::from_utf8_lossy(&index_tree.stdout)
+            .trim()
+            .to_string();
+        if tree.is_empty() {
+            return Err(AppError::GitOperation(
+                "Git returned an empty index tree before staging".to_string(),
+            ));
+        }
+
+        if let Err(error) = Self::stage_all_including_deletions(path).await {
+            return match Self::restore_index_snapshot(path, &GitIndexSnapshot { tree }).await {
+                Ok(()) => Err(error),
+                Err(restore_error) => Err(AppError::GitOperation(format!(
+                    "{error} Additionally, failed to restore the pre-stage Git index: {restore_error}"
+                ))),
+            };
+        }
+        Ok(GitIndexSnapshot { tree })
+    }
+
+    /// Restore the exact staged state captured before guarded staging.
+    pub(crate) async fn restore_index_snapshot(
+        path: &Path,
+        snapshot: &GitIndexSnapshot,
+    ) -> AppResult<()> {
+        let output = git_cmd::run(&["read-tree", &snapshot.tree], path).await?;
+        if !output.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "Failed to restore Git index after rejected staging: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Commit whatever is currently staged, returning the SHA or None if nothing staged.
+    pub(crate) async fn commit_staged_changes(
+        path: &Path,
+        message: &str,
+    ) -> AppResult<Option<String>> {
+        Self::commit_staged(path, message).await
+    }
+
+    async fn stage_all_including_deletions(path: &Path) -> AppResult<()> {
         // Use git status --porcelain -z -uall for safe, .gitignore-respecting staging
         // (instead of `git add -A` which can stage build artifacts)
         let status_output = git_cmd::run(&["status", "--porcelain", "-z", "-uall"], path).await?;
@@ -219,7 +284,7 @@ impl GitService {
             }
         }
 
-        Self::commit_staged(path, message).await
+        Ok(())
     }
 
     /// Stage modified and new files, skipping deletions.

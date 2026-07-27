@@ -2203,7 +2203,18 @@ const commandHandlers: Record<
     return true;
   },
   resume_deferred_git_startup: async () => true,
-  update_github_pr_enabled: async () => null,
+  update_github_pr_enabled: async (args) => {
+    const projectId = args.projectId as string;
+    const project = getStore().projects.get(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    getStore().projects.set(projectId, {
+      ...project,
+      githubPrEnabled: args.enabled === true,
+    });
+    return null;
+  },
 
   // Plan commands
   get_active_plan: async (args) =>

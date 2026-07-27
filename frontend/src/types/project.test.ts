@@ -3,6 +3,8 @@ import {
   GitModeSchema,
   ProjectSchema,
   CreateProjectSchema,
+  getProjectWorkspacePublishMode,
+  transformProject,
   UpdateProjectSchema,
 } from "./project";
 
@@ -37,6 +39,73 @@ describe("ProjectSchema", () => {
 
   it("should parse a valid project", () => {
     expect(() => ProjectSchema.parse(validProject)).not.toThrow();
+  });
+
+  it("transforms the live repository capability from the snake_case response", () => {
+    const project = transformProject(
+      ProjectSchema.parse({
+        ...validProject,
+        repository_capability: {
+          kind: "github",
+          fetch_url: "https://github.com/ralphx/ralphx.git",
+          push_url: "git@github.com:ralphx/ralphx.git",
+        },
+      })
+    );
+
+    expect(project.repositoryCapability).toEqual({
+      kind: "github",
+      fetchUrl: "https://github.com/ralphx/ralphx.git",
+      pushUrl: "git@github.com:ralphx/ralphx.git",
+    });
+  });
+
+  it("fails closed when a legacy response has no repository capability", () => {
+    const project = transformProject(ProjectSchema.parse(validProject));
+
+    expect(project.repositoryCapability).toEqual({
+      kind: "inspectionFailed",
+      message: expect.stringMatching(/capability is unavailable/i),
+    });
+  });
+
+  it("derives workspace publishing from persisted PR authority, capability, and preference", () => {
+    const baseProject = transformProject(ProjectSchema.parse(validProject));
+
+    expect(getProjectWorkspacePublishMode(baseProject, false)).toMatchObject({
+      kind: "unavailable",
+    });
+    expect(
+      getProjectWorkspacePublishMode(
+        {
+          ...baseProject,
+          githubPrEnabled: false,
+          repositoryCapability: {
+            kind: "github",
+            fetchUrl: null,
+            pushUrl: "git@github.com:ralphx/ralphx.git",
+          },
+        },
+        false,
+      ),
+    ).toMatchObject({ kind: "localCommit" });
+    expect(
+      getProjectWorkspacePublishMode(
+        {
+          ...baseProject,
+          githubPrEnabled: true,
+          repositoryCapability: {
+            kind: "github",
+            fetchUrl: null,
+            pushUrl: "git@github.com:ralphx/ralphx.git",
+          },
+        },
+        false,
+      ),
+    ).toEqual({ kind: "newPr" });
+    expect(getProjectWorkspacePublishMode(baseProject, true)).toEqual({
+      kind: "persistedPr",
+    });
   });
 
   it("should parse a project with worktree mode", () => {

@@ -15,7 +15,7 @@ use crate::domain::entities::ideation::PLAN_CONTRACT_V2;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ExecutionPlan,
     ExecutionPlanId, IdeationSessionId, IdeationSessionStatus, InternalStatus, PlanBranch,
-    PlanBranchId, ProjectId, SessionOrigin, Task, TaskCategory, TaskId, TaskProposal,
+    PlanBranchId, Project, ProjectId, SessionOrigin, Task, TaskCategory, TaskId, TaskProposal,
     TaskProposalId, TaskStep,
 };
 use crate::error::{AppError, AppResult};
@@ -27,6 +27,7 @@ use super::is_local_proposal;
 use crate::commands::branch_helpers::ensure_base_branch_exists;
 use crate::commands::plan_branch_commands::slug_from_name;
 use crate::http_server::handlers::ideation::stop_verification_children;
+use crate::infrastructure::git_auth::{inspect_repository_capability, RepositoryCapability};
 
 // ============================================================================
 // Core Result Type
@@ -190,7 +191,7 @@ pub(super) fn phase_upsert_plan_branch(
     base_branch_override_tx: &Option<String>,
     project_base_branch_tx: &Option<String>,
     project_name_tx: &str,
-    project_pr_eligible_tx: bool,
+    effective_pr_eligible_tx: bool,
     execution_plan_id: &ExecutionPlanId,
     branch_name_override_tx: &Option<String>,
 ) -> AppResult<(PlanBranchId, String)> {
@@ -220,7 +221,7 @@ pub(super) fn phase_upsert_plan_branch(
     );
     let branch_with_plan = PlanBranch {
         execution_plan_id: Some(execution_plan_id.clone()),
-        pr_eligible: project_pr_eligible_tx,
+        pr_eligible: effective_pr_eligible_tx,
         base_branch_override: base_branch_override_tx.clone(),
         ..branch
     };
@@ -237,7 +238,10 @@ pub(super) fn phase_upsert_plan_branch(
            merge_task_id=excluded.merge_task_id,
            merged_at=excluded.merged_at,
            execution_plan_id=excluded.execution_plan_id,
-           pr_eligible=excluded.pr_eligible,
+           pr_eligible=CASE
+             WHEN plan_branches.pr_number IS NULL THEN excluded.pr_eligible
+             ELSE plan_branches.pr_eligible
+           END,
            base_branch_override=excluded.base_branch_override",
         rusqlite::params![
             branch_with_plan.id.as_str(),
@@ -269,6 +273,34 @@ pub(super) fn phase_upsert_plan_branch(
         .map_err(|e| AppError::Database(format!("Failed to fetch upserted branch: {}", e)))?;
 
     Ok((persisted.id, base_branch))
+}
+
+/// Derive PR eligibility for a newly created plan branch from the live remote
+/// topology and the user's future-PR preference. A failed inspection cannot
+/// silently become a local merge because it would mutate the task pipeline
+/// before the repository authority is known.
+pub(super) fn derive_plan_branch_pr_eligibility(
+    github_pr_enabled: bool,
+    capability: RepositoryCapability,
+) -> AppResult<bool> {
+    match capability {
+        RepositoryCapability::Github { .. } => Ok(github_pr_enabled),
+        RepositoryCapability::LocalOnly | RepositoryCapability::OtherRemote { .. } => Ok(false),
+        RepositoryCapability::InspectionFailed { message } => Err(AppError::Validation(format!(
+            "Cannot determine repository capability before creating the plan branch: {message}"
+        ))),
+    }
+}
+
+pub(super) async fn inspect_plan_branch_pr_eligibility(project: &Project) -> AppResult<bool> {
+    if !project.github_pr_enabled {
+        return Ok(false);
+    }
+
+    derive_plan_branch_pr_eligibility(
+        true,
+        inspect_repository_capability(std::path::Path::new(&project.working_directory)).await,
+    )
 }
 
 pub(super) fn phase_insert_tasks_and_steps(
@@ -825,6 +857,9 @@ async fn apply_proposals_core_inner(
                 session.project_id.as_str()
             ))
         })?;
+    // This must happen before base-branch preparation and before the pipeline
+    // transaction so an inspection failure cannot create partial plan state.
+    let effective_plan_pr_eligible = inspect_plan_branch_pr_eligibility(&project).await?;
     let linked_agent_workspace =
         load_linked_agent_conversation_workspace(app_state, &session_id, &session.project_id)
             .await?;
@@ -1006,7 +1041,7 @@ async fn apply_proposals_core_inner(
         .map(|workspace| workspace.branch_name.clone());
     let project_base_branch_tx = project.base_branch.clone();
     let project_name_tx = project.name.clone();
-    let project_pr_eligible_tx = project.github_pr_enabled;
+    let effective_plan_pr_eligible_tx = effective_plan_pr_eligible;
     let require_verification_for_accept_tx = effective_policy.require_verification_for_accept;
     let session_converted_tx = session_converted;
     let proposals_tx = proposals_to_apply.clone();
@@ -1067,7 +1102,7 @@ async fn apply_proposals_core_inner(
                 &base_branch_override_tx,
                 &project_base_branch_tx,
                 &project_name_tx,
-                project_pr_eligible_tx,
+                effective_plan_pr_eligible_tx,
                 &execution_plan_id,
                 &agent_workspace_branch_name_tx,
             )?;

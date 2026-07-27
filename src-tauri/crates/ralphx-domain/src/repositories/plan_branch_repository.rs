@@ -45,7 +45,9 @@ pub trait PlanBranchRepository: Send + Sync {
     /// Get all plan branches for a project
     async fn get_by_project_id(&self, project_id: &ProjectId) -> AppResult<Vec<PlanBranch>>;
 
-    /// Get active PR-eligible branches that may need startup PR creation or metadata recovery.
+    /// Get active merge-task branches that may need startup PR creation or persisted PR metadata recovery.
+    ///
+    /// Candidates are PR-eligible or already have a persisted PR number.
     async fn get_startup_pr_recovery_candidates_by_project_id(
         &self,
         project_id: &ProjectId,
@@ -55,8 +57,8 @@ pub trait PlanBranchRepository: Send + Sync {
             .into_iter()
             .filter(|branch| {
                 branch.status == PlanBranchStatus::Active
-                    && branch.pr_eligible
                     && branch.merge_task_id.is_some()
+                    && (branch.pr_eligible || branch.pr_number.is_some())
             })
             .collect())
     }

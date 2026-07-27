@@ -1210,11 +1210,6 @@
       {
         "path": "src-tauri/src/http_server/handlers/projects.rs",
         "target": "crate::commands",
-        "text": "crate::commands::project_commands::ensure_git_initialized_async(&canonical_str)"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/projects.rs",
-        "target": "crate::commands",
         "text": "crate::commands::project_commands::spawn_project_analyzer("
       },
       {

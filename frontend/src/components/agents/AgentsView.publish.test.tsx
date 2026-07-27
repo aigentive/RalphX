@@ -6,20 +6,26 @@ import {
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspacePublicationEvent,
+  AgentWorkspaceReviewContext,
 } from "@/api/chat";
 import type { FileChange } from "@/api/diff";
 import type { PullRequestDetail } from "@/api/github";
 import { useChatStore } from "@/stores/chatStore";
+import { useProjectStore } from "@/stores/projectStore";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
+  renderWithAgentProviders,
 } from "./agentsTestFixtures";
+import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { getAgentConversationStoreKey } from "./agentConversations";
 import {
   DEFAULT_AGENT_ARTIFACT_UI_STATE,
@@ -32,6 +38,7 @@ const deferredHydrationTimeout = { timeout: 3_000 };
 
 const {
   getAgentConversationRuntimeStatusesMock,
+  commitAgentConversationWorkspaceLocallyMock,
   getPullRequestDetailMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
@@ -51,7 +58,9 @@ const {
   publishAgentConversationWorkspaceMock,
   realPublishPanelState,
   sendAgentMessageMock,
+  toastDismissMock,
   toastErrorMock,
+  toastInfoMock,
   toastSuccessMock,
   updateWorkspaceFromBaseMock,
 } = getAgentsViewTestMocks();
@@ -148,6 +157,11 @@ function configurePublishPane({
       reviewGateStatus,
       reviewBlockingSummary:
         reviewGateStatus === "blocking" ? "Address the blocking finding." : null,
+      workspaceHeadSha: "head-sha",
+      reviewedHeadSha: "reviewed-head-sha",
+      reviewedDiffFingerprint: "fingerprint-1",
+      reviewArtifactId: "artifact-1",
+      reviewArtifactVersion: 3,
     },
     isCurrent: false,
     isOutdated: false,
@@ -195,6 +209,321 @@ describe("AgentsView publish", () => {
       ).toBeInTheDocument();
       expect(actionbar).toHaveTextContent("1 changed file published for review.");
     });
+  });
+
+  it("uses local commit for local-only and GitHub-opt-out projects, but keeps a persisted PR authoritative", async () => {
+    configurePublishPane();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    commitAgentConversationWorkspaceLocallyMock.mockResolvedValue({
+      workspace: conversationWorkspace(),
+      outcome: "committed_local",
+      branchName: "ralphx/ralphx/agent-abcdef12",
+      previousHeadSha: "head-sha",
+      commitSha: "1234567890abcdef",
+      hadChanges: true,
+      attemptToken: "1",
+    });
+
+    await openPublishPane();
+    expect(screen.getByTestId("agents-commit-locally")).toBeEnabled();
+    expect(screen.queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+
+    await waitFor(() =>
+      expect(commitAgentConversationWorkspaceLocallyMock).toHaveBeenCalledWith(
+        "conversation-1",
+        {
+          expectedHeadSha: "head-sha",
+          reviewArtifactId: "artifact-1",
+          reviewArtifactVersion: 3,
+          reviewedHeadSha: "reviewed-head-sha",
+          reviewedDiffFingerprint: "fingerprint-1",
+          attemptToken: "1",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Committed locally on ralphx/ralphx/agent-abcdef12",
+        {
+          description: "Untitled agent • 1234567",
+          duration: 8_000,
+          id: "agent-workspace-operation:conversation-1:local-commit",
+        },
+      ),
+    );
+
+    act(() => {
+      useProjectStore.getState().updateProject("project-1", {
+        repositoryCapability: {
+          kind: "github",
+          fetchUrl: null,
+          pushUrl: "git@github.com:ralphx/ralphx.git",
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-commit-locally")).toHaveTextContent("Commit locally");
+      expect(screen.getByText(/GitHub PR mode is off for this project/i)).toBeInTheDocument();
+    });
+
+    act(() => {
+      useProjectStore.getState().updateProject("project-1", {
+        repositoryCapability: { kind: "inspectionFailed", message: "Unable to inspect" },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-publish-unavailable")).toBeDisabled();
+      expect(screen.queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+    });
+
+  });
+
+  it("keeps local commit unavailable for local-only task-pipeline workspaces", async () => {
+    configurePublishPane({
+      workspace: {
+        linkedPlanBranchId: "plan-branch-1",
+        mode: "ideation",
+      },
+    });
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+
+    const actionbar = await openPublishPane();
+
+    expect(screen.queryByTestId("agents-commit-locally")).not.toBeInTheDocument();
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toHaveTextContent(
+      "Managed by Tasks",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toBeDisabled();
+  });
+
+  it("keeps a persisted pull request on the publish action when inspection is unavailable", async () => {
+    configurePublishPane({ workspace: { publicationPrNumber: 42 } });
+    useProjectStore.getState().updateProject("project-1", {
+      repositoryCapability: { kind: "inspectionFailed", message: "Unable to inspect" },
+    });
+
+    await openPublishPane();
+
+    expect(screen.getByTestId("agents-publish-confirm")).toHaveTextContent("Commit & Publish");
+    expect(screen.queryByTestId("agents-commit-locally")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-publish-unavailable")).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale local-commit result without replacing workspace cache or showing success", async () => {
+    configurePublishPane();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    const initialWorkspace = conversationWorkspace({ updatedAt: "2026-04-23T09:00:00Z" });
+    const staleWorkspace = conversationWorkspace({ updatedAt: "2099-01-01T00:00:00Z" });
+    getAgentConversationWorkspaceMock.mockResolvedValue(initialWorkspace);
+    commitAgentConversationWorkspaceLocallyMock.mockResolvedValue({
+      workspace: staleWorkspace,
+      outcome: "committed_local",
+      branchName: staleWorkspace.branchName,
+      previousHeadSha: "head-sha",
+      commitSha: "1234567890abcdef",
+      hadChanges: true,
+      attemptToken: "stale-token",
+    });
+
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId("agents-publish-actionbar", undefined, deferredHydrationTimeout);
+    fireEvent.click(screen.getByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+
+    await waitFor(() => expect(commitAgentConversationWorkspaceLocallyMock).toHaveBeenCalled());
+    expect(queryClient.getQueryData(agentWorkspaceKeys.workspace("conversation-1"))).toEqual(
+      initialWorkspace,
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(toastInfoMock).not.toHaveBeenCalled();
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      "agent-workspace-operation:conversation-1:local-commit",
+    );
+  });
+
+  it("dismisses a local-commit completion after switching conversations", async () => {
+    mockAgentViewData();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    const firstWorkspace = conversationWorkspace();
+    const secondWorkspace = conversationWorkspace({
+      branchName: "ralphx/ralphx/agent-conversation-2",
+      conversationId: "conversation-2",
+      updatedAt: "2026-04-23T10:00:00Z",
+      worktreePath: "/tmp/ralphx/conversation-2",
+    });
+    const reviewContextFor = (
+      workspace: AgentConversationWorkspace,
+    ): AgentWorkspaceReviewContext => ({
+      success: true,
+      workspace,
+      events: [],
+      target: null,
+      monitor: {
+        status: "idle",
+        reviewArtifactId: "artifact-1",
+        reviewArtifactVersion: 3,
+        reviewGateStatus: null,
+        reviewBlockingSummary: null,
+        workspaceHeadSha: "head-sha",
+        reviewedHeadSha: "reviewed-head-sha",
+        reviewedDiffFingerprint: "fingerprint-1",
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: false,
+    });
+    let resolveLocalCommit: ((value: {
+      workspace: AgentConversationWorkspace;
+      outcome: "committed_local";
+      branchName: string;
+      previousHeadSha: string;
+      commitSha: string;
+      hadChanges: boolean;
+      attemptToken: string;
+    }) => void) | null = null;
+    const localCommitPromise = new Promise<{
+      workspace: AgentConversationWorkspace;
+      outcome: "committed_local";
+      branchName: string;
+      previousHeadSha: string;
+      commitSha: string;
+      hadChanges: boolean;
+      attemptToken: string;
+    }>((resolve) => {
+      resolveLocalCommit = resolve;
+    });
+    commitAgentConversationWorkspaceLocallyMock.mockReturnValue(localCommitPromise);
+    const panelProps = (workspace: AgentConversationWorkspace) => ({
+      workspace,
+      conversationTitle: workspace.conversationId,
+      projectBaseBranch: "main",
+      onPublishWorkspace: undefined,
+      publishAttempt: null,
+      reviewContext: reviewContextFor(workspace),
+      activeSubTab: "changes" as const,
+      showReviewTab: false,
+      onSubTabChange: vi.fn(),
+      reviewContent: null,
+    });
+
+    const { queryClient, rerender } = renderWithAgentProviders(
+      <AgentPublishPanel {...panelProps(firstWorkspace)} />,
+    );
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspace(secondWorkspace.conversationId),
+      secondWorkspace,
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+    await waitFor(() =>
+      expect(commitAgentConversationWorkspaceLocallyMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.anything(),
+      ),
+    );
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AgentPublishPanel {...panelProps(secondWorkspace)} />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      resolveLocalCommit?.({
+        workspace: firstWorkspace,
+        outcome: "committed_local",
+        branchName: firstWorkspace.branchName,
+        previousHeadSha: "head-sha",
+        commitSha: "1234567890abcdef",
+        hadChanges: true,
+        attemptToken: "1",
+      });
+      await localCommitPromise;
+    });
+
+    expect(
+      queryClient.getQueryData(agentWorkspaceKeys.workspace(secondWorkspace.conversationId)),
+    ).toEqual(secondWorkspace);
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      "agent-workspace-operation:conversation-1:local-commit",
+    );
+  });
+
+  it.each([
+    {
+      commitSha: "1234567890abcdef",
+      outcome: "already_committed" as const,
+      expectedMessage: "Already committed locally",
+      expectedOptions: {
+        description: "Untitled agent • 1234567",
+        dismissible: true,
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:local-commit",
+      },
+    },
+    {
+      commitSha: "",
+      outcome: "no_changes" as const,
+      expectedMessage: "No local changes to commit",
+      expectedOptions: {
+        description: "Untitled agent • Commit isolated workspace branch",
+        dismissible: true,
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:local-commit",
+      },
+    },
+  ])("shows an informational local-commit toast for $outcome", async ({
+    commitSha,
+    outcome,
+    expectedMessage,
+    expectedOptions,
+  }) => {
+    configurePublishPane();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    commitAgentConversationWorkspaceLocallyMock.mockResolvedValue({
+      workspace: conversationWorkspace(),
+      outcome,
+      branchName: "ralphx/ralphx/agent-abcdef12",
+      previousHeadSha: "head-sha",
+      commitSha,
+      hadChanges: outcome !== "no_changes",
+      attemptToken: "1",
+    });
+
+    await openPublishPane();
+    fireEvent.click(screen.getByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith(expectedMessage, expectedOptions),
+    );
   });
 
   it("keeps publishing ahead of conflict presentation and action branches", async () => {

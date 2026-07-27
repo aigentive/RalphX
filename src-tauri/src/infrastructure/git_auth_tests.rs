@@ -1,9 +1,13 @@
 use std::ffi::OsStr;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::Path;
 
 use super::git_auth::{
-    classify_gh_api_failure, http_status_code, is_valid_github_login,
-    probe_github_connection_status, probe_github_connection_status_with_timeout,
+    classify_gh_api_failure, http_status_code, inspect_repository_capability,
+    is_supported_github_remote, is_valid_github_login, probe_github_connection_status,
+    probe_github_connection_status_with_timeout, repository_capability_from_origin_config,
+    GitRemoteAuthConfig, RepositoryCapability,
 };
 use super::tool_paths::TEST_ENV_MUTEX;
 use crate::domain::services::github_service::{
@@ -42,6 +46,19 @@ fn write_fake_gh(path: &Path, body: &str) {
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).expect("mark fake gh executable");
+    }
+}
+
+fn write_fake_git(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("write fake git");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake git metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark fake git executable");
     }
 }
 
@@ -86,6 +103,26 @@ async fn probe_with_fake_gh_timeout(
     })
     .await
     .expect("probe task")
+}
+
+async fn inspect_capability_with_fake_git(script_body: &str) -> RepositoryCapability {
+    let script_body = script_body.to_owned();
+
+    tokio::task::spawn_blocking(move || {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let fake_git = temp_dir.path().join("git");
+        write_fake_git(&fake_git, &script_body);
+        let _path = EnvGuard::set_os("PATH", temp_dir.path().as_os_str());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(inspect_repository_capability(temp_dir.path()))
+    })
+    .await
+    .expect("capability task")
 }
 
 #[tokio::test]
@@ -153,6 +190,294 @@ fn github_login_validation_matches_github_account_rules() {
     assert!(!is_valid_github_login("octo-"));
     assert!(!is_valid_github_login("octo_user"));
     assert!(!is_valid_github_login(&"a".repeat(40)));
+}
+
+#[test]
+fn repository_capability_uses_effective_push_url_and_only_accepts_github_com() {
+    let local_only = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+        fetch_url: None,
+        push_url: None,
+        github_https_credential_helper_configured: false,
+    });
+    assert_eq!(local_only, RepositoryCapability::LocalOnly);
+
+    let github_https = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+        fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+        push_url: Some("https://github.com/owner/repo.git".to_string()),
+        github_https_credential_helper_configured: false,
+    });
+    assert!(matches!(github_https, RepositoryCapability::Github { .. }));
+
+    let github_ssh = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+        fetch_url: Some("https://gitlab.com/owner/repo.git".to_string()),
+        push_url: Some("ssh://git@github.com/owner/repo.git".to_string()),
+        github_https_credential_helper_configured: false,
+    });
+    assert!(matches!(github_ssh, RepositoryCapability::Github { .. }));
+
+    let mixed = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+        fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+        push_url: Some("git@gitlab.com:owner/repo.git".to_string()),
+        github_https_credential_helper_configured: false,
+    });
+    assert!(matches!(mixed, RepositoryCapability::OtherRemote { .. }));
+}
+
+#[test]
+fn repository_capability_falls_back_to_fetch_and_requires_exact_github_repository_paths() {
+    let fetch_only = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+        fetch_url: Some("git@github.com:owner/repository.git".to_string()),
+        push_url: None,
+        github_https_credential_helper_configured: false,
+    });
+    assert_eq!(
+        fetch_only,
+        RepositoryCapability::Github {
+            fetch_url: Some("git@github.com:owner/repository.git".to_string()),
+            push_url: "git@github.com:owner/repository.git".to_string(),
+        }
+    );
+
+    for url in [
+        "https://github.com/owner/repository.git",
+        "git@github.com:owner/repository.git",
+        "ssh://git@github.com/owner/repository.git",
+    ] {
+        assert!(is_supported_github_remote(url), "{url} must be supported");
+    }
+    for url in [
+        "https://github.com/owner/repository/issues",
+        "git@github.com:owner/repository/extra",
+        "ssh://git@github.com/owner/repository/tree/main",
+        "https://github.com/owner",
+        "https://github.com/owner//repository",
+    ] {
+        assert!(!is_supported_github_remote(url), "{url} must be rejected");
+    }
+}
+
+#[test]
+fn repository_capability_serialization_strips_https_userinfo_and_redacts_tokens() {
+    let raw_url = "https://automation:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ@github.com/owner/repo.git";
+    let capability = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+        fetch_url: Some(raw_url.to_string()),
+        push_url: Some(raw_url.to_string()),
+        github_https_credential_helper_configured: false,
+    });
+
+    assert_eq!(
+        capability,
+        RepositoryCapability::Github {
+            fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+            push_url: "https://github.com/owner/repo.git".to_string(),
+        }
+    );
+    let serialized = serde_json::to_string(&capability).expect("capability serializes");
+    assert!(!serialized.contains("automation"));
+    assert!(!serialized.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+}
+
+#[test]
+fn repository_capability_serialization_strips_scheme_url_query_and_fragment_secrets() {
+    let fetch_url = "https://gitlab.com/owner/fetch.git?access_token=fetch-secret#fetch-fragment";
+    let push_url = "https://github.com/owner/repo.git?access_token=push-secret#push-fragment";
+    let capability = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+        fetch_url: Some(fetch_url.to_string()),
+        push_url: Some(push_url.to_string()),
+        github_https_credential_helper_configured: false,
+    });
+
+    assert_eq!(
+        capability,
+        RepositoryCapability::OtherRemote {
+            fetch_url: Some("https://gitlab.com/owner/fetch.git".to_string()),
+            push_url: "https://github.com/owner/repo.git".to_string(),
+        }
+    );
+    let serialized = serde_json::to_string(&capability).expect("capability serializes");
+    for fragment in [
+        "access_token",
+        "fetch-secret",
+        "push-secret",
+        "fetch-fragment",
+        "push-fragment",
+    ] {
+        assert!(!serialized.contains(fragment));
+    }
+}
+
+#[test]
+fn repository_capability_rejects_file_and_generic_remote_urls() {
+    for url in [
+        "file:///tmp/repo.git",
+        "/tmp/repo.git",
+        "https://gitlab.com/owner/repo.git",
+        "git@gitlab.com:owner/repo.git",
+    ] {
+        let capability = repository_capability_from_origin_config(&GitRemoteAuthConfig {
+            fetch_url: Some(url.to_string()),
+            push_url: Some(url.to_string()),
+            github_https_credential_helper_configured: false,
+        });
+        assert!(matches!(
+            capability,
+            RepositoryCapability::OtherRemote { .. }
+        ));
+    }
+}
+
+#[tokio::test]
+async fn repository_capability_returns_typed_inspection_failure_for_invalid_config() {
+    let repo = tempfile::tempdir().expect("temporary repository path");
+    std::fs::create_dir(repo.path().join(".git")).expect("git metadata directory");
+    std::fs::create_dir(repo.path().join(".git").join("config")).expect("invalid config directory");
+
+    let capability = inspect_repository_capability(repo.path()).await;
+
+    assert!(matches!(
+        capability,
+        RepositoryCapability::InspectionFailed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn repository_capability_uses_git_effective_urls_for_included_push_rewrites() {
+    let repo = tempfile::tempdir().expect("temporary repository path");
+    let included = tempfile::tempdir().expect("included git config");
+    let include_path = included.path().join("capability.gitconfig");
+    std::process::Command::new("git")
+        .args(["init", "--initial-branch", "main"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git init should run");
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .expect("git remote add should run");
+    std::fs::write(
+        &include_path,
+        "[url \"https://gitlab.com/rewritten/\"]\n\tpushInsteadOf = https://github.com/\n",
+    )
+    .expect("included config should write");
+    std::process::Command::new("git")
+        .args([
+            "config",
+            "include.path",
+            include_path.to_str().expect("utf-8 path"),
+        ])
+        .current_dir(repo.path())
+        .output()
+        .expect("git config should run");
+
+    let capability = inspect_repository_capability(repo.path()).await;
+
+    assert!(matches!(
+        capability,
+        RepositoryCapability::OtherRemote { push_url, .. }
+            if push_url == "https://gitlab.com/rewritten/owner/repo.git"
+    ));
+}
+
+#[tokio::test]
+async fn repository_capability_uses_push_only_origin_url() {
+    let capability = inspect_capability_with_fake_git(
+        r#"#!/bin/sh
+if [ "$1" = "rev-parse" ]; then
+  echo true
+  exit 0
+fi
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "--push" ]; then
+  echo git@github.com:owner/repo.git
+  exit 0
+fi
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then
+  echo "error: No such remote 'origin'" >&2
+  exit 2
+fi
+exit 1
+"#,
+    )
+    .await;
+
+    assert_eq!(
+        capability,
+        RepositoryCapability::Github {
+            fetch_url: None,
+            push_url: "git@github.com:owner/repo.git".to_string(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn repository_capability_fails_closed_when_origin_url_inspection_fails() {
+    let capability = inspect_capability_with_fake_git(
+        r#"#!/bin/sh
+if [ "$1" = "rev-parse" ]; then
+  echo true
+  exit 0
+fi
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then
+  echo "fatal: unable to read repository configuration" >&2
+  exit 128
+fi
+exit 1
+"#,
+    )
+    .await;
+
+    assert!(matches!(
+        capability,
+        RepositoryCapability::InspectionFailed { .. }
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn repository_capability_rejects_symlinked_git_directory() {
+    let repo = tempfile::tempdir().expect("temporary repository path");
+    let outside = tempfile::tempdir().expect("external git metadata path");
+    std::fs::write(
+        outside.path().join("config"),
+        "[remote \"origin\"]\n\turl = https://github.com/owner/repo.git\n",
+    )
+    .expect("external git config");
+    symlink(outside.path(), repo.path().join(".git")).expect("symlinked git metadata");
+
+    let capability = inspect_repository_capability(repo.path()).await;
+
+    assert!(matches!(
+        capability,
+        RepositoryCapability::InspectionFailed { .. }
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn repository_capability_rejects_symlinked_config_escape() {
+    let repo = tempfile::tempdir().expect("temporary repository path");
+    let outside = tempfile::tempdir().expect("external git config path");
+    let git_directory = repo.path().join(".git");
+    std::fs::create_dir(&git_directory).expect("git metadata directory");
+    let external_config = outside.path().join("config");
+    std::fs::write(
+        &external_config,
+        "[remote \"origin\"]\n\turl = https://github.com/owner/repo.git\n",
+    )
+    .expect("external git config");
+    symlink(&external_config, git_directory.join("config")).expect("symlinked git config");
+
+    let capability = inspect_repository_capability(repo.path()).await;
+
+    assert!(matches!(
+        capability,
+        RepositoryCapability::InspectionFailed { .. }
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
