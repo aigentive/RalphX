@@ -456,6 +456,8 @@ mod ideation_workspace_tests;
 #[cfg(test)]
 mod integration_reference_expansion_tests;
 #[cfg(test)]
+mod integration_reference_expansion_edge_tests;
+#[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
 mod pending_session_drain_tests;

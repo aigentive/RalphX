@@ -122,3 +122,48 @@ async fn collector_rejects_malformed_user_reference_metadata() {
         .to_string()
         .contains("conversation reference metadata"));
 }
+
+#[tokio::test]
+async fn collector_rejects_invalid_metadata_shapes_and_reference_identities() {
+    let cases = [
+        (
+            serde_json::json!([]).to_string(),
+            "metadata must be a JSON object",
+        ),
+        (
+            serde_json::json!({
+                "composer_integration_references": {"provider": "atlassian"}
+            })
+            .to_string(),
+            "malformed integration references",
+        ),
+        (
+            serde_json::json!({
+                "composer_integration_references": [{
+                    "provider": "",
+                    "kind": "jira",
+                    "id": "RX-1"
+                }]
+            })
+            .to_string(),
+            "without provider, kind, or id",
+        ),
+    ];
+
+    for (metadata, expected_message) in cases {
+        let repository = MemoryChatMessageRepository::new();
+        let conversation_id = ChatConversationId::new();
+        create_user_message(&repository, &conversation_id, Some(metadata), Utc::now()).await;
+
+        let error =
+            collect_conversation_inherited_integration_references(&repository, &conversation_id)
+                .await
+                .expect_err("invalid metadata must fail closed");
+
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(
+            error.to_string().contains(expected_message),
+            "unexpected validation error: {error}"
+        );
+    }
+}
