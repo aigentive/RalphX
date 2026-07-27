@@ -34,7 +34,7 @@ use crate::remote_server::endpoints::RemoteRouterState;
 use crate::remote_server::rate_limit::{auth_endpoint_key, RemoteRateLimitKey, RemoteRateLimiter};
 use crate::remote_server::session_registry::RemoteSessionRegistry;
 use crate::remote_server::settings::RemoteExposureMode;
-use crate::remote_server::{remote_error_response, PRE_AUTH_ALLOWLIST};
+use crate::remote_server::{remote_error_response, PRE_AUTH_ALLOWLIST, TICKET_AUTH_ALLOWLIST};
 
 /// Device bearer tokens. Greppable and visually distinct from `rxk_live_` (:3848) keys.
 pub(crate) const REMOTE_DEVICE_TOKEN_PREFIX: &str = "rxd_live_";
@@ -482,6 +482,13 @@ pub(crate) async fn authenticate_remote_request(
         return next.run(request).await;
     }
     if PRE_AUTH_ALLOWLIST.contains(&request.uri().path()) {
+        return next.run(request).await;
+    }
+    // The WS upgrade carries no bearer by construction (§3.2) and authenticates itself with a
+    // single-use device-bound ticket before upgrading. Skipping the bearer check here is not a
+    // hole: `ws_events_handler` refuses every request that cannot consume a live ticket AND
+    // re-resolve an unrevoked device holding `ui:read`.
+    if TICKET_AUTH_ALLOWLIST.contains(&request.uri().path()) {
         return next.run(request).await;
     }
 
