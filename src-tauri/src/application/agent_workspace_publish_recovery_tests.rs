@@ -146,17 +146,17 @@ async fn prepare_metadata_recovery_receipt(
         )
         .await
         .expect("prepare metadata receipt");
-    state
+    let workspace = state
         .agent_conversation_workspace_repo
-        .update_publication(
-            &conversation_id,
-            Some(684),
-            Some("https://github.com/owner/repo/pull/684"),
-            Some("open"),
-            Some("describing"),
-        )
+        .get_by_conversation_id(&conversation_id)
         .await
-        .expect("seed transient metadata status");
+        .expect("load prepared metadata workspace")
+        .expect("prepared metadata workspace");
+    assert_eq!(
+        workspace.publication_push_status.as_deref(),
+        Some("pushing"),
+        "receipt recovery fixture must preserve the production prepare state"
+    );
     (temp, github)
 }
 
