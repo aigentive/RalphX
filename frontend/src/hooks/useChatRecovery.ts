@@ -21,6 +21,7 @@ import { MERGE_STATUSES } from "@/types/status";
 import { chatApi } from "@/api/chat";
 import {
   mergeActiveStreamingContentBlocks,
+  mergePersistedStreamingAnchors,
   mergeActiveStreamingTasks,
   mergeActiveStreamingToolCalls,
 } from "./chat-active-state";
@@ -48,6 +49,10 @@ interface UseChatRecoveryProps {
   activeAgentRunId?: string;
   /** Whether the containing panel is currently visible. */
   isVisible: boolean;
+  /** Canonical streaming timeline anchors loaded before active-state hydration. */
+  persistedStreamingContentBlocks?: readonly StreamingContentBlock[];
+  /** Prevent active-state recovery from racing the initial timeline response. */
+  isTimelineHydrated?: boolean;
   setStreamingTasks?: (
     updater: (prev: Map<string, StreamingTask>) => Map<string, StreamingTask>,
   ) => void;
@@ -82,6 +87,8 @@ export function useChatRecovery({
   agentRunStatus,
   activeAgentRunId,
   isVisible,
+  persistedStreamingContentBlocks = [],
+  isTimelineHydrated = true,
   setStreamingTasks,
   setStreamingToolCalls,
   setStreamingContentBlocks,
@@ -113,7 +120,12 @@ export function useChatRecovery({
       Boolean(setStreamingTasks) ||
       Boolean(setStreamingToolCalls) ||
       Boolean(setStreamingContentBlocks);
-    if (isHistoryMode || !isConversationInCurrentContext || !canHydrateStreamingState) {
+    if (
+      isHistoryMode
+      || !isConversationInCurrentContext
+      || !canHydrateStreamingState
+      || !isTimelineHydrated
+    ) {
       setIsStreamingHydrated(true);
       return;
     }
@@ -155,7 +167,10 @@ export function useChatRecovery({
         }
         if (setStreamingContentBlocks) {
           setStreamingContentBlocks((prev) =>
-            mergeActiveStreamingContentBlocks(prev, activeState)
+            mergeActiveStreamingContentBlocks(
+              mergePersistedStreamingAnchors(persistedStreamingContentBlocks, prev),
+              activeState,
+            )
           );
         }
       })
@@ -179,6 +194,8 @@ export function useChatRecovery({
     setStreamingTasks,
     setStreamingToolCalls,
     setStreamingContentBlocks,
+    persistedStreamingContentBlocks,
+    isTimelineHydrated,
     isVisible,
   ]);
 

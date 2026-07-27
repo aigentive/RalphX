@@ -1716,6 +1716,25 @@ pub async fn process_stream_background<R: Runtime>(
                             .append_text(&conversation_id_str, &text)
                             .await;
 
+                        // Persist text-only turns as they stream so a remount can recover the
+                        // durable timeline even before a tool call or terminal event arrives.
+                        persist_assistant_message_snapshot(
+                            &chat_message_repo,
+                            &assistant_message_id,
+                            &processor.response_text,
+                            &processor.tool_calls,
+                            &processor.content_blocks,
+                        )
+                        .await;
+                        persist_timeline_snapshot(
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &processor.content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
+
                         if let Some(ref handle) = app_handle {
                             // Unified event
                             let _ = handle.emit(

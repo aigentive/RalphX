@@ -13,9 +13,50 @@ use super::chat_service_selection_snapshot::{
     validate_selection_snapshot, SelectionSnapshotValidationError, SELECTION_SNAPSHOT_METADATA_KEY,
 };
 use crate::domain::services::{
-    ComposerExcerptReference, ComposerProjectReference, ComposerProjectReferenceKind,
-    ComposerSelectionSnapshot,
+    ComposerExcerptReference, ComposerIntegrationReference, ComposerProjectReference,
+    ComposerProjectReferenceKind, ComposerSelectionSnapshot,
 };
+
+#[test]
+fn live_reference_merge_prefers_current_references_and_deduplicates_inherited_identity() {
+    let current = ComposerIntegrationReference {
+        provider: "clickup".to_string(),
+        kind: "task".to_string(),
+        id: "CU-42".to_string(),
+        key: Some("CU-42".to_string()),
+        title: Some("Current title".to_string()),
+        url: None,
+        summary_excerpt: None,
+        include_transcript: None,
+    };
+    let inherited_duplicate = ComposerIntegrationReference {
+        title: Some("Older title".to_string()),
+        ..current.clone()
+    };
+    let inherited_unique = ComposerIntegrationReference {
+        provider: "linear".to_string(),
+        kind: "linear".to_string(),
+        id: "LIN-7".to_string(),
+        key: None,
+        title: None,
+        url: None,
+        summary_excerpt: None,
+        include_transcript: None,
+    };
+
+    let merged = super::merge_conversation_integration_references(
+        &[inherited_duplicate, inherited_unique],
+        &[current],
+        None,
+        None,
+        None,
+    );
+
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].id, "CU-42");
+    assert_eq!(merged[0].title.as_deref(), Some("Current title"));
+    assert_eq!(merged[1].id, "LIN-7");
+}
 
 fn plan_selection(content: &str, start_line: u32, end_line: u32) -> ComposerSelectionSnapshot {
     ComposerSelectionSnapshot {

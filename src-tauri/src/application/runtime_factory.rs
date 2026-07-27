@@ -7,9 +7,9 @@ use crate::application::chat_service::{AppChatService, ChatService, StreamingSta
 use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::notification_service::NotificationService;
 use crate::application::{
-    AgentClientBundle, AppState, AtlassianIntegrationService, GranolaIntegrationService,
-    InteractiveProcessRegistry, LinearIntegrationService, PrPollerRegistry, TaskSchedulerService,
-    TaskTransitionService,
+    AgentClientBundle, AppState, AtlassianIntegrationService, ClickUpIntegrationService,
+    GranolaIntegrationService, InteractiveProcessRegistry, LinearIntegrationService,
+    PrPollerRegistry, TaskSchedulerService, TaskTransitionService,
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
@@ -324,6 +324,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     pub linear_integration_service: Option<Arc<LinearIntegrationService>>,
     pub granola_integration_service: Option<Arc<GranolaIntegrationService>>,
+    pub clickup_integration_service: Option<Arc<ClickUpIntegrationService>>,
     pub mcp_policy_service: Option<crate::application::mcp_policy_service::McpPolicyService>,
 }
 
@@ -390,6 +391,7 @@ impl ChatRuntimeFactoryDeps {
             atlassian_integration_service: None,
             linear_integration_service: None,
             granola_integration_service: None,
+            clickup_integration_service: None,
             mcp_policy_service: None,
         }
     }
@@ -585,6 +587,24 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_clickup_integration_service(
+        mut self,
+        service: Arc<ClickUpIntegrationService>,
+    ) -> Self {
+        self.clickup_integration_service = Some(service);
+        self
+    }
+
+    pub(crate) fn with_integration_reference_services_from_app_state(
+        self,
+        state: &AppState,
+    ) -> Self {
+        self.with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
+            .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
+            .with_granola_integration_service(Arc::clone(&state.granola_integration_service))
+            .with_clickup_integration_service(Arc::clone(&state.clickup_integration_service))
+    }
+
     pub(crate) fn with_mcp_policy_service(
         mut self,
         service: crate::application::mcp_policy_service::McpPolicyService,
@@ -731,9 +751,7 @@ impl ChatRuntimeFactoryDeps {
             Some(Arc::clone(&state.external_events_repo)),
             state.webhook_publisher.as_ref().map(Arc::clone),
         )
-        .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
-        .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
-        .with_granola_integration_service(Arc::clone(&state.granola_integration_service))
+        .with_integration_reference_services_from_app_state(state)
         .with_mcp_policy_service(state.mcp_policy_service())
     }
 }
@@ -854,6 +872,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(granola) = deps.granola_integration_service.as_ref() {
         service = service.with_granola_integration_service(Arc::clone(granola));
+    }
+    if let Some(clickup) = deps.clickup_integration_service.as_ref() {
+        service = service.with_clickup_integration_service(Arc::clone(clickup));
     }
     if let Some(policy_service) = deps.mcp_policy_service.as_ref() {
         service = service.with_mcp_policy_service(policy_service.clone());

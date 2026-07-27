@@ -8,6 +8,10 @@ use uuid::Uuid;
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 
+use crate::application::integration_reference_expansion::{
+    IntegrationReferenceExpansion, SkippedIntegrationReference, SkippedIntegrationReferenceReason,
+};
+
 const LINEAR_API_TOKEN_SECRET_REF_PREFIX: &str = "integrations/linear/default/api-token";
 const MAX_INTEGRATION_REFERENCES: usize = 8;
 const MAX_RESOURCE_BYTES: usize = 64 * 1024;
@@ -685,19 +689,72 @@ impl LinearIntegrationService {
         message: &str,
         references: &[ComposerIntegrationReference],
         total_budget: usize,
-    ) -> String {
-        if references.is_empty() || total_budget == 0 {
-            return message.to_string();
+    ) -> IntegrationReferenceExpansion {
+        let mut skipped_references = Vec::new();
+        let provider_references = references
+            .iter()
+            .filter(|reference| reference.provider == "linear" && reference.kind == "linear")
+            .collect::<Vec<_>>();
+        let (references_to_expand, truncated_references) =
+            provider_references.split_at(provider_references.len().min(MAX_INTEGRATION_REFERENCES));
+        skipped_references.extend(truncated_references.iter().map(|reference| {
+            SkippedIntegrationReference::new(
+                reference,
+                SkippedIntegrationReferenceReason::BudgetExceeded,
+                "Linear reference limit was reached",
+            )
+        }));
+        if references_to_expand.is_empty() {
+            return IntegrationReferenceExpansion {
+                rewritten_prompt: message.to_string(),
+                skipped_references,
+            };
         }
-        let Ok(auth) = self.enabled_auth_context().await else {
-            return message.to_string();
+        let settings = match self.get_settings().await {
+            Ok(settings) => settings,
+            Err(_) => {
+                return expansion_with_skips(
+                    message,
+                    skipped_references,
+                    references_to_expand,
+                    SkippedIntegrationReferenceReason::ApiError,
+                    "Linear settings could not be loaded",
+                )
+            }
+        };
+        if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
+            return expansion_with_skips(
+                message,
+                skipped_references,
+                references_to_expand,
+                SkippedIntegrationReferenceReason::IntegrationDisabled,
+                "Linear integration is not enabled",
+            );
+        }
+        if settings.token_secret_ref.is_none() {
+            return expansion_with_skips(
+                message,
+                skipped_references,
+                references_to_expand,
+                SkippedIntegrationReferenceReason::MissingCredentials,
+                "Linear API token is not configured",
+            );
+        }
+        let auth = match self.auth_context(&settings).await {
+            Ok(auth) => auth,
+            Err(_) => {
+                return expansion_with_skips(
+                    message,
+                    skipped_references,
+                    references_to_expand,
+                    SkippedIntegrationReferenceReason::MissingCredentials,
+                    "Linear credentials are unavailable",
+                )
+            }
         };
         let mut remaining_budget = total_budget;
         let mut rendered = Vec::new();
-        for reference in references.iter().take(MAX_INTEGRATION_REFERENCES) {
-            if reference.provider != "linear" || reference.kind != "linear" {
-                continue;
-            }
+        for reference in references_to_expand {
             let wrapper_budget = if rendered.is_empty() {
                 LINEAR_BLOCK_PREFIX.len() + LINEAR_BLOCK_SUFFIX.len()
             } else {
@@ -705,15 +762,34 @@ impl LinearIntegrationService {
             };
             let reference_budget = remaining_budget.saturating_sub(wrapper_budget);
             if reference_budget == 0 {
+                skipped_references.push(SkippedIntegrationReference::new(
+                    reference,
+                    SkippedIntegrationReferenceReason::BudgetExceeded,
+                    "Integration reference budget was exhausted",
+                ));
                 continue;
             }
             let rendered_reference = match self.client.fetch_issue(&auth, reference).await {
                 Ok(content) => render_issue_content_with_budget(content, reference_budget),
-                Err(error) => {
-                    render_skipped_reference_with_budget(reference, &error, reference_budget)
+                Err(_) => {
+                    skipped_references.push(SkippedIntegrationReference::new(
+                        reference,
+                        SkippedIntegrationReferenceReason::ApiError,
+                        "Linear issue request failed",
+                    ));
+                    None
                 }
             };
             let Some(rendered_reference) = rendered_reference else {
+                if !skipped_references.iter().any(|skipped| {
+                    skipped.id == reference.id && skipped.provider == reference.provider
+                }) {
+                    skipped_references.push(SkippedIntegrationReference::new(
+                        reference,
+                        SkippedIntegrationReferenceReason::BudgetExceeded,
+                        "Integration reference budget was exhausted",
+                    ));
+                }
                 continue;
             };
             remaining_budget =
@@ -721,15 +797,21 @@ impl LinearIntegrationService {
             rendered.push(rendered_reference);
         }
         if rendered.is_empty() {
-            return message.to_string();
+            return IntegrationReferenceExpansion {
+                rewritten_prompt: message.to_string(),
+                skipped_references,
+            };
         }
-        format!(
-            "{}{}{}{}",
-            message.trim_end(),
-            LINEAR_BLOCK_PREFIX,
-            rendered.join("\n"),
-            LINEAR_BLOCK_SUFFIX
-        )
+        IntegrationReferenceExpansion {
+            rewritten_prompt: format!(
+                "{}{}{}{}",
+                message.trim_end(),
+                LINEAR_BLOCK_PREFIX,
+                rendered.join("\n"),
+                LINEAR_BLOCK_SUFFIX
+            ),
+            skipped_references,
+        }
     }
 
     pub(crate) async fn enabled_auth_context(&self) -> Result<LinearAuthContext, String> {
@@ -755,6 +837,24 @@ impl LinearIntegrationService {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Linear API token is missing from secure storage".to_string())?;
         Ok(LinearAuthContext { api_token })
+    }
+}
+
+fn expansion_with_skips(
+    message: &str,
+    mut skipped_references: Vec<SkippedIntegrationReference>,
+    references: &[&ComposerIntegrationReference],
+    reason: SkippedIntegrationReferenceReason,
+    skip_message: &'static str,
+) -> IntegrationReferenceExpansion {
+    skipped_references.extend(
+        references
+            .iter()
+            .map(|reference| SkippedIntegrationReference::new(reference, reason, skip_message)),
+    );
+    IntegrationReferenceExpansion {
+        rewritten_prompt: message.to_string(),
+        skipped_references,
     }
 }
 
@@ -851,15 +951,6 @@ fn render_skipped_reference(
         escape_attr(&reference.id),
         escape_attr(reason)
     )
-}
-
-fn render_skipped_reference_with_budget(
-    reference: &ComposerIntegrationReference,
-    reason: &str,
-    reference_budget: usize,
-) -> Option<String> {
-    let rendered = render_skipped_reference(reference, reason);
-    (rendered.len() <= reference_budget).then_some(rendered)
 }
 
 fn escape_attr(value: &str) -> String {
