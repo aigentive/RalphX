@@ -48,6 +48,10 @@ pub(crate) struct RemoteHostSettings {
 }
 
 /// SQLite-backed singleton settings and stable host identity for remote access.
+///
+/// PR 1.4 adds the durable seq high-water to this same singleton row and must write it inside
+/// the SAME `run_transaction` as each `remote_event_log` batch commit (§3.4 table note), so a
+/// committed seq and its persisted high-water can never disagree.
 pub(crate) struct RemoteHostSettingsStore {
     db: DbConnection,
 }
@@ -78,7 +82,10 @@ impl RemoteHostSettingsStore {
             .run_transaction(move |conn| {
                 ensure_settings_row(conn)?;
                 conn.execute(
-                    "UPDATE remote_host_settings SET enabled = ?1 WHERE id = ?2",
+                    "UPDATE remote_host_settings
+                     SET enabled = ?1,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+                     WHERE id = ?2",
                     rusqlite::params![i64::from(enabled), SETTINGS_ROW_ID],
                 )
                 .map_err(|error| AppError::Database(error.to_string()))?;
@@ -96,7 +103,10 @@ impl RemoteHostSettingsStore {
             .run_transaction(move |conn| {
                 ensure_settings_row(conn)?;
                 conn.execute(
-                    "UPDATE remote_host_settings SET exposure_mode = ?1 WHERE id = ?2",
+                    "UPDATE remote_host_settings
+                     SET exposure_mode = ?1,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+                     WHERE id = ?2",
                     rusqlite::params![exposure_mode.as_db_value(), SETTINGS_ROW_ID],
                 )
                 .map_err(|error| AppError::Database(error.to_string()))?;
@@ -111,6 +121,10 @@ fn ensure_settings_row(conn: &Connection) -> AppResult<RemoteHostSettings> {
         return Ok(settings);
     }
 
+    // Permanent host identity. Pairings, per-environment client caches, and stream cursors all
+    // bind to it (§3.1 descriptor, §3.2 "client discards any cursor whose environmentId ≠
+    // hello.environmentId"), so a future "reset remote access" must NOT re-mint it — that would
+    // silently orphan every paired device.
     let environment_id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO remote_host_settings (
@@ -135,12 +149,12 @@ fn read_settings_row(conn: &Connection) -> AppResult<RemoteHostSettings> {
 
 /// Failure to read the host's tailnet membership.
 ///
-/// The real `tailscale status --json` provider arrives in PR 1.6; this type exists so a
-/// provider failure can never be confused with "this host owns no tailnet address".
+/// This type exists so a provider failure (CLI missing, daemon down, unparseable status) can
+/// never be confused with "this host owns no tailnet address" — the logged-out case, which must
+/// degrade to an empty address list rather than an error (§5.3).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TailnetProviderError {
-    /// Constructed by PR 1.6's `tailscale status --json` provider; the pre-1.6 stub never fails.
-    #[allow(dead_code)]
+    /// Constructed by `infrastructure::tailscale`'s `tailscale status --json` provider.
     #[error("tailnet status is unavailable: {0}")]
     Unavailable(String),
 }
@@ -165,9 +179,9 @@ pub(crate) enum RemoteBindError {
 
 /// Source of this host's own tailnet addresses.
 ///
-/// PR 1.6 replaces the stub implementation with a `tailscale status --json` provider resolved
-/// through the shared production CLI resolver; the seam exists now so the bind policy is
-/// testable and direct exposure stays refused until that provider lands.
+/// Production implementation: `infrastructure::tailscale::TailscaleSelfAddressProvider` (PR 1.6
+/// — `tailscale status --json` through the shared production CLI resolver). The seam stays so
+/// the §4.4 bind policy is testable without a live tailnet.
 #[async_trait::async_trait]
 pub(crate) trait TailnetSelfAddressProvider: Send + Sync {
     async fn self_addresses(&self) -> Result<Vec<IpAddr>, TailnetProviderError>;
@@ -315,9 +329,17 @@ fn read_settings(conn: &Connection) -> AppResult<Option<RemoteHostSettings>> {
     match result {
         Ok((enabled, exposure_mode, port, environment_id)) => {
             let exposure_mode = RemoteExposureMode::from_db_value(&exposure_mode)?;
-            let port = u16::try_from(port).map_err(|_| {
-                AppError::Database(format!("invalid remote host settings port: {port}"))
-            })?;
+            let port = u16::try_from(port)
+                .ok()
+                // Port 0 reaches `TcpListener::bind` as "pick any ephemeral port" — on the
+                // tailnet CGNAT address in direct mode. The migration CHECK blocks it, but the
+                // bind sink needs sink-local proof (hand-restored DBs, `PRAGMA
+                // ignore_check_constraints`, foreign-tool-created files), and the env override
+                // path already rejects zero (`RemotePortOverrideError::Zero`).
+                .filter(|port| *port != 0)
+                .ok_or_else(|| {
+                    AppError::Database(format!("invalid remote host settings port: {port}"))
+                })?;
             Uuid::parse_str(&environment_id).map_err(|error| {
                 AppError::Database(format!("invalid remote host environment id: {error}"))
             })?;
