@@ -272,7 +272,7 @@ export const SUPPORT_TOOLS: Tool[] = [
     },
   },
   // ========================================================================
-  // CROSS-PROJECT TOOLS (ralphx-ideation + ralphx-ideation-team-lead)
+  // CROSS-PROJECT TOOLS (ralphx-ideation)
   // ========================================================================
   {
     name: "list_projects",
@@ -377,7 +377,7 @@ export const SUPPORT_TOOLS: Tool[] = [
     },
   },
   // ========================================================================
-  // CHILD SESSION TOOLS (ralphx-ideation and ralphx-ideation-team-lead)
+  // CHILD SESSION TOOLS (ralphx-ideation)
   // ========================================================================
   {
     name: "get_child_session_status",

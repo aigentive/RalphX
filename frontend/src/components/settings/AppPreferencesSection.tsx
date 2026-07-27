@@ -4,7 +4,7 @@ import { useCallback } from "react";
 import { SectionCard, ToggleSettingRow } from "./SettingsView.shared";
 import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { useUiStore } from "@/stores/uiStore";
-import { DEFAULT_PROJECT_VIEW } from "@/types/chat";
+import { DEFAULT_APP_VIEW } from "@/types/app-view";
 
 export function AppPreferencesSection() {
   const [skillsEnabled, setSkillsEnabled] = useSkillsEnabled();
@@ -15,7 +15,7 @@ export function AppPreferencesSection() {
     (enabled: boolean) => {
       setSkillsEnabled(enabled);
       if (!enabled && currentView === "skills") {
-        setCurrentView(DEFAULT_PROJECT_VIEW);
+        setCurrentView(DEFAULT_APP_VIEW);
       }
     },
     [currentView, setCurrentView, setSkillsEnabled],

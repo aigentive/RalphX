@@ -43,6 +43,80 @@ export interface AgentWorkspaceChangeSummaryState {
   worktreeChangeSignature?: string | undefined;
 }
 
+export interface AgentWorkspaceChangeFacts {
+  fileCount: number;
+  additions: number;
+  deletions: number;
+}
+
+/**
+ * Which source wins when BOTH live worktree facts and a loaded review are available.
+ *
+ * The two sources measure different ranges and are not interchangeable:
+ * - live summary  = HEAD → index → working tree (uncommitted work only)
+ * - review.changes = base → working tree (committed + staged + unstaged + untracked)
+ *
+ * - `"live-worktree"` — live buckets win. Used by the publish action bar, which is a live
+ *   indicator: it must track `changeSummary` polls as the agent edits files without
+ *   waiting for the (much more expensive) review query to refetch.
+ * - `"review"` — the loaded review wins. Used by `workspaceChangeCount`, which labels the
+ *   base→working-tree ("uncommitted") diff mode whose rendered file list *is*
+ *   `review.changes`; the label must equal the list length. Live buckets undercount there
+ *   because they omit committed-but-unpublished work.
+ *
+ * Both orders fall back to the other source when the preferred one has no facts.
+ */
+export type AgentWorkspaceChangeFactsSource = "live-worktree" | "review";
+
+function liveWorktreeChangeFacts(
+  liveSummary: AgentWorkspaceChangeSummary | null | undefined,
+): AgentWorkspaceChangeFacts | null {
+  // `supportsWorktreeModes: false` responses carry zeroed placeholder buckets, so the
+  // gate rejects fabricated facts rather than reporting a misleading "0 files · +0 −0".
+  if (!liveSummary?.supportsWorktreeModes) {
+    return null;
+  }
+  return {
+    fileCount:
+      liveSummary.staged.fileCount +
+      liveSummary.unstaged.fileCount +
+      (liveSummary.conflicted?.fileCount ?? 0),
+    additions: liveSummary.staged.additions + liveSummary.unstaged.additions,
+    deletions: liveSummary.staged.deletions + liveSummary.unstaged.deletions,
+  };
+}
+
+function reviewChangeFacts(
+  review: AgentWorkspaceReview | null | undefined,
+): AgentWorkspaceChangeFacts | null {
+  if (!review) {
+    return null;
+  }
+  return {
+    fileCount: review.changes.length,
+    additions: review.changes.reduce(
+      (sum, file) => sum + file.additions,
+      0,
+    ),
+    deletions: review.changes.reduce(
+      (sum, file) => sum + file.deletions,
+      0,
+    ),
+  };
+}
+
+export function getAgentWorkspaceChangeFacts(
+  liveSummary: AgentWorkspaceChangeSummary | null | undefined,
+  review: AgentWorkspaceReview | null | undefined,
+  prefer: AgentWorkspaceChangeFactsSource = "live-worktree",
+): AgentWorkspaceChangeFacts | null {
+  const liveFacts = liveWorktreeChangeFacts(liveSummary);
+  const reviewFacts = reviewChangeFacts(review);
+  return prefer === "review"
+    ? (reviewFacts ?? liveFacts)
+    : (liveFacts ?? reviewFacts);
+}
+
 function liveBucketSignature(
   bucket: AgentWorkspaceChangeBucketSummary,
 ): string {
@@ -372,13 +446,13 @@ export function useAgentWorkspaceChangeSummary({
     isCumulativeMode,
     commitSha,
     supportsWorktreeModes,
+    // Review-first: this count labels the base→working-tree ("uncommitted") diff mode,
+    // whose rendered file list is `review.changes`. Live buckets omit committed work and
+    // would desync the label from the list.
     workspaceChangeCount: !enabled
       ? 0
-      : liveSummary != null
-        ? liveSummary.staged.fileCount +
-          liveSummary.unstaged.fileCount +
-          (liveSummary.conflicted?.fileCount ?? 0)
-        : review?.changes.length ?? 0,
+      : (getAgentWorkspaceChangeFacts(liveSummary, review, "review")?.fileCount ??
+        0),
     currentFileCount,
     conflictedCount,
     stagedCount,

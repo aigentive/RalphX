@@ -20,14 +20,14 @@ import { useProjectStore } from "@/stores/projectStore";
 import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import { BrandMark } from "./BrandMark";
-import type { ViewType } from "@/types/chat";
+import type { AppView } from "@/types/app-view";
 
 export const LEFT_NAV_RAIL_WIDTH = 72;
 
 interface LeftNavRailProps {
-  currentView: ViewType;
-  onViewChange: (view: ViewType) => void;
-  onViewWarmUp?: (view: ViewType) => void;
+  currentView: AppView;
+  onViewChange: (view: AppView) => void;
+  onViewWarmUp?: (view: AppView) => void;
   onOpenSettings?: () => void;
   onOpenIssueReport?: () => void;
   /** Hide primary view items (e.g. during welcome screen). Settings stays. */
@@ -35,7 +35,7 @@ interface LeftNavRailProps {
 }
 
 interface RailItemProps {
-  view?: ViewType;
+  view?: AppView;
   label: string;
   icon: React.ElementType;
   shortcut?: string | undefined;
@@ -124,7 +124,7 @@ export function LeftNavRail({
           item.visible(featureFlags) &&
           (item.view !== "skills" || skillsEnabled),
       );
-  const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);
+  const dashboardViews = new Set<AppView>(["ticketing", "github", "granola"]);
   const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
   const dashboardItems = visibleItems.filter((item) => {
     if (item.view === "github") {

@@ -6,25 +6,40 @@ import {
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
+  AgentConversationWorkspacePublicationEvent,
+  AgentWorkspaceReviewContext,
 } from "@/api/chat";
 import type { FileChange } from "@/api/diff";
+import type { PullRequestDetail } from "@/api/github";
 import { useChatStore } from "@/stores/chatStore";
+import { useProjectStore } from "@/stores/projectStore";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
+  renderWithAgentProviders,
 } from "./agentsTestFixtures";
+import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { getAgentConversationStoreKey } from "./agentConversations";
+import {
+  DEFAULT_AGENT_ARTIFACT_UI_STATE,
+  useAgentArtifactUiStore,
+} from "./agentArtifactUiStore";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import { prKeys } from "@/hooks/usePullRequestDetail";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
 const {
   getAgentConversationRuntimeStatusesMock,
+  commitAgentConversationWorkspaceLocallyMock,
+  getPullRequestDetailMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
   getWorkspacePrAnnotationsMock,
@@ -38,11 +53,15 @@ const {
   listAgentTaskListTasksMock,
   listAgentTaskListsMock,
   listAgentTasksMock,
+  listAgentConversationWorkspacePublicationEventsMock,
   preloadAgentsArtifactPaneMock,
   publishAgentConversationWorkspaceMock,
   realPublishPanelState,
   sendAgentMessageMock,
+  toastDismissMock,
   toastErrorMock,
+  toastInfoMock,
+  toastSuccessMock,
   updateWorkspaceFromBaseMock,
 } = getAgentsViewTestMocks();
 
@@ -53,6 +72,32 @@ const reviewFile: FileChange = {
   deletions: 1,
   isGenerated: false,
 };
+
+const checksDetail = (
+  checks: PullRequestDetail["checks"],
+): PullRequestDetail => ({
+  state: "loaded",
+  origin: "ownedOutbound",
+  description: {
+    number: 78,
+    title: "Published pull request",
+    body: null,
+    author: "octocat",
+    createdAt: "2026-07-23T15:00:00Z",
+    url: "https://github.com/mock/project/pull/78",
+    state: "open",
+    isDraft: false,
+    headRefName: "ralphx/ralphx/agent-abcdef12",
+    baseRefName: "main",
+  },
+  checks,
+  reviewSummary: null,
+  issueComments: [],
+  reviewThread: [],
+  rxConversations: [],
+  linkedTickets: [],
+  sourcesUnavailable: [],
+});
 
 const fullFreshness = (
   overrides: Partial<AgentConversationWorkspaceFreshness> = {},
@@ -112,6 +157,11 @@ function configurePublishPane({
       reviewGateStatus,
       reviewBlockingSummary:
         reviewGateStatus === "blocking" ? "Address the blocking finding." : null,
+      workspaceHeadSha: "head-sha",
+      reviewedHeadSha: "reviewed-head-sha",
+      reviewedDiffFingerprint: "fingerprint-1",
+      reviewArtifactId: "artifact-1",
+      reviewArtifactVersion: 3,
     },
     isCurrent: false,
     isOutdated: false,
@@ -159,6 +209,357 @@ describe("AgentsView publish", () => {
       ).toBeInTheDocument();
       expect(actionbar).toHaveTextContent("1 changed file published for review.");
     });
+  });
+
+  it("uses local commit for local-only and GitHub-opt-out projects, but keeps a persisted PR authoritative", async () => {
+    configurePublishPane();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    commitAgentConversationWorkspaceLocallyMock.mockResolvedValue({
+      workspace: conversationWorkspace(),
+      outcome: "committed_local",
+      branchName: "ralphx/ralphx/agent-abcdef12",
+      previousHeadSha: "head-sha",
+      commitSha: "1234567890abcdef",
+      hadChanges: true,
+      attemptToken: "1",
+    });
+
+    await openPublishPane();
+    expect(screen.getByTestId("agents-commit-locally")).toBeEnabled();
+    expect(screen.queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+
+    await waitFor(() =>
+      expect(commitAgentConversationWorkspaceLocallyMock).toHaveBeenCalledWith(
+        "conversation-1",
+        {
+          expectedHeadSha: "head-sha",
+          reviewArtifactId: "artifact-1",
+          reviewArtifactVersion: 3,
+          reviewedHeadSha: "reviewed-head-sha",
+          reviewedDiffFingerprint: "fingerprint-1",
+          attemptToken: "1",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        "Committed locally on ralphx/ralphx/agent-abcdef12",
+        {
+          description: "Untitled agent • 1234567",
+          duration: 8_000,
+          id: "agent-workspace-operation:conversation-1:local-commit",
+        },
+      ),
+    );
+
+    act(() => {
+      useProjectStore.getState().updateProject("project-1", {
+        repositoryCapability: {
+          kind: "github",
+          fetchUrl: null,
+          pushUrl: "git@github.com:ralphx/ralphx.git",
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-commit-locally")).toHaveTextContent("Commit locally");
+      expect(screen.getByText(/GitHub PR mode is off for this project/i)).toBeInTheDocument();
+    });
+
+    act(() => {
+      useProjectStore.getState().updateProject("project-1", {
+        repositoryCapability: { kind: "inspectionFailed", message: "Unable to inspect" },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-publish-unavailable")).toBeDisabled();
+      expect(screen.queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+    });
+
+  });
+
+  it("keeps local commit unavailable for local-only task-pipeline workspaces", async () => {
+    configurePublishPane({
+      workspace: {
+        linkedPlanBranchId: "plan-branch-1",
+        mode: "ideation",
+      },
+    });
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+
+    const actionbar = await openPublishPane();
+
+    expect(screen.queryByTestId("agents-commit-locally")).not.toBeInTheDocument();
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toHaveTextContent(
+      "Managed by Tasks",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toBeDisabled();
+  });
+
+  it("keeps a persisted pull request on the publish action when inspection is unavailable", async () => {
+    configurePublishPane({ workspace: { publicationPrNumber: 42 } });
+    useProjectStore.getState().updateProject("project-1", {
+      repositoryCapability: { kind: "inspectionFailed", message: "Unable to inspect" },
+    });
+
+    await openPublishPane();
+
+    expect(screen.getByTestId("agents-publish-confirm")).toHaveTextContent("Commit & Publish");
+    expect(screen.queryByTestId("agents-commit-locally")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-publish-unavailable")).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale local-commit result without replacing workspace cache or showing success", async () => {
+    configurePublishPane();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    const initialWorkspace = conversationWorkspace({ updatedAt: "2026-04-23T09:00:00Z" });
+    const staleWorkspace = conversationWorkspace({ updatedAt: "2099-01-01T00:00:00Z" });
+    getAgentConversationWorkspaceMock.mockResolvedValue(initialWorkspace);
+    commitAgentConversationWorkspaceLocallyMock.mockResolvedValue({
+      workspace: staleWorkspace,
+      outcome: "committed_local",
+      branchName: staleWorkspace.branchName,
+      previousHeadSha: "head-sha",
+      commitSha: "1234567890abcdef",
+      hadChanges: true,
+      attemptToken: "stale-token",
+    });
+
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId("agents-publish-actionbar", undefined, deferredHydrationTimeout);
+    fireEvent.click(screen.getByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+
+    await waitFor(() => expect(commitAgentConversationWorkspaceLocallyMock).toHaveBeenCalled());
+    expect(queryClient.getQueryData(agentWorkspaceKeys.workspace("conversation-1"))).toEqual(
+      initialWorkspace,
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(toastInfoMock).not.toHaveBeenCalled();
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      "agent-workspace-operation:conversation-1:local-commit",
+    );
+  });
+
+  it("dismisses a local-commit completion after switching conversations", async () => {
+    mockAgentViewData();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    const firstWorkspace = conversationWorkspace();
+    const secondWorkspace = conversationWorkspace({
+      branchName: "ralphx/ralphx/agent-conversation-2",
+      conversationId: "conversation-2",
+      updatedAt: "2026-04-23T10:00:00Z",
+      worktreePath: "/tmp/ralphx/conversation-2",
+    });
+    const reviewContextFor = (
+      workspace: AgentConversationWorkspace,
+    ): AgentWorkspaceReviewContext => ({
+      success: true,
+      workspace,
+      events: [],
+      target: null,
+      monitor: {
+        status: "idle",
+        reviewArtifactId: "artifact-1",
+        reviewArtifactVersion: 3,
+        reviewGateStatus: null,
+        reviewBlockingSummary: null,
+        workspaceHeadSha: "head-sha",
+        reviewedHeadSha: "reviewed-head-sha",
+        reviewedDiffFingerprint: "fingerprint-1",
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: false,
+    });
+    let resolveLocalCommit: ((value: {
+      workspace: AgentConversationWorkspace;
+      outcome: "committed_local";
+      branchName: string;
+      previousHeadSha: string;
+      commitSha: string;
+      hadChanges: boolean;
+      attemptToken: string;
+    }) => void) | null = null;
+    const localCommitPromise = new Promise<{
+      workspace: AgentConversationWorkspace;
+      outcome: "committed_local";
+      branchName: string;
+      previousHeadSha: string;
+      commitSha: string;
+      hadChanges: boolean;
+      attemptToken: string;
+    }>((resolve) => {
+      resolveLocalCommit = resolve;
+    });
+    commitAgentConversationWorkspaceLocallyMock.mockReturnValue(localCommitPromise);
+    const panelProps = (workspace: AgentConversationWorkspace) => ({
+      workspace,
+      conversationTitle: workspace.conversationId,
+      projectBaseBranch: "main",
+      onPublishWorkspace: undefined,
+      publishAttempt: null,
+      reviewContext: reviewContextFor(workspace),
+      activeSubTab: "changes" as const,
+      showReviewTab: false,
+      onSubTabChange: vi.fn(),
+      reviewContent: null,
+    });
+
+    const { queryClient, rerender } = renderWithAgentProviders(
+      <AgentPublishPanel {...panelProps(firstWorkspace)} />,
+    );
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspace(secondWorkspace.conversationId),
+      secondWorkspace,
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+    await waitFor(() =>
+      expect(commitAgentConversationWorkspaceLocallyMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.anything(),
+      ),
+    );
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AgentPublishPanel {...panelProps(secondWorkspace)} />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      resolveLocalCommit?.({
+        workspace: firstWorkspace,
+        outcome: "committed_local",
+        branchName: firstWorkspace.branchName,
+        previousHeadSha: "head-sha",
+        commitSha: "1234567890abcdef",
+        hadChanges: true,
+        attemptToken: "1",
+      });
+      await localCommitPromise;
+    });
+
+    expect(
+      queryClient.getQueryData(agentWorkspaceKeys.workspace(secondWorkspace.conversationId)),
+    ).toEqual(secondWorkspace);
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      "agent-workspace-operation:conversation-1:local-commit",
+    );
+  });
+
+  it.each([
+    {
+      commitSha: "1234567890abcdef",
+      outcome: "already_committed" as const,
+      expectedMessage: "Already committed locally",
+      expectedOptions: {
+        description: "Untitled agent • 1234567",
+        dismissible: true,
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:local-commit",
+      },
+    },
+    {
+      commitSha: "",
+      outcome: "no_changes" as const,
+      expectedMessage: "No local changes to commit",
+      expectedOptions: {
+        description: "Untitled agent • Commit isolated workspace branch",
+        dismissible: true,
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:local-commit",
+      },
+    },
+  ])("shows an informational local-commit toast for $outcome", async ({
+    commitSha,
+    outcome,
+    expectedMessage,
+    expectedOptions,
+  }) => {
+    configurePublishPane();
+    useProjectStore.getState().updateProject("project-1", {
+      githubPrEnabled: false,
+      repositoryCapability: { kind: "localOnly" },
+    });
+    commitAgentConversationWorkspaceLocallyMock.mockResolvedValue({
+      workspace: conversationWorkspace(),
+      outcome,
+      branchName: "ralphx/ralphx/agent-abcdef12",
+      previousHeadSha: "head-sha",
+      commitSha,
+      hadChanges: outcome !== "no_changes",
+      attemptToken: "1",
+    });
+
+    await openPublishPane();
+    fireEvent.click(screen.getByTestId("agents-commit-locally"));
+    const commitButtons = await screen.findAllByRole("button", { name: "Commit locally" });
+    fireEvent.click(commitButtons.at(-1)!);
+
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith(expectedMessage, expectedOptions),
+    );
+  });
+
+  it("keeps publishing ahead of conflict presentation and action branches", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushing",
+        publicationPrNumber: 78,
+        prSupervisionStatus: "blocked",
+        prSupervisionSummary: "GitHub reported merge conflicts.",
+      },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          ...DEFAULT_AGENT_ARTIFACT_UI_STATE,
+          isOpen: true,
+          activeTab: "publish",
+        },
+      },
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+    const actionbar = await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    expect(
+      within(actionbar).getByRole("heading", { name: "Publishing workspace" }),
+    ).toBeInTheDocument();
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toBeDisabled();
+    expect(
+      within(actionbar).queryByTestId("agents-resolve-pr-conflicts"),
+    ).not.toBeInTheDocument();
   });
 
   it.each([
@@ -280,6 +681,18 @@ describe("AgentsView publish", () => {
       detail: "could not draft a PR description",
     },
     {
+      name: "description failure on a linked pull request",
+      workspace: {
+        publicationPushStatus: "description_failed",
+        publicationPrNumber: 888,
+      },
+      freshness: { hasUncommittedChanges: true },
+      changes: [reviewFile],
+      reviewGateStatus: null,
+      title: "Publishing failed",
+      detail: "metadata step for PR #888",
+    },
+    {
       name: "automatic publishing paused",
       workspace: {
         publicationPushStatus: "pushed",
@@ -348,6 +761,62 @@ describe("AgentsView publish", () => {
       expect(within(actionbar).getByRole("heading", { name: title })).toBeInTheDocument();
       expect(actionbar).toHaveTextContent(detail);
     });
+  });
+
+  it("renders the repair-pending status button as a calm chip, not the accent CTA", async () => {
+    configurePublishPane({
+      workspace: { publicationPushStatus: "needs_agent" },
+    });
+
+    const actionbar = await openPublishPane();
+    const repairButton = await within(actionbar).findByTestId(
+      "agents-publish-repair-pending",
+    );
+
+    expect(repairButton).toBeDisabled();
+    // A non-actionable status must not be painted as the solid accent CTA.
+    expect(repairButton.className).not.toContain("bg-primary");
+    // Stays fully legible instead of the default disabled-CTA half opacity.
+    expect(repairButton.className).toContain("disabled:opacity-100");
+    // Warning-tinted status surface via WKWebView-safe longhand tokens.
+    const style = repairButton.getAttribute("style") ?? "";
+    expect(style).toContain("--status-warning-muted");
+    expect(style).toContain("--status-warning-border");
+  });
+
+  it("keeps the actionable Commit & Publish button as the accent CTA", async () => {
+    configurePublishPane({ changes: [reviewFile] });
+
+    const actionbar = await openPublishPane();
+    const confirm = await within(actionbar).findByTestId(
+      "agents-publish-confirm",
+    );
+
+    expect(confirm).toBeEnabled();
+    expect(confirm.className).toContain("bg-primary");
+    const style = confirm.getAttribute("style") ?? "";
+    expect(style).not.toContain("--status-warning-muted");
+  });
+
+  it("renders the up-to-date status button as a calm success chip, not the accent CTA", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+      freshness: { unpublishedCommitCount: 0 },
+    });
+
+    const actionbar = await openPublishPane();
+    const confirm = await within(actionbar).findByRole("button", {
+      name: "PR is up to date",
+    });
+
+    expect(confirm).toBeDisabled();
+    expect(confirm.className).not.toContain("bg-primary");
+    expect(confirm.className).toContain("disabled:opacity-100");
+    const style = confirm.getAttribute("style") ?? "";
+    expect(style).toContain("--status-success-muted");
   });
 
   it("opens closed pull requests in count-free historical cumulative mode", async () => {
@@ -510,6 +979,154 @@ describe("AgentsView publish", () => {
     );
   });
 
+  it("locks publish controls from persisted background publish state without a manual attempt", async () => {
+    configurePublishPane({
+      workspace: { publicationPushStatus: "pushing" },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          ...DEFAULT_AGENT_ARTIFACT_UI_STATE,
+          isOpen: true,
+          activeTab: "publish",
+        },
+      },
+    });
+
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+
+    const headerShortcut = await screen.findByRole("button", {
+      name: "Publishing",
+    });
+    expect(headerShortcut).toBeDisabled();
+
+    const actionbar = await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("heading", { name: "Publishing workspace" }),
+      ).toBeInTheDocument(),
+    );
+    const publishButton = within(actionbar).getByRole("button", {
+      name: "Publishing",
+    });
+    expect(publishButton).toBeDisabled();
+
+    fireEvent.click(publishButton);
+
+    expect(publishAgentConversationWorkspaceMock).not.toHaveBeenCalled();
+
+    act(() => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace("conversation-1"),
+        conversationWorkspace({
+          mode: "edit",
+          publicationPushStatus: "pushed",
+          publicationPrNumber: 78,
+        }),
+      );
+      queryClient.setQueryData(
+        agentWorkspaceKeys.scopedFreshness("conversation-1", "full"),
+        fullFreshness({ unpublishedCommitCount: 0 }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByRole("button", { name: "PR is up to date" }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("settles an unresolved publish from durable evidence after the publish pane unmounts", async () => {
+    const baselineEvent: AgentConversationWorkspacePublicationEvent = {
+      id: "baseline-event",
+      conversationId: "conversation-1",
+      step: "checking",
+      status: "succeeded",
+      summary: "Previous publish check",
+      classification: null,
+      createdAt: new Date(Date.now() - 1_000).toISOString(),
+    };
+    const publishedEvent: AgentConversationWorkspacePublicationEvent = {
+      id: "published-event",
+      conversationId: "conversation-1",
+      step: "published",
+      status: "succeeded",
+      summary: "Published pull request",
+      classification: null,
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    };
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([
+      baselineEvent,
+    ]);
+    publishAgentConversationWorkspaceMock.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    configurePublishPane();
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Commit & Publish" }));
+    await waitFor(() =>
+      expect(publishAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-publish-dialog-close"));
+    fireEvent.click(screen.getByTestId("agents-artifact-pane-close"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-publish-pane")).not.toBeInTheDocument(),
+    );
+
+    const publishedWorkspace = conversationWorkspace({
+      mode: "edit",
+      publicationPushStatus: "pushed",
+      publicationPrNumber: 78,
+    });
+    getAgentConversationWorkspaceMock.mockResolvedValue(publishedWorkspace);
+    getAgentConversationWorkspaceFreshnessMock.mockResolvedValue(
+      fullFreshness({ unpublishedCommitCount: 0 }),
+    );
+    act(() => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.publicationEvents("conversation-1"),
+        [baselineEvent, publishedEvent],
+      );
+    });
+
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Published #78", {
+        description: "Untitled agent",
+        duration: 8_000,
+        id: "agent-workspace-operation:conversation-1:publish",
+      }),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    const currentActionbar = await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    expect(
+      within(currentActionbar).getByRole("button", { name: "PR is up to date" }),
+    ).toBeInTheDocument();
+  });
+
   it("keeps loaded inline annotations while removing redundant sync summaries", async () => {
     configurePublishPane({
       workspace: {
@@ -646,6 +1263,18 @@ describe("AgentsView publish", () => {
     fireEvent.click(screen.getByTestId("agents-publish-workspace"));
 
     const pane = await screen.findByTestId("agents-artifact-pane");
+    const actionbar = within(pane).getByTestId("agents-publish-actionbar");
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByTestId("agents-publish-change-facts"),
+      ).toHaveTextContent("1 file"),
+    );
+    expect(within(actionbar).getByTestId("agents-publish-additions")).toHaveTextContent(
+      "+3",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-deletions")).toHaveTextContent(
+      "−1",
+    );
     await waitFor(() =>
       expect(within(pane).getByTestId("inline-diffs-file-count")).toHaveTextContent(
         "1",
@@ -678,7 +1307,290 @@ describe("AgentsView publish", () => {
         "2",
       ),
     );
+    expect(
+      within(actionbar).getByTestId("agents-publish-change-facts"),
+    ).toHaveTextContent("2 files");
+    expect(within(actionbar).getByTestId("agents-publish-additions")).toHaveTextContent(
+      "+8",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-deletions")).toHaveTextContent(
+      "−1",
+    );
     expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to loaded review facts when live worktree totals are unavailable", async () => {
+    configurePublishPane({
+      changes: [
+        reviewFile,
+        {
+          path: "frontend/src/NewPanel.tsx",
+          status: "added",
+          additions: 6,
+          deletions: 0,
+          isGenerated: false,
+        },
+      ],
+    });
+    getWorkspaceChangeSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: false,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+    });
+
+    const actionbar = await openPublishPane();
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByTestId("agents-publish-change-facts"),
+      ).toHaveTextContent("2 files"),
+    );
+    expect(within(actionbar).getByTestId("agents-publish-additions")).toHaveTextContent(
+      "+7",
+    );
+    expect(within(actionbar).getByTestId("agents-publish-deletions")).toHaveTextContent(
+      "−1",
+    );
+  });
+
+  it("keeps the overflow action accessible and disclosed by the app tooltip", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        autoPublishEnabled: false,
+      },
+      freshness: { hasUncommittedChanges: true },
+    });
+
+    const actionbar = await openPublishPane();
+    const overflow = within(actionbar).getByRole("button", {
+      name: "Publish actions",
+    });
+
+    fireEvent.focus(overflow);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Publish actions");
+    expect(within(actionbar).getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+      "Auto Publish paused",
+    );
+  });
+
+  it("relocates publish history and automation without losing action-strip state", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        autoPublishEnabled: false,
+      },
+    });
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([
+      {
+        id: "event-1",
+        conversationId: "conversation-1",
+        step: "published",
+        status: "succeeded",
+        summary: "Published pull request",
+        classification: null,
+        createdAt: "2026-07-23T15:00:00Z",
+      },
+    ]);
+
+    const actionbar = await openPublishPane();
+    const tabs = screen.getByTestId("agents-publish-tabs");
+    expect(
+      Array.from(tabs.querySelectorAll('[role="tab"]')).map((tab) =>
+        tab.getAttribute("data-testid"),
+      ),
+    ).toEqual([
+      "agents-publish-tab-changes",
+      "agents-publish-tab-review",
+      "agents-publish-tab-checks",
+      "agents-publish-tab-history",
+      "agents-publish-tab-automation",
+    ]);
+    expect(screen.queryByTestId("agents-publish-events")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-pr-supervision-controls"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(actionbar).getByTestId("agents-pr-supervision-status"),
+    ).toHaveTextContent("Auto Publish paused");
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-checks"), {
+      button: 0,
+    });
+    expect(
+      await screen.findByTestId("agents-publish-checks-shell"),
+    ).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-history"), {
+      button: 0,
+    });
+    expect(
+      await screen.findByTestId("agents-publish-events"),
+    ).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-automation"), {
+      button: 0,
+    });
+    expect(
+      await screen.findByTestId("agents-pr-supervision-controls"),
+    ).toBeInTheDocument();
+    expect(
+      within(actionbar).getByTestId("agents-pr-supervision-status"),
+    ).toHaveTextContent("Auto Publish paused");
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-changes"), {
+      button: 0,
+    });
+    expect(
+      screen.getByTestId("agents-publish-content-automation"),
+    ).toHaveAttribute("data-state", "inactive");
+    expect(
+      screen.getByTestId("agents-publish-content-checks"),
+    ).toHaveAttribute("data-state", "inactive");
+  });
+
+  it("reuses fresh PR-detail cache data for the Checks badge and content", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+    });
+    const cachedDetail = checksDetail([
+      {
+        name: "lint",
+        status: "completed",
+        conclusion: "failure",
+        detailsUrl: null,
+      },
+      {
+        name: "types",
+        status: "in_progress",
+        conclusion: null,
+        detailsUrl: null,
+      },
+      {
+        name: "unit",
+        status: "completed",
+        conclusion: "success",
+        detailsUrl: null,
+      },
+    ]);
+
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      prKeys.detail({ projectId: "project-1", prNumber: 78 }),
+      cachedDetail,
+    );
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    expect(
+      within(screen.getByTestId("agents-publish-tab-checks")).getByLabelText(
+        "1 failed and 1 pending checks",
+      ),
+    ).toHaveTextContent("2");
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-checks"), {
+      button: 0,
+    });
+
+    expect(await screen.findByText("lint")).toBeInTheDocument();
+    expect(screen.getByText("types")).toBeInTheDocument();
+    expect(screen.getByText("unit")).toBeInTheDocument();
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+  });
+
+  it("suppresses the Checks attention badge when cached checks are all green", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+    });
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(
+      prKeys.detail({ projectId: "project-1", prNumber: 78 }),
+      checksDetail([
+        {
+          name: "unit",
+          status: "completed",
+          conclusion: "success",
+          detailsUrl: null,
+        },
+      ]),
+    );
+    selectSidebarConversationRow();
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    const checksTab = screen.getByTestId("agents-publish-tab-checks");
+    expect(checksTab).toHaveTextContent("Checks");
+    expect(
+      within(checksTab).queryByLabelText(/failed and .* pending checks/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("paints the Checks shell before showing deferred loading work", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      },
+    });
+    getPullRequestDetailMock.mockImplementation(() => new Promise(() => {}));
+
+    await openPublishPane();
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(screen.getByTestId("agents-publish-tab-checks"), {
+      button: 0,
+    });
+
+    expect(screen.getByTestId("agents-publish-checks-shell")).toBeInTheDocument();
+    expect(screen.queryByText("Loading checks…")).not.toBeInTheDocument();
+    expect(getPullRequestDetailMock).not.toHaveBeenCalled();
+
+    expect(
+      await screen.findByText("Loading checks…"),
+    ).toBeInTheDocument();
+    expect(getPullRequestDetailMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides Checks for a source pull request without a published PR", async () => {
+    configurePublishPane({
+      workspace: {
+        sourcePullRequest: {
+          number: 77,
+          url: "https://github.com/mock/project/pull/77",
+          title: "Source PR",
+          headRefName: "source/pr",
+          baseRefName: "main",
+          headRefOid: null,
+        },
+      },
+    });
+
+    await openPublishPane();
+
+    expect(
+      screen.queryByTestId("agents-publish-tab-checks"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-publish-content-checks"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a composer workspace changes summary from the compact live path and loads files on expand", async () => {

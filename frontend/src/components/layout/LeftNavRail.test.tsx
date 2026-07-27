@@ -12,10 +12,7 @@ vi.mock("@/stores/projectStore", () => ({
 let mockFeatureFlags: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
-  ideationPage: false,
   automationsPage: true,
-  battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: true,
 };
@@ -50,10 +47,7 @@ describe("LeftNavRail", () => {
     mockFeatureFlags = {
       activityPage: true,
       extensibilityPage: true,
-      ideationPage: false,
       automationsPage: true,
-      battleMode: true,
-      teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: true,
     };

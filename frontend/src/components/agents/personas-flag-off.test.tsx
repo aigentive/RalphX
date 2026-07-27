@@ -65,17 +65,36 @@ vi.mock("./AgentComposerSurface", () => ({
   AgentComposerSurface: ({
     mode,
     onSend,
-    personaControl,
+    persona,
   }: {
     mode?: { value: string };
     onSend: (message: string) => Promise<void>;
-    personaControl?: React.ReactNode;
+    persona?: {
+      onValueChange: (value: string) => void;
+      options: Array<{ id: string; label: string }>;
+    };
   }) => {
-    composerProps.hasPersonaControl = personaControl !== undefined;
+    composerProps.hasPersonaControl = persona !== undefined;
     composerProps.modeValue = mode?.value ?? null;
     return (
       <div>
-        {personaControl}
+        {persona && (
+          <>
+            <button type="button" aria-label="Choose persona">
+              Choose persona
+            </button>
+            {persona.options.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="menuitemradio"
+                onClick={() => persona.onValueChange(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </>
+        )}
         <button type="button" onClick={() => void onSend("flag-off submission")}>
           Start Agent
         </button>
@@ -215,13 +234,6 @@ vi.mock("@/hooks/useChatAttachments", () => ({
     clearAttachments: vi.fn(),
     uploading: false,
     uploadProgress: [],
-  }),
-}));
-vi.mock("@/hooks/useTeamModeAvailability", () => ({
-  useTeamModeAvailability: () => ({
-    ideationTeamModeAvailable: true,
-    executionTeamModeAvailable: true,
-    isAvailableForContext: () => true,
   }),
 }));
 vi.mock("@/providers/EventProvider", () => ({

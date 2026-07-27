@@ -45,6 +45,7 @@ import {
   getAutomationRunView,
   isIdleAfterCancelledRun,
   latestRun,
+  runTimelineHighlight,
   type AutomationRunStatusTone,
 } from "@/components/automations/automationStage";
 import {
@@ -486,6 +487,7 @@ function AutomationRunsList({
     <ul className="flex flex-col gap-1" data-testid="agents-automation-runs-list">
       {ordered.map((run) => {
         const runView = getAutomationRunView(automation, run);
+        const highlight = runTimelineHighlight(run);
         const phaseItem = runView.isOpen ? activeGoalItem : null;
         const isCancellable = runView.isCancellable;
         const isCanceling = cancelingRunId === run.id;
@@ -513,7 +515,12 @@ function AutomationRunsList({
           <li
             key={run.id}
             className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5"
-            style={{ backgroundColor: "var(--bg-hover)" }}
+            style={{
+              backgroundColor: highlight.backgroundColor,
+              borderColor: highlight.borderColor,
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
             data-testid={`agents-automation-run-${run.runIndex}`}
           >
             <span
@@ -732,7 +739,6 @@ export function AgentsAutomationPanel({
         "project",
         automation.projectId,
         UPDATE_AUTOMATION_FROM_LATEST_PROPOSAL_PROMPT,
-        undefined,
         undefined,
         {
           conversationId: automation.setupConversationId,

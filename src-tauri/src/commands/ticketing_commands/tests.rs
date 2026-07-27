@@ -18,9 +18,8 @@ use crate::application::{
     ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary,
     JiraStatusSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
     LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
-    LinearIssueSummary, LinearProject, LinearWorkflowState, TeamService, TeamStateTracker,
-    TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
-    TicketingTransitionOption,
+    LinearIssueSummary, LinearProject, LinearWorkflowState, TicketingLabelResult,
+    TicketingMutationResult, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -3673,9 +3672,6 @@ fn build_ticketing_start_app(
     mock_builder()
         .manage(state)
         .manage(execution_state)
-        .manage(Arc::new(TeamService::new_without_events(Arc::new(
-            TeamStateTracker::new(),
-        ))))
         .build(mock_context(noop_assets()))
         .expect("mock app should build")
 }
@@ -3810,7 +3806,6 @@ async fn start_work_from_ticket_queues_message_and_links_jira_after_successful_s
         ),
         app.state(),
         app.state(),
-        app.state(),
         app.handle().clone(),
     )
     .await
@@ -3871,7 +3866,6 @@ async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
                 key: Some("CU-42".to_string()),
             },
         ),
-        app.state(),
         app.state(),
         app.state(),
         app.handle().clone(),
@@ -3937,7 +3931,6 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
@@ -4024,7 +4017,6 @@ async fn clickup_ticket_start_reuses_unique_existing_branch_without_isolation() 
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
@@ -4093,7 +4085,6 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
@@ -4176,7 +4167,6 @@ async fn untouched_start_resolves_the_current_complete_role_default_at_launch() 
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
@@ -4245,7 +4235,6 @@ async fn start_agent_conversation_updates_seeded_project_team_coordination_mode(
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: app.state::<AppState>().inner(),
         execution_state: app.state::<Arc<ExecutionState>>().inner(),
-        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
         app_handle: app.handle().clone(),
     })
     .start(StartAgentConversationInput {
@@ -4317,15 +4306,10 @@ async fn start_work_from_ticket_does_not_link_when_existing_conversation_is_inva
     );
     input.start.conversation_id = Some(conversation.id.as_str().to_string());
 
-    let error = start_ralphx_work_from_ticket(
-        input,
-        app.state(),
-        app.state(),
-        app.state(),
-        app.handle().clone(),
-    )
-    .await
-    .expect_err("start should fail before ticket link upsert");
+    let error =
+        start_ralphx_work_from_ticket(input, app.state(), app.state(), app.handle().clone())
+            .await
+            .expect_err("start should fail before ticket link upsert");
 
     assert!(error.contains("does not belong to project"));
     let linked = app

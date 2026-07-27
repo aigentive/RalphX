@@ -22,6 +22,9 @@ capabilities:
     - update_agent_task
     - claim_agent_task
     - complete_agent_task
+    - get_delegate_assignment
+    - complete_delegate_assignment
+    - release_delegate_assignment
     - search_memories
     - get_memory
     - get_memories_for_paths

@@ -38,7 +38,10 @@ export const mockProjectsApi = {
       name: input.name,
       workingDirectory: input.workingDirectory,
       gitMode: input.gitMode ?? "worktree",
+      baseBranch: input.baseBranch ?? null,
+      worktreeParentDirectory: input.worktreeParentDirectory ?? null,
     });
+    getStore().projects.set(project.id, project);
     return project;
   },
 
@@ -59,6 +62,7 @@ export const mockProjectsApi = {
     if (input.baseBranch !== undefined) updated.baseBranch = input.baseBranch;
     if (input.worktreeParentDirectory !== undefined) updated.worktreeParentDirectory = input.worktreeParentDirectory;
     if (input.mergeValidationMode !== undefined) updated.mergeValidationMode = input.mergeValidationMode;
+    store.projects.set(projectId, updated);
     return updated;
   },
 

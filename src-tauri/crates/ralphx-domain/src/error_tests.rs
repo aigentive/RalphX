@@ -55,6 +55,16 @@ fn test_validation_error_display() {
 }
 
 #[test]
+fn workspace_review_unfinished_git_operation_has_actionable_display() {
+    let err = AppError::WorkspaceReviewUnfinishedGitOperation;
+
+    assert_eq!(
+        err.to_string(),
+        "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review."
+    );
+}
+
+#[test]
 fn test_database_error_serialization() {
     let err = AppError::Database("db failure".to_string());
     let json = serde_json::to_string(&err).expect("Failed to serialize Database error");

@@ -51,6 +51,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     runUsageTotals: {
@@ -58,6 +59,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     effectiveUsageTotals: {
@@ -65,6 +67,7 @@ function conversationStats(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     usageCoverage: {
@@ -72,6 +75,11 @@ function conversationStats(
       providerMessagesWithUsage: 0,
       runCount: 0,
       runsWithUsage: 0,
+      effectiveRunConversationCount: 0,
+      effectiveMessageConversationCount: 0,
+      legacyEstimatedSampleCount: 0,
+      fallbackEstimatedSampleCount: 0,
+      uncountedSampleCount: 0,
       effectiveTotalsSource: "none",
     },
     attributionCoverage: {
@@ -707,7 +715,7 @@ describe("AgentsChatHeader", () => {
         "Usage totals are pending until the provider reports the current turn.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Pending")).toHaveLength(4);
+    expect(screen.getAllByText("Pending")).toHaveLength(5);
 
     await user.keyboard("{Escape}");
     await waitFor(() => {
@@ -1340,6 +1348,37 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("agents-publish-workspace")).toHaveTextContent(
       "Update from feature/agent-screen"
     );
+  });
+
+  it("locks the publish shortcut when the effective workspace is publishing in the background", () => {
+    const openPublishPane = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1", agentMode: "edit" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        publishShortcutWorkspace={conversationWorkspace({
+          conversationId: "conversation-2",
+          mode: "edit",
+          publicationPushStatus: "  PuShInG  ",
+        })}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={openPublishPane}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const publishShortcut = screen.getByRole("button", { name: "Publishing" });
+    expect(publishShortcut).toBeDisabled();
+    expect(publishShortcut).toHaveTextContent("Publishing");
+
+    fireEvent.click(publishShortcut);
+
+    expect(openPublishPane).not.toHaveBeenCalled();
   });
 
   it("hides the publish header shortcut while the publish pane is open", () => {

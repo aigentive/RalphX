@@ -568,6 +568,8 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_fixer_run_id: Option<String>,
     pub review_fixer_conversation_id: Option<ChatConversationId>,
     pub review_fixer_status: Option<String>,
+    /// Backend-owned identity for the exact blocker repair reservation.
+    pub review_fixer_attempt_id: Option<String>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
@@ -613,6 +615,7 @@ impl AgentWorkspaceReviewMonitor {
             review_fixer_run_id: None,
             review_fixer_conversation_id: None,
             review_fixer_status: None,
+            review_fixer_attempt_id: None,
             last_run_id: None,
             last_error: None,
             auto_merge_guard: None,
@@ -697,6 +700,49 @@ pub struct AgentWorkspaceReviewApprovalSnapshot {
     pub diff_fingerprint: String,
     pub artifact_id: ArtifactId,
     pub artifact_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceReviewFixerSnapshot {
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub artifact_id: ArtifactId,
+    pub artifact_version: u32,
+    pub blocking_fingerprint: String,
+}
+
+impl AgentWorkspaceReviewFixerSnapshot {
+    pub fn from_monitor(monitor: &AgentWorkspaceReviewMonitor) -> Option<Self> {
+        let target_scope = monitor.current_target_scope?;
+        if monitor.reviewed_target_scope != Some(target_scope) {
+            return None;
+        }
+        let diff_fingerprint = monitor
+            .current_diff_fingerprint
+            .clone()
+            .filter(|value| !value.trim().is_empty())?;
+        if monitor.reviewed_diff_fingerprint.as_deref() != Some(diff_fingerprint.as_str()) {
+            return None;
+        }
+        let artifact_id = monitor
+            .review_artifact_id
+            .clone()
+            .filter(|value| !value.as_str().trim().is_empty())?;
+        let artifact_version = monitor
+            .review_artifact_version
+            .filter(|version| *version > 0)?;
+        let blocking_fingerprint = monitor
+            .review_blocking_fingerprint
+            .clone()
+            .filter(|value| !value.trim().is_empty())?;
+        Some(Self {
+            target_scope,
+            diff_fingerprint,
+            artifact_id,
+            artifact_version,
+            blocking_fingerprint,
+        })
+    }
 }
 
 impl AgentWorkspaceReviewApprovalSnapshot {
@@ -970,6 +1016,14 @@ pub fn is_open_pr(publication_pr_number: Option<i64>, publication_pr_status: Opt
 
 pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {
     matches!(status, None | Some("pushed" | "refreshed"))
+}
+
+/// Whether a workspace publication workflow is actively mutating its branch.
+pub fn is_publication_push_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
 }
 
 pub const DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD: &str = "squash";

@@ -68,6 +68,21 @@ fn test_parse_result() {
 }
 
 #[test]
+fn claude_result_usage_deserializes_terminal_cache_aliases() {
+    let line = r#"{"type":"result","session_id":"usage-result","result":"Done","is_error":false,"usage":{"input_tokens":13,"output_tokens":1434,"cache_creation_input_tokens":127826,"cache_read_input_tokens":1099251}}"#;
+    let parsed = StreamProcessor::parse_line(line).expect("result should parse");
+
+    let StreamMessage::Result { usage, .. } = parsed.message else {
+        panic!("expected result message");
+    };
+    let usage = usage.expect("terminal result usage");
+    assert_eq!(usage.input_tokens, Some(13));
+    assert_eq!(usage.output_tokens, Some(1_434));
+    assert_eq!(usage.cache_creation_tokens, Some(127_826));
+    assert_eq!(usage.cache_read_tokens, Some(1_099_251));
+}
+
+#[test]
 fn test_parse_assistant_message() {
     let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}],"stop_reason":"end_turn","usage":{"input_tokens":123,"output_tokens":45,"cache_read_input_tokens":67}},"session_id":"sess-123"}"#;
     let parsed = StreamProcessor::parse_line(line);
@@ -214,24 +229,4 @@ fn test_parse_system_hook_response_json() {
     assert_eq!(output, Some("All clean".to_string()));
     assert_eq!(exit_code, Some(0));
     assert_eq!(outcome, Some("success".to_string()));
-}
-
-#[test]
-fn test_parse_line_extracts_tool_use_result() {
-    let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_xxx","type":"tool_result","content":[{"type":"text","text":"Spawned."}]}]},"parent_tool_use_id":null,"session_id":"sess1","tool_use_result":{"status":"teammate_spawned","name":"worker","agent_id":"worker@team","model":"sonnet","color":"green","prompt":"Do work","agent_type":"general-purpose","teammate_id":"worker@team","team_name":"my-team"}}"#;
-    let parsed = StreamProcessor::parse_line(line).expect("Expected Some(ParsedLine)");
-    assert!(
-        parsed.tool_use_result.is_some(),
-        "tool_use_result should be extracted"
-    );
-    let tur = parsed.tool_use_result.unwrap();
-    assert_eq!(
-        tur.get("status").and_then(|s| s.as_str()),
-        Some("teammate_spawned")
-    );
-    assert_eq!(tur.get("name").and_then(|s| s.as_str()), Some("worker"));
-    assert_eq!(
-        tur.get("team_name").and_then(|s| s.as_str()),
-        Some("my-team")
-    );
 }

@@ -69,6 +69,7 @@ import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
   getAgentWorkspaceEffectiveBaseLabel,
+  isAgentWorkspacePublishActive,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
 import {
@@ -136,7 +137,6 @@ export interface AgentsChatHeaderProps {
   onPreloadArtifacts?: () => void;
   publishShortcutLabel?: string;
   publishShortcutWorkspace?: AgentConversationWorkspace | null;
-  suppressPublishShortcut?: boolean;
   promotePublishShortcut?: boolean;
   isPublishingWorkspace?: boolean;
   onToggleTerminal?: () => void;
@@ -317,7 +317,6 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onPreloadArtifacts,
   publishShortcutLabel = "Commit & Publish",
   publishShortcutWorkspace = null,
-  suppressPublishShortcut = false,
   promotePublishShortcut = false,
   isPublishingWorkspace = false,
   onToggleTerminal,
@@ -392,12 +391,22 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const showPromotedPublishShortcut =
     promotePublishShortcut && artifactOpen && activeArtifactTab === "review";
   const effectivePublishWorkspace = publishShortcutWorkspace ?? workspace;
+  const isPublishShortcutPublishing =
+    isPublishingWorkspace || isAgentWorkspacePublishActive(effectivePublishWorkspace);
+  const publishShortcutDisplayLabel = isPublishShortcutPublishing
+    ? "Publishing"
+    : publishShortcutLabel;
+  const publishShortcutAriaLabel = isPublishShortcutPublishing
+    ? "Publishing"
+    : `Open workspace publish panel: ${publishShortcutDisplayLabel}`;
+  const publishShortcutTooltip = isPublishShortcutPublishing
+    ? "Publishing"
+    : "Open the workspace publish panel";
   // Hide the publish shortcut whenever most artifact panes are open because the
   // tab bar already exposes it. A current passed Review promotes publishing so
   // the user does not have to switch tabs just to reach the publish flow.
   const showPublishShortcut = Boolean(
-    !suppressPublishShortcut &&
-      conversation &&
+    conversation &&
       shouldShowAgentWorkspacePublishSurface(effectivePublishWorkspace) &&
       (!artifactOpen || showPromotedPublishShortcut),
   );
@@ -633,23 +642,25 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
                 disabled={
                   !onPublishWorkspace ||
                   !onOpenPublishPane ||
-                  isPublishingWorkspace ||
+                  isPublishShortcutPublishing ||
                   (effectivePublishWorkspace?.mode === "edit" &&
                     effectivePublishWorkspace?.status === "missing")
                 }
-                aria-label={`Open workspace publish panel: ${publishShortcutLabel}`}
+                aria-label={publishShortcutAriaLabel}
                 data-testid="agents-publish-workspace"
               >
-                {isPublishingWorkspace ? (
+                {isPublishShortcutPublishing ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <GitPullRequestArrow className="h-3.5 w-3.5" />
                 )}
-                <span className="hidden xl:inline">{publishShortcutLabel}</span>
+                <span className="hidden xl:inline">
+                  {publishShortcutDisplayLabel}
+                </span>
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
-              Open the workspace publish panel
+              {publishShortcutTooltip}
             </TooltipContent>
           </Tooltip>
         )}

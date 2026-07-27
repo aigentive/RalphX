@@ -14,7 +14,6 @@ mod gate1_conversation_identity;
 mod gate1_ipr_fast_path_tests;
 mod ipr_cleanup_guard_tests;
 mod interactive_mode_integration;
-mod team_nudge_running_count_tests;
 mod task_cleanup_service;
 mod reconciliation_runner;
 mod agentic_client_flows;

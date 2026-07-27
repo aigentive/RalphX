@@ -45,10 +45,7 @@ function enabledFeatureFlags(overrides: Record<string, boolean> = {}) {
   return {
     activityPage: true,
     extensibilityPage: true,
-    ideationPage: false,
     automationsPage: true,
-    battleMode: true,
-    teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: false,
     agentPersonas: false,
@@ -828,18 +825,12 @@ describe("AgentsView start conversation", () => {
 
   it("threads a selected active persona to the start invoke only when personas are enabled", async () => {
     mockAgentViewData();
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_ui_feature_flags"
+        ? Promise.resolve(enabledFeatureFlags({ agentPersonas: true }))
+        : Promise.resolve(undefined),
+    );
     const { queryClient } = renderAgentsView();
-    queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, {
-      activityPage: true,
-      extensibilityPage: true,
-      ideationPage: false,
-      automationsPage: true,
-      battleMode: true,
-      teamMode: false,
-      atlassianOauth: false,
-      ticketingDashboard: false,
-      agentPersonas: true,
-    });
     queryClient.setQueryData(
       personaKeys.list({ type: "globalAndProject", projectId: "project-1" }),
       [
@@ -860,16 +851,12 @@ describe("AgentsView start conversation", () => {
       ],
     );
 
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Choose persona" }),
-      ).toBeInTheDocument(),
+    await userEvent.click(await screen.findByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(
+      screen.getByTestId("agent-composer-runtime-persona-menu-trigger"),
     );
     await userEvent.click(
-      screen.getByRole("button", { name: "Choose persona" }),
-    );
-    await userEvent.click(
-      screen.getByRole("menuitemradio", { name: /^Reviewer Voice/ }),
+      screen.getByTestId("agents-start-persona-persona-reviewer"),
     );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "Review the current changes" },
@@ -1158,10 +1145,7 @@ describe("AgentsView start conversation", () => {
     queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, {
       activityPage: true,
       extensibilityPage: true,
-      ideationPage: false,
       automationsPage: true,
-      battleMode: true,
-      teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
       agentPersonas: false,

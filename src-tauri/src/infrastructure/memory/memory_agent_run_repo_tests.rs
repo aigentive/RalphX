@@ -1,7 +1,9 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
-use crate::domain::entities::{AgentRunAttribution, AgentRunUsage};
+use crate::domain::entities::{
+    AgentRunAttribution, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+};
 
 #[tokio::test]
 async fn test_create_and_get() {
@@ -199,6 +201,53 @@ async fn test_update_usage() {
     assert_eq!(retrieved.cache_creation_tokens, Some(5));
     assert_eq!(retrieved.cache_read_tokens, Some(10));
     assert_eq!(retrieved.estimated_usd, Some(0.0035));
+}
+
+#[tokio::test]
+async fn replace_usage_capture_clears_stale_memory_run_usage() {
+    let repo = MemoryAgentRunRepository::new();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.input_tokens = Some(100);
+    let id = run.id;
+    repo.create(run).await.unwrap();
+    let raw = ProviderUsageSnapshot::from_usage(AgentRunUsage {
+        input_tokens: Some(500),
+        ..AgentRunUsage::default()
+    });
+
+    repo.replace_usage_capture(&id, &UsageCapture::cumulative_baseline(raw.clone()))
+        .await
+        .unwrap();
+
+    let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
+    assert_eq!(retrieved.input_tokens, None);
+    assert_eq!(retrieved.raw_usage_snapshot, Some(raw));
+    assert_eq!(
+        retrieved.usage_provenance,
+        Some(UsageProvenance::CumulativeBaselineOnly)
+    );
+}
+
+#[tokio::test]
+async fn replace_usage_capture_rejects_missing_memory_run() {
+    let repo = MemoryAgentRunRepository::new();
+    let missing_id = AgentRunId::new();
+
+    let error = repo
+        .replace_usage_capture(
+            &missing_id,
+            &UsageCapture::normalized(
+                AgentRunUsage {
+                    input_tokens: Some(10),
+                    ..AgentRunUsage::default()
+                },
+                UsageProvenance::ProviderTurnDelta,
+            ),
+        )
+        .await
+        .expect_err("a missing canonical run must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
 }
 
 #[tokio::test]

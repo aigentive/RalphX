@@ -410,23 +410,6 @@ async fn test_update_coordination_mode_persists_value() {
     assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeTeam);
 }
 
-#[tokio::test]
-async fn test_update_coordination_mode_preserves_legacy_compatibility_value() {
-    let db = setup_test_db();
-    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
-
-    let conv = make_conversation(ChatContextType::Project, "project-legacy");
-    let conversation_id = conv.id;
-    repo.create(conv).await.unwrap();
-
-    repo.update_coordination_mode(&conversation_id, CoordinationMode::LegacyClaudeTeam)
-        .await
-        .unwrap();
-
-    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
-    assert_eq!(loaded.coordination_mode, CoordinationMode::LegacyClaudeTeam);
-}
-
 // --- get_by_id ---
 
 #[tokio::test]
@@ -896,6 +879,33 @@ async fn test_update_role_default_bindings_preserves_session_tuple_when_requeste
         Some("keep-provider-session")
     );
     assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
+}
+
+#[tokio::test]
+async fn test_update_agent_mode_and_role_bindings_persists_one_tuple() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = make_conversation(ChatContextType::Project, "project-atomic-edit");
+    let conversation_id = conversation.id;
+    repo.create(conversation).await.unwrap();
+
+    repo.update_agent_mode_and_role_default_bindings(
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        CoordinationMode::RxNativeWorkflow,
+        Some("persona-edit"),
+        false,
+    )
+    .await
+    .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.agent_mode,
+        Some(AgentConversationWorkspaceMode::Edit)
+    );
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeWorkflow);
+    assert_eq!(loaded.persona_id.as_deref(), Some("persona-edit"));
 }
 
 // --- clear_claude_session_id ---

@@ -21,6 +21,7 @@ use crate::application::runtime_factory::{
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
 };
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
+use crate::application::startup_status::StartupCoordinator;
 use crate::application::task_cleanup_service::TaskCleanupService;
 use crate::application::tasks_feature_toggle_service::TasksFeatureToggleService;
 use crate::application::AgentClientBundle;
@@ -77,9 +78,9 @@ use crate::domain::repositories::{
     ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
     ReviewSettingsRepository, SessionLinkRepository, SkillUsageEventRepository,
     TaskDependencyRepository, TaskOutcomeRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
-    TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
-    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    TaskRepository, TaskStepRepository, TicketCanonicalBranchRepository,
+    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
+    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -116,13 +117,13 @@ use crate::infrastructure::memory::{
     MemoryReviewRepository, MemoryReviewSettingsRepository, MemorySecretStore,
     MemorySessionLinkRepository, MemorySkillUsageEventRepository, MemoryTaskDependencyRepository,
     MemoryTaskOutcomeRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
-    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
-    MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
+    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
     MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
     MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
+use crate::infrastructure::sqlite::migrations::{run_migrations_with_observer, MigrationProgress};
 use crate::infrastructure::sqlite::ReviewIssueRepository;
 use crate::infrastructure::sqlite::{
     open_connection, run_migrations, SqliteActivePlanRepository, SqliteActivityEventRepository,
@@ -156,8 +157,7 @@ use crate::infrastructure::sqlite::{
     SqliteReviewRepository, SqliteReviewSettingsRepository, SqliteRunningAgentRegistry,
     SqliteSessionLinkRepository, SqliteSkillUsageEventRepository, SqliteTaskDependencyRepository,
     SqliteTaskOutcomeRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
-    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
-    SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
     SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
     SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
@@ -370,10 +370,6 @@ pub struct AppState {
     pub project_skill_repo: Arc<dyn ProjectSkillRepository>,
     /// Learned skill usage event repository
     pub skill_usage_event_repo: Arc<dyn SkillUsageEventRepository>,
-    /// Team session repository for agent team history
-    pub team_session_repo: Arc<dyn TeamSessionRepository>,
-    /// Team message repository for agent team messages
-    pub team_message_repo: Arc<dyn TeamMessageRepository>,
     /// Execution plan repository for tracking plan implementation attempts
     pub execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
     /// Chat attachment repository for file uploads in chat
@@ -425,6 +421,8 @@ pub struct AppState {
     /// Startup Git/GitHub recovery gate. Set when startup defers Git-dependent
     /// work and cleared after an explicit repair resumes that work.
     pub(crate) startup_git_auth_recovery_state: Arc<StartupGitAuthRecoveryState>,
+    /// Process-local startup authority shared by Tauri and HTTP AppState graphs.
+    pub startup_coordinator: Arc<StartupCoordinator>,
 }
 
 impl AppState {
@@ -922,6 +920,7 @@ impl AppState {
         project_id: Option<&str>,
         project_root: Option<&std::path::Path>,
         role: RoutingRole,
+        runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
         agent_name: &str,
         purpose: &str,
         harness_override: Option<AgentHarnessKind>,
@@ -933,6 +932,7 @@ impl AppState {
                 project_id,
                 project_root,
                 role,
+                runtime_override,
                 harness_override,
                 None,
                 &defaults,
@@ -1101,6 +1101,20 @@ impl AppState {
         agent_name: &str,
         purpose: &str,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_workspace_role_runtime_for_project_with_override(
+            project_id, role, None, agent_name, purpose,
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_workspace_role_runtime_for_project_with_override(
+        &self,
+        project_id: &str,
+        role: RoutingRole,
+        runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+        agent_name: &str,
+        purpose: &str,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         let project = self
             .project_repo
             .get_by_id(&ProjectId::from_string(project_id.to_string()))
@@ -1110,6 +1124,7 @@ impl AppState {
             Some(project_id),
             Some(std::path::Path::new(&project.working_directory)),
             role,
+            runtime_override,
             agent_name,
             purpose,
             None,
@@ -1185,9 +1200,31 @@ impl AppState {
         events: Arc<dyn EventSink>,
         internal_event_bus: InternalEventBus,
     ) -> AppResult<Self> {
+        Self::new_production_with_paths_events_and_migration_observer(
+            app_handle,
+            app_paths,
+            events,
+            internal_event_bus,
+            |_| {},
+        )
+    }
+
+    /// Constructs production AppState while reporting real migration units.
+    ///
+    /// # Errors
+    ///
+    /// Returns database, migration, path, or repository-wiring failures without
+    /// publishing AppState readiness.
+    pub fn new_production_with_paths_events_and_migration_observer(
+        app_handle: AppHandle,
+        app_paths: AppPaths,
+        events: Arc<dyn EventSink>,
+        internal_event_bus: InternalEventBus,
+        observer: impl FnMut(MigrationProgress),
+    ) -> AppResult<Self> {
         let path = app_paths.database_path()?;
         let conn = open_connection(&path)?;
-        run_migrations(&conn)?;
+        run_migrations_with_observer(&conn, observer)?;
         let remove_inherited_github_cli_tokens = conn
             .query_row(
                 "SELECT remove_inherited_github_cli_tokens FROM app_state WHERE id = 1",
@@ -1497,12 +1534,6 @@ impl AppState {
             skill_usage_event_repo: Arc::new(SqliteSkillUsageEventRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
-            team_session_repo: Arc::new(SqliteTeamSessionRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
-            team_message_repo: Arc::new(SqliteTeamMessageRepository::from_shared(Arc::clone(
-                &shared_conn,
-            ))),
             execution_plan_repo: Arc::new(SqliteExecutionPlanRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1546,6 +1577,7 @@ impl AppState {
             plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
+            startup_coordinator: Arc::new(StartupCoordinator::new()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -1749,8 +1781,6 @@ impl AppState {
             ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(
@@ -1777,6 +1807,7 @@ impl AppState {
             plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
+            startup_coordinator: Arc::new(StartupCoordinator::new()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -1951,8 +1982,6 @@ impl AppState {
             ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(
@@ -1979,6 +2008,7 @@ impl AppState {
             plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
+            startup_coordinator: Arc::new(StartupCoordinator::new()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -2175,8 +2205,6 @@ impl AppState {
             ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(SqliteExecutionPlanRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2205,6 +2233,7 @@ impl AppState {
             plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
+            startup_coordinator: Arc::new(StartupCoordinator::new()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -2351,8 +2380,6 @@ impl AppState {
             ),
             project_skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
             skill_usage_event_repo: Arc::new(MemorySkillUsageEventRepository::new()),
-            team_session_repo: Arc::new(MemoryTeamSessionRepository::new()),
-            team_message_repo: Arc::new(MemoryTeamMessageRepository::new()),
             execution_plan_repo: Arc::new(MemoryExecutionPlanRepository::new()),
             chat_attachment_repo,
             conversation_folder_reference_repo: Arc::new(
@@ -2389,6 +2416,7 @@ impl AppState {
             plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
+            startup_coordinator: Arc::new(StartupCoordinator::new()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(

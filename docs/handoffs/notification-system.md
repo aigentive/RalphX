@@ -37,7 +37,6 @@ Non-goals (v1): deep-linking from the OS notification into a specific view (macO
 | B3 | Plan-mode proposal | same transport, `metadata.kind = "plan_mode_proposal"` (`question-handler.ts:410`) | rides B2 |
 | B4 | Workspace/ideation plan needs approval | client-derived `needs_approval` (`AgentsArtifactPane.tsx:2260`); backend signals: `plan_artifact:created` … `plan_artifact:approved` | No dedicated backend "awaiting approval" event today |
 | B5 | Agent finished turn, waiting for user | `agent:turn_completed` (`chat_service_streaming.rs:2088-2107`) → `waiting_for_input` | The generic "your turn" signal; high volume — desktop-only category |
-| B6 | Team plan requires manual approval | `team:plan_requested` (`handlers/teams/plan.rs:144-159`) | approve via `approve_team_plan` |
 
 ### C. Automation v2
 
@@ -120,9 +119,9 @@ CREATE INDEX idx_notifications_unread ON notifications(created_at) WHERE read_at
 ```
 
 `NotificationCategory` (single Rust enum, serialized snake_case, mirrored in TS):
-`review_needed, review_escalated, qa_failed, merge_conflict, merge_incomplete, task_failed, task_blocked, task_stuck, provider_paused, recovery_prompt, permission_request, agent_question, plan_approval, team_plan_approval, automation_plan_approval, automation_paused, automation_run_failed, automation_run_completed, agent_waiting, gh_auth, git_auth_preflight, pr_review_action, info`
+`review_needed, review_escalated, qa_failed, merge_conflict, merge_incomplete, task_failed, task_blocked, task_stuck, provider_paused, recovery_prompt, permission_request, agent_question, plan_approval, automation_plan_approval, automation_paused, automation_run_failed, automation_run_completed, agent_waiting, gh_auth, git_auth_preflight, pr_review_action, info`
 
-`NotificationTarget` (typed, versioned JSON): `{ kind: "task" | "agent_conversation" | "automation_run" | "project" | "none", projectId?, taskId?, conversationId?, setupConversationId?, automationId?, runId? }`. Frontend maps kinds to existing navigation: `navigateToTask` (`uiStore.ts:952`), `navigateToIdeationSession` (`lib/navigation.ts:25`), `requestAutomationRunOpen` (`automationRunNavigation.ts:210`).
+`NotificationTarget` (typed, versioned JSON): `{ kind: "task" | "agent_conversation" | "automation_run" | "project" | "none", projectId?, taskId?, conversationId?, setupConversationId?, automationId?, runId? }`. Frontend maps task targets through `openTaskInAgents(taskId, mode, hints)`, linked ideation setup targets through `openIdeationInAgents(setupConversationId)`, and automation targets through `requestAutomationRunOpen` (`automationRunNavigation.ts:210`). Project-linked conversations use the current Agents conversation/plan navigation.
 
 **`NotificationService`** (application layer):
 - `record(NewNotification)` — insert with dedupe, emit `notification:created` Tauri event, then desktop-dispatch (Phase 3). **Fire-and-forget**: all errors logged, never propagated — recording must never block or fail a state transition.
@@ -162,7 +161,7 @@ Branch note: automation producers (PR 6) depend on `feat/automation-v2`; everyth
 **PR 2 — `feat: notification center panel + badge`**
 - `frontend/src/types/notifications.ts` (Zod mirrors), `api/notifications.ts`, `hooks/useAttentionItems.ts`, `hooks/useNotificationEvents.ts` (event → invalidation, registered in `EventProvider.tsx`).
 - `NotificationCenterPanel` from `ReviewsPanel` (reviews category keeps `TaskReviewCard` + `ReviewDetailModal` behavior; new generic `AttentionItemRow` for other categories with target navigation). `AppTopBar` badge switches from `pendingReviewCount` to attention count; ⌘⇧R preserved.
-- Category → navigation wiring (`navigateToTask`, `navigateToIdeationSession`, `requestAutomationRunOpen`).
+- Category → navigation wiring (`openTaskInAgents`, `openIdeationInAgents`, current Agents conversation/plan navigation, `requestAutomationRunOpen`).
 - Tests (Vitest): badge count derivation (asserting the new semantics: in-progress AI reviews excluded, failure states included), panel renders per category, navigation dispatch per target kind, **first-paint synchronous shell test** (perf rule TDD), existing ReviewsPanel test migration.
 - Test-surface migration is larger than Vitest: Playwright page objects/fixtures consume the reviews testids — `frontend/tests/pages/modals/reviews-panel.page.ts`, `tests/pages/kanban.page.ts`, `tests/fixtures/setup.fixtures.ts`, `tests/helpers/review-detail.helpers.ts` — plus `uiStore.test.ts` (`reviewsPanelOpen`), `App.test.tsx`, `App.navigation.test.tsx`. Migrate all in this PR.
 - WKWebView rules apply to any new themed surface (explicit bg/border longhands, no chained `var()` on canvas paint).
@@ -180,7 +179,7 @@ Branch note: automation producers (PR 6) depend on `feat/automation-v2`; everyth
 - Tests: production-entry-path tests per producer incl. re-entry/duplicate scenarios asserting exactly-one notification (stateful-workflow test-falsification rule).
 
 **PR 5 — `feat: interactive HITL producers`**
-- B1 `permission_request` (record at `permissions.rs:12-48`; severity `action_required`), B2/B3 questions (`questions.rs:12-65`; plan-mode proposal keeps `metadata.kind`), B4 plan-awaiting-approval (record on `plan_artifact:created` for **non-automation** planning conversations only — same `automation_run_id` exclusion as the Tier 1 source; Tier 1 governs liveness, so no resolution needed when approved), B6 `team:plan_requested`.
+- B1 `permission_request` (record at `permissions.rs:12-48`; severity `action_required`), B2/B3 questions (`questions.rs:12-65`; plan-mode proposal keeps `metadata.kind`), B4 plan-awaiting-approval (record on `plan_artifact:created` for **non-automation** planning conversations only — same `automation_run_id` exclusion as the Tier 1 source; Tier 1 governs liveness, so no resolution needed when approved).
 - Tests incl. hydration race (notification recorded even if no frontend listener mounted).
 - B5 `agent_waiting` moves to PR 10 (it is ephemeral/desktop-only, and desktop dispatch + focus state don't exist until Phase 3 — landing it here would be an untestable no-op).
 

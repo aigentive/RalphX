@@ -1,60 +1,81 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
 import { toast } from "sonner";
-import { Download, Sparkles } from "lucide-react";
 import {
   getCurrentReleaseNotes,
   getLastSeenReleaseNotesVersion,
-  markReleaseNotesSeen,
 } from "@/api/release-notes";
-import {
-  clearPostUpdatePreparing,
-  markPostUpdatePreparing,
-} from "@/lib/postUpdatePreparing";
+import type { UpdateChannel } from "@/api/update-channel";
 import { ReleaseNotesDialog } from "@/components/ReleaseNotesDialog";
+import { useUpdateChannel } from "@/hooks/useUpdateChannel";
 import { useUiStore } from "@/stores/uiStore";
+import { installUpdate } from "./UpdateChecker.install";
+import { useUpdateCheckerNativeEvents } from "./UpdateChecker.events";
+import {
+  sanitizeReleaseNotesBody,
+  showUpdateNotification,
+  showWhatsNewToast,
+  updateChannelLabel,
+  whatsNewToastId,
+  type ReleaseNotesView,
+} from "./UpdateChecker.toasts";
 
 const INITIAL_UPDATE_CHECK_DELAY_MS = 3_000;
 const STARTUP_RELEASE_NOTES_DELAY_MS = 4_000;
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
 const LIFECYCLE_UPDATE_CHECK_COOLDOWN_MS = 5 * 60 * 1_000;
-const UPDATE_CHECK_EVENT = "ralphx://check-for-updates";
-const RELEASE_NOTES_EVENT = "ralphx://show-release-notes";
 const UPDATE_CHECK_RESULT_TOAST_ID = "update-check-result";
-const GITHUB_RELEASE_METADATA_MARKERS =
-  /^[ \t]*<!--\s*github-release-metadata:(?:start|end)\s*-->[ \t]*\n?/gm;
-
-interface ReleaseNotesView {
-  version: string;
-  body: string | null;
-  context: "current" | "update";
-}
-
 interface ReleaseDialogState {
   open: boolean;
   version?: string | undefined;
   body?: string | null | undefined;
   context?: "current" | "update" | undefined;
+  channel?: UpdateChannel | undefined;
 }
 
 interface CheckForUpdatesOptions {
   manual?: boolean;
   force?: boolean;
+  target?: UpdateChannel;
 }
 
-export function UpdateChecker() {
+type CheckForUpdates = (options?: CheckForUpdatesOptions) => Promise<void>;
+
+interface UpdateCheckerProps {
+  automaticMaintenanceEnabled?: boolean;
+  checkForUpdatesRequest?: number;
+  listenForNativeActions?: boolean;
+  openReleaseNotesRequest?: number;
+}
+
+export function UpdateChecker({
+  automaticMaintenanceEnabled = true,
+  checkForUpdatesRequest = 0,
+  listenForNativeActions = true,
+  openReleaseNotesRequest = 0,
+}: UpdateCheckerProps = {}) {
   const activeModal = useUiStore((s) => s.activeModal);
+  const {
+    updateChannel,
+    isSettled: isUpdateChannelSettled,
+    isError: isUpdateChannelError,
+    loadError: updateChannelError,
+  } = useUpdateChannel();
   const checkInFlight = useRef(false);
-  const manualCheckRequested = useRef(false);
   const notifiedVersion = useRef<string | null>(null);
   const lastCheckAt = useRef<number | null>(null);
+  const activeUpdateChannel = useRef<UpdateChannel | null>(null);
+  const checkGeneration = useRef(0);
+  const queuedForcedCheck = useRef<CheckForUpdatesOptions | null>(null);
+  const queuedUnsettledCheck = useRef<CheckForUpdatesOptions | null>(null);
+  const checkForUpdatesRef = useRef<CheckForUpdates | null>(null);
   const whatsNewVersion = useRef<string | null>(null);
   const pendingWhatsNew = useRef<ReleaseNotesView | null>(null);
   const visibleWhatsNew = useRef<ReleaseNotesView | null>(null);
   const visibleWhatsNewToastId = useRef<string | null>(null);
   const isGlobalModalOpen = useRef(activeModal !== null);
+  const handledCheckForUpdatesRequest = useRef(0);
+  const handledOpenReleaseNotesRequest = useRef(0);
   const [dialogState, setDialogState] = useState<ReleaseDialogState>({ open: false });
 
   const clearVisibleWhatsNew = useCallback((version?: string) => {
@@ -77,6 +98,7 @@ export function UpdateChecker() {
         version: notes.version,
         body: notes.body,
         context: notes.context,
+        channel: notes.channel,
       });
     },
     [clearVisibleWhatsNew],
@@ -102,30 +124,32 @@ export function UpdateChecker() {
     setDialogState({ open: true, context: "current" });
   }, []);
 
-  const handleUpdateFromDialog = useCallback(async () => {
-    setDialogState({ open: false });
-    showCheckingForUpdatesToast();
-    try {
-      const update = await check();
-      if (update) {
-        toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
-        void installUpdate(update);
-      } else {
-        toast.success("RalphX is up to date.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
-      }
-    } catch {
-      toast.error("Failed to check for updates.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
-    }
-  }, []);
-
   const checkForUpdates = useCallback(
-    async ({ manual = false, force = false }: CheckForUpdatesOptions = {}) => {
-      if (manual) {
-        manualCheckRequested.current = true;
-        showCheckingForUpdatesToast();
+    async ({
+      manual = false,
+      force = false,
+      target = updateChannel,
+    }: CheckForUpdatesOptions = {}) => {
+      if (!isUpdateChannelSettled) {
+        const queued = queuedUnsettledCheck.current;
+        queuedUnsettledCheck.current = {
+          manual: manual || queued?.manual === true,
+          force: force || queued?.force === true,
+        };
+        return;
       }
 
-      if (checkInFlight.current) return;
+      if (checkInFlight.current) {
+        if (force) {
+          const queued = queuedForcedCheck.current;
+          queuedForcedCheck.current = {
+            force: true,
+            manual: manual || queued?.manual === true,
+            target,
+          };
+        }
+        return;
+      }
 
       const now = Date.now();
       if (
@@ -139,10 +163,20 @@ export function UpdateChecker() {
 
       checkInFlight.current = true;
       lastCheckAt.current = now;
+      const generation = checkGeneration.current;
+      if (manual) {
+        showCheckingForUpdatesToast();
+      }
 
       try {
-        const update = await check();
-        const shouldShowManualResult = manualCheckRequested.current;
+        const update = await check({ target });
+        if (
+          generation !== checkGeneration.current ||
+          target !== activeUpdateChannel.current
+        ) {
+          return;
+        }
+        const shouldShowManualResult = manual;
         if (
           update &&
           (shouldShowManualResult || notifiedVersion.current !== update.version)
@@ -151,24 +185,49 @@ export function UpdateChecker() {
           if (shouldShowManualResult) {
             toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
           }
-          showUpdateNotification(update, openReleaseNotes);
+          showUpdateNotification(update, target, openReleaseNotes, installUpdate);
         } else if (shouldShowManualResult && !update) {
-          toast.success("RalphX is up to date.", { id: UPDATE_CHECK_RESULT_TOAST_ID });
+          toast.success(`RalphX is up to date on ${updateChannelLabel(target)}.`, {
+            id: UPDATE_CHECK_RESULT_TOAST_ID,
+          });
         }
       } catch (error) {
         console.debug("Update check failed:", error);
-        if (manualCheckRequested.current) {
+        if (
+          generation === checkGeneration.current &&
+          target === activeUpdateChannel.current &&
+          manual
+        ) {
           toast.error("Failed to check for updates. Please try again later.", {
             id: UPDATE_CHECK_RESULT_TOAST_ID,
           });
         }
       } finally {
         checkInFlight.current = false;
-        manualCheckRequested.current = false;
+        const queuedCheck = queuedForcedCheck.current;
+        queuedForcedCheck.current = null;
+        if (queuedCheck !== null) {
+          void checkForUpdatesRef.current?.(queuedCheck);
+        }
       }
     },
-    [openReleaseNotes],
+    [isUpdateChannelSettled, openReleaseNotes, updateChannel],
   );
+
+  const handleCheckFromDialog = useCallback(
+    (target: UpdateChannel) => {
+      if (!isUpdateChannelSettled) {
+        return;
+      }
+      setDialogState({ open: false });
+      void checkForUpdates({ force: true, manual: true, target });
+    },
+    [checkForUpdates, isUpdateChannelSettled],
+  );
+
+  useEffect(() => {
+    checkForUpdatesRef.current = checkForUpdates;
+  }, [checkForUpdates]);
 
   const showStartupReleaseNotes = useCallback(async () => {
     try {
@@ -187,11 +246,16 @@ export function UpdateChecker() {
       }
 
       whatsNewVersion.current = notes.version;
-      presentWhatsNewToast({ version: notes.version, body, context: "current" });
+      presentWhatsNewToast({
+        version: notes.version,
+        body,
+        context: "current",
+        channel: updateChannel,
+      });
     } catch (error) {
       console.debug("Release notes startup check failed:", error);
     }
-  }, [presentWhatsNewToast]);
+  }, [presentWhatsNewToast, updateChannel]);
 
   useEffect(() => {
     isGlobalModalOpen.current = activeModal !== null;
@@ -210,29 +274,95 @@ export function UpdateChecker() {
   }, [activeModal, clearVisibleWhatsNew, presentWhatsNewToast]);
 
   useEffect(() => {
+    if (!isUpdateChannelError) {
+      return;
+    }
+    console.debug(
+      "Update channel load failed; using Stable for update checks:",
+      updateChannelError,
+    );
+  }, [isUpdateChannelError, updateChannelError]);
+
+  useEffect(() => {
+    if (!isUpdateChannelSettled) {
+      return;
+    }
+
+    if (activeUpdateChannel.current === null) {
+      activeUpdateChannel.current = updateChannel;
+      return;
+    }
+    if (activeUpdateChannel.current === updateChannel) {
+      return;
+    }
+
+    activeUpdateChannel.current = updateChannel;
+    checkGeneration.current += 1;
+    notifiedVersion.current = null;
+    lastCheckAt.current = null;
+    toast.dismiss("update-available");
+    toast.dismiss(UPDATE_CHECK_RESULT_TOAST_ID);
+
+    if (!automaticMaintenanceEnabled) {
+      return;
+    }
+
+    if (checkInFlight.current) {
+      queuedForcedCheck.current = { force: true, target: updateChannel };
+      return;
+    }
+    void checkForUpdates({ force: true, target: updateChannel });
+  }, [
+    automaticMaintenanceEnabled,
+    checkForUpdates,
+    isUpdateChannelSettled,
+    updateChannel,
+  ]);
+
+  useEffect(() => {
+    if (!isUpdateChannelSettled || queuedUnsettledCheck.current === null) {
+      return;
+    }
+    const queued = queuedUnsettledCheck.current;
+    queuedUnsettledCheck.current = null;
+    void checkForUpdates({ ...queued, target: updateChannel });
+  }, [checkForUpdates, isUpdateChannelSettled, updateChannel]);
+
+  useEffect(() => {
+    if (!automaticMaintenanceEnabled || !isUpdateChannelSettled) {
+      return undefined;
+    }
     const timeoutId = window.setTimeout(
-      () => void checkForUpdates({ force: true }),
+      () => void checkForUpdatesRef.current?.({ force: true }),
       INITIAL_UPDATE_CHECK_DELAY_MS,
     );
     const intervalId = window.setInterval(
-      () => void checkForUpdates({ force: true }),
+      () => void checkForUpdatesRef.current?.({ force: true }),
       UPDATE_CHECK_INTERVAL_MS,
     );
     return () => {
       window.clearTimeout(timeoutId);
       window.clearInterval(intervalId);
     };
-  }, [checkForUpdates]);
+  }, [automaticMaintenanceEnabled, isUpdateChannelSettled]);
 
   useEffect(() => {
+    if (!automaticMaintenanceEnabled) {
+      return undefined;
+    }
+
     const timeoutId = window.setTimeout(
       () => void showStartupReleaseNotes(),
       STARTUP_RELEASE_NOTES_DELAY_MS,
     );
     return () => window.clearTimeout(timeoutId);
-  }, [showStartupReleaseNotes]);
+  }, [automaticMaintenanceEnabled, showStartupReleaseNotes]);
 
   useEffect(() => {
+    if (!automaticMaintenanceEnabled) {
+      return undefined;
+    }
+
     const checkIfActive = () => {
       if (document.visibilityState === "hidden") return;
       void checkForUpdates();
@@ -247,37 +377,30 @@ export function UpdateChecker() {
       window.removeEventListener("online", checkIfActive);
       document.removeEventListener("visibilitychange", checkIfActive);
     };
-  }, [checkForUpdates]);
+  }, [automaticMaintenanceEnabled, checkForUpdates]);
 
   useEffect(() => {
-    const unlisteners: UnlistenFn[] = [];
-    let isMounted = true;
+    if (checkForUpdatesRequest <= handledCheckForUpdatesRequest.current) {
+      return;
+    }
+    handledCheckForUpdatesRequest.current = checkForUpdatesRequest;
+    void checkForUpdates({ manual: true, force: true });
+  }, [checkForUpdates, checkForUpdatesRequest]);
 
-    void listen(UPDATE_CHECK_EVENT, () => {
-      void checkForUpdates({ manual: true, force: true });
-    }).then((unlisten) => {
-      if (isMounted) {
-        unlisteners.push(unlisten);
-      } else {
-        unlisten();
-      }
-    });
+  useEffect(() => {
+    if (openReleaseNotesRequest <= handledOpenReleaseNotesRequest.current) {
+      return;
+    }
+    handledOpenReleaseNotesRequest.current = openReleaseNotesRequest;
+    openCurrentReleaseNotes();
+  }, [openCurrentReleaseNotes, openReleaseNotesRequest]);
 
-    void listen(RELEASE_NOTES_EVENT, () => {
-      void openCurrentReleaseNotes();
-    }).then((unlisten) => {
-      if (isMounted) {
-        unlisteners.push(unlisten);
-      } else {
-        unlisten();
-      }
-    });
+  useUpdateCheckerNativeEvents({
+    checkForUpdates,
+    enabled: listenForNativeActions,
+    openCurrentReleaseNotes,
+  });
 
-    return () => {
-      isMounted = false;
-      unlisteners.forEach((unlisten) => unlisten());
-    };
-  }, [checkForUpdates, openCurrentReleaseNotes]);
 
   return (
     <ReleaseNotesDialog
@@ -286,211 +409,12 @@ export function UpdateChecker() {
       initialVersion={dialogState.version}
       initialBody={dialogState.body}
       initialContext={dialogState.context}
-      onRequestUpdate={handleUpdateFromDialog}
+      initialChannel={dialogState.channel}
+      onCheckForUpdates={handleCheckFromDialog}
     />
   );
 }
 
 function showCheckingForUpdatesToast() {
   toast.loading("Checking for updates...", { id: UPDATE_CHECK_RESULT_TOAST_ID });
-}
-
-function showUpdateNotification(
-  update: Update,
-  onOpenReleaseNotes: (notes: ReleaseNotesView) => void,
-) {
-  const notes = sanitizeReleaseNotesBody(typeof update.body === "string" ? update.body : null);
-  const releaseNotes = notes
-    ? { version: update.version, body: notes, context: "update" as const }
-    : null;
-
-  toast(
-    <div className="flex flex-col gap-2" data-testid="update-available-toast">
-      <div className="flex items-center gap-2">
-        <Download
-          className="h-4 w-4"
-          style={{ color: "var(--accent-primary)" }}
-        />
-        <span className="font-medium">Update available</span>
-      </div>
-      <p
-        className="text-xs"
-        style={{ color: "var(--text-muted)", lineHeight: 1.4 }}
-      >
-        Version {update.version} is ready to install.
-      </p>
-      {notes ? (
-        <p
-          className="line-clamp-2 text-xs"
-          style={{ color: "var(--text-muted)", lineHeight: 1.4 }}
-        >
-          {notes}
-        </p>
-      ) : null}
-      <div className="flex gap-2 mt-1">
-        <button
-          type="button"
-          data-testid="update-install-button"
-          className="git-auth-startup-toast-action inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-semibold"
-          onClick={() => installUpdate(update)}
-        >
-          Update Now
-        </button>
-        {releaseNotes ? (
-          <button
-            type="button"
-            data-testid="update-release-notes-button"
-            className="inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-medium"
-            style={{ color: "var(--accent-primary)" }}
-            onClick={() => onOpenReleaseNotes(releaseNotes)}
-          >
-            Release Notes
-          </button>
-        ) : null}
-        <button
-          type="button"
-          data-testid="update-later-button"
-          className="inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-medium"
-          style={{ color: "var(--text-muted)" }}
-          onClick={() => toast.dismiss("update-available")}
-        >
-          Later
-        </button>
-      </div>
-    </div>,
-    {
-      duration: Infinity,
-      id: "update-available",
-      className: "git-auth-startup-toast",
-    }
-  );
-}
-
-function showWhatsNewToast(
-  releaseNotes: ReleaseNotesView,
-  onOpenReleaseNotes: (notes: ReleaseNotesView) => void,
-  onDismiss: () => void,
-) {
-  const toastId = whatsNewToastId(releaseNotes.version);
-
-  toast(
-    <div className="flex flex-col gap-2" data-testid="whats-new-toast">
-      <div className="flex items-center gap-2">
-        <Sparkles
-          className="h-4 w-4"
-          style={{ color: "var(--accent-primary)" }}
-        />
-        <span className="font-medium">What&apos;s new in RalphX {releaseNotes.version}</span>
-      </div>
-      <p
-        className="line-clamp-2 text-xs"
-        style={{ color: "var(--text-muted)", lineHeight: 1.4 }}
-      >
-        {releaseNotesPreview(releaseNotes.body)}
-      </p>
-      <div className="flex gap-2 mt-1">
-        <button
-          type="button"
-          data-testid="whats-new-open-button"
-          className="git-auth-startup-toast-action inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-semibold"
-          onClick={() => onOpenReleaseNotes(releaseNotes)}
-        >
-          Read Release Notes
-        </button>
-        <button
-          type="button"
-          data-testid="whats-new-dismiss-button"
-          className="inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-medium"
-          style={{ color: "var(--text-muted)" }}
-          onClick={() => {
-            void markReleaseNotesSeen(releaseNotes.version).catch((error) => {
-              console.debug("Failed to mark release notes as seen:", error);
-            });
-            toast.dismiss(toastId);
-            onDismiss();
-          }}
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>,
-    {
-      duration: Infinity,
-      id: toastId,
-      className: "git-auth-startup-toast",
-    },
-  );
-}
-
-function whatsNewToastId(version: string): string {
-  return `whats-new-${version}`;
-}
-
-function sanitizeReleaseNotesBody(body: string | null): string | null {
-  if (!body) {
-    return null;
-  }
-
-  const sanitized = body
-    .replace(GITHUB_RELEASE_METADATA_MARKERS, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  return sanitized.length > 0 ? sanitized : null;
-}
-
-function releaseNotesPreview(body: string | null): string {
-  return (body ?? "")
-    .replace(/^#+\s+/gm, "")
-    .replace(/\*\*/g, "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 2)
-    .join(" ");
-}
-
-async function installUpdate(update: Update) {
-  const toastId = "update-progress";
-
-  toast.dismiss("update-available");
-  toast.loading("Downloading update...", { id: toastId });
-
-  try {
-    let totalBytes = 0;
-    let downloadedBytes = 0;
-
-    await update.downloadAndInstall((progress) => {
-      if (progress.event === "Started" && progress.data.contentLength) {
-        totalBytes = progress.data.contentLength;
-      } else if (progress.event === "Progress") {
-        downloadedBytes += progress.data.chunkLength;
-        if (totalBytes > 0) {
-          const percent = Math.round((downloadedBytes / totalBytes) * 100);
-          toast.loading(`Downloading update... ${percent}%`, { id: toastId });
-        }
-      } else if (progress.event === "Finished") {
-        toast.loading("Installing update...", { id: toastId });
-      }
-    });
-
-    toast.success("Update installed! Restarting...", { id: toastId });
-
-    // Give user a moment to see the success message
-    setTimeout(() => {
-      markPostUpdatePreparing(update.version);
-      void relaunch().catch((error) => {
-        clearPostUpdatePreparing();
-        toast.error("Failed to restart RalphX. Please reopen the app manually.", {
-          id: toastId,
-        });
-        console.error("Update relaunch failed:", error);
-      });
-    }, 1500);
-  } catch (error) {
-    toast.error("Failed to install update. Please try again later.", {
-      id: toastId,
-    });
-    console.error("Update installation failed:", error);
-  }
 }

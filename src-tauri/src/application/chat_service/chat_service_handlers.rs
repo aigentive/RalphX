@@ -1126,7 +1126,6 @@ fn build_recovery_retry_background_context<R: Runtime>(
     user_message_content: Option<&str>,
     retry_conv: ChatConversation,
     agent_name: Option<&str>,
-    team_mode: bool,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
@@ -1212,7 +1211,6 @@ fn build_recovery_retry_background_context<R: Runtime>(
         turn_metadata: None,
         conversation: Some(retry_conv),
         agent_name: agent_name.map(str::to_string),
-        team_mode,
         assistant_message_attribution: crate::domain::entities::ChatMessageAttribution {
             attribution_source: Some("native_runtime".to_string()),
             provider_harness: Some(recovery_harness),
@@ -1226,7 +1224,6 @@ fn build_recovery_retry_background_context<R: Runtime>(
         },
         persist_conversation_provider_session_ref: true,
         cancellation_token: tokio_util::sync::CancellationToken::new(),
-        team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: interactive_process_registry.clone(),
         interactive_process_token: None,
@@ -2468,7 +2465,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     app_handle: &Option<AppHandle<R>>,
     agent_name: Option<&str>,
-    team_mode: bool,
     run_chain_id: Option<String>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
@@ -2816,7 +2812,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     plugin_dir,
                     working_directory,
                     resolved_project_id.clone(),
-                    team_mode,
                     Arc::clone(chat_message_repo),
                     Arc::clone(conversation_repo),
                     Arc::clone(chat_attachment_repo),
@@ -2886,11 +2881,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         .await;
 
                         let retry_agent_name =
-                            super::chat_service_helpers::resolve_agent_with_team_mode(
-                                &context_type,
-                                None,
-                                team_mode,
-                            );
+                            super::chat_service_helpers::resolve_agent(&context_type, None);
                         let external_readiness = chat_service_context::await_required_external_mcp(
                             app_handle.as_ref(),
                             recovery_harness,
@@ -2925,7 +2916,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     } else {
                                         None
                                     },
-                                    team_mode,
                                     Arc::clone(chat_attachment_repo),
                                     Arc::clone(artifact_repo),
                                     retry_agent_lane_settings_repo.clone(),
@@ -3038,7 +3028,6 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         user_message_content,
                                         retry_conv,
                                         agent_name,
-                                        team_mode,
                                         review_repo,
                                         task_step_repo,
                                         validation_run_repo,

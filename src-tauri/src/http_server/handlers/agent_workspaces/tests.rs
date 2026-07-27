@@ -1,4 +1,5 @@
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path as StdPath, PathBuf};
     use std::pin::Pin;
     use std::process::Command;
@@ -11,12 +12,11 @@
         resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
     };
     use crate::application::agent_workspace_review::{
-        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewContext,
-        AgentWorkspaceReviewDiffSummary, AgentWorkspaceReviewHunkAnchor,
-        AgentWorkspaceReviewPacket,
+        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewContext, AgentWorkspaceReviewDiffSummary,
+        AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewPacket,
     };
     use crate::application::agent_workspace_review_publish_handoff::pr_fix_publish_can_resume_after_workspace_review;
-    use crate::application::{AppState, TeamService, TeamStateTracker};
+    use crate::application::AppState;
     use crate::commands::ExecutionState;
     use crate::domain::agents::{
         AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
@@ -26,11 +26,12 @@
         PrPushStatus as PlanPrPushStatus, PrStatus as PlanPrStatus,
     };
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+        AgentWorkspacePrMetadataDecision,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
         AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState,
-        AgentWorkspaceSourcePullRequest, AgentRunId, ArtifactId, ChatContextType, ChatConversation,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
         IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project,
         ProjectId, TaskId,
     };
@@ -38,12 +39,11 @@
     use crate::domain::review::ReviewSettings;
     use crate::domain::services::github_generated_markdown::RALPHX_GENERATED_FOOTER;
     use crate::domain::services::github_service::{
-        GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
-        PrSyncState,
+        GithubServiceTrait, PrDetail, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent,
+        PrStatus, PrSyncState,
     };
     use crate::http_server::handlers::agent_workspace_review_approval::{
-        approve_agent_workspace_review_anyway_handler,
-        ApproveAgentWorkspaceReviewAnywayRequest,
+        approve_agent_workspace_review_anyway_handler, ApproveAgentWorkspaceReviewAnywayRequest,
     };
     use crate::tests::mock_github_service::MockGithubService;
     use async_trait::async_trait;
@@ -66,13 +66,9 @@
     }
 
     fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         HttpServerState {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -171,8 +167,7 @@
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 assert!(!force, "repair completion should start a normal refresh");
-                let context =
-                    load_agent_workspace_review_context(state.as_ref(), workspace).await?;
+                let context = load_agent_workspace_review_context(state.as_ref(), workspace).await?;
                 let target = context.target;
                 assert!(
                     target.is_some(),
@@ -202,7 +197,8 @@
                         review_artifact_is_current: false,
                         review_artifact_is_outdated: false,
                         can_mutate_review_state: false,
-                        review_runtime_state: AgentWorkspaceReviewRuntimeState::MissingRuntimeIdentity,
+                        review_runtime_state:
+                            AgentWorkspaceReviewRuntimeState::MissingRuntimeIdentity,
                         should_show_tab: true,
                     },
                     started: true,
@@ -216,16 +212,19 @@
     struct SubmittingPrDescriptionClient {
         repo: Arc<dyn AgentConversationWorkspaceRepository>,
         conversation_id: ChatConversationId,
+        preserve_existing_pr_metadata: bool,
     }
 
     impl SubmittingPrDescriptionClient {
         fn new(
             repo: Arc<dyn AgentConversationWorkspaceRepository>,
             conversation_id: ChatConversationId,
+            preserve_existing_pr_metadata: bool,
         ) -> Self {
             Self {
                 repo,
                 conversation_id,
+                preserve_existing_pr_metadata,
             }
         }
     }
@@ -241,16 +240,26 @@
         }
 
         async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
-            self.repo
-                .save_pr_description(
-                    &self.conversation_id,
-                    AgentWorkspacePrDescription::new(
-                        Some("Cached publication title".to_string()),
-                        "## Summary\n\nReady to publish.".to_string(),
-                    ),
-                )
-                .await
-                .expect("test PR description should save");
+            if self.preserve_existing_pr_metadata {
+                self.repo
+                    .save_pr_metadata_decision(
+                        &self.conversation_id,
+                        AgentWorkspacePrMetadataDecision::Preserve,
+                    )
+                    .await
+                    .expect("test existing PR metadata decision should save");
+            } else {
+                self.repo
+                    .save_pr_description(
+                        &self.conversation_id,
+                        AgentWorkspacePrDescription::new(
+                            Some("Cached publication title".to_string()),
+                            "## Summary\n\nReady to publish.".to_string(),
+                        ),
+                    )
+                    .await
+                    .expect("test PR description should save");
+            }
             Ok(AgentOutput::success("submitted"))
         }
 
@@ -435,8 +444,7 @@
     #[test]
     fn workspace_review_tool_run_id_requires_active_review_run_match() {
         let conversation_id = ChatConversationId::new();
-        let mut monitor =
-            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), ProjectId::new());
+        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), ProjectId::new());
         monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
         monitor.last_run_id = Some("run-current".to_string());
         monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
@@ -458,12 +466,10 @@
             "workspace Review completion",
         )
         .is_err());
-        assert!(validate_workspace_review_tool_run_id(
-            &monitor,
-            None,
-            "workspace Review completion",
-        )
-        .is_err());
+        assert!(
+            validate_workspace_review_tool_run_id(&monitor, None, "workspace Review completion",)
+                .is_err()
+        );
 
         monitor.last_run_id = None;
         assert!(validate_workspace_review_tool_run_id(
@@ -474,12 +480,10 @@
         .is_err());
 
         monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
-        assert!(validate_workspace_review_tool_run_id(
-            &monitor,
-            None,
-            "workspace Review completion",
-        )
-        .is_err());
+        assert!(
+            validate_workspace_review_tool_run_id(&monitor, None, "workspace Review completion",)
+                .is_err()
+        );
     }
 
     #[test]
@@ -826,6 +830,8 @@
             Json(CompleteAgentWorkspacePrFixRequest {
                 summary: "Should never publish".to_string(),
                 blocker: None,
+                fix_commit_sha: None,
+                created_by_run_id: None,
             }),
         )
         .await
@@ -1047,7 +1053,25 @@
         _worktrees: tempfile::TempDir,
         app_state: Arc<AppState>,
         conversation_id: ChatConversationId,
+        fix_commit_sha: String,
+        pr_fix_run_id: AgentRunId,
         github: Arc<MockGithubService>,
+    }
+
+    async fn seed_pr_fix_completion_authority(
+        app_state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> AgentRunId {
+        let mut run = AgentRun::new(conversation_id.clone());
+        run.action_kind = Some(crate::domain::entities::AgentRunActionKind::PrAutofix);
+        run.action_context_id = Some("267".to_string());
+        run.action_target_id = Some("github_pr_autofix:267:test".to_string());
+        app_state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("active PR autofix run should persist")
+            .id
     }
 
     async fn setup_pr_fix_workspace_with_review_gate(
@@ -1106,6 +1130,9 @@
             ],
         );
         std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
+        git(&workspace_path, &["add", "fix.txt"]);
+        git(&workspace_path, &["commit", "-m", "fix CI"]);
+        let fix_commit_sha = git(&workspace_path, &["rev-parse", "HEAD"]);
         let mut workspace = AgentConversationWorkspace::new(
             conversation_id.clone(),
             project.id.clone(),
@@ -1122,6 +1149,7 @@
         workspace.publication_pr_status = Some("open".to_string());
         workspace.publication_push_status = Some("needs_agent".to_string());
         workspace.pr_supervision_status = Some("fixing".to_string());
+        workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
         workspace.pr_autofix_enabled = true;
         workspace.pr_auto_merge_desired = true;
         app_state
@@ -1129,6 +1157,7 @@
             .create_or_update(workspace.clone())
             .await
             .expect("seed workspace");
+        let pr_fix_run_id = seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
 
         let review_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
             .await
@@ -1171,8 +1200,151 @@
             _worktrees: worktrees,
             app_state,
             conversation_id,
+            fix_commit_sha,
+            pr_fix_run_id,
             github,
         }
+    }
+
+    #[tokio::test]
+    async fn current_pr_fixer_refreshes_base_then_completes_and_publishes_refreshed_head() {
+        let mut fixture = setup_pr_fix_workspace_with_review_gate(
+            "base-refresh-completion",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let workspace_repo =
+            Arc::clone(&fixture.app_state.agent_conversation_workspace_repo);
+        fixture.app_state = Arc::new(
+            fixture
+                .app_state
+                .as_ref()
+                .clone()
+                .with_agent_client(Arc::new(SubmittingPrDescriptionClient::new(
+                    workspace_repo,
+                    fixture.conversation_id.clone(),
+                    false,
+                ))),
+        );
+        fixture
+            .app_state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("workspace review should be disabled for direct publish");
+        let mut workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.auto_publish_enabled = true;
+        fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("auto publish should persist");
+
+        std::fs::write(fixture._repo.path().join("base-refresh.txt"), "new base\n")
+            .expect("base update should be written");
+        git(fixture._repo.path(), &["add", "base-refresh.txt"]);
+        git(
+            fixture._repo.path(),
+            &["commit", "-m", "advance base while fixer runs"],
+        );
+
+        let Json(update_response) = update_agent_workspace_from_base(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(UpdateAgentWorkspaceFromBaseRequest {
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("current PR fixer should refresh from base");
+
+        assert_eq!(update_response.updated, Some(true));
+        assert_eq!(
+            fixture.github.state().push_branch_calls,
+            0,
+            "base refresh must not publish the local branch"
+        );
+        let refreshed = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let refreshed_head = git(
+            std::path::Path::new(&refreshed.worktree_path),
+            &["rev-parse", "HEAD"],
+        );
+        assert_ne!(refreshed_head, fixture.fix_commit_sha);
+        assert_eq!(
+            refreshed.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
+        assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
+        let existing_pr = PrDetail {
+            number: 267,
+            title: "Existing PR title".to_string(),
+            body: Some("Existing PR body".to_string()),
+            author: Some("maintainer".to_string()),
+            created_at: None,
+            url: Some("https://github.com/owner/repo/pull/267".to_string()),
+            state: PrStatus::Open,
+            is_draft: false,
+            head_ref_name: refreshed.branch_name.clone(),
+            base_ref_name: "main".to_string(),
+        };
+        fixture.github.queue_pr_detail(Ok(existing_pr.clone()));
+        fixture.github.queue_pr_detail(Ok(existing_pr));
+        let Json(completion) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Refreshed the fixer branch and retained the repair".to_string(),
+                blocker: None,
+                fix_commit_sha: Some(refreshed_head.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("current PR fixer should publish the refreshed branch");
+
+        assert_eq!(
+            completion.status, "published",
+            "publish error: {:?}",
+            completion.publish_error
+        );
+        assert_eq!(completion.pushed, Some(true));
+        assert_eq!(fixture.github.state().push_branch_calls, 1);
+        assert_eq!(fixture.github.state().fetch_pr_detail_calls, 2);
+        assert_eq!(fixture.github.state().last_fetch_pr_detail_number, Some(267));
+        let completed = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(
+            completed.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(
+            completed.pr_supervision_status.as_deref(),
+            Some("monitoring")
+        );
     }
 
     #[test]
@@ -1260,8 +1432,7 @@
                 PrReviewSubmissionEvent::Comment,
             ),
         ] {
-            let (app_state, state, conversation_id, github) =
-                pr_review_submission_context().await;
+            let (app_state, state, conversation_id, github) = pr_review_submission_context().await;
             github.will_submit_pr_review(format!("review-{event}"), None);
             let source_body = "Agent-authored review body.";
             let action = app_state
@@ -1296,15 +1467,16 @@
                 .unwrap()
                 .expect("submitted action should remain stored");
             assert_eq!(saved_action.review_body, source_body);
-            assert_eq!(saved_action.status, AgentWorkspacePrReviewActionStatus::Submitted);
             assert_eq!(
-                github
-                    .state()
-                    .last_submit_pr_review_args
-                    .as_ref()
-                    .map(|(pr_number, captured_event, body)| {
+                saved_action.status,
+                AgentWorkspacePrReviewActionStatus::Submitted
+            );
+            assert_eq!(
+                github.state().last_submit_pr_review_args.as_ref().map(
+                    |(pr_number, captured_event, body)| {
                         (*pr_number, *captured_event, body.clone())
-                    }),
+                    }
+                ),
                 Some((
                     411,
                     event,
@@ -1493,9 +1665,7 @@
                 Some((
                     411,
                     PrReviewSubmissionEvent::RequestChanges,
-                    format!(
-                        "Please fix the regression before merge.\n\n{RALPHX_GENERATED_FOOTER}"
-                    )
+                    format!("Please fix the regression before merge.\n\n{RALPHX_GENERATED_FOOTER}")
                 ))
             );
         }
@@ -1596,12 +1766,10 @@
         seed_current_passing_workspace_review(app_state.as_ref(), &workspace).await;
         let state = test_http_state(app_state);
 
-        let Json(response) = check_agent_workspace_publish_readiness(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("readiness should load");
+        let Json(response) =
+            check_agent_workspace_publish_readiness(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("readiness should load");
 
         assert!(response.success);
         assert!(response.can_publish);
@@ -1689,12 +1857,10 @@
             .expect("seed workspace");
         let state = test_http_state(app_state);
 
-        let Json(response) = check_agent_workspace_publish_readiness(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("readiness should load");
+        let Json(response) =
+            check_agent_workspace_publish_readiness(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("readiness should load");
 
         assert!(response.success);
         assert_eq!(response.review_gate_status.as_deref(), Some("required"));
@@ -1714,6 +1880,7 @@
                 base_ref_kind: Some("not-a-kind".to_string()),
                 base_ref: Some("main".to_string()),
                 base_display_name: Some("main".to_string()),
+                created_by_run_id: None,
             }),
         )
         .await
@@ -1846,10 +2013,9 @@
             .unwrap();
         let state = test_http_state(app_state);
 
-        let Json(response) =
-            publish_agent_workspace(State(state), Path(conversation_id.to_string()))
-                .await
-                .unwrap();
+        let Json(response) = publish_agent_workspace(State(state), Path(conversation_id.to_string()))
+            .await
+            .unwrap();
 
         assert!(response.success);
         assert_eq!(response.status, "publish_in_progress");
@@ -1869,10 +2035,9 @@
             .unwrap();
         let state = test_http_state(app_state);
 
-        let Json(response) =
-            publish_agent_workspace(State(state), Path(conversation_id.to_string()))
-                .await
-                .unwrap();
+        let Json(response) = publish_agent_workspace(State(state), Path(conversation_id.to_string()))
+            .await
+            .unwrap();
 
         assert!(response.success);
         assert_eq!(response.status, "needs_agent_repair");
@@ -1902,6 +2067,7 @@
             .create_or_update(workspace)
             .await
             .unwrap();
+        let pr_fix_run_id = seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
         let state = test_http_state(Arc::clone(&app_state));
 
         let Json(response) = complete_agent_workspace_pr_fix(
@@ -1910,6 +2076,8 @@
             Json(CompleteAgentWorkspacePrFixRequest {
                 summary: "Investigated post-merge fixer state".to_string(),
                 blocker: None,
+                fix_commit_sha: None,
+                created_by_run_id: Some(pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -1929,29 +2097,493 @@
     }
 
     #[tokio::test]
+    async fn complete_pr_fix_stale_attempt_is_a_side_effect_free_superseded_noop() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "stale-superseded",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let mut stale_run = AgentRun::new(fixture.conversation_id.clone());
+        stale_run.action_kind = Some(crate::domain::entities::AgentRunActionKind::PrAutofix);
+        stale_run.action_context_id = Some("267".to_string());
+        stale_run.action_target_id = Some("github_pr_autofix:267:test".to_string());
+        stale_run.status = crate::domain::entities::AgentRunStatus::Failed;
+        stale_run.started_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let stale_run_id = fixture
+            .app_state
+            .agent_run_repo
+            .create(stale_run)
+            .await
+            .expect("stale PR autofix run should persist")
+            .id;
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Stale fixer must not settle the replacement".to_string(),
+                blocker: None,
+                fix_commit_sha: None,
+                created_by_run_id: Some(stale_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("stale attempt should be acknowledged as superseded");
+
+        assert_eq!(response.status, "superseded");
+        assert!(response.workspace.is_none());
+        assert_eq!(fixture.github.state().check_pr_status_calls, 0);
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after.publication_push_status, before.publication_push_status);
+        assert_eq!(after.pr_supervision_status, before.pr_supervision_status);
+        assert_eq!(
+            fixture
+                .app_state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&fixture.conversation_id)
+                .await
+                .expect("events should load")
+                .len(),
+            events_before
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_old_fingerprint_cannot_settle_new_issue_claim() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "stale-fingerprint-superseded",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let original_workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let original_claim = AgentWorkspaceRepairClaim {
+            conversation_id: fixture.conversation_id.clone(),
+            guard: AgentWorkspaceRepairStateGuard::from_workspace(&original_workspace),
+        };
+        assert!(
+            crate::application::agent_workspace_publish_repair_state::settle_agent_workspace_repair_failure(
+                Arc::clone(&fixture.app_state.agent_conversation_workspace_repo),
+                &original_claim,
+                "The routed PR issue changed.",
+            )
+            .await
+            .expect("original claim settlement should succeed")
+        );
+        crate::application::agent_workspace_publish_repair_state::claim_agent_workspace_repair(
+            Arc::clone(&fixture.app_state.agent_conversation_workspace_repo),
+            &fixture.conversation_id,
+            "Routing the replacement PR issue.",
+            original_workspace.pr_auto_merge_current,
+        )
+        .await
+        .expect("replacement claim should persist")
+        .expect("replacement claim should win");
+        let mut replacement_run = AgentRun::new(fixture.conversation_id.clone());
+        replacement_run.action_kind = Some(crate::domain::entities::AgentRunActionKind::PrAutofix);
+        replacement_run.action_context_id = Some("267".to_string());
+        replacement_run.action_target_id =
+            Some("github_pr_autofix:267:new-issue-fingerprint".to_string());
+        fixture
+            .app_state
+            .agent_run_repo
+            .create(replacement_run)
+            .await
+            .expect("replacement PR autofix run should persist");
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "The old issue fixer must not settle the new claim".to_string(),
+                blocker: None,
+                fix_commit_sha: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("old fingerprint should be acknowledged as superseded");
+
+        assert_eq!(response.status, "superseded");
+        assert!(response.workspace.is_none());
+        assert_eq!(fixture.github.state().check_pr_status_calls, 0);
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        assert_eq!(fixture.github.state().enable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().disable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().submit_pr_review_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after, before);
+        assert_eq!(
+            fixture
+                .app_state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&fixture.conversation_id)
+                .await
+                .expect("events should load")
+                .len(),
+            events_before
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_already_completed_is_a_side_effect_free_noop() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "already-completed-noop",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        fixture
+            .app_state
+            .agent_run_repo
+            .update_status(
+                &fixture.pr_fix_run_id,
+                crate::domain::entities::AgentRunStatus::Completed,
+            )
+            .await
+            .expect("settled PR autofix run should persist");
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "The settled fixer must not publish twice".to_string(),
+                blocker: Some("must not persist".to_string()),
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("settled attempt should be acknowledged without side effects");
+
+        assert_eq!(response.status, "already_completed");
+        assert!(response.workspace.is_none());
+        assert_eq!(fixture.github.state().check_pr_status_calls, 0);
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        assert_eq!(fixture.github.state().enable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().disable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().submit_pr_review_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after, before);
+        assert_eq!(
+            fixture
+                .app_state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&fixture.conversation_id)
+                .await
+                .expect("events should load")
+                .len(),
+            events_before
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_current_authority_with_stale_claim_schedules_recovery_without_effects() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "stale-current-claim",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let mut stale_workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        stale_workspace.publication_push_status = Some("failed".to_string());
+        stale_workspace.pr_supervision_status = Some("blocked".to_string());
+        fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(stale_workspace.clone())
+            .await
+            .expect("seed stale PR fixer claim");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(test_http_state(Arc::clone(&fixture.app_state))),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "The stale workspace claim must not settle".to_string(),
+                blocker: Some("must not persist".to_string()),
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect_err("stale workspace claim must fail closed");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("claim is no longer current")));
+        for _ in 0..100 {
+            if fixture.github.state().check_pr_sync_state_calls >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(fixture.github.state().check_pr_sync_state_calls, 1);
+        {
+            let github_state = fixture.github.state();
+            assert_eq!(github_state.check_pr_status_calls, 0);
+            assert_eq!(github_state.create_issue_calls, 0);
+            assert_eq!(github_state.create_draft_pr_calls, 0);
+            assert_eq!(github_state.mark_pr_ready_calls, 0);
+            assert_eq!(github_state.update_pr_details_calls, 0);
+            assert_eq!(github_state.update_pr_base_calls, 0);
+            assert_eq!(github_state.push_branch_calls, 0);
+            assert_eq!(github_state.enable_pr_auto_merge_calls, 0);
+            assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
+            assert_eq!(github_state.submit_pr_review_calls, 0);
+            assert_eq!(github_state.close_pr_calls, 0);
+            assert_eq!(github_state.delete_remote_branch_calls, 0);
+        }
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after.status, stale_workspace.status);
+        assert_eq!(after.source_pull_request, stale_workspace.source_pull_request);
+        assert_eq!(after.publication_pr_number, stale_workspace.publication_pr_number);
+        assert_eq!(after.publication_pr_url, stale_workspace.publication_pr_url);
+        assert_eq!(after.publication_pr_status, stale_workspace.publication_pr_status);
+        assert_eq!(after.publication_push_status, stale_workspace.publication_push_status);
+        assert_eq!(after.auto_publish_enabled, stale_workspace.auto_publish_enabled);
+        assert_eq!(
+            after.auto_publish_initial_pr_enabled,
+            stale_workspace.auto_publish_initial_pr_enabled
+        );
+        assert_eq!(
+            after.auto_publish_paused_pr_autofix_enabled,
+            stale_workspace.auto_publish_paused_pr_autofix_enabled
+        );
+        assert_eq!(
+            after.auto_publish_paused_pr_auto_merge_desired,
+            stale_workspace.auto_publish_paused_pr_auto_merge_desired
+        );
+        assert_eq!(after.pr_autofix_enabled, stale_workspace.pr_autofix_enabled);
+        assert_eq!(
+            after.pr_auto_merge_desired,
+            stale_workspace.pr_auto_merge_desired
+        );
+        assert_eq!(after.pr_auto_merge_method, stale_workspace.pr_auto_merge_method);
+        assert_eq!(after.pr_auto_merge_current, stale_workspace.pr_auto_merge_current);
+        assert_eq!(
+            after.pr_supervision_status,
+            stale_workspace.pr_supervision_status
+        );
+        assert_eq!(
+            after.pr_supervision_summary,
+            stale_workspace.pr_supervision_summary
+        );
+        let events_after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load");
+        assert_eq!(events_after.len(), events_before);
+        assert!(
+            !events_after.iter().skip(events_before).any(|event| {
+                matches!(
+                    event.step.as_str(),
+                    "pr_autofix_completed"
+                        | "pr_autofix_blocked"
+                        | "pr_autofix_published"
+                        | "pr_autofix_publish_failed"
+                )
+            }),
+            "stale claim must not append completion, block, or publish events"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_invalid_or_missing_caller_fails_closed_without_completion_effects() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "missing-caller-noop",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let events_before = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load")
+            .len();
+
+        for created_by_run_id in [None, Some("not-a-run-id".to_string())] {
+            let (status, Json(body)) = complete_agent_workspace_pr_fix(
+                State(test_http_state(Arc::clone(&fixture.app_state))),
+                Path(fixture.conversation_id.to_string()),
+                Json(CompleteAgentWorkspacePrFixRequest {
+                    summary: "Invalid ownership must not settle the fixer".to_string(),
+                    blocker: Some("must not persist".to_string()),
+                    fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                    created_by_run_id,
+                }),
+            )
+            .await
+            .expect_err("invalid fixer authority must fail closed");
+
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(body["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("no longer current")));
+        }
+        assert_eq!(fixture.github.state().push_branch_calls, 0);
+        assert_eq!(fixture.github.state().enable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().disable_pr_auto_merge_calls, 0);
+        assert_eq!(fixture.github.state().submit_pr_review_calls, 0);
+        let after = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(after, before);
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should load");
+        assert_eq!(events.len(), events_before);
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.step.as_str(),
+                "pr_autofix_completed"
+                    | "pr_autofix_blocked"
+                    | "pr_autofix_published"
+                    | "pr_autofix_publish_failed"
+            )
+        }));
+    }
+
+    #[tokio::test]
     async fn complete_pr_fix_skips_publish_when_auto_publish_is_paused() {
-        let app_state = Arc::new(AppState::new_test());
-        let conversation_id = ChatConversationId::new();
-        let mut workspace = test_workspace(conversation_id.clone());
-        workspace.publication_pr_number = Some(267);
-        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/267".to_string());
-        workspace.publication_pr_status = Some("open".to_string());
-        workspace.publication_push_status = Some("needs_agent".to_string());
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "auto-publish-paused",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        fixture
+            .app_state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should update");
+        let mut workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
         workspace.auto_publish_enabled = false;
-        workspace.pr_supervision_status = Some("fixing".to_string());
-        app_state
+        fixture
+            .app_state
             .agent_conversation_workspace_repo
             .create_or_update(workspace)
             .await
             .unwrap();
-        let state = test_http_state(Arc::clone(&app_state));
+        let state = test_http_state(Arc::clone(&fixture.app_state));
 
         let Json(response) = complete_agent_workspace_pr_fix(
             State(state),
-            Path(conversation_id.to_string()),
+            Path(fixture.conversation_id.to_string()),
             Json(CompleteAgentWorkspacePrFixRequest {
                 summary: "Fixed requested review change".to_string(),
                 blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -1960,22 +2592,260 @@
         assert_eq!(response.status, "publish_paused");
         assert_eq!(response.publish_status.as_deref(), Some("skipped"));
         assert!(response.commit_sha.is_none());
-        let updated = app_state
+        let updated = fixture
+            .app_state
             .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
+            .get_by_conversation_id(&fixture.conversation_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(updated.pr_supervision_status.as_deref(), Some("paused"));
-        let events = app_state
+        let events = fixture
+            .app_state
             .agent_conversation_workspace_repo
-            .list_publication_events(&conversation_id)
+            .list_publication_events(&fixture.conversation_id)
             .await
             .unwrap();
         assert!(events.iter().any(|event| {
             event.step == "pr_autofix_publish_skipped"
                 && event.classification.as_deref() == Some("auto_publish_paused")
         }));
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_requires_exact_head_without_settling_current_attempt() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "missing-head",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed failing CI check".to_string(),
+                blocker: None,
+                fix_commit_sha: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect_err("missing fix HEAD must be rejected");
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("fix_commit_sha"));
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            workspace.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
+        assert_eq!(workspace.pr_supervision_status.as_deref(), Some("fixing"));
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_completed"));
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_rejects_configured_branch_tip_when_worktree_head_is_detached() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "detached-head",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        git(&workspace.worktree_path, &["checkout", "--detach", "HEAD^"]);
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed failing CI check".to_string(),
+                blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect_err("detached worktree HEAD must reject the configured branch tip");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("not the current workspace HEAD"));
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_completed"));
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_rejects_configured_branch_tip_when_worktree_switches_branch() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "switched-head",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        git(
+            &workspace.worktree_path,
+            &["checkout", "-b", "unexpected-pr-fix-head", "HEAD^"],
+        );
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed failing CI check".to_string(),
+                blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect_err("switched worktree branch must reject the configured branch tip");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("not the current workspace HEAD"));
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_completed"));
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_blocker_needs_no_sha_or_github_preflight() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "blocker-no-head",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Repair could not be completed".to_string(),
+                blocker: Some("Required dependency is unavailable".to_string()),
+                fix_commit_sha: None,
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect("current repair blocker should settle without a commit SHA");
+
+        assert_eq!(response.status, "blocked");
+        assert_eq!(fixture.github.state().check_pr_status_calls, 0);
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(workspace.pr_supervision_status.as_deref(), Some("blocked"));
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.step == "pr_autofix_blocked"));
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_completed"));
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_rejects_dirty_workspace_without_settling_current_attempt() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "dirty-workspace",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(&workspace.worktree_path).join("dirty.txt"),
+            "uncommitted\n",
+        )
+        .expect("dirty workspace file should be written");
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let (status, Json(body)) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Fixed failing CI check".to_string(),
+                blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            }),
+        )
+        .await
+        .expect_err("dirty workspace must be rejected");
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"].as_str().unwrap().contains("uncommitted"));
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_completed"));
     }
 
     #[tokio::test]
@@ -2029,6 +2899,9 @@
             ],
         );
         std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
+        git(&workspace_path, &["add", "fix.txt"]);
+        git(&workspace_path, &["commit", "-m", "fix CI"]);
+        let fix_commit_sha = git(&workspace_path, &["rev-parse", "HEAD"]);
         let mut workspace = AgentConversationWorkspace::new(
             conversation_id.clone(),
             project.id.clone(),
@@ -2045,6 +2918,7 @@
         workspace.publication_pr_status = Some("open".to_string());
         workspace.publication_push_status = Some("needs_agent".to_string());
         workspace.pr_supervision_status = Some("fixing".to_string());
+        workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
         workspace.pr_autofix_enabled = true;
         workspace.pr_auto_merge_desired = true;
         app_state
@@ -2052,6 +2926,7 @@
             .create_or_update(workspace.clone())
             .await
             .expect("seed workspace");
+        let pr_fix_run_id = seed_pr_fix_completion_authority(app_state.as_ref(), &conversation_id).await;
         let review_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
             .await
             .expect("review context should load");
@@ -2071,6 +2946,8 @@
             Json(CompleteAgentWorkspacePrFixRequest {
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
+                fix_commit_sha: Some(fix_commit_sha),
+                created_by_run_id: Some(pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2108,7 +2985,8 @@
             .unwrap();
         assert!(events.iter().any(|event| {
             event.step == "pr_autofix_workspace_review"
-                && event.classification.as_deref() == Some("workspace_reviewing")
+                && event.status == "pending"
+                && event.classification.as_deref() == Some("workspace_review_pending")
         }));
     }
 
@@ -2325,6 +3203,8 @@
             Json(CompleteAgentWorkspacePrFixRequest {
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2357,9 +3237,9 @@
             .await
             .unwrap();
         assert!(events.iter().any(|event| {
-            event.step == "pr_autofix_workspace_review"
-                && event.status == "blocked"
-                && event.classification.as_deref() == Some("workspace_review_blocked")
+            event.step == "pr_autofix_workspace_review_aborted"
+                && event.status == "failed"
+                && event.classification.as_deref() == Some("workspace_review_aborted")
         }));
         assert!(!events
             .iter()
@@ -2414,11 +3294,9 @@
 
     #[tokio::test]
     async fn complete_pr_fix_blocks_when_workspace_review_failed() {
-        let fixture = setup_pr_fix_workspace_with_review_gate(
-            "failed",
-            AgentWorkspaceReviewGateStatus::Failed,
-        )
-        .await;
+        let fixture =
+            setup_pr_fix_workspace_with_review_gate("failed", AgentWorkspaceReviewGateStatus::Failed)
+                .await;
         let state = test_http_state(Arc::clone(&fixture.app_state));
 
         let Json(response) = complete_agent_workspace_pr_fix(
@@ -2427,6 +3305,8 @@
             Json(CompleteAgentWorkspacePrFixRequest {
                 summary: "Fixed failing CI check".to_string(),
                 blocker: None,
+                fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+                created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
             }),
         )
         .await
@@ -2477,6 +3357,7 @@
         let client = Arc::new(SubmittingPrDescriptionClient::new(
             Arc::clone(&state.agent_conversation_workspace_repo),
             conversation_id.clone(),
+            true,
         ));
         let state = state.with_agent_client(client);
         let app_state = Arc::new(state);
@@ -2518,6 +3399,22 @@
             ],
         );
         std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
+        git(&workspace_path, &["add", "fix.txt"]);
+        git(&workspace_path, &["commit", "-m", "fix CI"]);
+        let existing_pr = PrDetail {
+            number: 267,
+            title: "Existing PR title".to_string(),
+            body: Some("Existing PR body".to_string()),
+            author: Some("maintainer".to_string()),
+            created_at: None,
+            url: Some("https://github.com/owner/repo/pull/267".to_string()),
+            state: PrStatus::Open,
+            is_draft: false,
+            head_ref_name: branch_name.to_string(),
+            base_ref_name: "main".to_string(),
+        };
+        github.queue_pr_detail(Ok(existing_pr.clone()));
+        github.queue_pr_detail(Ok(existing_pr));
         let mut workspace = AgentConversationWorkspace::new(
             conversation_id.clone(),
             project.id.clone(),
@@ -2592,6 +3489,7 @@
                 github_state.last_push_branch_name.as_deref(),
                 Some(branch_name)
             );
+            assert_eq!(github_state.fetch_pr_detail_calls, 2);
             assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
         }
         let updated = app_state
@@ -2649,6 +3547,49 @@
         std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
         git(repo.path(), &["add", "README.md"]);
         git(repo.path(), &["commit", "-m", "base"]);
+        let fake_remote = worktrees.path().join("github-remote.git");
+        git(
+            repo.path(),
+            &[
+                "clone",
+                "--bare",
+                repo.path().to_str().expect("repo path should be UTF-8"),
+                fake_remote.to_str().expect("remote path should be UTF-8"),
+            ],
+        );
+        let fake_ssh = worktrees.path().join("fake-github-ssh");
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-G\" ]; then exit 0; fi\ncase \"$*\" in\n  *git-upload-pack*) exec git-upload-pack '{}' ;;\n  *git-receive-pack*) exec git-receive-pack '{}' ;;\nesac\nexit 2\n",
+                fake_remote.display(),
+                fake_remote.display(),
+            ),
+        )
+        .expect("fake GitHub SSH transport should be written");
+        let mut permissions = std::fs::metadata(&fake_ssh)
+            .expect("fake GitHub SSH transport metadata should load")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_ssh, permissions)
+            .expect("fake GitHub SSH transport should be executable");
+        git(
+            repo.path(),
+            &[
+                "config",
+                "core.sshCommand",
+                fake_ssh.to_str().expect("SSH path should be UTF-8"),
+            ],
+        );
+        git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:ralphx/test-repository.git",
+            ],
+        );
         let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
 
         let github = Arc::new(MockGithubService::new());
@@ -2661,6 +3602,7 @@
         let publish_client = Arc::new(SubmittingPrDescriptionClient::new(
             Arc::clone(&state.agent_conversation_workspace_repo),
             conversation_id.clone(),
+            false,
         ));
         let state = state.with_agent_client(publish_client);
         let app_state = Arc::new(state);
@@ -2670,6 +3612,7 @@
         );
         project.base_branch = Some("main".to_string());
         project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        project.github_pr_enabled = true;
         app_state
             .project_repo
             .create(project.clone())
@@ -3065,8 +4008,7 @@
 
     #[tokio::test]
     async fn blocking_review_is_noop_for_non_automation_conversation() {
-        let fixture =
-            setup_workspace_for_review_completion("block-interactive", false, false).await;
+        let fixture = setup_workspace_for_review_completion("block-interactive", false, false).await;
         let state = test_http_state(Arc::clone(&fixture.app_state));
 
         // No automation linked → the handler must still succeed and not attempt any pause.
@@ -3401,7 +4343,7 @@
     }
 
     #[tokio::test]
-    async fn submit_agent_workspace_pr_description_saves_valid_body() {
+    async fn submit_agent_workspace_pr_description_saves_partial_patch() {
         let app_state = Arc::new(AppState::new_test());
         let conversation_id = ChatConversationId::new();
         app_state
@@ -3415,8 +4357,9 @@
             State(state),
             Path(conversation_id.to_string()),
             Json(SubmitAgentWorkspacePrDescriptionRequest {
+                decision: "patch".to_string(),
                 title: Some("Better PR title".to_string()),
-                body_markdown: "## Summary\n\nGenerated body".to_string(),
+                body_markdown: None,
             }),
         )
         .await
@@ -3425,31 +4368,37 @@
         assert!(response.success);
         let saved = app_state
             .agent_conversation_workspace_repo
-            .get_pr_description(&conversation_id)
+            .get_pr_metadata_decision(&conversation_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(saved.title.as_deref(), Some("Better PR title"));
-        assert_eq!(saved.body_markdown, "## Summary\n\nGenerated body");
+        assert!(matches!(
+            saved,
+            crate::domain::entities::AgentWorkspacePrMetadataDecision::Patch {
+                title: Some(title),
+                body_markdown: None
+            } if title == "Better PR title"
+        ));
     }
 
     #[tokio::test]
-    async fn submit_agent_workspace_pr_description_rejects_empty_body() {
+    async fn submit_agent_workspace_pr_description_rejects_empty_patch() {
         let state = test_http_state(Arc::new(AppState::new_test()));
 
         let (status, Json(body)) = submit_agent_workspace_pr_description(
             State(state),
             Path(ChatConversationId::new().to_string()),
             Json(SubmitAgentWorkspacePrDescriptionRequest {
+                decision: "patch".to_string(),
                 title: None,
-                body_markdown: "   ".to_string(),
+                body_markdown: Some("   ".to_string()),
             }),
         )
         .await
         .unwrap_err();
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"].as_str().unwrap().contains("cannot be empty"));
+        assert!(body["error"].as_str().unwrap().contains("requires"));
     }
 
     #[tokio::test]
@@ -3460,8 +4409,9 @@
             State(state),
             Path(ChatConversationId::new().to_string()),
             Json(SubmitAgentWorkspacePrDescriptionRequest {
+                decision: "preserve".to_string(),
                 title: None,
-                body_markdown: "## Summary\n\nGenerated body".to_string(),
+                body_markdown: None,
             }),
         )
         .await
@@ -3503,8 +4453,7 @@
 
         let mut project = Project::new("Diff Test".to_string(), repo.display().to_string());
         project.base_branch = Some("main".to_string());
-        project.worktree_parent_directory =
-            Some(tmp.path().join("worktrees").display().to_string());
+        project.worktree_parent_directory = Some(tmp.path().join("worktrees").display().to_string());
 
         let conversation_id = ChatConversationId::new();
         let workspace = prepare_agent_conversation_workspace(
@@ -3547,12 +4496,10 @@
         git(worktree_path.as_path(), &["add", "staged.txt"]);
 
         let state = test_http_state(app_state);
-        let Json(changes) = get_agent_workspace_staged_file_changes(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("staged changes should load");
+        let Json(changes) =
+            get_agent_workspace_staged_file_changes(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("staged changes should load");
 
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, "staged.txt");
@@ -3566,12 +4513,10 @@
         std::fs::write(worktree_path.join("base.txt"), "base\nmodified\n").unwrap();
 
         let state = test_http_state(app_state);
-        let Json(changes) = get_agent_workspace_unstaged_file_changes(
-            State(state),
-            Path(conversation_id.to_string()),
-        )
-        .await
-        .expect("unstaged changes should load");
+        let Json(changes) =
+            get_agent_workspace_unstaged_file_changes(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("unstaged changes should load");
 
         assert!(changes.iter().any(|c| c.path == "base.txt"));
     }

@@ -1,6 +1,82 @@
 import { useEffect } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConversationStatsPopover } from "@/components/Chat/ConversationStatsPopover";
 import { MessageItem, type ContentBlockItem } from "@/components/Chat/MessageItem";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import type { ConversationStatsResponse } from "@/api/chat";
+
+const visualQueryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+
+const CODEX_STATS: ConversationStatsResponse = {
+  conversationId: "visual-codex-conversation",
+  contextType: "project",
+  contextId: "visual-project",
+  providerHarness: "codex",
+  upstreamProvider: "openai",
+  providerProfile: null,
+  messageUsageTotals: {
+    inputTokens: 9_116_803,
+    outputTokens: 25_881,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 8_837_504,
+    processedTokens: 9_142_684,
+    estimatedUsd: null,
+  },
+  runUsageTotals: {
+    inputTokens: 9_116_803,
+    outputTokens: 25_881,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 8_837_504,
+    processedTokens: 9_142_684,
+    estimatedUsd: null,
+  },
+  effectiveUsageTotals: {
+    inputTokens: 9_116_803,
+    outputTokens: 25_881,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 8_837_504,
+    processedTokens: 9_142_684,
+    estimatedUsd: null,
+  },
+  usageCoverage: {
+    providerMessageCount: 1,
+    providerMessagesWithUsage: 1,
+    runCount: 1,
+    runsWithUsage: 1,
+    effectiveRunConversationCount: 1,
+    effectiveMessageConversationCount: 0,
+    legacyEstimatedSampleCount: 0,
+    fallbackEstimatedSampleCount: 1,
+    uncountedSampleCount: 0,
+    effectiveTotalsSource: "runs",
+  },
+  attributionCoverage: {
+    providerMessageCount: 1,
+    providerMessagesWithAttribution: 1,
+    runCount: 1,
+    runsWithAttribution: 1,
+  },
+  byHarness: [{ key: "codex", count: 1, usage: {
+    inputTokens: 9_116_803,
+    outputTokens: 25_881,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 8_837_504,
+    processedTokens: 9_142_684,
+    estimatedUsd: null,
+  } }],
+  byUpstreamProvider: [],
+  byModel: [{ key: "gpt-5.5", count: 1, usage: {
+    inputTokens: 9_116_803,
+    outputTokens: 25_881,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 8_837_504,
+    processedTokens: 9_142_684,
+    estimatedUsd: null,
+  } }],
+  byEffort: [],
+};
 
 const CHAT_CONTEXTS = [
   "Ideation",
@@ -146,7 +222,8 @@ export function ChatActivityVisualTestPage() {
   }, []);
 
   return (
-    <TooltipProvider delayDuration={0}>
+    <QueryClientProvider client={visualQueryClient}>
+      <TooltipProvider delayDuration={0}>
       <main
         className="min-h-screen p-6"
         data-testid="chat-activity-visual-test-page"
@@ -175,6 +252,16 @@ export function ChatActivityVisualTestPage() {
                 </span>
               ))}
             </div>
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                Provider-correct usage
+              </span>
+              <ConversationStatsPopover
+                conversationId="visual-codex-conversation"
+                stats={CODEX_STATS}
+                isLoading={false}
+              />
+            </div>
           </header>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -183,6 +270,7 @@ export function ChatActivityVisualTestPage() {
           </div>
         </div>
       </main>
-    </TooltipProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
   );
 }

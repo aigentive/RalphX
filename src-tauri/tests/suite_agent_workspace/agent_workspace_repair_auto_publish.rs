@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::common::MockGithubService;
 use axum::{extract::Path, Json};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use ralphx_lib::domain::entities::{
@@ -37,12 +37,9 @@ fn git(repo: impl AsRef<std::path::Path>, args: &[&str]) -> String {
 }
 
 fn make_http_state(app_state: AppState) -> HttpServerState {
-    let team_tracker = TeamStateTracker::new();
     HttpServerState {
         app_state: Arc::new(app_state),
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: team_tracker.clone(),
-        team_service: Arc::new(TeamService::new_without_events(Arc::new(team_tracker))),
         delegation_service: Default::default(),
     }
 }
@@ -110,6 +107,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
     project.id = ProjectId::from_string("project-auto-publish".to_string());
     project.base_branch = Some("main".to_string());
     project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+    project.github_pr_enabled = true;
 
     let workspace_path =
         resolve_agent_conversation_workspace_path(&project, &conversation_id).unwrap();
@@ -159,6 +157,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
     );
     workspace.publication_push_status = Some("needs_agent".to_string());
     workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.auto_publish_enabled = true;
     app_state
         .agent_conversation_workspace_repo
         .create_or_update(workspace)
@@ -182,12 +181,12 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
     .expect("repair completion should succeed")
     .0;
 
-    assert_eq!(response.new_status, "failed");
+    assert_eq!(response.new_status, "refreshed");
     assert_eq!(response.auto_publish_status.as_deref(), Some("failed"));
     assert!(response
         .auto_publish_error
         .as_deref()
-        .is_some_and(|error| error.contains("GitHub integration is not available")));
+        .is_some_and(|error| error.contains("no GitHub origin")));
 
     let refreshed = state
         .app_state
@@ -196,8 +195,14 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
         .await
         .expect("query workspace")
         .expect("workspace exists");
-    assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
-    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("blocked"));
+    assert_eq!(
+        refreshed.publication_push_status.as_deref(),
+        Some("refreshed")
+    );
+    assert_eq!(
+        refreshed.pr_supervision_status.as_deref(),
+        Some("publishing")
+    );
 
     let events = state
         .app_state
@@ -208,13 +213,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
     assert!(events
         .iter()
         .any(|event| event.step == "repair_completed" && event.status == "succeeded"));
-    assert!(events.iter().any(|event| {
-        event.step == "failed"
-            && event.status == "failed"
-            && event
-                .summary
-                .contains("GitHub integration is not available")
-    }));
+    assert!(!events.iter().any(|event| event.step == "failed"));
 
     let event_count = events.len();
     assert!(complete_agent_workspace_repair(

@@ -1,7 +1,6 @@
 /**
  * Agent short names used by MCP authorization resolution.
- * Most match canonical ids under `agents/<agent>/agent.yaml` directly; a few
- * legacy teammate aliases are resolved to canonical ids by the metadata loader.
+ * Every value matches a canonical id under `agents/<agent>/agent.yaml` directly.
  */
 export declare const ORCHESTRATOR_IDEATION = "ralphx-ideation";
 export declare const ORCHESTRATOR_IDEATION_READONLY = "ralphx-ideation-readonly";
@@ -32,13 +31,9 @@ export declare const ORCHESTRATOR = "ralphx-execution-orchestrator";
 export declare const DEEP_RESEARCHER = "ralphx-research-deep-researcher";
 export declare const MEMORY_MAINTAINER = "ralphx-memory-maintainer";
 export declare const MEMORY_CAPTURE = "ralphx-memory-capture";
-export declare const IDEATION_TEAM_LEAD = "ralphx-ideation-team-lead";
-export declare const IDEATION_TEAM_MEMBER = "ideation-team-member";
 export declare const IDEATION_SPECIALIST_BACKEND = "ralphx-ideation-specialist-backend";
 export declare const IDEATION_SPECIALIST_FRONTEND = "ralphx-ideation-specialist-frontend";
 export declare const IDEATION_SPECIALIST_INFRA = "ralphx-ideation-specialist-infra";
 export declare const IDEATION_CRITIC = "ralphx-ideation-critic";
 export declare const IDEATION_ADVOCATE = "ralphx-ideation-advocate";
-export declare const WORKER_TEAM_LEAD = "ralphx-execution-team-lead";
-export declare const WORKER_TEAM_MEMBER = "worker-team-member";
 //# sourceMappingURL=agentNames.d.ts.map

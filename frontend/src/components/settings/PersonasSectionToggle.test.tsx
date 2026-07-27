@@ -14,10 +14,7 @@ import { PersonasSection } from "./PersonasSection";
 const disabledFlags: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
-  ideationPage: false,
   automationsPage: true,
-  battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
   agentPersonas: false,

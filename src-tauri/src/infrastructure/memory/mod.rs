@@ -18,6 +18,8 @@ pub mod memory_agent_run_repo;
 pub mod memory_agent_task_repo;
 pub mod memory_api_key_repo;
 pub mod memory_app_state_repo;
+#[cfg(test)]
+mod memory_app_state_repo_tests;
 pub mod memory_automation_repo;
 #[cfg(test)]
 mod memory_automation_repo_tests;
@@ -83,8 +85,6 @@ pub mod memory_task_qa_repo;
 pub mod memory_task_repo;
 pub mod memory_task_step_repo;
 pub mod memory_ui_feature_flag_overrides_repo;
-pub mod memory_team_message_repo;
-pub mod memory_team_session_repo;
 pub mod memory_ticket_canonical_branch_repo;
 pub mod memory_ticketing_status_catalog_repo;
 pub mod memory_validation_run_repo;
@@ -172,8 +172,6 @@ pub use memory_task_qa_repo::MemoryTaskQARepository;
 pub use memory_task_repo::MemoryTaskRepository;
 pub use memory_task_step_repo::MemoryTaskStepRepository;
 pub use memory_ui_feature_flag_overrides_repo::MemoryUiFeatureFlagOverridesRepository;
-pub use memory_team_message_repo::MemoryTeamMessageRepository;
-pub use memory_team_session_repo::MemoryTeamSessionRepository;
 pub use memory_ticket_canonical_branch_repo::MemoryTicketCanonicalBranchRepository;
 pub use memory_ticketing_status_catalog_repo::MemoryTicketingStatusCatalogRepository;
 pub use memory_validation_run_repo::MemoryValidationRunRepository;

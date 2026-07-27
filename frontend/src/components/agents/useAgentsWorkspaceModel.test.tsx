@@ -4,8 +4,10 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AGENT_MODEL_CATALOG } from "@/lib/agent-models";
+import type { Project } from "@/types/project";
 
 import type { AgentConversation } from "./agentConversations";
+import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import { useAgentsWorkspaceModel } from "./useAgentsWorkspaceModel";
 
 const {
@@ -69,6 +71,27 @@ function wrapper() {
         {children}
       </QueryClientProvider>
     );
+  };
+}
+
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: "project-1",
+    name: "Project",
+    workingDirectory: "/repo/project",
+    gitMode: "worktree",
+    baseBranch: "main",
+    worktreeParentDirectory: null,
+    useFeatureBranches: true,
+    mergeValidationMode: "block",
+    detectedAnalysis: null,
+    customAnalysis: null,
+    analyzedAt: null,
+    githubPrEnabled: false,
+    repositoryCapability: { kind: "localOnly" },
+    createdAt: "2026-05-22T00:00:00.000Z",
+    updatedAt: "2026-05-22T00:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -145,7 +168,38 @@ describe("useAgentsWorkspaceModel", () => {
     });
   });
 
-  it("uses persisted child run metadata ahead of the next-launch Reviewer default", () => {
+  it("uses the committed review focus hint before child summary hydration", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          focusedWorkspaceReviewConversationId: "review-conversation-1",
+          focusedWorkspaceReviewRuntimeHint: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "high",
+          },
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "medium",
+          },
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "high",
+    });
+  });
+
+  it("uses directly hydrated child metadata ahead of stale client runtime and the next-launch Reviewer default", () => {
     const { result } = renderHook(
       () =>
         useAgentsWorkspaceModel({
@@ -156,11 +210,23 @@ describe("useAgentsWorkspaceModel", () => {
             providerHarness: "codex",
             logicalModel: "gpt-5.5",
             logicalEffort: "high",
+            serviceTier: "fast",
           }),
           focusedWorkspaceReviewConversationId: "review-conversation-1",
+          focusedWorkspaceReviewRuntimeHint: {
+            provider: "codex",
+            modelId: "gpt-5.6-terra",
+            effort: "medium",
+          },
           modelRegistry: AGENT_MODEL_CATALOG,
           optimisticWorkspacesByConversationId: {},
-          runtimeByConversationId: {},
+          runtimeByConversationId: {
+            "review-conversation-1": {
+              provider: "claude",
+              modelId: "sonnet",
+              effort: "medium",
+            },
+          },
           selectedConversationId: "conversation-1",
           workspaceReviewerRuntime: {
             provider: "codex",
@@ -176,101 +242,11 @@ describe("useAgentsWorkspaceModel", () => {
       modelId: "gpt-5.5",
       effort: "high",
     });
+    expect(result.current.focusedWorkspaceReviewServiceTier).toBe("fast");
   });
 
-  it("resolves the publish shortcut from the focused automation run workspace", async () => {
-    getAgentConversationWorkspaceMock.mockImplementation(
-      (conversationId: string) =>
-        Promise.resolve(
-          conversationId === "run-conversation-1"
-            ? {
-                conversationId: "run-conversation-1",
-                projectId: "project-1",
-                mode: "edit",
-                branchMode: "isolated",
-                baseRefKind: "project_default",
-                baseRef: "main",
-                baseDisplayName: "Project default (main)",
-                baseCommit: null,
-                branchName: "ralphx/run-branch",
-                worktreePath: "/tmp/run",
-                linkedIdeationSessionId: null,
-                linkedPlanBranchId: null,
-                publicationPrNumber: 12,
-                publicationPrUrl: "https://example.com/pr/12",
-                publicationPrStatus: "merged",
-                publicationPushStatus: "pushed",
-                autoPublishEnabled: true,
-                autoPublishInitialPrEnabled: false,
-                autoPublishPausedPrAutofixEnabled: null,
-                autoPublishPausedPrAutoMergeDesired: null,
-                status: "active",
-                createdAt: "2026-05-22T00:00:00.000Z",
-                updatedAt: "2026-05-22T00:00:00.000Z",
-              }
-            : null,
-        ),
-    );
 
-    const { result } = renderHook(
-      () =>
-        useAgentsWorkspaceModel({
-          activeConversation: projectConversation(),
-          focusedAutomationRunConversationId: "run-conversation-1",
-          modelRegistry: AGENT_MODEL_CATALOG,
-          optimisticWorkspacesByConversationId: {},
-          runtimeByConversationId: {},
-          selectedConversationId: "conversation-1",
-          workspaceReviewerRuntime: null,
-        }),
-      { wrapper: wrapper() },
-    );
 
-    await waitFor(() => {
-      expect(result.current.publishShortcutWorkspace?.conversationId).toBe(
-        "run-conversation-1",
-      );
-    });
-    expect(result.current.publishShortcutLabel).toBe("Merged");
-    expect(result.current.suppressPublishShortcut).toBe(false);
-  });
-
-  it("suppresses the publish shortcut while the focused run workspace is unresolved", () => {
-    const { result } = renderHook(
-      () =>
-        useAgentsWorkspaceModel({
-          activeConversation: projectConversation(),
-          focusedAutomationRunConversationId: "run-conversation-1",
-          modelRegistry: AGENT_MODEL_CATALOG,
-          optimisticWorkspacesByConversationId: {},
-          runtimeByConversationId: {},
-          selectedConversationId: "conversation-1",
-          workspaceReviewerRuntime: null,
-        }),
-      { wrapper: wrapper() },
-    );
-
-    expect(result.current.suppressPublishShortcut).toBe(true);
-    expect(result.current.publishShortcutWorkspace).toBeNull();
-  });
-
-  it("does not surface a run publish workspace without a focused automation run", () => {
-    const { result } = renderHook(
-      () =>
-        useAgentsWorkspaceModel({
-          activeConversation: projectConversation(),
-          modelRegistry: AGENT_MODEL_CATALOG,
-          optimisticWorkspacesByConversationId: {},
-          runtimeByConversationId: {},
-          selectedConversationId: "conversation-1",
-          workspaceReviewerRuntime: null,
-        }),
-      { wrapper: wrapper() },
-    );
-
-    expect(result.current.suppressPublishShortcut).toBe(false);
-    expect(result.current.publishShortcutWorkspace).toBeNull();
-  });
 
   it("normalizes remembered Codex Ultra effort before alias-aware send checks", () => {
     const { result } = renderHook(
@@ -301,5 +277,60 @@ describe("useAgentsWorkspaceModel", () => {
       modelId: "gpt-5.6-terra",
       effort: "max",
     });
+  });
+
+  it("uses the shared publish mode for local, unavailable, and persisted-PR shortcuts", async () => {
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspaceFixture());
+    const { result, rerender, unmount } = renderHook(
+      ({ activeProject }) =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          activeProject,
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { initialProps: { activeProject: project() }, wrapper: wrapper() },
+    );
+
+    await waitFor(() => expect(result.current.publishShortcutLabel).toBe("Commit locally"));
+
+    rerender({
+      activeProject: project({
+        repositoryCapability: {
+          kind: "inspectionFailed",
+          message: "Unable to inspect",
+        },
+      }),
+    });
+    expect(result.current.publishShortcutLabel).toBe("Repository setup required");
+
+    unmount();
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({ publicationPrNumber: 42 }),
+    );
+    const { result: persistedResult } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          activeProject: project({
+            repositoryCapability: {
+              kind: "inspectionFailed",
+              message: "Unable to inspect",
+            },
+          }),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+    await waitFor(() =>
+      expect(persistedResult.current.publishShortcutLabel).toBe("Commit & Publish"),
+    );
   });
 });

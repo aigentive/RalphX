@@ -1,5 +1,5 @@
 use super::chat_service_context::*;
-use super::chat_service_helpers::resolve_agent_with_team_mode;
+use super::chat_service_helpers::resolve_agent;
 use super::conversation_launch_security::{
     conversation_launch_security_class, validate_conversation_launch_identity,
     ConversationLaunchSecurityClass,
@@ -657,7 +657,6 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
         Path::new("/tmp/task-runtime-env"),
         Some("re_executing"),
         Some("project-runtime-env"),
-        false,
         None,
         None,
     );
@@ -675,7 +674,6 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
         Path::new("/tmp/project-runtime-env"),
         Some("executing"),
         Some("project-runtime-env"),
-        false,
         None,
         None,
     );
@@ -746,7 +744,6 @@ async fn task_runtime_launch_plans_inject_prompt_env_and_mcp_state() {
             Some("executing"),
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -835,7 +832,6 @@ async fn build_project_agent_launch_plan(
         None,
         Some(project_id.as_str()),
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -910,7 +906,6 @@ async fn build_fresh_ideation_launch_prompt(
         None,
         None,
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -973,7 +968,7 @@ async fn build_fresh_claude_interactive_prompt_for_test(
     .await
     .expect("fresh ideation prompt should build");
 
-    let agent_name = resolve_agent_with_team_mode(&ChatContextType::Ideation, None, false);
+    let agent_name = resolve_agent(&ChatContextType::Ideation, None);
     let spawnable = build_spawnable_interactive_command_for_test(
         cli_path,
         plugin_dir,
@@ -1499,7 +1494,6 @@ async fn project_launch_plans_include_agent_workspace_prompt_context() {
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1579,7 +1573,6 @@ async fn project_child_launch_plans_pass_parent_and_current_conversation_ids_to_
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1619,6 +1612,95 @@ async fn project_child_launch_plans_pass_parent_and_current_conversation_ids_to_
         assert!(
             mcp_args.contains("--agent-run-id") && mcp_args.contains(agent_run_id),
             "{harness} child project launch should pass the current run id for review write authority: {mcp_args}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delegated_launch_plans_pass_root_lineage_and_current_run_identity_to_mcp() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let plugin_dir = repo_plugin_dir();
+    let project_id = ProjectId::new();
+    let delegated_session_id = DelegatedSessionId::new();
+    let root_conversation_id = ChatConversationId::new().as_str();
+    let delegated_run_id = "delegated-run-current";
+    let agent_name = agent_names::AGENT_GENERAL_WORKER;
+    let harness_clis = [
+        (AgentHarnessKind::Claude, make_fake_claude_cli(&temp)),
+        (AgentHarnessKind::Codex, make_fake_codex_cli(&temp)),
+    ];
+
+    for (harness, cli_path) in harness_clis {
+        let mut conversation = ChatConversation::new_delegation(delegated_session_id.clone());
+        let delegated_conversation_id = conversation.id.as_str();
+        conversation.parent_conversation_id = Some(root_conversation_id.clone());
+        let resolved_spawn_settings =
+            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                agent_name,
+                Some(project_id.as_str()),
+                ChatContextType::Delegation,
+                None,
+                Some(harness),
+                None,
+                None,
+            )
+            .await;
+
+        let launch_plan = build_launch_plan_for_harness_for_test(
+            harness,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "continue delegated work",
+            Some(agent_name),
+            None,
+            ChatContextType::Delegation,
+            delegated_session_id.as_str(),
+            Some(conversation.id.as_str()),
+            Some(delegated_run_id),
+            temp.path(),
+            None,
+            Some(project_id.as_str()),
+            &[],
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            false,
+            None,
+            &resolved_spawn_settings,
+            None,
+            None,
+        )
+        .await
+        .expect("delegated launch plan should build");
+
+        let spawnable = launch_spawnable(&launch_plan);
+        let mcp_args = match harness {
+            AgentHarnessKind::Claude => claude_mcp_config_args(spawnable).join("\n"),
+            AgentHarnessKind::Codex => spawnable
+                .get_args_for_test()
+                .into_iter()
+                .filter(|arg| arg.starts_with("mcp_servers."))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+
+        assert!(
+            mcp_args.contains("--parent-conversation-id")
+                && mcp_args.contains(&root_conversation_id),
+            "{harness} delegated launch should retain original root lineage: {mcp_args}"
+        );
+        assert!(
+            mcp_args.contains("--conversation-id") && mcp_args.contains(&delegated_conversation_id),
+            "{harness} delegated launch should retain current conversation authority: {mcp_args}"
+        );
+        assert!(
+            mcp_args.contains("--agent-run-id") && mcp_args.contains(delegated_run_id),
+            "{harness} delegated launch should retain current run authority: {mcp_args}"
         );
     }
 }
@@ -1732,7 +1814,6 @@ async fn project_launch_plans_include_captured_attachment_context_for_claude_and
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1815,7 +1896,6 @@ async fn project_launch_plans_fall_back_to_pending_attachment_context() {
             None,
             Some(project_id.as_str()),
             &[],
-            false,
             attachment_repo,
             Arc::new(MemoryArtifactRepository::new()),
             Arc::new(MemoryIdeationSessionRepository::new()),
@@ -1909,7 +1989,6 @@ async fn resume_commands_append_captured_attachment_context_for_claude_and_codex
             Some(project_id.as_str()),
             &[],
             Some("conversation-id".to_string()),
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -2020,7 +2099,6 @@ async fn project_resume_commands_use_plan_agent_profile_for_claude_and_codex() {
             Some(project_id.as_str()),
             &[],
             Some("conversation-id".to_string()),
-            false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
             None,
@@ -2136,7 +2214,6 @@ async fn claude_project_launch_plan_resumes_stored_provider_session() {
         None,
         Some(project_id.as_str()),
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -2232,7 +2309,6 @@ async fn codex_project_launch_plan_resume_keeps_current_conversation_id_for_mcp(
         None,
         Some(project_id.as_str()),
         &[],
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         Arc::new(MemoryIdeationSessionRepository::new()),
@@ -2308,7 +2384,6 @@ async fn codex_project_noninteractive_resume_keeps_current_conversation_id_for_m
         Some(project_id.as_str()),
         &[],
         None,
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         None,
@@ -2385,7 +2460,6 @@ async fn codex_project_noninteractive_resume_without_resume_capability_uses_reco
         Some(project_id.as_str()),
         &[],
         None,
-        false,
         Arc::new(MemoryChatAttachmentRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         None,

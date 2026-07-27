@@ -2,7 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Bot, FileCheck, FlaskConical, GitMerge, GitPullRequest, GitPullRequestArrow,
   Hand, Inbox, KeyRound, LifeBuoy, MessageCircleQuestion, PauseCircle,
-  ShieldQuestion, TriangleAlert, Users, XCircle,
+  ShieldQuestion, TriangleAlert, XCircle,
 } from "lucide-react";
 
 import type { NotificationCategory } from "@/types/notifications";
@@ -20,7 +20,6 @@ export const ATTENTION_CATEGORY_MAPPING: Record<NotificationCategory, AttentionC
   permission_request: { action: "Respond", group: "Agent requests", icon: ShieldQuestion, iconColor: "var(--status-warning)" },
   agent_question: { action: "Answer", group: "Agent requests", icon: MessageCircleQuestion, iconColor: "var(--accent-primary)" },
   plan_approval: { action: "Review plan", group: "Agent requests", icon: FileCheck, iconColor: "var(--accent-primary)" },
-  team_plan_approval: { action: "Review plan", group: "Agent requests", icon: Users, iconColor: "var(--accent-primary)" },
   review_needed: { action: "Review", group: "Reviews", icon: GitPullRequest, iconColor: "var(--accent-primary)" },
   review_escalated: { action: "Decide", group: "Reviews", icon: TriangleAlert, iconColor: "var(--status-warning)" },
   qa_failed: { action: "Open task", group: "Tasks", icon: FlaskConical, iconColor: "var(--status-error)" },

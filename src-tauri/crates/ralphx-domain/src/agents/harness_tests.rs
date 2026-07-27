@@ -218,7 +218,6 @@ fn test_standard_harness_behavior_for_claude() {
     let behavior = standard_harness_behavior(AgentHarnessKind::Claude);
 
     assert!(behavior.team.rx_native_team);
-    assert!(behavior.team.legacy_native_team_tools);
     assert!(behavior.team.interactive_delivery);
     assert!(behavior.team.resume_delivery);
     assert!(behavior.team.stream_projection);
@@ -239,7 +238,6 @@ fn test_standard_harness_behavior_for_codex() {
     let behavior = standard_harness_behavior(AgentHarnessKind::Codex);
 
     assert!(behavior.team.rx_native_team);
-    assert!(!behavior.team.legacy_native_team_tools);
     assert!(!behavior.team.interactive_delivery);
     assert!(behavior.team.resume_delivery);
     assert!(behavior.team.stream_projection);

@@ -551,6 +551,10 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
 
     let (chat_service, services) =
         make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = with_default_test_branch_update_authority(
+        services,
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    );
     let context = crate::domain::state_machine::context::TaskContext::new(
         task_id_str.as_str(),
         "proj-1",
@@ -641,6 +645,10 @@ async fn on_enter_executing_repairs_wrong_existing_worktree_path_before_spawn() 
 
     let (chat_service, services) =
         make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = with_default_test_branch_update_authority(
+        services,
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    );
     let context = crate::domain::state_machine::context::TaskContext::new(
         task_id_str.as_str(),
         project_id.as_str(),

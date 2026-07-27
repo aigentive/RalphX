@@ -565,6 +565,7 @@ pub(crate) async fn schedule_explicit_project_skill_distillation(
             Some(project_id.as_str()),
             Some(&working_directory),
             crate::domain::agents::RoutingRole::MemoryCapture,
+            None,
             crate::infrastructure::agents::claude::agent_names::SHORT_MEMORY_CAPTURE,
             "explicit project skill distillation",
             provider_harness,

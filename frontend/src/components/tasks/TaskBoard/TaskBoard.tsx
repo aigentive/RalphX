@@ -129,8 +129,7 @@ export function TaskBoard({
   // Default: full kanban screen → keep column widths fixed when one collapses
   // (empty space appears on the right). Embedded hosts still redistribute
   // through `1fr`, but expanded columns must keep a hard readable minimum.
-  const selectedTaskId = useUiStore((s) => s.selectedTaskId);
-  const fillWidth = fillWidthProp ?? selectedTaskId != null;
+  const fillWidth = fillWidthProp ?? Boolean(onTaskSelect);
   const showMergeTasks = true;
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const cardDisplayMode = useUiStore((s) => s.kanbanCardDisplayMode);
@@ -313,8 +312,7 @@ export function TaskBoard({
     })
   );
 
-  // Task selection is now handled by TaskCard directly via setSelectedTaskId
-  // which shows the TaskDetailOverlay in the split layout
+  // Task selection is owned by the embedding Agents artifact surface.
 
   if (isLoading) {
     return <TaskBoardSkeleton />;

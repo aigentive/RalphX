@@ -1,6 +1,5 @@
 use super::*;
-use crate::application::{AppState, TeamService, TeamStateTracker};
-use crate::commands::ExecutionState;
+use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
     ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Project,
@@ -71,15 +70,7 @@ fn git_stdout(repo_path: &std::path::Path, args: &[&str]) -> String {
 }
 
 fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
-    HttpServerState {
-        app_state,
-        execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
-        delegation_service: Default::default(),
-    }
+    HttpServerState::new_test(app_state)
 }
 
 #[tokio::test]

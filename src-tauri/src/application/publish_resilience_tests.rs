@@ -4,7 +4,8 @@ use super::publish_resilience::{
     publish_branch_freshness_status_from_commits,
     publish_branch_freshness_status_from_commits_and_branch, publish_push_status_for_failure,
     remote_tracking_ref_for_publish, verify_agent_workspace_repair_completion,
-    AgentWorkspaceRepairCompletionCheck, PublishBranchFreshnessOutcome, PublishFailureClass,
+    verify_agent_workspace_settled_current_head, AgentWorkspaceRepairCompletionCheck,
+    AgentWorkspaceSettledHeadCheck, PublishBranchFreshnessOutcome, PublishFailureClass,
 };
 use super::publish_resilience::{
     ensure_plan_publish_branch_fresh, push_agent_workspace_publish_branch, review_base_for_publish,
@@ -573,6 +574,7 @@ fn repaired_workspace_check() -> AgentWorkspaceRepairCompletionCheck<'static> {
         has_uncommitted_changes: false,
         is_merge_in_progress: false,
         is_rebase_in_progress: false,
+        has_conflict_files: false,
         has_conflict_markers: false,
     }
 }
@@ -611,7 +613,7 @@ fn rejects_agent_workspace_repair_when_head_does_not_match_reported_repair_commi
 
     let error = verify_agent_workspace_repair_completion(check)
         .expect_err("reported repair commit must be current HEAD");
-    assert!(error.contains("repair_commit_sha"));
+    assert!(error.contains("reported fix commit"));
 }
 
 #[test]
@@ -652,4 +654,20 @@ fn rejects_agent_workspace_repair_when_conflict_markers_remain() {
     let error = verify_agent_workspace_repair_completion(check)
         .expect_err("conflict markers must reject repair completion");
     assert!(error.contains("conflict markers"));
+}
+
+#[test]
+fn settled_head_verifier_rejects_unresolved_conflict_files() {
+    let error = verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+        reported_head_sha: "head",
+        workspace_head_sha: "head",
+        has_uncommitted_changes: false,
+        is_merge_in_progress: false,
+        is_rebase_in_progress: false,
+        has_conflict_files: true,
+        has_conflict_markers: false,
+    })
+    .expect_err("unresolved index conflicts must reject completion");
+
+    assert!(error.contains("unresolved conflict files"));
 }

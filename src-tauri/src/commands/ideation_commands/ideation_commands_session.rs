@@ -18,10 +18,12 @@ use crate::application::ideation_workspace::{
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::AppState;
 use crate::application::{StopMode, TaskCleanupService};
+use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_ideation_session;
 use crate::domain::entities::plan_branch::PlanBranchStatus;
 use crate::domain::entities::{
     IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId, SessionPurpose, TaskId,
 };
+use crate::domain::execution::ExecutionTaskAgentWorkspace;
 
 use super::ideation_commands_types::{
     ChatMessageResponse, CreateSessionInput, IdeationSessionResponse,
@@ -32,6 +34,27 @@ use super::ideation_commands_types::{
 // ============================================================================
 // Session Management Commands
 // ============================================================================
+
+/// Resolve the active Agent workspace that owns a linked ideation session.
+#[tauri::command]
+pub async fn get_ideation_agent_workspace(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    get_ideation_agent_workspace_for_app_state(session_id, state.inner()).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_ideation_agent_workspace_for_app_state(
+    session_id: String,
+    state: &AppState,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    resolve_agent_workspace_target_for_ideation_session(
+        state,
+        &IdeationSessionId::from_string(session_id),
+    )
+    .await
+}
 
 /// Core implementation for creating an ideation session.
 /// Generic over Runtime to enable unit testing with MockRuntime.
@@ -49,35 +72,6 @@ pub async fn create_ideation_session_impl<R: tauri::Runtime>(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", project_id.as_str()))?;
     let seed_task_id = input.seed_task_id.map(TaskId::from_string);
-    let team_mode_requested = input
-        .team_mode
-        .as_deref()
-        .is_some_and(|mode| mode != "solo");
-    let team_mode_supported = crate::application::ideation_harness_availability::ideation_team_mode_supported_for_project(
-        &state.agent_lane_settings_repo,
-        Some(project_id.as_str()),
-    )
-    .await;
-    let normalized_team_mode = if team_mode_requested && !team_mode_supported {
-        tracing::info!(
-            project_id = %project_id,
-            "Downgrading ideation session team mode to solo because the primary harness does not support team mode"
-        );
-        Some("solo".to_string())
-    } else {
-        input.team_mode.clone()
-    };
-    let normalized_team_config_json = if team_mode_requested && !team_mode_supported {
-        None
-    } else {
-        input
-            .team_config
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| e.to_string())?
-    };
-
     let session_id = IdeationSessionId::new();
     let analysis = prepare_ideation_analysis_state(
         &project,
@@ -102,14 +96,6 @@ pub async fn create_ideation_session_impl<R: tauri::Runtime>(
 
     if let Some(task_id) = seed_task_id {
         builder = builder.seed_task_id(task_id);
-    }
-
-    if let Some(ref team_mode) = normalized_team_mode {
-        builder = builder.team_mode(team_mode.clone());
-    }
-
-    if let Some(config_json) = normalized_team_config_json {
-        builder = builder.team_config_json(config_json);
     }
 
     let session = builder.build();

@@ -99,7 +99,7 @@ manual:
         .unwrap()
         .as_ref()
         .unwrap_err()
-        .contains("compatibility-only"));
+        .contains("unknown variant"));
     assert_eq!(
         snapshot
             .entries

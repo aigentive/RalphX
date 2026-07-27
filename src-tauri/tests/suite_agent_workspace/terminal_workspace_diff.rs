@@ -258,3 +258,75 @@ async fn terminal_transition_does_not_reuse_cached_active_branch_context() {
         vec!["published.rs"]
     );
 }
+
+#[tokio::test]
+async fn terminal_workspace_with_missing_preserved_pr_head_fails_closed() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo should be created");
+
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test User"]);
+    std::fs::write(repo.join("README.md"), "base\n").expect("base file should be written");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "base"]);
+    let base_commit = git(&repo, &["rev-parse", "HEAD"]);
+
+    let workspace_branch = "ralphx/demo/missing-terminal-head";
+    git(&repo, &["checkout", "-b", workspace_branch]);
+    std::fs::write(repo.join("missing.rs"), "pub fn missing_head() {}\n")
+        .expect("workspace file should be written");
+    git(&repo, &["add", "missing.rs"]);
+    git(&repo, &["commit", "-m", "feat: missing terminal head"]);
+    git(&repo, &["checkout", "main"]);
+    git(&repo, &["branch", "-D", workspace_branch]);
+
+    let state = AppState::new_test();
+    let mut project = Project::new(
+        "Missing Terminal Head".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+
+    let conversation_id = ChatConversationId::from_string("conversation-missing-terminal-head");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_commit),
+        workspace_branch.to_string(),
+        temp.path()
+            .join("removed-worktree")
+            .to_string_lossy()
+            .to_string(),
+    );
+    workspace.publication_pr_number = Some(453);
+    workspace.publication_pr_status = Some("merged".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("terminal workspace should persist");
+
+    let error = get_agent_conversation_workspace_cumulative_file_changes_for_state(
+        &state,
+        &conversation_id,
+    )
+    .await
+    .expect_err("missing preserved PR head must not fall back to another range");
+    assert!(error.to_string().contains("refs/ralphx/pr-heads/453"));
+    assert!(!git_ref_exists(
+        &repo,
+        &format!("refs/heads/{workspace_branch}")
+    ));
+}

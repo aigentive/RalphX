@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentRunUsage, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
-    IdeationSessionId, MessageRole, ProjectId, TaskId,
+    IdeationSessionId, MessageRole, ProjectId, TaskId, UsageCapture,
 };
 use crate::domain::repositories::ChatMessageRepository;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 /// In-memory implementation of ChatMessageRepository for testing
 pub struct MemoryChatMessageRepository {
@@ -243,6 +243,19 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
         if let Some(message) = messages.get_mut(&id.to_string()) {
             message.apply_usage(usage);
         }
+        Ok(())
+    }
+
+    async fn replace_usage_capture(
+        &self,
+        id: &ChatMessageId,
+        capture: &UsageCapture,
+    ) -> AppResult<()> {
+        let mut messages = self.messages.write().unwrap();
+        let message = messages
+            .get_mut(&id.to_string())
+            .ok_or_else(|| AppError::NotFound(format!("Chat message not found: {id}")))?;
+        message.replace_usage_capture(capture);
         Ok(())
     }
 

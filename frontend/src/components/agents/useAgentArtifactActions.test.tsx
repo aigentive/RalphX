@@ -70,4 +70,36 @@ describe("useAgentArtifactActions", () => {
     );
     expect(openArtifactTab).toHaveBeenCalledWith("conversation-1", "publish");
   });
+
+  it.each(["history", "automation"] as const)(
+    "requests %s before opening Commit & Publish",
+    (destination) => {
+      const callOrder: string[] = [];
+      const openArtifactTab = vi.fn(() => callOrder.push("open"));
+      const onPublishSubTabRequest = vi.fn(() => callOrder.push("request"));
+
+      const { result } = renderHook(() =>
+        useAgentArtifactActions({
+          onPublishSubTabRequest,
+          openArtifactTab,
+          scheduleArtifactPanePreload: vi.fn(),
+          selectedConversationId: "conversation-1",
+        }),
+      );
+
+      act(() => {
+        result.current.handleOpenPublishPane(destination);
+      });
+
+      expect(onPublishSubTabRequest).toHaveBeenCalledWith(
+        "conversation-1",
+        destination,
+      );
+      expect(openArtifactTab).toHaveBeenCalledWith(
+        "conversation-1",
+        "publish",
+      );
+      expect(callOrder).toEqual(["request", "open"]);
+    },
+  );
 });

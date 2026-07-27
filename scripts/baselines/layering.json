@@ -336,11 +336,6 @@
         "text": "use crate::commands::ExecutionState;"
       },
       {
-        "path": "src-tauri/src/application/team_stream_processor.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/application/validation_service.rs",
         "target": "crate::http_server",
         "text": "let (validation_hint, hint_message) = crate::http_server::helpers::compute_validation_hint("
@@ -1129,16 +1124,6 @@
         "text": "use crate::commands::unified_chat_commands::{"
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_followups_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/agent_issues_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
         "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_cumulative_file_changes_for_state("
@@ -1246,22 +1231,7 @@
       {
         "path": "src-tauri/src/http_server/handlers/projects.rs",
         "target": "crate::commands",
-        "text": "crate::commands::project_commands::ensure_git_initialized_async(&canonical_str)"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/projects.rs",
-        "target": "crate::commands",
         "text": "crate::commands::project_commands::spawn_project_analyzer("
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/reviews/complete_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/steps_tests.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/helpers.rs",
@@ -1426,11 +1396,6 @@
         "text": "use crate::application::question_state::QuestionOption;"
       },
       {
-        "path": "src-tauri/src/infrastructure/memory/memory_team_session_repo_tests.rs",
-        "target": "crate::application",
-        "text": "cost: crate::application::team_state_tracker::TeammateCost {"
-      },
-      {
         "path": "src-tauri/src/infrastructure/sqlite/sqlite_chat_message_repo.rs",
         "target": "crate::application",
         "text": "crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER"
@@ -1484,11 +1449,6 @@
         "path": "src-tauri/src/infrastructure/sqlite/sqlite_question_repo_tests.rs",
         "target": "crate::application",
         "text": "use crate::application::question_state::QuestionState;"
-      },
-      {
-        "path": "src-tauri/src/infrastructure/sqlite/sqlite_team_session_repo_tests.rs",
-        "target": "crate::application",
-        "text": "use crate::application::team_state_tracker::TeammateCost;"
       }
     ],
     "workspace_domain_no_root_layer_refs": [],

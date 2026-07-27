@@ -50,6 +50,15 @@ export function pullRequestShellFromWorkspace(
       conversationId: workspace.conversationId,
     };
   }
+  if (workspace.publicationPrUrl) {
+    return {
+      projectId: workspace.projectId,
+      url: workspace.publicationPrUrl,
+      status: workspace.publicationPrStatus,
+      branch: workspace.branchName,
+      conversationId: workspace.conversationId,
+    };
+  }
   if (workspace.sourcePullRequest) {
     return {
       projectId: workspace.projectId,

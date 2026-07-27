@@ -267,8 +267,7 @@ fn desktop_summary_group(category: NotificationCategory) -> &'static str {
     match category {
         NotificationCategory::ReviewNeeded
         | NotificationCategory::ReviewEscalated
-        | NotificationCategory::PlanApproval
-        | NotificationCategory::TeamPlanApproval => "reviews",
+        | NotificationCategory::PlanApproval => "reviews",
         NotificationCategory::PermissionRequest => "permission request",
         NotificationCategory::AgentQuestion => "agent question",
         NotificationCategory::MergeConflict => "merge conflict",

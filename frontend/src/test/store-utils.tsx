@@ -101,7 +101,6 @@ export function renderHookWithProviders<T>(
 export function resetAllStores(): void {
   useTaskStore.setState({
     tasks: {},
-    selectedTaskId: null,
   });
 
   useProjectStore.setState({
@@ -139,7 +138,7 @@ export function resetStore(
 ): void {
   switch (storeName) {
     case "task":
-      useTaskStore.setState({ tasks: {}, selectedTaskId: null });
+      useTaskStore.setState({ tasks: {} });
       break;
     case "project":
       useProjectStore.setState({ projects: {}, activeProjectId: null });

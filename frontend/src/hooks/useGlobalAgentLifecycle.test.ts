@@ -7,10 +7,8 @@
  * - turn_completed: sets waiting_for_input with verification child guard
  * - Verification child reverse link cleanup on child termination
  * - ask-user-question state survives terminal lifecycle events
- * - clearPendingPlan scoped to team-mode-active contexts only
  * - Error toasts with deterministic id for task_execution/review/merge
  * - heartbeat/task events update lastAgentEventTimestamp
- * - Teammate events are skipped
  * - watchdog guard: run_started does NOT update lastAgentEvent when already generating
  * - Cross-session integration: agentStatus populated without IntegratedChatPanel
  * - Verification cache invalidated on abnormal child termination
@@ -27,10 +25,10 @@ const chatStoreMocks = vi.hoisted(() => ({
   setAgentStatus: vi.fn(),
   agentStatus: {} as Record<string, string>,
   activeAgentRunIds: {} as Record<string, string>,
+  activeAgentRunHarnesses: {} as Record<string, string | null>,
   lastAgentEventTimestamp: {} as Record<string, number>,
   updateLastAgentEvent: vi.fn(),
   setAgentActivityLabel: vi.fn(),
-  isTeamActive: {} as Record<string, boolean>,
   activeConversationIds: {} as Record<string, string | null>,
   setActiveConversation: vi.fn(),
   setActiveAgentRun: vi.fn(),
@@ -53,17 +51,6 @@ vi.mock("@/stores/uiStore", () => ({
   useUiStore: Object.assign(
     vi.fn((selector: (s: typeof uiStoreMocks) => unknown) => selector(uiStoreMocks)),
     { getState: () => uiStoreMocks }
-  ),
-}));
-
-const teamStoreMocks = vi.hoisted(() => ({
-  clearPendingPlan: vi.fn(),
-}));
-
-vi.mock("@/stores/teamStore", () => ({
-  useTeamStore: Object.assign(
-    vi.fn((selector: (s: typeof teamStoreMocks) => unknown) => selector(teamStoreMocks)),
-    { getState: () => teamStoreMocks }
   ),
 }));
 
@@ -124,53 +111,48 @@ import { toast } from "sonner";
 const PARENT_SESSION_ID = "parent-session-abc";
 const CHILD_SESSION_ID = "child-session-xyz";
 
-function mkRunStarted(contextType: string, contextId: string, teammateName?: string) {
+function mkRunStarted(contextType: string, contextId: string) {
   return {
     run_id: "run-1",
     context_type: contextType,
     context_id: contextId,
     conversation_id: "conv-" + contextId,
-    teammate_name: teammateName ?? null,
   };
 }
 
-function mkRunCompleted(contextType: string, contextId: string, teammateName?: string) {
+function mkRunCompleted(contextType: string, contextId: string) {
   return {
     context_type: contextType,
     context_id: contextId,
     conversation_id: "conv-" + contextId,
     status: "completed",
-    teammate_name: teammateName ?? null,
   };
 }
 
-function mkTurnCompleted(contextType: string, contextId: string, teammateName?: string) {
+function mkTurnCompleted(contextType: string, contextId: string) {
   return {
     context_type: contextType,
     context_id: contextId,
     conversation_id: "conv-" + contextId,
     status: "turn_completed",
-    teammate_name: teammateName ?? null,
   };
 }
 
-function mkStopped(contextType: string, contextId: string, teammateName?: string) {
+function mkStopped(contextType: string, contextId: string) {
   return {
     context_type: contextType,
     context_id: contextId,
     conversation_id: "conv-" + contextId,
     agent_run_id: "run-" + contextId,
-    teammate_name: teammateName ?? null,
   };
 }
 
-function mkError(contextType: string, contextId: string, error = "process crashed", teammateName?: string) {
+function mkError(contextType: string, contextId: string, error = "process crashed") {
   return {
     context_type: contextType,
     context_id: contextId,
     conversation_id: "conv-" + contextId,
     error,
-    teammate_name: teammateName ?? null,
   };
 }
 
@@ -192,11 +174,10 @@ describe("useGlobalAgentLifecycle", () => {
     chatStoreMocks.setEffectiveModel.mockClear();
     chatStoreMocks.agentStatus = {};
     chatStoreMocks.activeAgentRunIds = {};
+    chatStoreMocks.activeAgentRunHarnesses = {};
     chatStoreMocks.lastAgentEventTimestamp = {};
-    chatStoreMocks.isTeamActive = {};
     chatStoreMocks.activeConversationIds = {};
     uiStoreMocks.clearActiveQuestion.mockClear();
-    teamStoreMocks.clearPendingPlan.mockClear();
     vi.mocked(toast.error).mockClear();
 
     useIdeationStore.setState({
@@ -232,7 +213,6 @@ describe("useGlobalAgentLifecycle", () => {
         context_type: "project",
         context_id: "project-1",
         conversation_id: "conversation-1",
-        teammate_name: null,
       });
     });
 
@@ -322,15 +302,6 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.updateLastAgentEvent).not.toHaveBeenCalled();
   });
 
-  it("run_started skips teammate events", () => {
-    renderHook(() => useGlobalAgentLifecycle());
-
-    act(() => {
-      fireEvent("agent:run_started", mkRunStarted("ideation", "session-1", "teammate-alice"));
-    });
-
-    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
-  });
 
   it("run_started populates activeConversationIds tracking for the context", () => {
     renderHook(() => useGlobalAgentLifecycle());
@@ -353,12 +324,14 @@ describe("useGlobalAgentLifecycle", () => {
         ...mkRunStarted("project", "project-1"),
         conversation_id: "conv-project-1",
         run_id: "run-new",
+        provider_harness: "claude",
       });
     });
 
     expect(chatStoreMocks.setActiveAgentRun).toHaveBeenCalledWith(
       "project:conv-project-1",
-      "run-new"
+      "run-new",
+      "claude",
     );
   });
 
@@ -446,15 +419,6 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.updateLastAgentEvent).toHaveBeenCalledWith("task_execution:task-1");
   });
 
-  it("run_completed skips teammate events", () => {
-    renderHook(() => useGlobalAgentLifecycle());
-
-    act(() => {
-      fireEvent("agent:run_completed", mkRunCompleted("ideation", "session-1", "teammate-bob"));
-    });
-
-    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
-  });
 
   it("run_completed re-asserts generating when parent has active verification child", () => {
     useIdeationStore.setState({
@@ -505,6 +469,7 @@ describe("useGlobalAgentLifecycle", () => {
   it("run_completed ignores stale terminal events from an older run on the same conversation", () => {
     chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
     chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    chatStoreMocks.activeAgentRunHarnesses = { "project:conv-project-1": "codex" };
     chatStoreMocks.agentStatus = { "project:conv-project-1": "generating" };
     renderHook(() => useGlobalAgentLifecycle());
 
@@ -522,6 +487,32 @@ describe("useGlobalAgentLifecycle", () => {
       "idle"
     );
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
+    expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
+  });
+
+  it("run_completed without an id preserves a newer run and harness pair", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    chatStoreMocks.activeAgentRunHarnesses = { "project:conv-project-1": "codex" };
+    chatStoreMocks.agentStatus = { "project:conv-project-1": "generating" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_completed", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "idle"
+    );
+    expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
+    expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
   });
 
   it("run_completed clears the active run id when the terminal event matches", () => {
@@ -589,15 +580,6 @@ describe("useGlobalAgentLifecycle", () => {
     );
   });
 
-  it("turn_completed skips teammate events", () => {
-    renderHook(() => useGlobalAgentLifecycle());
-
-    act(() => {
-      fireEvent("agent:turn_completed", mkTurnCompleted("ideation", "session-1", "teammate-carol"));
-    });
-
-    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
-  });
 
   it("turn_completed: stale conversation_id is ignored — status not updated", () => {
     chatStoreMocks.activeConversationIds["task_execution:task-1"] = "conv-NEW";
@@ -648,15 +630,6 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.setAgentStatus).toHaveBeenCalledWith("review:task-2", "idle");
   });
 
-  it("stopped skips teammate events", () => {
-    renderHook(() => useGlobalAgentLifecycle());
-
-    act(() => {
-      fireEvent("agent:stopped", mkStopped("ideation", "session-1", "teammate-dave"));
-    });
-
-    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
-  });
 
   it("stopped ignores stale events using agent_run_id", () => {
     chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
@@ -742,16 +715,6 @@ describe("useGlobalAgentLifecycle", () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it("error skips teammate events", () => {
-    renderHook(() => useGlobalAgentLifecycle());
-
-    act(() => {
-      fireEvent("agent:error", mkError("task_execution", "task-1", "crash", "teammate-eve"));
-    });
-
-    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
-    expect(toast.error).not.toHaveBeenCalled();
-  });
 
   it("error ignores stale terminal events from an older run", () => {
     chatStoreMocks.activeConversationIds = { "task_execution:task-1": "conv-task-1" };
@@ -799,31 +762,6 @@ describe("useGlobalAgentLifecycle", () => {
     expect(uiStoreMocks.clearActiveQuestion).not.toHaveBeenCalled();
   });
 
-  // --------------------------------------------------------------------------
-  // clearPendingPlan scope guard
-  // --------------------------------------------------------------------------
-
-  it("clearPendingPlan called when team mode is active for context", () => {
-    chatStoreMocks.isTeamActive = { "session:session-1": true };
-    renderHook(() => useGlobalAgentLifecycle());
-
-    act(() => {
-      fireEvent("agent:run_completed", mkRunCompleted("ideation", "session-1"));
-    });
-
-    expect(teamStoreMocks.clearPendingPlan).toHaveBeenCalledWith("session:session-1");
-  });
-
-  it("clearPendingPlan NOT called when team mode is not active", () => {
-    chatStoreMocks.isTeamActive = {};
-    renderHook(() => useGlobalAgentLifecycle());
-
-    act(() => {
-      fireEvent("agent:run_completed", mkRunCompleted("ideation", "session-1"));
-    });
-
-    expect(teamStoreMocks.clearPendingPlan).not.toHaveBeenCalled();
-  });
 
   // --------------------------------------------------------------------------
   // Verification child reverse link

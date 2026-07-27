@@ -59,7 +59,6 @@ fn notification_category_group_mapping_is_exhaustive() {
         NotificationCategory::PermissionRequest,
         NotificationCategory::AgentQuestion,
         NotificationCategory::PlanApproval,
-        NotificationCategory::TeamPlanApproval,
         NotificationCategory::AutomationPlanApproval,
         NotificationCategory::AutomationPaused,
         NotificationCategory::AutomationRunFailed,
@@ -71,7 +70,7 @@ fn notification_category_group_mapping_is_exhaustive() {
         NotificationCategory::Info,
     ];
 
-    assert_eq!(categories.len(), 23);
+    assert_eq!(categories.len(), 22);
     for category in categories {
         let _ = notification_category_group(category);
     }

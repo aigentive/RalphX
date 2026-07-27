@@ -33,9 +33,9 @@ use crate::domain::state_machine::transition_handler::{
 use crate::error::{AppError, AppResult};
 
 use super::ideation_commands_apply::{
-    load_linked_agent_conversation_workspace, phase_insert_dependencies,
-    phase_insert_execution_plan, phase_insert_merge_task, phase_insert_tasks_and_steps,
-    phase_update_proposals, phase_upsert_plan_branch,
+    inspect_plan_branch_pr_eligibility, load_linked_agent_conversation_workspace,
+    phase_insert_dependencies, phase_insert_execution_plan, phase_insert_merge_task,
+    phase_insert_tasks_and_steps, phase_update_proposals, phase_upsert_plan_branch,
 };
 use super::ideation_commands_types::{
     RestartImplementationResult, RestartImplementationResultResponse,
@@ -412,15 +412,7 @@ fn restore_restart_workspace_state(
 ) -> AppResult<()> {
     conn.execute(
         "UPDATE plan_branches
-         SET pr_number = NULL,
-             pr_url = NULL,
-             pr_status = NULL,
-             pr_draft = NULL,
-             pr_push_status = 'pending',
-             pr_polling_active = 0,
-             last_polled_at = NULL,
-             merge_commit_sha = NULL,
-             local_cleanup_status = NULL,
+         SET local_cleanup_status = NULL,
              local_cleanup_checked_at = NULL
          WHERE id = ?1",
         rusqlite::params![plan_branch_id],
@@ -517,6 +509,10 @@ pub async fn restart_ideation_implementation_core(
         std::path::Path::new(&project.working_directory),
         "project checkout",
     )?;
+    // Read the current origin topology before any restart cleanup or transaction
+    // effects. Local and non-GitHub repositories deliberately select local
+    // routing; an unreadable topology fails closed.
+    let effective_plan_pr_eligible = inspect_plan_branch_pr_eligibility(&project).await?;
 
     let session_base_ref = session
         .analysis
@@ -772,7 +768,7 @@ pub async fn restart_ideation_implementation_core(
         .map(|workspace| workspace.conversation_id.as_str().to_string());
     let project_base_branch_tx = project.base_branch.clone();
     let project_name_tx = project.name.clone();
-    let project_pr_eligible_tx = project.github_pr_enabled;
+    let effective_plan_pr_eligible_tx = effective_plan_pr_eligible;
     let proposals_tx = proposals_to_apply.clone();
     let proposal_deps_tx: HashMap<String, Vec<String>> = proposal_deps
         .iter()
@@ -816,7 +812,7 @@ pub async fn restart_ideation_implementation_core(
                 &base_branch_override_tx,
                 &project_base_branch_tx,
                 &project_name_tx,
-                project_pr_eligible_tx,
+                effective_plan_pr_eligible_tx,
                 &execution_plan_id,
                 &agent_workspace_branch_name_tx,
             )?;

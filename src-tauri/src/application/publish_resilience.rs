@@ -426,7 +426,45 @@ pub struct AgentWorkspaceRepairCompletionCheck<'a> {
     pub has_uncommitted_changes: bool,
     pub is_merge_in_progress: bool,
     pub is_rebase_in_progress: bool,
+    pub has_conflict_files: bool,
     pub has_conflict_markers: bool,
+}
+
+pub struct AgentWorkspaceSettledHeadCheck<'a> {
+    pub reported_head_sha: &'a str,
+    pub workspace_head_sha: &'a str,
+    pub has_uncommitted_changes: bool,
+    pub is_merge_in_progress: bool,
+    pub is_rebase_in_progress: bool,
+    pub has_conflict_files: bool,
+    pub has_conflict_markers: bool,
+}
+
+pub fn verify_agent_workspace_settled_current_head(
+    check: AgentWorkspaceSettledHeadCheck<'_>,
+) -> Result<(), String> {
+    if check.workspace_head_sha != check.reported_head_sha {
+        return Err(format!(
+            "reported fix commit '{}' is not the current workspace HEAD '{}'",
+            check.reported_head_sha, check.workspace_head_sha
+        ));
+    }
+    if check.has_uncommitted_changes {
+        return Err("workspace has uncommitted changes".to_string());
+    }
+    if check.is_merge_in_progress {
+        return Err("workspace merge is still in progress".to_string());
+    }
+    if check.is_rebase_in_progress {
+        return Err("workspace rebase is still in progress".to_string());
+    }
+    if check.has_conflict_files {
+        return Err("workspace still contains unresolved conflict files".to_string());
+    }
+    if check.has_conflict_markers {
+        return Err("workspace still contains conflict markers".to_string());
+    }
+    Ok(())
 }
 
 pub fn verify_agent_workspace_repair_completion(
@@ -455,30 +493,15 @@ pub fn verify_agent_workspace_repair_completion(
         ));
     }
 
-    if check.workspace_head_sha != check.repair_commit_sha {
-        return Err(format!(
-            "repair_commit_sha '{}' is not the current workspace HEAD '{}'",
-            check.repair_commit_sha, check.workspace_head_sha
-        ));
-    }
-
-    if check.has_uncommitted_changes {
-        return Err("workspace has uncommitted changes".to_string());
-    }
-
-    if check.is_merge_in_progress {
-        return Err("workspace merge is still in progress".to_string());
-    }
-
-    if check.is_rebase_in_progress {
-        return Err("workspace rebase is still in progress".to_string());
-    }
-
-    if check.has_conflict_markers {
-        return Err("workspace still contains conflict markers".to_string());
-    }
-
-    Ok(())
+    verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+        reported_head_sha: check.repair_commit_sha,
+        workspace_head_sha: check.workspace_head_sha,
+        has_uncommitted_changes: check.has_uncommitted_changes,
+        is_merge_in_progress: check.is_merge_in_progress,
+        is_rebase_in_progress: check.is_rebase_in_progress,
+        has_conflict_files: check.has_conflict_files,
+        has_conflict_markers: check.has_conflict_markers,
+    })
 }
 
 pub(crate) fn publish_branch_freshness_outcome_from_source_update(

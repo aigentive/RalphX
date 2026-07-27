@@ -159,10 +159,23 @@ fn continuation_message_and_metadata_are_hidden_resume_payloads() {
     );
 
     let metadata: serde_json::Value =
-        serde_json::from_str(&plan_mode_proposal_continuation_metadata()).expect("metadata json");
+        serde_json::from_str(&plan_mode_proposal_continuation_metadata("request-123"))
+            .expect("metadata json");
     assert_eq!(
         metadata.get("source").and_then(|value| value.as_str()),
         Some("accepted_plan_mode_proposal")
+    );
+    assert_eq!(
+        metadata
+            .get("source_request_id")
+            .and_then(|value| value.as_str()),
+        Some("request-123")
+    );
+    assert_eq!(
+        metadata
+            .get("required_workspace_mode")
+            .and_then(|value| value.as_str()),
+        Some("plan")
     );
     assert_eq!(
         metadata
@@ -200,7 +213,7 @@ fn continuation_metadata_can_carry_compact_plan_mode_verdict_outcome() {
     };
 
     let metadata: serde_json::Value = serde_json::from_str(
-        &plan_mode_proposal_continuation_metadata_with_outcome(Some(&outcome)),
+        &plan_mode_proposal_continuation_metadata_with_outcome("req-plan", Some(&outcome)),
     )
     .expect("metadata json");
     let captured = metadata

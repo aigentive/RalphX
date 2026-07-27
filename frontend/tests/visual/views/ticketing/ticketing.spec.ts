@@ -10,8 +10,6 @@ const THEMES: ThemeName[] = ["dark", "light", "high-contrast"];
 const TICKETING_FLAGS = {
   activityPage: true,
   extensibilityPage: true,
-  battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: true,
 };

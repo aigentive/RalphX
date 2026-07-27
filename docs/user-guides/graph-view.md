@@ -8,14 +8,13 @@ The Graph View visualizes your project's tasks and their dependencies as an inte
 
 | Question | Answer |
 |----------|--------|
-| How do I open the Graph View? | Click **Graph** in the sidebar (or press `G` from anywhere). |
+| How do I open the Graph View? | Open **Agents**, choose a conversation, then select the **Graph** tab in its Tasks artifact. |
 | Nothing shows — why? | You need to select an active plan first. The graph only shows tasks for the current plan. |
 | How do I zoom in/out? | Scroll wheel, or use the zoom controls (bottom-left). |
 | How do I fit everything in view? | Click the **fit view** button in the zoom controls. |
 | Why are nodes tiny? | Compact mode is on. Groups with 8+ tasks auto-compact. Toggle Standard/Compact in the left filter panel. |
 | What does the orange glowing line mean? | It's on the **critical path** — the longest dependency chain that determines overall completion time. |
-| How do I see task details? | Click a node to open the detail panel on the right. Double-click to open the full overlay. |
-| How do I activate Battle Mode? | Press **⌘⇧B** while in Graph View (requires `battle_mode` feature flag enabled in `ralphx.yaml`). |
+| How do I see task details? | Click a node to open the Agents task detail overlay. |
 
 ---
 
@@ -29,10 +28,9 @@ The Graph View visualizes your project's tasks and their dependencies as an inte
 6. [Timeline Panel](#timeline-panel)
 7. [Filtering](#filtering)
 8. [Active Plan Context](#active-plan-context)
-9. [Battle Mode](#battle-mode)
-10. [Graph + Chat Split](#graph--chat-split)
-11. [Keyboard Shortcuts](#keyboard-shortcuts)
-12. [Tips & Best Practices](#tips--best-practices)
+9. [Graph + Timeline Layout](#graph--timeline-layout)
+10. [Keyboard Shortcuts](#keyboard-shortcuts)
+11. [Tips & Best Practices](#tips--best-practices)
 
 ---
 
@@ -76,7 +74,7 @@ The graph enforces zoom limits of 0.6×–1× to keep nodes readable.
 - **Single click on a task node** — selects it; opens the detail panel on the right and centers the node in view
 - **Single click on a plan group header** — selects the plan group; centers the group in view
 - **Click on canvas (empty space)** — deselects everything
-- **Double-click on a task node** — opens the full task detail overlay
+- **Double-click on a task node** — opens the Agents task detail overlay
 
 ### Node Highlighting
 
@@ -283,60 +281,23 @@ Switching the active plan instantly updates the graph to show only tasks from th
 
 ---
 
-## Battle Mode
-
-Battle Mode is an alternate visualization of task execution — a pixel-art space game where executing tasks appear as invader glyphs moving across the screen. It's purely cosmetic: all task state is real, just rendered differently.
-
-### What It Shows
-
-| Element | Represents |
-|---------|-----------|
-| **Drone glyphs** | Standard executing tasks |
-| **Elite glyphs** | High-priority executing tasks |
-| **Hazard glyphs** | Tasks in blocked or error states |
-| **Cluster glyphs** | Tasks grouped together |
-| **Pixel explosions** | Task completion events |
-| **Star field** | Background animation |
-| **Running / Queued counter** | Live count of executing and queued tasks |
-
-### How to Activate
-
-- Press **⌘⇧B** (CMD+SHIFT+B) while the Graph View is focused
-
-> **Feature flag required:** Battle Mode is disabled by default. To enable it, set `battle_mode: true` under `ui.feature_flags` in `ralphx.yaml` and restart the app. When the flag is disabled, the shortcut is a no-op.
-
-### Controls in Battle Mode
-
-| Control | Action |
-|---------|--------|
-| **Quality button** | Cycles through Low / Balanced / High visual quality |
-| **Exit button** | Returns to normal graph view |
-
-### What Doesn't Work in Battle Mode
-
-The timeline panel, node selection, keyboard graph navigation, and filter panel are hidden while Battle Mode is active. Exit Battle Mode to return to full interactivity.
-
 ---
 
-## Graph + Chat Split
+## Graph + Timeline Layout
 
 The Graph View uses a split layout:
 
 | Panel | Content |
 |-------|---------|
 | **Left (main)** | Graph canvas with filter controls |
-| **Right (no selection)** | Execution Timeline |
-| **Right (task selected)** | IntegratedChatPanel — chat and agent activity for the selected task |
+| **Right** | Execution Timeline |
 
-### Opening and Closing the Right Panel
+Selecting a node opens the Agents-owned task detail overlay over the artifact.
+The Graph layout itself keeps the timeline as its only right-side content.
 
-- Select a task node → right panel switches to the task's chat
-- Click empty canvas → deselects; right panel returns to timeline
-- On compact/narrow screens → the right panel opens as an **overlay** instead of a side-by-side split
-
-### Interacting with Agents
-
-When a task is selected and an agent is active, the right panel shows live agent output. You can send messages to the agent directly from this panel without leaving the graph.
+- On wide screens, the timeline is shown beside the graph.
+- On compact/narrow screens, the timeline opens as an overlay.
+- Use the surrounding Agents conversation to inspect or message the active agent.
 
 ---
 
@@ -345,15 +306,12 @@ When a task is selected and an agent is active, the right panel shows live agent
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` / `←` / `→` | Navigate between nodes |
-| `Enter` | Open full task detail overlay for focused node |
+| `Enter` | Open the Agents task detail overlay for the focused node |
 | `Space` | Select focused node |
 | `Escape` | Deselect / close detail panel |
 | `Delete` / `Backspace` | Delete selected task or plan group (with confirmation) |
-| `⌘⇧B` | Toggle Battle Mode (requires `battle_mode` feature flag) |
 | `+` / `-` | Zoom in / out |
 | `0` | Fit view (show all nodes) |
-
-Keyboard navigation is disabled while Battle Mode is active.
 
 ---
 

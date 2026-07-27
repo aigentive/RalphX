@@ -225,12 +225,12 @@ pub struct StreamTimeoutsConfig {
     pub review_parse_stall_secs: u64,
     pub default_line_read_secs: u64,
     pub default_parse_stall_secs: u64,
-    pub team_line_read_secs: u64,
-    pub team_parse_stall_secs: u64,
     #[serde(default = "default_max_wall_clock_secs")]
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
     pub completion_grace_secs: u64,
+    #[serde(default = "default_launch_reservation_lease_secs")]
+    pub launch_reservation_lease_secs: u64,
     #[serde(default = "default_execution_attempt_start_tolerance_secs")]
     pub execution_attempt_start_tolerance_secs: u64,
     #[serde(default = "default_desktop_notification_coalesce_window_secs")]
@@ -239,6 +239,10 @@ pub struct StreamTimeoutsConfig {
     pub notification_retention_read_days: u64,
     #[serde(default = "default_notification_retention_max_rows")]
     pub notification_retention_max_rows: u64,
+    #[serde(default = "default_db_lock_wait_warn_ms")]
+    pub db_lock_wait_warn_ms: u64,
+    #[serde(default = "default_db_lock_hold_warn_ms")]
+    pub db_lock_hold_warn_ms: u64,
 }
 
 fn default_max_wall_clock_secs() -> u64 {
@@ -246,6 +250,10 @@ fn default_max_wall_clock_secs() -> u64 {
 }
 
 fn default_completion_grace_secs() -> u64 {
+    30
+}
+
+fn default_launch_reservation_lease_secs() -> u64 {
     30
 }
 
@@ -265,6 +273,14 @@ fn default_notification_retention_max_rows() -> u64 {
     DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS
 }
 
+fn default_db_lock_wait_warn_ms() -> u64 {
+    100
+}
+
+fn default_db_lock_hold_warn_ms() -> u64 {
+    250
+}
+
 impl Default for StreamTimeoutsConfig {
     fn default() -> Self {
         Self {
@@ -274,15 +290,16 @@ impl Default for StreamTimeoutsConfig {
             review_parse_stall_secs: 120,
             default_line_read_secs: 600,
             default_parse_stall_secs: 180,
-            team_line_read_secs: 3600,
-            team_parse_stall_secs: 3600,
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
+            launch_reservation_lease_secs: 30,
             execution_attempt_start_tolerance_secs: 1,
             desktop_notification_coalesce_window_secs:
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
             notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
             notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
+            db_lock_wait_warn_ms: default_db_lock_wait_warn_ms(),
+            db_lock_hold_warn_ms: default_db_lock_hold_warn_ms(),
         }
     }
 }
@@ -472,6 +489,7 @@ impl Default for ReconciliationConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GitRuntimeConfig {
     pub cmd_timeout_secs: u64,
+    pub startup_auth_preflight_timeout_secs: u64,
     pub max_retries: u64,
     pub retry_backoff_secs: Vec<u64>,
     pub index_lock_stale_secs: u64,
@@ -520,6 +538,7 @@ impl Default for GitRuntimeConfig {
     fn default() -> Self {
         Self {
             cmd_timeout_secs: 60,
+            startup_auth_preflight_timeout_secs: 10,
             max_retries: 3,
             retry_backoff_secs: vec![1, 2, 4],
             index_lock_stale_secs: 5,
@@ -774,20 +793,16 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS"
     );
     env_u64!(
-        cfg.stream.team_line_read_secs,
-        "RALPHX_STREAM_TEAM_LINE_READ_SECS"
-    );
-    env_u64!(
-        cfg.stream.team_parse_stall_secs,
-        "RALPHX_STREAM_TEAM_PARSE_STALL_SECS"
-    );
-    env_u64!(
         cfg.stream.max_wall_clock_secs,
         "RALPHX_STREAM_MAX_WALL_CLOCK_SECS"
     );
     env_u64!(
         cfg.stream.completion_grace_secs,
         "RALPHX_STREAM_COMPLETION_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.stream.launch_reservation_lease_secs,
+        "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS"
     );
     env_u64!(
         cfg.stream.execution_attempt_start_tolerance_secs,
@@ -804,6 +819,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.notification_retention_max_rows,
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS"
+    );
+    env_u64!(
+        cfg.stream.db_lock_wait_warn_ms,
+        "RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS"
+    );
+    env_u64!(
+        cfg.stream.db_lock_hold_warn_ms,
+        "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS"
     );
 
     // Reconciliation
@@ -976,6 +999,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
 
     // Git
     env_u64!(cfg.git.cmd_timeout_secs, "RALPHX_GIT_CMD_TIMEOUT_SECS");
+    env_u64!(
+        cfg.git.startup_auth_preflight_timeout_secs,
+        "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS"
+    );
     env_u64!(cfg.git.max_retries, "RALPHX_GIT_MAX_RETRIES");
     env_u64!(
         cfg.git.index_lock_stale_secs,
@@ -1185,17 +1212,8 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     if let Some(v) = lookup("RALPHX_UI_EXTENSIBILITY_PAGE") {
         cfg.ui_feature_flags.extensibility_page = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
-    if let Some(v) = lookup("RALPHX_UI_IDEATION_PAGE") {
-        cfg.ui_feature_flags.ideation_page = matches!(v.to_lowercase().as_str(), "true" | "1");
-    }
     if let Some(v) = lookup("RALPHX_UI_AUTOMATIONS_PAGE") {
         cfg.ui_feature_flags.automations_page = matches!(v.to_lowercase().as_str(), "true" | "1");
-    }
-    if let Some(v) = lookup("RALPHX_UI_BATTLE_MODE") {
-        cfg.ui_feature_flags.battle_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
-    }
-    if let Some(v) = lookup("RALPHX_UI_TEAM_MODE") {
-        cfg.ui_feature_flags.team_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_ATLASSIAN_OAUTH") {
         cfg.ui_feature_flags.atlassian_oauth = matches!(v.to_lowercase().as_str(), "true" | "1");

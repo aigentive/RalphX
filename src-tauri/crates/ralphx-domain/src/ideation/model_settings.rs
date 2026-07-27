@@ -16,6 +16,12 @@ pub enum ModelLevel {
     Inherit,
     Sonnet,
     Opus,
+    #[serde(rename = "claude-opus-4-7")]
+    ClaudeOpus47,
+    #[serde(rename = "claude-opus-4-8")]
+    ClaudeOpus48,
+    #[serde(rename = "claude-opus-5")]
+    ClaudeOpus5,
     Haiku,
     Fable,
 }
@@ -32,6 +38,9 @@ impl fmt::Display for ModelLevel {
             Self::Inherit => write!(f, "inherit"),
             Self::Sonnet => write!(f, "sonnet"),
             Self::Opus => write!(f, "opus"),
+            Self::ClaudeOpus47 => write!(f, "claude-opus-4-7"),
+            Self::ClaudeOpus48 => write!(f, "claude-opus-4-8"),
+            Self::ClaudeOpus5 => write!(f, "claude-opus-5"),
             Self::Haiku => write!(f, "haiku"),
             Self::Fable => write!(f, "fable"),
         }
@@ -46,10 +55,13 @@ impl FromStr for ModelLevel {
             "inherit" => Ok(Self::Inherit),
             "sonnet" => Ok(Self::Sonnet),
             "opus" => Ok(Self::Opus),
+            "claude-opus-4-7" => Ok(Self::ClaudeOpus47),
+            "claude-opus-4-8" => Ok(Self::ClaudeOpus48),
+            "claude-opus-5" => Ok(Self::ClaudeOpus5),
             "haiku" => Ok(Self::Haiku),
             "fable" => Ok(Self::Fable),
             other => Err(format!(
-                "Invalid model level '{}'. Valid values: inherit, sonnet, opus, haiku, fable",
+                "Invalid model level '{}'. Valid values: inherit, sonnet, opus, claude-opus-4-7, claude-opus-4-8, claude-opus-5, haiku, fable",
                 other
             )),
         }
@@ -60,8 +72,7 @@ impl FromStr for ModelLevel {
 /// Used to select the correct model setting column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelBucket {
-    /// Primary ideation agents: ralphx-ideation, ralphx-ideation-team-lead,
-    /// ideation-team-member, ralphx-ideation-readonly
+    /// Primary ideation agents: ralphx-ideation and ralphx-ideation-readonly.
     Primary,
     /// Verification agents: ralphx-plan-verifier
     Verifier,
@@ -69,7 +80,7 @@ pub enum ModelBucket {
     /// Not mapped by model_bucket_for_agent() — resolved separately at runtime.
     VerifierSubagent,
     /// Cap-resolution bucket for subagents spawned by the main ideation path
-    /// (ralphx-ideation, ralphx-ideation-team-lead).
+    /// (`ralphx-ideation`).
     /// Not mapped by model_bucket_for_agent() — resolved separately at runtime.
     IdeationSubagent,
 }
@@ -83,7 +94,7 @@ pub struct IdeationModelSettings {
     pub primary_model: ModelLevel,
     pub verifier_model: ModelLevel,
     pub verifier_subagent_model: ModelLevel,
-    /// Cap for subagents spawned by the main ideation path (ralphx-ideation, ralphx-ideation-team-lead).
+    /// Cap for subagents spawned by the main ideation path (`ralphx-ideation`).
     /// Defaults to `Inherit` (fall through to next resolution level).
     pub ideation_subagent_model: ModelLevel,
     pub updated_at: DateTime<Utc>,
@@ -107,9 +118,6 @@ pub fn model_bucket_for_agent(agent_name: &str) -> Option<ModelBucket> {
     match normalized {
         "ralphx-ideation"
         | "orchestrator-ideation"
-        | "ralphx-ideation-team-lead"
-        | "ideation-team-lead"
-        | "ideation-team-member"
         | "ralphx-ideation-readonly"
         | "orchestrator-ideation-readonly" => Some(ModelBucket::Primary),
         "ralphx-plan-verifier" | "plan-verifier" => Some(ModelBucket::Verifier),

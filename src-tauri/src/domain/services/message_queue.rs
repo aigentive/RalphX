@@ -162,6 +162,9 @@ pub struct QueuedMessage {
     /// Optional provider service-tier override selected when this message was queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier_override: Option<String>,
+    /// Keep the parent conversation provider-session ref unchanged on replay.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preserve_conversation_provider_session_ref: bool,
     /// Whether queue replay must start a fresh provider-native session.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_new_provider_session: bool,
@@ -201,6 +204,7 @@ impl QueuedMessage {
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -227,6 +231,7 @@ impl QueuedMessage {
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -300,6 +305,25 @@ impl MessageQueue {
         let key = QueueKey::new(context_type, context_id);
         let mut queues = self.queues.lock().unwrap();
         queues.entry(key).or_default().insert(0, message);
+    }
+
+    /// Re-insert an existing queued message at the back of the queue.
+    ///
+    /// Message IDs are stable queue identities. Re-enqueuing one replaces its
+    /// earlier occurrence and leaves all unrelated messages in their order.
+    pub fn queue_back_existing(
+        &self,
+        context_type: ChatContextType,
+        context_id: impl Into<String>,
+        message: QueuedMessage,
+    ) {
+        let key = QueueKey::new(context_type, context_id);
+        let mut queues = self.queues.lock().unwrap();
+        queues.retain(|_, queue| {
+            queue.retain(|queued| queued.id != message.id);
+            !queue.is_empty()
+        });
+        queues.entry(key).or_default().push(message);
     }
 
     /// Queue a message using a QueueKey

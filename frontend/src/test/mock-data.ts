@@ -168,6 +168,7 @@ export function createMockProject(overrides: Partial<Project> = {}): Project {
     customAnalysis: null,
     analyzedAt: null,
     githubPrEnabled: false,
+    repositoryCapability: { kind: "localOnly" },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,

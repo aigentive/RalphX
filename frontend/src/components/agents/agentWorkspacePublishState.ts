@@ -1,12 +1,43 @@
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
+  AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
+
+const PUBLISH_EVENT_START_SKEW_MS = 5_000;
+const AGENT_WORKSPACE_ACTIVE_PUBLISH_STATUSES = new Set([
+  "checking",
+  "committing",
+  "refreshing",
+  "describing",
+  "pushing",
+]);
+
+export type AgentWorkspacePublishTerminalEvent = {
+  event: AgentConversationWorkspacePublicationEvent;
+  kind: "failure" | "needs_agent" | "no_changes" | "success";
+};
 
 export function hasPublishedWorkspacePr(
   workspace: AgentConversationWorkspace | null
 ): boolean {
   return Boolean(workspace?.publicationPrNumber ?? workspace?.publicationPrUrl);
+}
+
+export function getAgentWorkspaceDescriptionFailurePresentation(
+  targetPullRequestLabel: string | null,
+): { title: string; summary: string } {
+  if (targetPullRequestLabel) {
+    return {
+      title: "Publishing failed",
+      summary: `RalphX could not finish the metadata step for ${targetPullRequestLabel} and did not apply an unsafe replacement body. Review the latest publish event before retrying Commit & Publish.`,
+    };
+  }
+  return {
+    title: "Publishing failed",
+    summary:
+      "RalphX could not draft a PR description, so no pull request was opened. Review the latest publish event before retrying Commit & Publish.",
+  };
 }
 
 function normalizePublicationStatus(status: string | null | undefined): string | null {
@@ -38,6 +69,18 @@ export function getAgentWorkspaceTerminalPublicationLabel(
     return "Closed";
   }
   return null;
+}
+
+export function isAgentWorkspacePublishActive(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  if (!workspace || getAgentWorkspaceTerminalPublicationStatus(workspace)) {
+    return false;
+  }
+  const pushStatus = normalizePublicationStatus(workspace.publicationPushStatus);
+  return (
+    pushStatus !== null && AGENT_WORKSPACE_ACTIVE_PUBLISH_STATUSES.has(pushStatus)
+  );
 }
 
 export function isPipelineOwnedAgentWorkspace(
@@ -80,6 +123,34 @@ export function getAgentWorkspacePrConflictSummary(
     normalized.includes("mergeability blocker")
   ) {
     return summary;
+  }
+  return null;
+}
+
+export type AgentWorkspaceReviewActionBlocker = {
+  kind: "repair" | "conflict";
+  message: string;
+};
+
+export function getAgentWorkspaceReviewActionBlocker(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspaceReviewActionBlocker | null {
+  if (!workspace || getAgentWorkspaceTerminalPublicationStatus(workspace)) {
+    return null;
+  }
+  const pushStatus = normalizePublicationStatus(workspace.publicationPushStatus);
+  const supervisionStatus = normalizePublicationStatus(workspace.prSupervisionStatus);
+  if (pushStatus === "needs_agent" || supervisionStatus === "fixing") {
+    return {
+      kind: "repair",
+      message: "Finish or abort the current repair, then retry Review.",
+    };
+  }
+  if (getAgentWorkspacePrConflictSummary(workspace)) {
+    return {
+      kind: "conflict",
+      message: "Resolve conflicts before retrying Review.",
+    };
   }
   return null;
 }
@@ -204,6 +275,74 @@ export function isAgentWorkspacePublishCurrent(
     !freshness.hasUncommittedChanges &&
     freshness.unpublishedCommitCount === 0
   );
+}
+
+export function getPostBaselinePublicationEvents(
+  events: AgentConversationWorkspacePublicationEvent[],
+  lastEventId: string | null,
+  startedAtMs: number,
+): AgentConversationWorkspacePublicationEvent[] | null {
+  let suffix = events;
+  if (lastEventId !== null) {
+    const baselineIndexes = events.flatMap((event, index) =>
+      event.id === lastEventId ? [index] : [],
+    );
+    if (baselineIndexes.length !== 1) {
+      return null;
+    }
+    suffix = events.slice((baselineIndexes[0] ?? 0) + 1);
+  }
+
+  const seenEventIds = new Set<string>();
+  return suffix.filter((event) => {
+    if (seenEventIds.has(event.id)) {
+      return false;
+    }
+    seenEventIds.add(event.id);
+    const createdAtMs = new Date(event.createdAt).getTime();
+    return (
+      Number.isFinite(createdAtMs) &&
+      createdAtMs >= startedAtMs - PUBLISH_EVENT_START_SKEW_MS
+    );
+  });
+}
+
+export function classifyAgentWorkspacePublishTerminalEvent(
+  events: AgentConversationWorkspacePublicationEvent[],
+  workspace: AgentConversationWorkspace | null,
+  freshness: AgentConversationWorkspaceFreshness | undefined,
+): AgentWorkspacePublishTerminalEvent | null {
+  const workspacePushStatus = normalizePublicationStatus(
+    workspace?.publicationPushStatus,
+  );
+  for (const event of events) {
+    const step = event.step.trim().toLowerCase();
+    const status = event.status.trim().toLowerCase();
+    const classification = event.classification?.trim().toLowerCase() ?? null;
+    if (step === "published" && status === "succeeded") {
+      if (isAgentWorkspacePublishCurrent(workspace, freshness)) {
+        return { event, kind: "success" };
+      }
+      continue;
+    }
+    if (
+      step === "needs_agent" &&
+      status === "failed" &&
+      (classification === "agent_fixable" || workspacePushStatus === "needs_agent")
+    ) {
+      return { event, kind: "needs_agent" };
+    }
+    if (
+      (step === "failed" || step === "description_failed") &&
+      status === "failed"
+    ) {
+      return { event, kind: "failure" };
+    }
+    if (step === "no_changes" && status === "skipped") {
+      return { event, kind: "no_changes" };
+    }
+  }
+  return null;
 }
 
 export function shouldAutoRefreshCleanAgentWorkspaceFromBase(

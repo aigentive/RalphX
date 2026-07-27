@@ -30,10 +30,15 @@ mod mcp_policy_service_tests;
 pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
+pub mod agent_task_assignment_recovery;
 pub(crate) mod agent_task_pipeline_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
+pub mod agent_workspace_local_commit;
+#[cfg(test)]
+mod agent_workspace_local_commit_tests;
 pub mod agent_workspace_continuation;
+pub(crate) mod agent_workspace_pr_autofix_attempt;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_terminal_cleanup;
@@ -44,6 +49,8 @@ pub(crate) mod agent_workspace_merge_classification;
 mod agent_workspace_merge_classification_tests;
 #[cfg(test)]
 mod agent_workspace_terminal_cleanup_tests;
+#[cfg(test)]
+mod agent_workspace_pr_autofix_attempt_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub(crate) mod agent_workspace_publish_repair_state;
@@ -78,6 +85,8 @@ pub mod app_paths;
 #[cfg(test)]
 mod app_paths_tests;
 pub mod app_setup;
+#[cfg(test)]
+mod app_setup_tests;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
@@ -203,6 +212,8 @@ pub mod review_service;
 pub mod runtime_factory;
 pub mod runtime_wiring;
 pub mod server_boot;
+#[cfg(test)]
+mod server_boot_tests;
 pub mod services;
 pub mod session_export_service;
 pub(crate) mod session_namer_agent;
@@ -222,12 +233,17 @@ mod standalone_workspace_path_safety_tests;
 mod standalone_workspace_tests;
 pub mod startup_background;
 pub mod startup_bootstrap;
+#[cfg(test)]
+mod startup_bootstrap_tests;
 pub mod startup_cleanup;
 pub mod startup_git_auth_preflight;
 pub mod startup_jobs;
 pub mod startup_pipeline;
+#[cfg(test)]
+mod startup_pipeline_tests;
 pub mod startup_pipeline_launch;
 pub mod startup_runtime_builders;
+pub mod startup_status;
 pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
@@ -245,10 +261,6 @@ mod tasks_feature_policy_tests;
 pub(crate) mod tasks_feature_toggle_service;
 #[cfg(test)]
 mod tasks_feature_toggle_service_tests;
-pub mod team_events;
-pub mod team_service;
-pub mod team_state_tracker;
-pub mod team_stream_processor;
 pub mod throttled_emitter;
 pub mod ticket_attachment;
 pub mod ticket_attachment_runtime_store;
@@ -326,7 +338,6 @@ pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
     build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
     resolve_lane_harness_config, resolve_primary_ideation_harness_availability_for_state,
-    team_mode_supported_for_context,
     validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
     IDEATION_LANES,
 };
@@ -384,8 +395,6 @@ pub use task_cleanup_service::{
 pub use task_context_service::TaskContextService;
 pub use task_scheduler_service::{ReadyWatchdog, TaskSchedulerService};
 pub use task_transition_service::TaskTransitionService;
-pub use team_service::TeamService;
-pub use team_state_tracker::TeamStateTracker;
 pub use throttled_emitter::ThrottledEmitter;
 pub use ticketing_cache_invalidator::{
     TicketingCacheInvalidatedEvent, TicketingCacheInvalidator, TICKETING_CACHE_INVALIDATED_EVENT,
@@ -492,6 +501,10 @@ mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
 #[cfg(test)]
+mod startup_status_guard_tests;
+#[cfg(test)]
+mod startup_status_tests;
+#[cfg(test)]
 mod task_cleanup_service_tests;
 #[cfg(test)]
 mod task_transition_service_tests;
@@ -513,9 +526,7 @@ pub use chat_service::{
     AgentChunkPayload, AgentErrorPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
     AgentQueueSentPayload, AgentRunCompletedPayload, AgentRunStartedPayload, AgentToolCallPayload,
     AppChatService, ChatConversationWithMessages, ChatService, ChatServiceError, MockChatResponse,
-    MockChatService, SendResult, TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload,
-    TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
-    TeamTeammateSpawnedPayload, AGENT_MESSAGE_QUEUED,
+    MockChatService, SendResult, AGENT_MESSAGE_QUEUED,
 };
 pub mod agent_capability_gate;
 #[cfg(test)]

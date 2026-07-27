@@ -162,14 +162,15 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             "project_archived",
         ));
     }
+
+    if workspace.publication_pr_number.is_some() {
+        return reconcile_linked_agent_workspace_pr(deps, &workspace, &project).await;
+    }
+
     if !project.github_pr_enabled {
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
             "github_pr_disabled",
         ));
-    }
-
-    if workspace.publication_pr_number.is_some() {
-        return reconcile_linked_agent_workspace_pr(deps, &workspace, &project).await;
     }
 
     let lookup_started = Instant::now();
@@ -455,9 +456,13 @@ async fn reconcile_clickup_ticket_for_workspace_pr(
                 None
             }
         };
+    // Only branch-authored commits may serve as ticket evidence: a plain
+    // `base..HEAD` walk imports the base's own commit subjects (e.g. squash
+    // merges from unrelated tickets) after a base-update merge when the local
+    // base ref is stale.
     let commit_subjects = match worktree_path.as_deref() {
         Some(worktree_path) => {
-            match GitService::get_commits_between(worktree_path, &workspace.base_ref, "HEAD").await
+            match GitService::get_branch_authored_commits(worktree_path, &workspace.base_ref).await
             {
                 Ok(commits) => commits
                     .into_iter()

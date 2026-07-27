@@ -68,10 +68,6 @@ pub struct IdeationSession {
     pub archived_at: Option<DateTime<Utc>>,
     /// When all proposals were converted to tasks (if applicable)
     pub converted_at: Option<DateTime<Utc>>,
-    /// Team mode: "solo" | "research" | "debate"
-    pub team_mode: Option<String>,
-    /// Serialized JSON team configuration
-    pub team_config_json: Option<String>,
     /// Title source: "auto" (ralphx-utility-session-namer) | "user" (manual rename). None treated as "auto".
     pub title_source: Option<String>,
     /// Verification status of this session's plan
@@ -183,8 +179,6 @@ pub struct IdeationSessionBuilder {
     updated_at: Option<DateTime<Utc>>,
     archived_at: Option<DateTime<Utc>>,
     converted_at: Option<DateTime<Utc>>,
-    team_mode: Option<String>,
-    team_config_json: Option<String>,
     title_source: Option<String>,
     verification_status: Option<VerificationStatus>,
     verification_in_progress: Option<bool>,
@@ -300,18 +294,6 @@ impl IdeationSessionBuilder {
     /// Set the converted_at timestamp
     pub fn converted_at(mut self, converted_at: DateTime<Utc>) -> Self {
         self.converted_at = Some(converted_at);
-        self
-    }
-
-    /// Set the team mode
-    pub fn team_mode(mut self, team_mode: impl Into<String>) -> Self {
-        self.team_mode = Some(team_mode.into());
-        self
-    }
-
-    /// Set the team config JSON
-    pub fn team_config_json(mut self, team_config_json: impl Into<String>) -> Self {
-        self.team_config_json = Some(team_config_json.into());
         self
     }
 
@@ -487,8 +469,6 @@ impl IdeationSessionBuilder {
             updated_at: self.updated_at.unwrap_or(now),
             archived_at: self.archived_at,
             converted_at: self.converted_at,
-            team_mode: self.team_mode,
-            team_config_json: self.team_config_json,
             title_source: self.title_source,
             verification_status: self.verification_status.unwrap_or_default(),
             verification_in_progress: self.verification_in_progress.unwrap_or(false),
@@ -636,10 +616,6 @@ impl IdeationSession {
             converted_at: row
                 .get::<_, Option<String>>("converted_at")?
                 .map(Self::parse_datetime),
-            team_mode: row.get::<_, Option<String>>("team_mode").unwrap_or(None),
-            team_config_json: row
-                .get::<_, Option<String>>("team_config_json")
-                .unwrap_or(None),
             title_source: row.get::<_, Option<String>>("title_source").unwrap_or(None),
             verification_status: row
                 .get::<_, Option<String>>("verification_status")

@@ -48,4 +48,24 @@ describe("PublishWorkspaceDialog", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("passes the linked target into description failure progress copy", () => {
+    render(
+      <PublishWorkspaceDialog
+        base="main"
+        branch="feature/linked-pr"
+        confirmDisabled={false}
+        isPublishing={false}
+        onConfirm={vi.fn()}
+        onOpenChange={vi.fn()}
+        open
+        phase="publishing"
+        status="description_failed"
+        targetPullRequestLabel="PR #888"
+      />,
+    );
+
+    expect(screen.getByText(/metadata step for PR #888/)).toBeInTheDocument();
+    expect(screen.queryByText(/no pull request was opened/)).not.toBeInTheDocument();
+  });
 });

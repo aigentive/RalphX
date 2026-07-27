@@ -23,8 +23,7 @@ import { getFilteredTools, isToolAllowed, getAllowedToolNames, parseAllowedTools
 import { FILESYSTEM_TOOL_NAMES, formatFilesystemToolError, handleFilesystemToolCall, } from "./filesystem-tools.js";
 import { permissionRequestTool, handlePermissionRequest, } from "./permission-handler.js";
 import { handleAskUserQuestion, handleProposePlanMode, } from "./question-handler.js";
-import { handleRequestTeamPlan } from "./team-plan-handler.js";
-import { buildArtifactMutationTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
+import { buildArtifactMutationTransportHeaders, buildRuntimeIdentityTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
@@ -392,41 +391,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             };
         }
     }
-    // Special handling for request_team_plan (two-phase: register POST + long-poll GET)
-    if (name === "request_team_plan") {
-        // Still check authorization (must be in agent's allowlist)
-        if (!isToolAllowed(name)) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `ERROR: Tool "${name}" is not available for agent type "${AGENT_TYPE}".`,
-                    },
-                ],
-                isError: true,
-            };
-        }
-        const leadSessionId = globalThis.process.env.RALPHX_LEAD_SESSION_ID;
-        try {
-            const result = await handleRequestTeamPlan(args, RALPHX_CONTEXT_TYPE ?? "ideation", RALPHX_CONTEXT_ID ?? "", leadSessionId, runtimeContext);
-            safeTrace("tool.success", {
-                name,
-                result: summarizeResult(result),
-            });
-            return result;
-        }
-        catch (error) {
-            safeTrace("tool.error", {
-                name,
-                error: error instanceof Error ? error.message : String(error),
-            });
-            const message = error instanceof Error ? error.message : String(error);
-            return {
-                content: [{ type: "text", text: `ERROR: Unexpected error: ${message}` }],
-                isError: true,
-            };
-        }
-    }
     // Authorization check (defense in depth)
     if (!isToolAllowed(name)) {
         const allowedNames = getAllowedToolNames();
@@ -695,12 +659,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         else if (name === "create_child_session") {
             // POST /api/create_child_session
-            const { parent_session_id, title, description, inherit_context, initial_prompt, team_mode, team_config, purpose } = args;
+            const { parent_session_id, title, description, inherit_context, initial_prompt, purpose } = args;
             // Propagate external trigger context from the spawning process env var.
             // RALPHX_IS_EXTERNAL_TRIGGER=1 is set by the backend when the agent was spawned
             // in response to an external MCP message (is_external_mcp=true).
             const is_external_trigger = process.env.RALPHX_IS_EXTERNAL_TRIGGER === "1";
-            result = await callTauri("create_child_session", { parent_session_id, title, description, inherit_context, initial_prompt, team_mode, team_config, purpose, is_external_trigger });
+            result = await callTauri("create_child_session", { parent_session_id, title, description, inherit_context, initial_prompt, purpose, is_external_trigger });
         }
         else if (name === "create_followup_session") {
             // POST /api/create_child_session with first-class execution/review provenance
@@ -836,9 +800,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 caller_context_type: RALPHX_CONTEXT_TYPE,
                 caller_context_id: RALPHX_CONTEXT_ID,
             }, {
-                headers: {
-                    "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
-                },
+                headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
             });
         }
         else if (name === "delegate_wait") {
@@ -856,14 +818,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 claim_agent_task: "agent_tasks/claim",
                 complete_agent_task: "agent_tasks/complete",
             };
-            const endpoint = endpointByTool[name];
-            result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
-                contextType: RALPHX_CONTEXT_TYPE,
-                contextId: RALPHX_CONTEXT_ID,
-                projectId: RALPHX_PROJECT_ID,
-                actorAgent: AGENT_TYPE,
-                parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
-            }));
+            if (name === "get_delegate_assignment" ||
+                name === "complete_delegate_assignment" ||
+                name === "release_delegate_assignment") {
+                const assignmentEndpointByTool = {
+                    get_delegate_assignment: "agent_tasks/delegate_assignment/get",
+                    complete_delegate_assignment: "agent_tasks/delegate_assignment/complete",
+                    release_delegate_assignment: "agent_tasks/delegate_assignment/release",
+                };
+                result = await callTauri(assignmentEndpointByTool[name], args, {
+                    headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+                });
+            }
+            else {
+                const endpoint = endpointByTool[name];
+                result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
+                    contextType: RALPHX_CONTEXT_TYPE,
+                    contextId: RALPHX_CONTEXT_ID,
+                    projectId: RALPHX_PROJECT_ID,
+                    actorAgent: AGENT_TYPE,
+                    parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+                }));
+            }
         }
         else if (name === "get_project_analysis") {
             // GET /api/projects/:project_id/analysis?task_id=
@@ -879,11 +855,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (LEARNED_SKILL_TOOL_NAMES.includes(name)) {
             result = await callTauri(learnedSkillEndpoint(name), args, learnedSkillTransportOptions(name, runtimeContext));
         }
-        else if (name === "request_teammate_spawn") {
-            // POST /api/team/spawn
-            const { role, prompt, model, tools, mcp_tools, preset } = args;
-            result = await callTauri("team/spawn", { role, prompt, model, tools, mcp_tools, preset });
-        }
         else if (name === "create_team_artifact") {
             // POST /api/team/artifact
             const { session_id, title, content, artifact_type, related_artifact_id } = args;
@@ -893,27 +864,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 content,
                 artifact_type,
                 related_artifact_id,
+            }, {
+                headers: {
+                    ...(buildArtifactMutationTransportHeaders(runtimeContext) ?? {}),
+                    "x-ralphx-agent-type": AGENT_TYPE,
+                },
             });
         }
         else if (name === "get_team_artifacts") {
             // GET /api/team/artifacts/:session_id
             const { session_id } = args;
             result = await callTauriGet(`team/artifacts/${session_id}`);
-        }
-        else if (name === "get_team_session_state") {
-            // GET /api/team/session_state/:session_id
-            const { session_id } = args;
-            result = await callTauriGet(`team/session_state/${session_id}`);
-        }
-        else if (name === "save_team_session_state") {
-            // POST /api/team/session_state
-            const { session_id, team_composition, phase, artifact_ids } = args;
-            result = await callTauri("team/session_state", {
-                session_id,
-                team_composition,
-                phase,
-                artifact_ids,
-            });
         }
         else if (name === "execution_complete") {
             // POST /api/execution/tasks/:task_id/complete

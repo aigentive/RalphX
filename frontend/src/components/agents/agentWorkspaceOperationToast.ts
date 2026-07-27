@@ -3,13 +3,13 @@ import { toast } from "sonner";
 import { formatElapsedTime } from "@/lib/formatters";
 
 export type AgentWorkspaceOperationToastKind =
+  | "local-commit"
   | "publish"
   | "rebase"
   | "update-from-base";
 
 export interface AgentWorkspaceOperationToast {
   dismiss: () => void;
-  dispose: () => void;
   error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
   info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
   success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
@@ -31,36 +31,20 @@ export interface AgentWorkspaceOperationToastResultOptions {
 
 const OPERATION_TOAST_INTERVAL_MS = 1_000;
 const MAX_OPERATION_ERROR_DETAIL_CHARS = 240;
+const MAX_OPERATION_RESULT_DETAIL_CHARS = 140;
+const VERBOSE_OPERATION_RESULT_DETAIL = "Full output is available in the workspace.";
+const ANSI_ESCAPE = String.fromCharCode(27);
 export const AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS = 8_000;
 export const AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS = 12_000;
 type ActiveAgentWorkspaceOperationToastOptions =
   AgentWorkspaceOperationToastOptions & {
     startedAtMs: number;
   };
-type ActiveAgentWorkspaceOperationToastController = {
-  dismiss: () => void;
-  settle: () => void;
-};
-
-const activeOperationToastControllers = new Map<
-  string,
-  ActiveAgentWorkspaceOperationToastController
->();
-
 export function agentWorkspaceOperationToastId(
   conversationId: string,
   kind: AgentWorkspaceOperationToastKind,
 ): string {
   return `agent-workspace-operation:${conversationId}:${kind}`;
-}
-
-export function markAgentWorkspaceOperationToastSettled(id: string): boolean {
-  const controller = activeOperationToastControllers.get(id);
-  if (!controller) {
-    return false;
-  }
-  controller.settle();
-  return true;
 }
 
 export function publishPipelineToastLabel(status: string | null): string {
@@ -101,6 +85,41 @@ export function agentWorkspaceOperationToastDescription(
   return description || undefined;
 }
 
+function cleanAgentWorkspaceOperationDetail(detail: string): string {
+  return stripControlCharacters(stripAnsiEscapeSequences(detail))
+    .replace(/\s*Raw output:\s*[\s\S]*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripAnsiEscapeSequences(detail: string): string {
+  let output = "";
+  for (let index = 0; index < detail.length; index += 1) {
+    if (detail[index] !== ANSI_ESCAPE || detail[index + 1] !== "[") {
+      output += detail[index] ?? "";
+      continue;
+    }
+    index += 2;
+    while (index < detail.length) {
+      const code = detail.charCodeAt(index);
+      if (code >= 64 && code <= 126) {
+        break;
+      }
+      index += 1;
+    }
+  }
+  return output;
+}
+
+function stripControlCharacters(detail: string): string {
+  return Array.from(detail)
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127 ? " " : character;
+    })
+    .join("");
+}
+
 export function agentWorkspaceOperationErrorDetail(
   error: unknown,
   fallback: string,
@@ -111,14 +130,27 @@ export function agentWorkspaceOperationErrorDetail(
       : typeof error === "string"
         ? error
         : fallback;
-  const withoutRawOutput = raw.replace(/\s*Raw output:\s*[\s\S]*$/i, "");
-  const compact = (withoutRawOutput.trim() || fallback)
-    .replace(/\s+/g, " ")
-    .trim();
+  const compact = cleanAgentWorkspaceOperationDetail(raw) || fallback;
   if (compact.length <= MAX_OPERATION_ERROR_DETAIL_CHARS) {
     return compact;
   }
   return `${compact.slice(0, MAX_OPERATION_ERROR_DETAIL_CHARS - 3).trimEnd()}...`;
+}
+
+export function agentWorkspaceOperationResultDetail(
+  detail: string | null | undefined,
+): string | null {
+  if (!detail) {
+    return null;
+  }
+  const compact = cleanAgentWorkspaceOperationDetail(detail);
+  if (!compact) {
+    return null;
+  }
+  if (compact.length <= MAX_OPERATION_RESULT_DETAIL_CHARS) {
+    return compact;
+  }
+  return VERBOSE_OPERATION_RESULT_DETAIL;
 }
 
 function progressDescription(options: ActiveAgentWorkspaceOperationToastOptions): string | undefined {
@@ -138,9 +170,13 @@ function resultDescription(
   options: ActiveAgentWorkspaceOperationToastOptions,
   resultOptions?: AgentWorkspaceOperationToastResultOptions,
 ): string | undefined {
+  const detail =
+    resultOptions && Object.prototype.hasOwnProperty.call(resultOptions, "detail")
+      ? agentWorkspaceOperationResultDetail(resultOptions.detail)
+      : options.detail;
   return agentWorkspaceOperationToastDescription(
     options.conversationTitle,
-    resultOptions?.detail ?? options.detail,
+    detail,
   );
 }
 
@@ -176,19 +212,11 @@ export function startAgentWorkspaceOperationToast(
     }
   };
 
-  const unregisterActiveToast = (id: string | null) => {
-    if (id && activeOperationToastControllers.get(id) === controller) {
-      activeOperationToastControllers.delete(id);
-    }
-  };
-
   const registerActiveToast = (id: string) => {
     if (activeToastId && activeToastId !== id) {
-      unregisterActiveToast(activeToastId);
       toast.dismiss(activeToastId);
     }
     activeToastId = id;
-    activeOperationToastControllers.set(id, controller);
   };
 
   const settle = () => {
@@ -197,7 +225,6 @@ export function startAgentWorkspaceOperationToast(
     }
     settled = true;
     clearTimer();
-    unregisterActiveToast(activeToastId);
   };
 
   const dismiss = () => {
@@ -206,15 +233,9 @@ export function startAgentWorkspaceOperationToast(
     }
     dismissed = true;
     clearTimer();
-    unregisterActiveToast(activeToastId);
     if (activeToastId) {
       toast.dismiss(activeToastId);
     }
-  };
-
-  const controller: ActiveAgentWorkspaceOperationToastController = {
-    dismiss,
-    settle,
   };
 
   const render = () => {
@@ -235,7 +256,6 @@ export function startAgentWorkspaceOperationToast(
         }
         dismissed = true;
         clearTimer();
-        unregisterActiveToast(activeToastId);
       },
     });
   };
@@ -245,11 +265,10 @@ export function startAgentWorkspaceOperationToast(
 
   return {
     dismiss,
-    dispose: () => {
-      clearTimer();
-      unregisterActiveToast(activeToastId);
-    },
     error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
+      if (settled) {
+        return;
+      }
       settle();
       toast.error(message, {
         ...resultToastOptions(
@@ -262,6 +281,9 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
+      if (settled) {
+        return;
+      }
       settle();
       toast.info(message, {
         ...resultToastOptions(
@@ -273,6 +295,9 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
+      if (settled) {
+        return;
+      }
       settle();
       toast.success(
         message,

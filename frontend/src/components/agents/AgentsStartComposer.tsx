@@ -26,6 +26,7 @@ import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useStartComposerRoleDefault } from "@/hooks/useManualRoleDefaults";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { usePersonas } from "@/hooks/usePersonas";
 import {
   PERSONA_UNAVAILABLE_PREFIX,
   isPersonaUnavailableError,
@@ -95,7 +96,6 @@ import {
 } from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
-import { PersonaPickerControl } from "./PersonaPickerControl";
 import { PersonaBuildBanner } from "./PersonaBuildBanner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -306,6 +306,33 @@ export function AgentsStartComposer({
   const openModal = useUiStore((s) => s.openModal);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const { data: featureFlags } = useFeatureFlags();
+  const { data: availablePersonas = [] } = usePersonas(
+    projectId
+      ? { type: "globalAndProject", projectId }
+      : { type: "globalOnly" },
+  );
+  const personaOptions = useMemo(
+    () => [
+      {
+        id: "none",
+        label: "No persona",
+        description: "Use the role's default instructions without a persona.",
+      },
+      ...availablePersonas
+        .filter(
+          (persona) =>
+            persona.status === "active" &&
+            (persona.projectId === null || persona.projectId === projectId),
+        )
+        .map((persona) => ({
+          id: persona.id,
+          label: persona.name,
+          description:
+            persona.projectId === null ? "Global persona" : "Project persona",
+        })),
+    ],
+    [availablePersonas, projectId],
+  );
   const startModeOptions = useMemo(
     () =>
       buildAgentStartModeOptions({
@@ -1728,21 +1755,25 @@ export function AgentsStartComposer({
               : {})}
             {...(mode !== "persona_builder" && featureFlags.agentPersonas && projectId
               ? {
-                  personaControl: (
-                    <PersonaPickerControl
-                      currentProjectId={projectId}
-                      currentProjectName={
-                        projects.find((project) => project.id === projectId)?.name ?? projectId
-                      }
-                      personaId={personaId}
-                      onValueChange={(nextPersonaId) => {
-                        clearStartError();
-                        markRoleOverride();
-                        setPersonaId(nextPersonaId);
-                      }}
-                      onOpenPersonas={openPersonaSettings}
-                    />
-                  ),
+                  persona: {
+                    value: personaId ?? "none",
+                    onValueChange: (nextPersonaId: string) => {
+                      clearStartError();
+                      markRoleOverride();
+                      setPersonaId(nextPersonaId === "none" ? null : nextPersonaId);
+                    },
+                    options: personaOptions,
+                    footerAction: (
+                      <button
+                        type="button"
+                        className="w-full rounded px-2 py-1.5 text-left text-xs font-medium text-[var(--accent-primary)] hover:bg-[var(--bg-hover)]"
+                        onClick={openPersonaSettings}
+                      >
+                        Manage personas
+                      </button>
+                    ),
+                    testId: "agents-start-persona",
+                  },
                 }
               : {})}
             project={{
@@ -1786,21 +1817,6 @@ export function AgentsStartComposer({
               onValueChange: handleModelChange,
               options: modelOptions,
               disabled: Boolean(providerStatusMessage),
-              fastMode: {
-                visible: provider === "codex",
-                value: selectableCodexFastMode,
-                onValueChange: (value) => {
-                  markRoleOverride();
-                  setCodexFastModeOverride(value);
-                },
-                disabled:
-                  !providerSettingsReady ||
-                  !codexFastModeAvailability.supported,
-                description:
-                  codexFastModeAvailability.reason ??
-                  CODEX_FAST_MODE_DESCRIPTION,
-                testId: "agents-start-codex-fast-mode",
-              },
               onOpenModelSettings: () => openModal("settings", { section: "models" }),
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",
@@ -1813,6 +1829,53 @@ export function AgentsStartComposer({
               testId: "agents-start-effort",
               className: "max-w-[148px] flex-none",
             }}
+            {...(provider === "codex"
+              ? {
+                  speed: {
+                    value:
+                      codexFastModeOverride === null
+                        ? "provider_default"
+                        : codexFastModeOverride
+                          ? "fast"
+                          : "standard",
+                    onValueChange: (value: string) => {
+                      markRoleOverride();
+                      setCodexFastModeOverride(
+                        value === "provider_default" ? null : value === "fast",
+                      );
+                    },
+                    options: [
+                      {
+                        id: "provider_default",
+                        label: "Provider default",
+                        description: "Use the service tier configured for Codex.",
+                      },
+                      {
+                        id: "standard",
+                        label: "Standard",
+                        description: "Use standard processing.",
+                      },
+                      {
+                        id: "fast",
+                        label: "Fast",
+                        description:
+                          codexFastModeAvailability.reason ??
+                          CODEX_FAST_MODE_DESCRIPTION,
+                        ...(!providerSettingsReady ||
+                        !codexFastModeAvailability.supported
+                          ? {
+                              disabled: true,
+                              disabledReason:
+                                codexFastModeAvailability.reason ??
+                                "Fast processing is unavailable.",
+                            }
+                          : {}),
+                      },
+                    ],
+                    testId: "agents-start-speed",
+                  },
+                }
+              : {})}
             runtimeDefault={{
               source: roleDefaultQuery.data?.source ?? null,
               isResetting: roleDefaultQuery.isFetching || isResettingRoleDefault,

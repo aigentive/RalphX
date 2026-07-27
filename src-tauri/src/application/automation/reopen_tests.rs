@@ -21,6 +21,7 @@ use crate::domain::entities::{
 };
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::sqlite::SqliteAutomationRunRepository;
 
 #[derive(Default)]
 pub(super) struct RecordingRedriver {
@@ -494,6 +495,110 @@ async fn reopen_automation_run_keeps_active_automation_active() {
     assert!(automation.paused_reason_code.is_none());
     assert!(automation.paused_reason_detail.is_none());
     assert_eq!(redriver.redrives().len(), 1);
+}
+
+#[tokio::test]
+async fn reopen_automation_run_reactivates_stopped_automation_and_clears_terminal_fields() {
+    let fixture =
+        setup_with_automation_status(AutomationRunStatus::AgentFailed, AutomationStatus::Stopped)
+            .await;
+    let redriver = RecordingRedriver::default();
+
+    reopen_automation_run_with_redriver(
+        &fixture.state,
+        &fixture.automation.id,
+        &fixture.run.id,
+        &redriver,
+    )
+    .await
+    .expect("stopped automation should reactivate around the reopened run");
+
+    let automation = fixture
+        .state
+        .automation_repo
+        .get_by_id(&fixture.automation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let reopened = fixture
+        .state
+        .automation_run_repo
+        .get_by_id(&fixture.run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+    assert_eq!(reopened.status, AutomationRunStatus::Running);
+    assert_eq!(reopened.judge_state, AutomationJudgeState::None);
+    assert!(reopened.judge_verdict_json.is_none());
+    assert!(reopened.finished_at.is_none());
+    assert_eq!(redriver.redrives().len(), 1);
+}
+
+#[tokio::test]
+async fn reopen_automation_run_corrective_transition_loss_preserves_failed_state() {
+    let mut fixture = setup(AutomationRunStatus::AgentFailed).await;
+    fixture.state.automation_run_repo = Arc::new(SqliteAutomationRunRepository::from_shared(
+        Arc::clone(fixture.state.db.inner()),
+    ));
+    fixture
+        .state
+        .automation_run_repo
+        .create_run(fixture.run.clone())
+        .await
+        .unwrap();
+    fixture
+        .state
+        .db
+        .run(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_reopen_status_update
+                 BEFORE UPDATE OF status ON automation_runs
+                 WHEN OLD.id = 'run-reopen' AND OLD.status = 'agent_failed' AND NEW.status = 'running'
+                 BEGIN
+                     SELECT RAISE(IGNORE);
+                 END;",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let error = reopen_automation_run_with_redriver(
+        &fixture.state,
+        &fixture.automation.id,
+        &fixture.run.id,
+        &PanickingRedriver,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Conflict(ref detail) if detail == "failed run changed before it could be resumed")
+    );
+    let unchanged = fixture
+        .state
+        .automation_run_repo
+        .get_by_id(&fixture.run.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(unchanged.judge_state, AutomationJudgeState::Done);
+    assert_eq!(unchanged.judge_verdict_json, fixture.run.judge_verdict_json);
+    assert_eq!(unchanged.finished_at, fixture.run.finished_at);
+    assert_eq!(
+        fixture
+            .state
+            .automation_repo
+            .get_by_id(&fixture.automation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Paused
+    );
+    assert!(fixture.events.events().is_empty());
 }
 
 #[tokio::test]

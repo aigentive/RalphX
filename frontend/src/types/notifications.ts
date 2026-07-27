@@ -6,7 +6,7 @@ export const NotificationCategorySchema = z.enum([
   "review_needed", "review_escalated", "qa_failed", "merge_conflict",
   "merge_incomplete", "task_failed", "task_blocked", "task_stuck",
   "provider_paused", "recovery_prompt", "permission_request", "agent_question",
-  "plan_approval", "team_plan_approval", "automation_plan_approval",
+  "plan_approval", "automation_plan_approval",
   "automation_paused", "automation_run_failed", "automation_run_completed",
   "agent_waiting", "gh_auth", "git_auth_preflight", "pr_review_action", "info",
 ]);

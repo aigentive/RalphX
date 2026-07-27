@@ -22,6 +22,7 @@ interface AgentsConversationMainRegionProps {
   defaultRuntime: StartConversationPanelProps["defaultRuntime"];
   hasAttachedPlanArtifact: ActiveConversationPanelProps["hasAttachedPlanArtifact"];
   hasAutoOpenArtifacts: ActiveConversationPanelProps["hasAutoOpenArtifacts"];
+  focusedWorkspaceReviewServiceTier: ActiveConversationPanelProps["focusedWorkspaceReviewServiceTier"];
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
   modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
@@ -58,10 +59,8 @@ interface AgentsConversationMainRegionProps {
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
-  publishShortcutWorkspace?: ActiveConversationPanelProps["publishShortcutWorkspace"];
-  suppressPublishShortcut?: ActiveConversationPanelProps["suppressPublishShortcut"];
   promotePublishShortcut?: ActiveConversationPanelProps["promotePublishShortcut"];
-  publishingConversationId: ActiveConversationPanelProps["publishingConversationId"];
+  publishAttemptsByConversationId: ActiveConversationPanelProps["publishAttemptsByConversationId"];
   selectedConversationId: string | null;
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
@@ -87,6 +86,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   defaultRuntime,
   hasAttachedPlanArtifact,
   hasAutoOpenArtifacts,
+  focusedWorkspaceReviewServiceTier,
   isLoadingProjects,
   modelRegistry,
   normalizedActiveRuntime,
@@ -121,10 +121,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onSelectChatFocus,
   projects,
   publishShortcutLabel,
-  publishShortcutWorkspace = null,
-  suppressPublishShortcut = false,
   promotePublishShortcut = false,
-  publishingConversationId,
+  publishAttemptsByConversationId,
   selectedConversationId,
   selectedTaskArtifactId,
   setTerminalChatDockElement,
@@ -149,6 +147,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         chatFocusOptions={chatFocusOptions}
         hasAttachedPlanArtifact={hasAttachedPlanArtifact}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+        focusedWorkspaceReviewServiceTier={focusedWorkspaceReviewServiceTier}
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
@@ -180,10 +179,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onSelectChatFocus={onSelectChatFocus}
         onStartPersonaBuilder={onStartPersonaBuilder}
         publishShortcutLabel={publishShortcutLabel}
-        publishShortcutWorkspace={publishShortcutWorkspace}
-        suppressPublishShortcut={suppressPublishShortcut}
         promotePublishShortcut={promotePublishShortcut}
-        publishingConversationId={publishingConversationId}
+        publishAttemptsByConversationId={publishAttemptsByConversationId}
         selectedConversationId={selectedConversationId}
         selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}

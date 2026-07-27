@@ -370,6 +370,106 @@ async fn test_get_commit_count_multiple_commits() {
 }
 
 // =========================================================================
+// get_branch_authored_commits Tests
+// =========================================================================
+//
+// Regression for PR-title contamination: after a base-update merge with a
+// stale local base ref, `base..HEAD` includes the base's own commits (e.g.
+// squash merges carrying another project's ticket token in the subject).
+// Those commits must never count as branch-authored evidence.
+
+#[tokio::test]
+async fn get_branch_authored_commits_excludes_commits_imported_by_base_update_merge() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path();
+    super::init_test_repo(repo);
+
+    let commit = |message: &str| {
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", message])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+    };
+    let checkout = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+    };
+
+    commit("base initial");
+    checkout(&["checkout", "-b", "feature"]);
+    commit("feature work");
+    // Simulate the base advancing elsewhere while the local `main` ref stays
+    // stale: the advanced base is merged into the branch from another ref.
+    checkout(&["checkout", "-b", "advanced-base", "main"]);
+    commit("MBE-3250: poisoned squash from another project");
+    checkout(&["checkout", "feature"]);
+    checkout(&["merge", "--no-edit", "advanced-base"]);
+    commit("more feature work");
+
+    // The naive range walk imports the poisoned base commit.
+    let between = GitService::get_commits_between(repo, "main", "HEAD")
+        .await
+        .unwrap();
+    assert!(
+        between
+            .iter()
+            .any(|commit| commit.message.contains("MBE-3250")),
+        "precondition: base..HEAD imports the base commit after the merge"
+    );
+
+    // The scoped walk keeps only branch-authored commits (plus the merge
+    // commit itself, whose machine-generated subject carries no ticket token).
+    let authored = GitService::get_branch_authored_commits(repo, "main")
+        .await
+        .unwrap();
+    let subjects = authored
+        .iter()
+        .map(|commit| commit.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        !subjects.iter().any(|subject| subject.contains("MBE-3250")),
+        "imported base commit leaked into branch-authored evidence: {subjects:?}"
+    );
+    assert!(subjects.contains(&"feature work"));
+    assert!(subjects.contains(&"more feature work"));
+}
+
+#[tokio::test]
+async fn get_branch_authored_commits_tolerates_missing_origin_base_ref() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path();
+    super::init_test_repo(repo);
+
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "base initial"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["checkout", "-b", "feature"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "feature work"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    // No `origin` remote exists in this repo; the exclusion of
+    // `origin/main` must be ignored rather than failing the walk.
+    let authored = GitService::get_branch_authored_commits(repo, "main")
+        .await
+        .unwrap();
+    assert_eq!(authored.len(), 1);
+    assert_eq!(authored[0].message, "feature work");
+}
+
+// =========================================================================
 // find_commit_by_message_grep Tests
 // =========================================================================
 

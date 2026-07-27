@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -36,7 +38,7 @@ use crate::application::plan_verification_service::{
     PlanVerificationRequestSource, PlanVerificationStatusKind,
 };
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
-use crate::application::{AppState, TeamService};
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId, VerificationStatus};
 use crate::domain::repositories::{
@@ -53,10 +55,25 @@ use tracing::{info, warn};
 
 const AGENT_WORKSPACE_BRIDGE_DISPATCH_INTERVAL: Duration = Duration::from_secs(5);
 
+static STARTUP_SERVICE_REGISTRY: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+
+pub(crate) fn try_start_recurring_service(service: &'static str) -> bool {
+    STARTUP_SERVICE_REGISTRY
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(service)
+}
+
+pub(crate) fn external_mcp_startup_timeout(
+    config: &crate::infrastructure::agents::claude::ExternalMcpConfig,
+) -> Duration {
+    Duration::from_secs(config.startup_timeout_secs)
+}
+
 pub struct AgentConversationAutomationRunStarter<R: tauri::Runtime + 'static> {
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    team_service: Option<Arc<TeamService>>,
     app_handle: tauri::AppHandle<R>,
 }
 
@@ -64,13 +81,11 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
     pub fn new(
         state: AppState,
         execution_state: Arc<ExecutionState>,
-        team_service: Option<Arc<TeamService>>,
         app_handle: tauri::AppHandle<R>,
     ) -> Self {
         Self {
             state,
             execution_state,
-            team_service,
             app_handle,
         }
     }
@@ -83,7 +98,6 @@ pub(crate) fn automation_run_starter_for_test(
     AgentConversationAutomationRunStarter::new(
         state,
         Arc::new(ExecutionState::new()),
-        None,
         crate::testing::create_mock_app_handle(),
     )
 }
@@ -100,7 +114,6 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
         let result = AgentConversationStartService::new(AgentConversationStartDeps {
             state: &self.state,
             execution_state: &self.execution_state,
-            team_service: self.team_service.clone(),
             app_handle: self.app_handle.clone(),
         })
         .start(start_input)
@@ -439,6 +452,10 @@ pub fn spawn_watchdog(
     task_repo: Arc<dyn TaskRepository>,
     project_repo: Arc<dyn ProjectRepository>,
 ) {
+    if !try_start_recurring_service("ready_watchdog") {
+        tracing::debug!("Ready watchdog already started; skipping duplicate spawn");
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         crate::application::ReadyWatchdog::new(task_scheduler, task_repo, project_repo)
             .run_loop()
@@ -456,13 +473,9 @@ pub fn spawn_automation_scheduler(
         tracing::debug!("Automation scheduler already started; skipping duplicate spawn");
         return;
     }
-    let team_service = app_handle
-        .try_state::<Arc<crate::application::TeamService>>()
-        .map(|state| state.inner().clone());
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         state.clone(),
         Arc::clone(&execution_state),
-        team_service,
         app_handle.clone(),
     ));
     let resumer = Arc::new(AgentConversationAutomationRunResumer::new(
@@ -561,6 +574,10 @@ pub fn spawn_cleanup_loops(
     memory_entry_repo: Arc<dyn MemoryEntryRepository>,
     project_repo: Arc<dyn ProjectRepository>,
 ) {
+    if !try_start_recurring_service("cleanup_loops") {
+        tracing::debug!("Cleanup loops already started; skipping duplicate spawn");
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         crate::application::EventCleanupService::new(external_events_repo)
             .run_loop()
@@ -610,6 +627,12 @@ pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
     execution_state: Arc<ExecutionState>,
     app_handle: tauri::AppHandle,
 ) {
+    if !try_start_recurring_service("agent_workspace_bridge_dispatcher") {
+        tracing::debug!(
+            "Agent workspace bridge dispatcher already started; skipping duplicate spawn"
+        );
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(AGENT_WORKSPACE_BRIDGE_DISPATCH_INTERVAL);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -667,8 +690,9 @@ pub async fn maybe_start_external_mcp(
     };
 
     let backend_port = backend_http_port();
+    let startup_timeout = external_mcp_startup_timeout(&bootstrap.config);
     let wait_started_at = std::time::Instant::now();
-    match wait_for_backend_ready(backend_port, Duration::from_secs(30)).await {
+    match wait_for_backend_ready(backend_port, startup_timeout).await {
         Err(e) => {
             warn!(
                 elapsed_ms = started_at.elapsed().as_millis(),
@@ -703,11 +727,20 @@ pub async fn maybe_start_external_mcp(
                 .await
             {
                 Ok(()) => {
-                    info!(
-                        supervisor_elapsed_ms = supervisor_started_at.elapsed().as_millis(),
-                        elapsed_ms = started_at.elapsed().as_millis(),
-                        "External MCP supervisor registered and starting"
-                    );
+                    let readiness_budget = startup_timeout.saturating_sub(started_at.elapsed());
+                    match supervisor.await_ready(readiness_budget).await {
+                        Ok(()) => info!(
+                            supervisor_elapsed_ms = supervisor_started_at.elapsed().as_millis(),
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            "External MCP startup reached readiness"
+                        ),
+                        Err(error) => warn!(
+                            supervisor_elapsed_ms = supervisor_started_at.elapsed().as_millis(),
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            "External MCP startup did not reach readiness: {}",
+                            error
+                        ),
+                    }
                 }
                 Err(e) => {
                     warn!(

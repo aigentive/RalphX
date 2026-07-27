@@ -8,12 +8,7 @@ use super::{effort_bucket_for_agent, resolve_ideation_effort};
 
 #[test]
 fn test_effort_bucket_mapping_primary_agents() {
-    for name in &[
-        "ralphx-ideation",
-        "ralphx-ideation-team-lead",
-        "ideation-team-member",
-        "ralphx-ideation-readonly",
-    ] {
+    for name in &["ralphx-ideation", "ralphx-ideation-readonly"] {
         assert_eq!(
             effort_bucket_for_agent(name),
             Some(EffortBucket::Primary),
@@ -29,19 +24,11 @@ fn test_effort_bucket_mapping_primary_agents_fully_qualified() {
         effort_bucket_for_agent("ralphx:ralphx-ideation"),
         Some(EffortBucket::Primary)
     );
-    assert_eq!(
-        effort_bucket_for_agent("ralphx:ralphx-ideation-team-lead"),
-        Some(EffortBucket::Primary)
-    );
 }
 
 #[test]
 fn test_effort_bucket_mapping_legacy_aliases() {
-    for name in &[
-        "orchestrator-ideation",
-        "ideation-team-lead",
-        "orchestrator-ideation-readonly",
-    ] {
+    for name in &["orchestrator-ideation", "orchestrator-ideation-readonly"] {
         assert_eq!(
             effort_bucket_for_agent(name),
             Some(EffortBucket::Primary),

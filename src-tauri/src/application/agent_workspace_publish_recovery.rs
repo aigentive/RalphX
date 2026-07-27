@@ -1,8 +1,14 @@
 use std::sync::Arc;
 
+use crate::application::agent_workspace_pr_autofix_attempt::{
+    load_latest_exact_pr_autofix_run_for_pr, load_pr_autofix_attempt_decision,
+    PrAutofixAttemptDecision,
+};
 use crate::application::agent_workspace_publish_repair_state::{
-    reconcile_active_agent_workspace_repair, settle_terminal_agent_workspace_repair,
-    terminal_run_authorizes_repair_recovery,
+    abort_agent_workspace_pr_fix_review_handoff, claim_agent_workspace_repair,
+    reconcile_active_agent_workspace_repair, restore_refreshed_agent_workspace_pr_fix_claim,
+    settle_terminal_agent_workspace_repair, terminal_run_authorizes_repair_recovery,
+    AgentWorkspaceRepairClaim,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewTarget,
@@ -16,10 +22,11 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, TaskOutcomeRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+    TaskOutcomeRepository,
 };
 use crate::domain::services::AgentWorkspaceOutcomeAdapter;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 pub(super) const STALE_REPAIR_RECOVERED_STEP: &str = "stale_repair_recovered";
 pub(super) const STALE_NEEDS_AGENT_CLASSIFICATION: &str = "stale_needs_agent";
@@ -28,6 +35,26 @@ pub(super) const STALE_REPAIR_BLOCKED_SUMMARY: &str =
 pub(super) const STALE_TRANSIENT_RECOVERED_STEP: &str = "stale_transient_recovered";
 pub(super) const STALE_TRANSIENT_CLASSIFICATION: &str = "stale_transient_status";
 pub const STALE_TRANSIENT_STATUS_STALE_SECS: u64 = 300;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StalePublishRepairRecoveryOutcome {
+    Noop,
+    ActiveReplacement,
+    ActiveRepairReconciled,
+    RetryEligible,
+    Manual,
+    HandoffPreserved,
+    TerminalRecovered,
+}
+
+impl StalePublishRepairRecoveryOutcome {
+    fn was_recovered(self) -> bool {
+        matches!(
+            self,
+            Self::RetryEligible | Self::Manual | Self::TerminalRecovered
+        )
+    }
+}
 
 pub async fn recover_stale_agent_workspace_publish_repairs_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
@@ -109,9 +136,9 @@ pub async fn recover_stale_agent_workspace_publish_repairs_for_state(
     let mut recovered = 0u32;
 
     for workspace in workspaces {
-        let (_workspace, was_recovered) =
+        let (_workspace, outcome) =
             recover_stale_publish_repair_for_workspace_in_state_result(state, workspace).await?;
-        if was_recovered {
+        if outcome.was_recovered() {
             recovered += 1;
         }
     }
@@ -131,17 +158,153 @@ pub async fn recover_stale_publish_repair_for_workspace_in_state(
 async fn recover_stale_publish_repair_for_workspace_in_state_result(
     state: &AppState,
     workspace: AgentConversationWorkspace,
-) -> AppResult<(AgentConversationWorkspace, bool)> {
-    let current_review_target =
-        current_pr_fix_review_handoff_target_for_state(state, &workspace).await?;
-    recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
+) -> AppResult<(
+    AgentConversationWorkspace,
+    StalePublishRepairRecoveryOutcome,
+)> {
+    recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
         Arc::clone(&state.task_outcome_repo),
+        Arc::clone(&state.project_repo),
         workspace,
-        current_review_target.as_ref(),
     )
     .await
+}
+
+#[cfg(test)]
+pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    workspace: AgentConversationWorkspace,
+) -> AppResult<(AgentConversationWorkspace, bool)> {
+    recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
+        workspace_repo,
+        agent_run_repo,
+        task_outcome_repo,
+        project_repo,
+        workspace,
+    )
+    .await
+    .map(|(workspace, outcome)| (workspace, outcome.was_recovered()))
+}
+
+pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    workspace: AgentConversationWorkspace,
+) -> AppResult<(
+    AgentConversationWorkspace,
+    StalePublishRepairRecoveryOutcome,
+)> {
+    if agent_run_repo
+        .get_active_for_conversation(&workspace.conversation_id)
+        .await?
+        .is_none()
+    {
+        let publication_events = workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await?;
+        if has_pending_pr_fix_workspace_review_publish_handoff(&publication_events) {
+            let latest_run = agent_run_repo
+                .get_latest_for_conversation(&workspace.conversation_id)
+                .await?;
+            let latest_run = latest_run.filter(|run| {
+                run.status.is_terminal()
+                    && terminal_run_authorizes_repair_recovery(&workspace, &publication_events, run)
+            });
+            let Some(latest_run) = latest_run else {
+                return abort_invalid_pr_fix_review_handoff(
+                    Arc::clone(&workspace_repo),
+                    workspace,
+                    "Recovered a PR fix Review handoff without current terminal repair evidence. Start a fresh repair attempt.",
+                )
+                .await;
+            };
+            let current_review_target =
+                current_pr_fix_review_handoff_target(project_repo.as_ref(), &workspace).await;
+            let current_review_target = match current_review_target {
+                Ok(target) => target,
+                Err(AppError::WorkspaceReviewUnfinishedGitOperation) => {
+                    return abort_invalid_pr_fix_review_handoff(
+                        Arc::clone(&workspace_repo),
+                        workspace,
+                        "Recovered a PR fix Review handoff with an unfinished Git operation. Resolve conflicts and start a fresh repair attempt.",
+                    )
+                    .await;
+                }
+                Err(error) => return Err(error),
+            };
+            let review_monitor = workspace_repo
+                .get_workspace_review_monitor(&workspace.conversation_id)
+                .await?;
+            if !has_open_pr_fix_workspace_review_publish_handoff(
+                &publication_events,
+                review_monitor.as_ref(),
+                current_review_target.as_ref(),
+            ) {
+                return abort_invalid_pr_fix_review_handoff(
+                    Arc::clone(&workspace_repo),
+                    workspace,
+                    "Recovered a PR fix Review handoff without a current Review monitor. Start a fresh repair attempt.",
+                )
+                .await;
+            }
+            tracing::info!(
+                conversation_id = workspace.conversation_id.as_str(),
+                agent_run_id = %latest_run.id,
+                agent_run_status = %latest_run.status,
+                "Preserved terminal PR fix state while its current Workspace Review handoff remains open"
+            );
+            return Ok((
+                workspace,
+                StalePublishRepairRecoveryOutcome::HandoffPreserved,
+            ));
+        }
+    }
+    recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
+        workspace_repo,
+        agent_run_repo,
+        task_outcome_repo,
+        workspace,
+        None,
+    )
+    .await
+}
+
+async fn abort_invalid_pr_fix_review_handoff(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    workspace: AgentConversationWorkspace,
+    summary: &str,
+) -> AppResult<(
+    AgentConversationWorkspace,
+    StalePublishRepairRecoveryOutcome,
+)> {
+    let conversation_id = workspace.conversation_id.clone();
+    let claim = AgentWorkspaceRepairClaim {
+        conversation_id: conversation_id.clone(),
+        guard: crate::domain::repositories::AgentWorkspaceRepairStateGuard::from_workspace(
+            &workspace,
+        ),
+    };
+    let recovered =
+        abort_agent_workspace_pr_fix_review_handoff(Arc::clone(&workspace_repo), &claim, summary)
+            .await?
+            .is_some();
+    if !recovered {
+        return Ok((workspace, StalePublishRepairRecoveryOutcome::Noop));
+    }
+    Ok((
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await?
+            .unwrap_or(workspace),
+        StalePublishRepairRecoveryOutcome::Manual,
+    ))
 }
 
 pub async fn recover_stale_publish_repair_for_workspace_and_reload(
@@ -150,7 +313,7 @@ pub async fn recover_stale_publish_repair_for_workspace_and_reload(
     task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     workspace: AgentConversationWorkspace,
 ) -> AppResult<AgentConversationWorkspace> {
-    let (workspace, _recovered) =
+    let (workspace, _outcome) =
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             workspace_repo,
             agent_run_repo,
@@ -168,7 +331,10 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_and_reload_with_r
     task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     workspace: AgentConversationWorkspace,
     current_review_target: Option<&AgentWorkspaceReviewTarget>,
-) -> AppResult<(AgentConversationWorkspace, bool)> {
+) -> AppResult<(
+    AgentConversationWorkspace,
+    StalePublishRepairRecoveryOutcome,
+)> {
     let conversation_id = workspace.conversation_id;
     let recovered = recover_stale_publish_repair_for_workspace_with_review_target(
         Arc::clone(&workspace_repo),
@@ -178,32 +344,30 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_and_reload_with_r
         current_review_target,
     )
     .await?;
-    if recovered {
+    if recovered.was_recovered()
+        || matches!(
+            recovered,
+            StalePublishRepairRecoveryOutcome::ActiveReplacement
+                | StalePublishRepairRecoveryOutcome::ActiveRepairReconciled
+        )
+    {
         return Ok((
             workspace_repo
                 .get_by_conversation_id(&conversation_id)
                 .await?
                 .unwrap_or(workspace),
-            true,
+            recovered,
         ));
     }
 
-    Ok((workspace, false))
+    Ok((workspace, recovered))
 }
 
-async fn current_pr_fix_review_handoff_target_for_state(
-    state: &AppState,
+async fn current_pr_fix_review_handoff_target(
+    project_repo: &dyn ProjectRepository,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
-    let publication_events = state
-        .agent_conversation_workspace_repo
-        .list_publication_events(&workspace.conversation_id)
-        .await?;
-    if !has_pending_pr_fix_workspace_review_publish_handoff(&publication_events) {
-        return Ok(None);
-    }
-
-    let Some(project) = state.project_repo.get_by_id(&workspace.project_id).await? else {
+    let Some(project) = project_repo.get_by_id(&workspace.project_id).await? else {
         return Ok(None);
     };
     resolve_review_target(workspace, &project).await
@@ -223,45 +387,90 @@ pub async fn recover_stale_publish_repair_for_workspace(
         None,
     )
     .await
+    .map(StalePublishRepairRecoveryOutcome::was_recovered)
 }
 
 async fn recover_stale_publish_repair_for_workspace_with_review_target(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
-    workspace: AgentConversationWorkspace,
+    mut workspace: AgentConversationWorkspace,
     current_review_target: Option<&AgentWorkspaceReviewTarget>,
-) -> AppResult<bool> {
-    if workspace.publication_push_status.as_deref() != Some("needs_agent") {
-        return Ok(false);
+) -> AppResult<StalePublishRepairRecoveryOutcome> {
+    let refreshed_fixing = workspace.publication_push_status.as_deref() == Some("refreshed")
+        && workspace.pr_supervision_status.as_deref() == Some("fixing");
+    if workspace.publication_push_status.as_deref() != Some("needs_agent") && !refreshed_fixing {
+        return Ok(StalePublishRepairRecoveryOutcome::Noop);
     }
 
+    let latest_exact_autofix_run = match workspace.publication_pr_number {
+        Some(pr_number) => {
+            load_latest_exact_pr_autofix_run_for_pr(
+                agent_run_repo.as_ref(),
+                &workspace.conversation_id,
+                pr_number,
+            )
+            .await?
+        }
+        None => None,
+    };
+    if refreshed_fixing {
+        if latest_exact_autofix_run.is_none()
+            || restore_refreshed_agent_workspace_pr_fix_claim(
+                Arc::clone(&workspace_repo),
+                &workspace,
+            )
+            .await?
+            .is_none()
+        {
+            return Ok(StalePublishRepairRecoveryOutcome::Noop);
+        }
+        workspace = workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await?
+            .unwrap_or(workspace);
+    }
+    let publication_events = workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await?;
+    let exact_autofix = latest_exact_autofix_run
+        .as_ref()
+        .and_then(|run| {
+            workspace
+                .publication_pr_number
+                .zip(run.action_target_id.clone())
+        })
+        .or_else(|| legacy_pr_autofix_tuple(&workspace, &publication_events));
+    let agent_run_tuple_is_authoritative = latest_exact_autofix_run.is_some();
+    if latest_exact_autofix_run
+        .as_ref()
+        .is_some_and(|run| run.status.is_active())
+    {
+        if workspace.pr_supervision_status.as_deref() == Some("blocked") {
+            claim_agent_workspace_repair(
+                Arc::clone(&workspace_repo),
+                &workspace.conversation_id,
+                "Matching PR autofix replacement is in progress.",
+                workspace.pr_auto_merge_current,
+            )
+            .await?;
+        }
+        return Ok(StalePublishRepairRecoveryOutcome::ActiveReplacement);
+    }
     if agent_run_repo
         .get_active_for_conversation(&workspace.conversation_id)
         .await?
         .is_some()
-    {
-        return reconcile_active_agent_workspace_repair(workspace_repo, agent_run_repo, &workspace)
-            .await;
-    }
-
-    let Some(latest_run) = agent_run_repo
-        .get_latest_for_conversation(&workspace.conversation_id)
+        && reconcile_active_agent_workspace_repair(
+            Arc::clone(&workspace_repo),
+            Arc::clone(&agent_run_repo),
+            &workspace,
+        )
         .await?
-    else {
-        return Ok(false);
-    };
-
-    if !latest_run.status.is_terminal() {
-        return Ok(false);
+    {
+        return Ok(StalePublishRepairRecoveryOutcome::ActiveRepairReconciled);
     }
 
-    let publication_events = workspace_repo
-        .list_publication_events(&workspace.conversation_id)
-        .await?;
-    if !terminal_run_authorizes_repair_recovery(&workspace, &publication_events, &latest_run) {
-        return Ok(false);
-    }
     let review_monitor = workspace_repo
         .get_workspace_review_monitor(&workspace.conversation_id)
         .await?;
@@ -272,21 +481,62 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
     ) {
         tracing::info!(
             conversation_id = workspace.conversation_id.as_str(),
-            agent_run_id = %latest_run.id,
-            agent_run_status = %latest_run.status,
             "Skipped stale publish repair recovery while PR fix waits on current Workspace Review"
         );
-        return Ok(false);
+        return Ok(StalePublishRepairRecoveryOutcome::HandoffPreserved);
     }
 
-    if !settle_terminal_agent_workspace_repair(
-        Arc::clone(&workspace_repo),
-        &workspace,
-        STALE_REPAIR_BLOCKED_SUMMARY,
-    )
-    .await?
+    let (summary, latest_run, outcome) = if let Some((pr_number, fingerprint)) = exact_autofix {
+        let decision = load_pr_autofix_attempt_decision(
+            agent_run_repo.as_ref(),
+            &workspace.conversation_id,
+            pr_number,
+            &fingerprint,
+            !agent_run_tuple_is_authoritative,
+        )
+        .await?;
+        if decision == PrAutofixAttemptDecision::Active {
+            return Ok(StalePublishRepairRecoveryOutcome::Noop);
+        }
+        let summary = decision.manual_summary().unwrap_or(
+            "The exact PR autofix attempt failed; supervision remains blocked while the single retry is eligible.",
+        );
+        let outcome = if decision.allows_start() {
+            StalePublishRepairRecoveryOutcome::RetryEligible
+        } else {
+            StalePublishRepairRecoveryOutcome::Manual
+        };
+        (summary.to_string(), None, outcome)
+    } else {
+        let latest_run = agent_run_repo
+            .get_by_conversation(&workspace.conversation_id)
+            .await?
+            .into_iter()
+            .filter(|run| run.status.is_terminal())
+            .max_by_key(|run| run.started_at);
+        let Some(latest_run) = latest_run else {
+            return Ok(StalePublishRepairRecoveryOutcome::Noop);
+        };
+        if !latest_run.status.is_terminal() {
+            return Ok(StalePublishRepairRecoveryOutcome::Noop);
+        }
+        (
+            STALE_REPAIR_BLOCKED_SUMMARY.to_string(),
+            Some(latest_run),
+            StalePublishRepairRecoveryOutcome::TerminalRecovered,
+        )
+    };
+
+    if let Some(latest_run) = latest_run.as_ref() {
+        if !terminal_run_authorizes_repair_recovery(&workspace, &publication_events, latest_run) {
+            return Ok(StalePublishRepairRecoveryOutcome::Noop);
+        }
+    }
+
+    if !settle_terminal_agent_workspace_repair(Arc::clone(&workspace_repo), &workspace, &summary)
+        .await?
     {
-        return Ok(false);
+        return Ok(StalePublishRepairRecoveryOutcome::Noop);
     }
     let summary =
         "Recovered stale publish repair state; no active workspace agent repair is running.";
@@ -312,14 +562,35 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
         );
     }
 
-    tracing::info!(
-        conversation_id = latest_run.conversation_id.as_str(),
-        agent_run_id = %latest_run.id,
-        agent_run_status = %latest_run.status,
-        "Recovered stale agent workspace publish repair state"
-    );
+    if let Some(latest_run) = latest_run {
+        tracing::info!(
+            conversation_id = latest_run.conversation_id.as_str(),
+            agent_run_id = %latest_run.id,
+            agent_run_status = %latest_run.status,
+            "Recovered stale agent workspace publish repair state"
+        );
+    }
 
-    Ok(true)
+    Ok(outcome)
+}
+
+fn legacy_pr_autofix_tuple(
+    workspace: &AgentConversationWorkspace,
+    publication_events: &[AgentConversationWorkspacePublicationEvent],
+) -> Option<(i64, String)> {
+    let pr_number = workspace.publication_pr_number?;
+    publication_events
+        .iter()
+        .filter(|event| event.step == "pr_autofix")
+        .filter(|event| {
+            event
+                .classification
+                .as_deref()
+                .is_some_and(|value| value.starts_with("github_pr_autofix:"))
+        })
+        .max_by_key(|event| event.created_at)
+        .and_then(|event| event.classification.as_deref())
+        .map(|fingerprint| (pr_number, fingerprint.to_string()))
 }
 
 pub async fn recover_stale_transient_publish_statuses(

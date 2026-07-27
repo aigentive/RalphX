@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { automationsApi } from "@/api/automations";
 import { permissionApi } from "@/api/permission";
-import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
   navigateToAgentPlan,
   navigateToIdeationSession,
+  openTaskInAgents,
 } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -27,13 +27,13 @@ const { toastError, toastSuccess } = vi.hoisted(() => ({
 vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
-vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
 vi.mock("@/api/automations", () => ({ automationsApi: { resume: vi.fn() } }));
 vi.mock("@/api/permission", () => ({ permissionApi: { getPendingPermissions: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({
   navigateToAgentConversation: vi.fn(),
   navigateToAgentPlan: vi.fn(),
   navigateToIdeationSession: vi.fn(),
+  openTaskInAgents: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { error: toastError, success: toastSuccess } }));
 
@@ -47,18 +47,15 @@ const target = {
 };
 
 describe("navigateNotification", () => {
-  const navigateToTask = vi.fn();
   const setCurrentView = vi.fn();
   const selectProject = vi.fn();
-  const setState = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(tasksApi.get).mockResolvedValue({ id: "task-1" } as never);
+    vi.mocked(openTaskInAgents).mockResolvedValue(true);
     vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([]);
     vi.mocked(requestAutomationRunOpen).mockResolvedValue({ applied: true });
-    vi.spyOn(useUiStore, "getState").mockReturnValue({ navigateToTask, setCurrentView, viewByProject: {}, selectedTaskByProject: {} } as ReturnType<typeof useUiStore.getState>);
-    vi.spyOn(useUiStore, "setState").mockImplementation(setState);
+    vi.spyOn(useUiStore, "getState").mockReturnValue({ setCurrentView } as ReturnType<typeof useUiStore.getState>);
     vi.spyOn(useProjectStore, "getState").mockReturnValue({ activeProjectId: "project-1", selectProject } as ReturnType<typeof useProjectStore.getState>);
   });
 
@@ -163,7 +160,6 @@ describe("navigateNotification", () => {
     expect(navigated).toBe(true);
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ detail: { requestId: "request-1" } }));
     expect(onClose).toHaveBeenCalledOnce();
-    expect(navigateToTask).not.toHaveBeenCalled();
     window.removeEventListener("ralphx:open-permission-dialog", listener);
   });
 
@@ -180,7 +176,7 @@ describe("navigateNotification", () => {
     await expect(navigateNotification(item, {} as QueryClient)).resolves.toBe(false);
   });
 
-  it("keeps same-project task routing on the fast path", async () => {
+  it("routes task notifications through the shared Agents owner", async () => {
     const onClose = vi.fn();
     await navigateNotification(
       { id: "task-1", category: "task_failed", target: { kind: "task", taskId: "task-1", projectId: "project-1" } },
@@ -188,13 +184,13 @@ describe("navigateNotification", () => {
       { onClose },
     );
 
-    expect(tasksApi.get).toHaveBeenCalledWith("task-1");
-    expect(navigateToTask).toHaveBeenCalledWith("task-1");
-    expect(selectProject).not.toHaveBeenCalled();
+    expect(openTaskInAgents).toHaveBeenCalledWith("task-1", "graph", {
+      projectId: "project-1",
+    });
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("switches projects before restoring a cross-project task target", async () => {
+  it("passes cross-project task ownership hints to the shared Agents owner", async () => {
     const onClose = vi.fn();
     await navigateNotification(
       { id: "task-2", category: "task_failed", target: { kind: "task", taskId: "task-2", projectId: "project-2" } },
@@ -202,19 +198,15 @@ describe("navigateNotification", () => {
       { onClose },
     );
 
-    expect(tasksApi.get).toHaveBeenCalledWith("task-2");
-    expect(setState).toHaveBeenCalledWith(expect.objectContaining({
-      viewByProject: { "project-2": "kanban" },
-      selectedTaskByProject: { "project-2": "task-2" },
-    }));
-    expect(selectProject).toHaveBeenCalledWith("project-2");
-    expect(navigateToTask).not.toHaveBeenCalled();
+    expect(openTaskInAgents).toHaveBeenCalledWith("task-2", "graph", {
+      projectId: "project-2",
+    });
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("keeps the drawer open when a task target no longer exists", async () => {
+  it("keeps the drawer open when Agents ownership cannot be resolved", async () => {
     const onClose = vi.fn();
-    vi.mocked(tasksApi.get).mockRejectedValueOnce(new Error("not found"));
+    vi.mocked(openTaskInAgents).mockResolvedValueOnce(false);
 
     await navigateNotification(
       { id: "task-missing", category: "task_failed", target: { kind: "task", taskId: "task-missing", projectId: "project-2" } },
@@ -222,9 +214,10 @@ describe("navigateNotification", () => {
       { onClose },
     );
 
-    expect(toastError).toHaveBeenCalledWith("This task no longer exists.");
+    expect(openTaskInAgents).toHaveBeenCalledWith("task-missing", "graph", {
+      projectId: "project-2",
+    });
     expect(selectProject).not.toHaveBeenCalled();
-    expect(navigateToTask).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -237,8 +230,7 @@ describe("navigateNotification", () => {
       { onClose },
     );
 
-    expect(tasksApi.get).not.toHaveBeenCalled();
-    expect(navigateToTask).not.toHaveBeenCalled();
+    expect(openTaskInAgents).not.toHaveBeenCalled();
     expect(selectProject).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -286,28 +278,6 @@ describe("navigateNotification", () => {
 
     expect(navigateToAgentPlan).toHaveBeenCalledWith("project-2", "conversation-1");
     expect(navigateToAgentConversation).not.toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it("opens team-plan approval in its inline Agent conversation", () => {
-    const onClose = vi.fn();
-
-    navigateNotification(
-      {
-        id: "team-plan-1",
-        category: "team_plan_approval",
-        target: {
-          kind: "agent_conversation",
-          projectId: "project-2",
-          conversationId: "conversation-1",
-        },
-      },
-      {} as QueryClient,
-      { onClose },
-    );
-
-    expect(navigateToAgentConversation).toHaveBeenCalledWith("project-2", "conversation-1");
-    expect(navigateToAgentPlan).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -383,7 +353,6 @@ describe("navigateNotification", () => {
 
     navigateNotification(item, {} as QueryClient, { onClose });
 
-    expect(navigateToTask).not.toHaveBeenCalled();
     expect(selectProject).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });

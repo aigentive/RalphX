@@ -78,7 +78,6 @@ import { withAlpha } from "@/lib/theme-colors";
 import type {
   PlanDisplayConversationReference,
   PlanDisplayBodyMode,
-  TeamMetadata,
 } from "@/components/Ideation/PlanDisplay";
 import { useChatStore } from "@/stores/chatStore";
 import {
@@ -89,6 +88,7 @@ import {
 import {
   useAgentSessionStore,
   type AgentArtifactTab,
+  type AgentRuntimeSelection,
   type AgentTaskArtifactMode,
 } from "@/stores/agentSessionStore";
 import {
@@ -97,6 +97,7 @@ import {
 } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import { ticketingKeys } from "@/hooks/useTicketing";
 import {
   taskKeys,
@@ -154,12 +155,17 @@ import {
 } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { AgentWorkspaceToolbar } from "./AgentWorkspaceToolbar";
-import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
+import {
+  getAgentWorkspaceReviewActionBlocker,
+  hasPublishedWorkspacePr,
+  shouldShowAgentWorkspacePublishSurface,
+} from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type {
   AgentPublishSubTab,
   AgentPublishSubTabRequest,
 } from "./agentPublishSubTab";
+import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
@@ -186,9 +192,15 @@ import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
+  PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
-import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
-import { implementAgentPlanDirectly } from "./implementAgentPlanDirectly";
+import {
+  activateAgentPlanProposals,
+  PlanContinuationCommittedError,
+  refreshTransitionedAgentWorkspace,
+} from "./agentPlanProposalActivation";
+import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
+import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
 import { ArtifactSelectionProvider } from "./artifact-selection/ArtifactSelectionProvider";
 import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
@@ -610,6 +622,7 @@ interface AgentsArtifactPaneProps {
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
+  publishAttempt?: AgentWorkspacePublishAttempt | null;
   publishFocusRequest?: AgentPublishFocusRequest | null;
   publishSubTabRequest?: AgentPublishSubTabRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
@@ -635,7 +648,10 @@ interface AgentsArtifactPaneProps {
   ) => void;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
-  onFocusWorkspaceReview?: (conversationId: string) => void;
+  onFocusWorkspaceReview?: (
+    conversationId: string,
+    runtimeHint?: AgentRuntimeSelection,
+  ) => void;
   onFocusTaskRuntime?: (
     taskId: string,
     contextType: AgentTaskRuntimeContextType,
@@ -660,6 +676,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
+  publishAttempt = null,
   publishFocusRequest = null,
   publishSubTabRequest = null,
   taskFocusRequest = null,
@@ -676,6 +693,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
   const [skillsEnabled] = useSkillsEnabled();
+  const { registry: modelRegistry } = useAgentModels();
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
     !ideationSettingsQuery.isLoading &&
@@ -884,6 +902,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     isLocalWorkspaceReviewModeEligible(scopedWorkspace.mode) &&
     !isReviewPrWorkspace,
   );
+  const hasPublishedPr = hasPublishedWorkspacePr(scopedWorkspace);
   const [publishSubTabByConversation, setPublishSubTabByConversation] =
     useState<Record<string, AgentPublishSubTab>>(() =>
       conversationId
@@ -901,9 +920,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const rememberedPublishSubTab = conversationId
     ? publishSubTabByConversation[conversationId]
     : null;
-  const publishSubTab = nestsWorkspaceReview
-    ? (rememberedPublishSubTab ?? (activeTab === "review" ? "review" : "changes"))
-    : "changes";
+  const publishSubTab = rememberedPublishSubTab
+    ? (rememberedPublishSubTab === "review" && !nestsWorkspaceReview) ||
+      (rememberedPublishSubTab === "checks" && !hasPublishedPr)
+      ? "changes"
+      : rememberedPublishSubTab
+    : nestsWorkspaceReview && activeTab === "review"
+      ? "review"
+      : "changes";
   const selectPublishSubTab = useCallback(
     (tab: AgentPublishSubTab) => {
       if (!conversationId) return;
@@ -916,8 +940,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   useEffect(() => {
     if (
-      !nestsWorkspaceReview ||
+      !showPublishTab ||
       publishSubTabRequest?.conversationId !== conversationId ||
+      (publishSubTabRequest.tab === "review" && !nestsWorkspaceReview) ||
+      (publishSubTabRequest.tab === "checks" && !hasPublishedPr) ||
       publishSubTabRequest.requestId <=
         lastHandledPublishSubTabRequestIdRef.current
     ) {
@@ -933,9 +959,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     }
   }, [
     conversationId,
+    hasPublishedPr,
     nestsWorkspaceReview,
     publishSubTabRequest,
     selectPublishSubTab,
+    showPublishTab,
   ]);
   useEffect(() => {
     if (!nestsWorkspaceReview || activeTab !== "review") {
@@ -1080,14 +1108,18 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       conversationId,
       force,
       confirmation,
+      runtimeOverride,
     }: {
       conversationId: string;
       force: boolean;
       confirmation?: AgentWorkspaceReviewStartConfirmation;
+      runtimeOverride?: import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection;
     }) =>
       chatApi.startAgentWorkspaceReview(
         conversationId,
-        confirmation ? { force, confirmation } : { force },
+        confirmation
+          ? { force, confirmation, ...(runtimeOverride ? { runtimeOverride } : {}) }
+          : { force },
       ),
     onSuccess: (result, variables) => {
       queryClient.setQueryData(
@@ -1098,7 +1130,20 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       const reviewConversationId = result.monitor.reviewConversationId;
       if (reviewConversationId) {
         invalidateConversationDataQueries(queryClient, reviewConversationId);
-        onFocusWorkspaceReview?.(reviewConversationId);
+        const runtimeHint =
+          result.started &&
+          !result.wasQueued &&
+          variables.runtimeOverride
+            ? materializeWorkspaceRuntimeSelection(
+                variables.runtimeOverride,
+                modelRegistry,
+              )
+            : null;
+        if (runtimeHint) {
+          onFocusWorkspaceReview?.(reviewConversationId, runtimeHint);
+        } else {
+          onFocusWorkspaceReview?.(reviewConversationId);
+        }
       }
       const artifactId = result.monitor.reviewArtifactId;
       if (artifactId) {
@@ -1109,8 +1154,19 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     },
   });
   const startWorkspaceReviewFixerMutation = useMutation({
-    mutationFn: ({ conversationId }: { conversationId: string }) =>
-      chatApi.startAgentWorkspaceReviewFixer(conversationId),
+    mutationFn: ({
+      conversationId,
+      confirmation,
+      runtimeOverride,
+    }: {
+      conversationId: string;
+      confirmation: import("@/api/chat").AgentWorkspaceReviewFixerConfirmation;
+      runtimeOverride: import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection;
+    }) =>
+      chatApi.startAgentWorkspaceReviewFixer(conversationId, {
+        confirmation,
+        runtimeOverride,
+      }),
     onSuccess: (result, variables) => {
       queryClient.setQueryData(
         agentWorkspaceKeys.workspaceReview(variables.conversationId),
@@ -1699,9 +1755,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ({
       force,
       confirmation,
+      runtimeOverride,
     }: {
       force: boolean;
       confirmation?: AgentWorkspaceReviewStartConfirmation;
+      runtimeOverride?: import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection;
     }) => {
       if (!workspaceReviewConversationId) {
         return Promise.resolve();
@@ -1711,6 +1769,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             conversationId: workspaceReviewConversationId,
             force,
             confirmation,
+            ...(runtimeOverride ? { runtimeOverride } : {}),
           })
         : startWorkspaceReviewMutation.mutateAsync({
             conversationId: workspaceReviewConversationId,
@@ -1721,11 +1780,21 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const {
     startReview: confirmAndStartWorkspaceReview,
+    startFixer: confirmAndStartWorkspaceReviewFixer,
     confirmationDialogProps: workspaceReviewConfirmationDialogProps,
     ConfirmationDialog: WorkspaceReviewConfirmationDialog,
   } = useWorkspaceReviewActions({
     conversationId: workspaceReviewConversationId,
     onStartReview: startWorkspaceReviewWithConfirmation,
+    projectId: scopedWorkspace?.projectId ?? null,
+    onStartFixer: ({ confirmation, runtimeOverride }) => {
+      if (!workspaceReviewConversationId) return Promise.resolve();
+      return startWorkspaceReviewFixerMutation.mutateAsync({
+        conversationId: workspaceReviewConversationId,
+        confirmation,
+        runtimeOverride,
+      });
+    },
   });
   const handleStartReview = useCallback(
     (force: boolean) => {
@@ -1757,15 +1826,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ) {
       return;
     }
-    startWorkspaceReviewFixerMutation.mutate({
-      conversationId: workspaceReviewConversationId,
-    });
+    if (workspaceReviewContext) {
+      confirmAndStartWorkspaceReviewFixer(workspaceReviewContext);
+    }
   }, [
     isPublishingWorkspace,
     isWorkspaceReviewActionPending,
     isWorkspaceReviewFixIssuesPending,
     isWorkspaceRuntimeGenerating,
-    startWorkspaceReviewFixerMutation,
+    confirmAndStartWorkspaceReviewFixer,
+    workspaceReviewContext,
     workspaceReviewConversationId,
   ]);
   const handleApproveReviewAnyway = useCallback(async () => {
@@ -1857,9 +1927,28 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         handleOpenReview();
         return;
       }
-      handleOpenPublish();
+      if (tab === "changes") {
+        handleOpenPublish();
+        return;
+      }
+      selectPublishSubTab(tab);
+      setPendingReviewFocusConversationId(null);
+      if (activeTab !== "publish") {
+        if (onOpenPublish) {
+          onOpenPublish();
+          return;
+        }
+        onTabChange("publish");
+      }
     },
-    [handleOpenPublish, handleOpenReview],
+    [
+      activeTab,
+      handleOpenPublish,
+      handleOpenReview,
+      onOpenPublish,
+      onTabChange,
+      selectPublishSubTab,
+    ],
   );
   const handleAddArtifactExcerpt = useCallback(
     (reference: Parameters<typeof stageComposerExcerptReference>[1]) => {
@@ -2282,6 +2371,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 hasImplementationAttempt={hasImplementationAttempt}
                 onPublishWorkspace={onPublishWorkspace}
                 isPublishingWorkspace={isPublishingWorkspace}
+                publishAttempt={publishAttempt}
                 publishFocusRequest={publishFocusRequest}
                 publishSubTab={publishSubTab}
                 showPublishReviewTab={nestsWorkspaceReview}
@@ -2375,6 +2465,7 @@ type ArtifactContentProps = {
   hasImplementationAttempt: boolean;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
+  publishAttempt?: AgentWorkspacePublishAttempt | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
   publishSubTab: AgentPublishSubTab;
   showPublishReviewTab: boolean;
@@ -2460,6 +2551,7 @@ function ArtifactContent({
   hasImplementationAttempt,
   onPublishWorkspace,
   isPublishingWorkspace,
+  publishAttempt,
   publishFocusRequest,
   publishSubTab,
   showPublishReviewTab,
@@ -2480,6 +2572,7 @@ function ArtifactContent({
   onTaskArtifactSelectedIdChange,
   skillsEnabled,
 }: ArtifactContentProps) {
+  const reviewActionBlocker = getAgentWorkspaceReviewActionBlocker(workspace);
   const renderReviewPanel = (embedded: boolean) => (
     <AgentReviewPanel
       reviewArtifact={reviewArtifact}
@@ -2499,6 +2592,7 @@ function ArtifactContent({
       isApproveAnywayActionPending={isApproveAnywayActionPending}
       isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
       isPublishingWorkspace={isPublishingWorkspace}
+      reviewActionBlocker={reviewActionBlocker}
       onOpenPublish={onOpenPublish}
       onStartReview={onStartReview}
       onFixIssues={onFixIssues}
@@ -2550,7 +2644,7 @@ function ArtifactContent({
         conversationTitle={conversationTitle}
         projectBaseBranch={projectBaseBranch}
         onPublishWorkspace={onPublishWorkspace}
-        isPublishingWorkspace={isPublishingWorkspace}
+        publishAttempt={publishAttempt ?? null}
         publishFocusRequest={publishFocusRequest}
         reviewContext={reviewContext}
         onOpenReview={onOpenReview}
@@ -2794,6 +2888,7 @@ function AgentPlanPanel({
     ProposalDetailEnrichment | undefined
   >(undefined);
   const queryClient = useQueryClient();
+  const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
   const setFocusedAgentProject = useAgentSessionStore(
@@ -2805,6 +2900,15 @@ function AgentPlanPanel({
   );
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const loadActivePlan = usePlanStore((s) => s.loadActivePlan);
+  const {
+    confirmImplementDirectly,
+    confirmCreateProposals,
+    confirmationDialogProps: planContinuationDialogProps,
+    ConfirmationDialog: PlanContinuationDialog,
+  } = useApprovedPlanContinuation({
+    conversationId: workspace?.conversationId ?? null,
+    projectId: workspace?.projectId ?? session?.projectId ?? null,
+  });
 
   useEffect(() => {
     setIsEditing(false);
@@ -2814,17 +2918,6 @@ function AgentPlanPanel({
     setViewingEnrichment(undefined);
   }, [planArtifact?.id, planArtifact?.metadata.version, session?.id]);
 
-  const teamMetadata = useMemo<TeamMetadata | undefined>(() => {
-    if (!session?.teamMode || session.teamMode === "solo") {
-      return undefined;
-    }
-    return {
-      teamIdeated: true,
-      teamMode: session.teamMode as "research" | "debate",
-      teammateCount: session.teamConfig?.maxTeammates ?? 0,
-      findings: [],
-    };
-  }, [session?.teamConfig?.maxTeammates, session?.teamMode]);
   const criticalPathSet = useMemo(
     () => new Set(dependencyGraph?.criticalPath ?? []),
     [dependencyGraph?.criticalPath],
@@ -2878,9 +2971,17 @@ function AgentPlanPanel({
     }) => tasksApi.stopExecutionPlan(input),
   });
 
-  const handleCreateProposals = useCallback(async () => {
+  const handleCreateProposals = useCallback(() => {
     if (!session) return;
-    try {
+    let workspaceActivationCompleted = workspace?.mode === "tasks";
+    let committedRuntimeOverride:
+      | import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection
+      | null = null;
+    const perform = async (
+      runtimeOverride?: import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection,
+    ) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
+      try {
       await activateAgentPlanProposals({
         sessionId: session.id,
         workspace,
@@ -2890,10 +2991,25 @@ function AgentPlanPanel({
         ...(onFocusIdeationSessionForConversation
           ? { onFocusIdeationSessionForConversation }
           : {}),
+        ...(runtimeForAttempt ? { runtimeOverride: runtimeForAttempt } : {}),
+        workspaceActivationCompleted,
+        onWorkspaceActivated: () => {
+          workspaceActivationCompleted = true;
+          if (runtimeForAttempt) {
+            committedRuntimeOverride = { ...runtimeForAttempt };
+          }
+        },
       });
-    } catch (err) {
-      console.error("Failed to create proposals:", err);
-      toast.error("Failed to request proposal creation");
+      } catch (err) {
+        console.error("Failed to create proposals:", err);
+        toast.error("Failed to request proposal creation");
+        throw err;
+      }
+    };
+    if (workspace?.mode === "plan") {
+      void confirmCreateProposals((runtimeOverride) => perform(runtimeOverride));
+    } else {
+      void perform();
     }
   }, [
     onConversationModeSwitched,
@@ -2901,6 +3017,7 @@ function AgentPlanPanel({
     queryClient,
     session,
     workspace,
+    confirmCreateProposals,
   ]);
 
   const isPlanningSession = session?.sessionFlow === "planning";
@@ -2986,11 +3103,14 @@ function AgentPlanPanel({
         !planComplexityQuery.data,
       approvedAt: planArtifact?.planApproval?.approvedAt,
     });
-  const planActionHint = buildPlanActionHint({
-    assessment: planComplexityQuery.data,
-    isAssessing: isPlanRecommendationPending,
-    canChoose: canImplementDirectly && canCreateProposals,
-  });
+  const planActionHint =
+    !tasksEnabled && isPlanApproved
+      ? "Tasks is off. Implement this approved plan directly."
+      : buildPlanActionHint({
+          assessment: planComplexityQuery.data,
+          isAssessing: isPlanRecommendationPending,
+          canChoose: canImplementDirectly && canCreateProposals,
+        });
   const primaryPlanAction = tasksEnabled
     ? planComplexityQuery.data?.recommendedAction
     : "implement_directly";
@@ -3059,29 +3179,88 @@ function AgentPlanPanel({
     }
   }, [canApprovePlan, onPlanUpdated, planArtifact, queryClient, session]);
 
-  const handleImplementDirectly = useCallback(async () => {
+  const handleImplementDirectly = useCallback(() => {
     if (!session || !workspace?.conversationId || !canImplementDirectly) {
       return;
     }
-    setIsImplementingPlanDirectly(true);
-    try {
-      await implementAgentPlanDirectly({
-        projectId: session.projectId,
-        workspace,
-        queryClient,
-        ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
-      });
+    let modeTransitionCompleted = workspace.mode === "edit";
+    let committedRuntimeOverride:
+      | import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection
+      | null = null;
+    void confirmImplementDirectly(async (runtimeOverride) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
+      setIsImplementingPlanDirectly(true);
+      try {
+      if (!modeTransitionCompleted) {
+        const result = await chatApi.switchAgentConversationMode({
+          conversationId: workspace.conversationId,
+          mode: "edit",
+          runtimeOverride: runtimeForAttempt,
+        });
+        if (result.workspace) {
+          queryClient.setQueryData(
+            agentWorkspaceKeys.workspace(workspace.conversationId),
+            result.workspace,
+          );
+          onConversationModeSwitched?.(
+            workspace.conversationId,
+            "edit",
+            result.workspace,
+          );
+        }
+        void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
+        modeTransitionCompleted = true;
+        committedRuntimeOverride = { ...runtimeForAttempt };
+      }
+
+      await chatApi.sendAgentMessage(
+        "project",
+        session.projectId,
+        PLAN_IMPLEMENT_DIRECTLY_REQUEST,
+        undefined,
+        {
+          conversationId: workspace.conversationId,
+          runtimeOverride: runtimeForAttempt,
+          suppressUserMessage: true,
+        },
+      );
+      useAgentSessionStore.getState().setRuntimeForConversation(
+        workspace.conversationId,
+        session.projectId,
+        materializeWorkspaceRuntimeSelection(runtimeForAttempt, modelRegistry),
+      );
+      useAgentSessionStore
+        .getState()
+        .setServiceTierForConversation(
+          workspace.conversationId,
+          runtimeForAttempt.serviceTier,
+        );
       toast.success("Implementation started");
-    } catch (err) {
+      } catch (err) {
+      if (modeTransitionCompleted) {
+        await refreshTransitionedAgentWorkspace({
+          queryClient,
+          conversationId: workspace.conversationId,
+          ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
+        });
+        const detail = err instanceof Error ? ` ${err.message}` : "";
+        throw new PlanContinuationCommittedError(
+          `Edit mode is active, but implementation launch failed. Retry will only send the implementation request; it will not switch modes again.${detail}`,
+        );
+      }
       console.error("Failed to implement plan directly:", err);
       toast.error(
         err instanceof Error ? err.message : "Failed to start implementation",
       );
-    } finally {
+        throw err;
+      } finally {
       setIsImplementingPlanDirectly(false);
-    }
+      }
+    });
   }, [
     canImplementDirectly,
+    confirmImplementDirectly,
+    modelRegistry,
     onConversationModeSwitched,
     queryClient,
     session,
@@ -3633,10 +3812,6 @@ function AgentPlanPanel({
       : planLifecycleState === "approved"
         ? "Plan approved"
         : "Plan accepted";
-  const shouldShowPlanLifecycleBanner = Boolean(
-    planLifecycleState &&
-      (planLifecycleState !== "approved" || planLifecycleActions.length > 0),
-  );
 
   if (isPlanLoading) {
     return <EmptyArtifactState title="Loading plan..." />;
@@ -3660,7 +3835,7 @@ function AgentPlanPanel({
           </Suspense>
         ) : (
           <>
-            {shouldShowPlanLifecycleBanner && planLifecycleState && (
+            {planLifecycleState && (
               <PlanLifecycleBanner
                 state={planLifecycleState}
                 title={planLifecycleTitle}
@@ -3712,7 +3887,6 @@ function AgentPlanPanel({
                 isExpanded={isPlanExpanded}
                 onExpandedChange={setIsPlanExpanded}
                 chromeless
-                {...(teamMetadata !== undefined && { teamMetadata })}
               />
             </Suspense>
             {planBodyMode === "proposals" &&
@@ -3762,6 +3936,7 @@ function AgentPlanPanel({
                 </>
               )}
             <ConfirmationDialog {...confirmationDialogProps} />
+            <PlanContinuationDialog {...planContinuationDialogProps} />
           </>
         )
       ) : (

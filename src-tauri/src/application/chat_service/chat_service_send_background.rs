@@ -11,7 +11,9 @@ use tracing::Instrument;
 
 use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
-use super::chat_service_streaming::{is_completion_tool_name, process_stream_background};
+use super::chat_service_streaming::{
+    completion_tool_result_accepted, is_completion_tool_name, process_stream_background,
+};
 use super::chat_service_types::{
     AgentMessageCreatedPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
 };
@@ -126,13 +128,10 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     pub turn_metadata: Option<String>,
     pub conversation: Option<ChatConversation>,
     pub agent_name: Option<String>,
-    pub team_mode: bool,
     pub assistant_message_attribution: ChatMessageAttribution,
     pub persist_conversation_provider_session_ref: bool,
     // Cancellation
     pub cancellation_token: CancellationToken,
-    // Team state
-    pub team_service: Option<std::sync::Arc<crate::application::TeamService>>,
     // Streaming state cache for frontend hydration
     pub streaming_state_cache: StreamingStateCache,
     // Interactive process registry for stdin cleanup on process exit
@@ -205,6 +204,7 @@ async fn resolve_memory_agent_runtime_for_background<R: Runtime>(
             project_id,
             None,
             crate::domain::agents::RoutingRole::MemoryCapture,
+            None,
             crate::infrastructure::agents::claude::agent_names::SHORT_MEMORY_CAPTURE,
             "memory pipeline owning conversation",
             conversation.provider_harness,
@@ -333,19 +333,20 @@ fn is_mutating_work_tool(tool_name: &str) -> bool {
     AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES.contains(&tool_name)
 }
 
-fn is_nonrecoverable_terminal_tool(tool_name: &str) -> bool {
-    if is_completion_tool_name(tool_name) {
-        return true;
-    }
-
+fn is_nonrecoverable_terminal_tool(tool_name: &str, result: Option<&serde_json::Value>) -> bool {
     let normalized = tool_name.trim().to_ascii_lowercase();
     normalized.ends_with("ask_user_question")
         || normalized.ends_with("permission_request")
         || normalized.ends_with("resolve_permission_request")
+        || (is_completion_tool_name(tool_name)
+            && result.is_some_and(|result| completion_tool_result_accepted(Some(result))))
 }
 
-fn is_recoverable_terminal_tool_activity(tool_name: &str) -> bool {
-    !is_nonrecoverable_terminal_tool(tool_name)
+fn is_recoverable_terminal_tool_activity(
+    tool_name: &str,
+    result: Option<&serde_json::Value>,
+) -> bool {
+    !is_nonrecoverable_terminal_tool(tool_name, result)
 }
 
 fn has_recoverable_tool_activity_after_final_text(
@@ -355,9 +356,9 @@ fn has_recoverable_tool_activity_after_final_text(
 ) -> bool {
     if content_blocks.is_empty() {
         return response_text.trim().is_empty()
-            && tool_calls
-                .last()
-                .is_some_and(|tool_call| is_recoverable_terminal_tool_activity(&tool_call.name));
+            && tool_calls.last().is_some_and(|tool_call| {
+                is_recoverable_terminal_tool_activity(&tool_call.name, tool_call.result.as_ref())
+            });
     }
 
     let mut recoverable_tool_after_last_text = false;
@@ -367,8 +368,9 @@ fn has_recoverable_tool_activity_after_final_text(
                 recoverable_tool_after_last_text = false;
             }
             ContentBlockItem::Text { .. } => {}
-            ContentBlockItem::ToolUse { name, .. } => {
-                recoverable_tool_after_last_text = is_recoverable_terminal_tool_activity(name);
+            ContentBlockItem::ToolUse { name, result, .. } => {
+                recoverable_tool_after_last_text =
+                    is_recoverable_terminal_tool_activity(name, result.as_ref());
             }
         }
     }
@@ -1006,11 +1008,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             turn_metadata,
             conversation,
             agent_name,
-            team_mode,
             assistant_message_attribution,
             persist_conversation_provider_session_ref,
             cancellation_token,
-            team_service,
             streaming_state_cache,
             interactive_process_registry,
             interactive_process_token,
@@ -1080,12 +1080,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 None
             };
 
-        // Pre-spawn cleanup: disband any stale teams for this context before the new run.
-        // Handles mode-switch (team → solo) and crash-recovery re-execution scenarios.
-        if let Some(ref service) = team_service {
-            service.cleanup_stale_teams_for_context(&context_id).await;
-        }
-
         // Resolve project ID for RALPHX_PROJECT_ID env var (used in queue processing)
         let resolved_project_id = chat_service_context::resolve_project_id(
             context_type,
@@ -1134,8 +1128,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             Some(pre_assistant_msg_id.clone()),
             question_state.clone(),
             cancellation_token.clone(),
-            team_service.clone(),
-            team_mode,
             streaming_state_cache.clone(),
             Some(Arc::clone(&running_agent_registry)),
             Some(Arc::clone(&agent_run_repo)),
@@ -1152,39 +1144,10 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         )
         .await;
 
-        // Clean up team state when lead stream ends (success, error, or timeout)
-        let mut team_still_active = false;
-        if team_mode {
-            if let Some(ref service) = team_service {
-                let teams = service.list_teams().await;
-                for tn in &teams {
-                    if let Ok(status) = service.get_team_status(tn).await {
-                        if status.context_id == context_id {
-                            // Disband the team via TeamService (stops teammates + persists + emits events)
-                            if let Err(e) = service.disband_team(tn).await {
-                                tracing::error!(
-                                    team_name = %tn,
-                                    error = %e,
-                                    "[TEAM_DISBAND_FAIL] Failed to disband team — IPR will still be removed (dead stdin is useless)"
-                                );
-                                // Disband failed: team is still registered, but we must still
-                                // remove the IPR — a dead process's stdin is useless.
-                                // Teammates will trigger re-spawn via the IPR-miss path.
-                                team_still_active = true;
-                            }
-                            // If disband succeeded, team_still_active stays false
-                        }
-                    }
-                }
-            }
-        }
-
         // Unregister the process when done (ownership check: only removes our own slot)
         running_agent_registry.unregister(&registry_key, &agent_run_id).await;
 
         // Always remove the IPR entry on stream exit — a dead process's stdin is useless.
-        // Even if teammates are still registered, they will trigger re-spawn via the
-        // standard IPR-miss path when they try to nudge the lead.
         if let Some(ref ipr) = interactive_process_registry {
             let ipr_key = InteractiveProcessKey::new(
                 context_type.to_string(),
@@ -1203,22 +1166,12 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     "[IPR_REMOVE] Stream exit preserved newer interactive process"
                 );
             }
-            if team_still_active {
-                tracing::info!(
-                    %context_type,
-                    context_id = %context_id,
-                    runtime_context_id = %runtime_context_id,
-                    "[IPR_REMOVE_TEAM] Removed IPR — team active but lead exited. \
-                     Teammate nudges trigger re-spawn via standard IPR-miss path."
-                );
-            } else {
-                tracing::info!(
-                    %context_type,
-                    context_id = %context_id,
-                    runtime_context_id = %runtime_context_id,
-                    "[IPR_REMOVE] Removed interactive process stdin on stream exit"
-                );
-            }
+            tracing::info!(
+                %context_type,
+                context_id = %context_id,
+                runtime_context_id = %runtime_context_id,
+                "[IPR_REMOVE] Removed interactive process stdin on stream exit"
+            );
         }
 
         // Clean up interactive idle slot tracking
@@ -1237,6 +1190,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 let stderr_text = crate::utils::secret_redactor::redact(&outcome.stderr_text);
                 let turns_finalized = outcome.turns_finalized;
                 let turn_completion_applied = outcome.completion_applied;
+                let mode_handoff_exit = outcome.mode_handoff_exit;
                 // Debug: Log what we got from stream processing
                 tracing::info!(
                     "[CHAT_SERVICE] Stream complete: context={}/{}, response_len={}, tool_calls={}, session_id={:?}",
@@ -1872,11 +1826,15 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     0
                 };
                 let initial_queue_count = initial_memory_queue_count + initial_durable_queue_count;
+                // A runtime-handoff watchdog cancels only the retiring owner. Its
+                // replacement must not inherit that cancelled token or be mistaken
+                // for a user-requested stop.
+                let queue_cancellation_requested = cancellation_requested && !mode_handoff_exit;
                 let will_process_queue = should_process_stream_queue(
                     initial_queue_count,
                     has_session_for_queue,
                     outcome.silent_interactive_exit,
-                    cancellation_requested,
+                    queue_cancellation_requested,
                 );
 
                 tracing::info!(
@@ -1885,6 +1843,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     turns_finalized,
                     skip_post_loop_finalization,
                     silent_interactive_exit = outcome.silent_interactive_exit,
+                    mode_handoff_exit,
                     cancellation_requested,
                     initial_queue_count,
                     has_session_for_queue,
@@ -2030,8 +1989,11 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         app_handle.clone(),
                         resolved_project_id.as_deref(),
                         conversation_coordination_mode,
-                        team_mode,
-                        cancellation_token.clone(),
+                        if mode_handoff_exit {
+                            CancellationToken::new()
+                        } else {
+                            cancellation_token.clone()
+                        },
                         run_chain_id.as_deref(),
                         Some(&agent_run_id),
                         streaming_state_cache.clone(),
@@ -2182,7 +2144,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &agent_provider_settings_repo,
                     &app_handle,
                     agent_name.as_deref(),
-                    team_mode,
                     run_chain_id.clone(),
                     &interactive_process_registry,
                     &review_repo,
@@ -2273,7 +2234,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 app_handle.clone(),
                                 resolved_project_id.as_deref(),
                                 conversation_coordination_mode,
-                                team_mode,
                                 cancellation_token.clone(),
                                 run_chain_id.as_deref(),
                                 Some(&agent_run_id),

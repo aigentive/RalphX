@@ -22,46 +22,12 @@ import {
   getAutomationRunJudgeLabel,
   isAutomationRunDeletable,
   isAutomationRunResumable,
+  runTimelineHighlight,
 } from "./automationRunView";
 import { ExpandableText, FieldLabel, Pill } from "./automationDetailShared";
 const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
   setup_agent: "Setup agent", judge: "Judge", skip_judge_template: "Skip-judge template",
 };
-interface RunTimelineHighlight { backgroundColor: string; borderColor: string; markerColor: string }
-
-function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
-  // Per-status card treatment: merged = soft green, running/active = soft accent
-  // (orange) bg+border, failed = soft darker surface with an error marker.
-  // Everything else stays neutral.
-  if (run.status === "merged") {
-    return {
-      backgroundColor: "var(--status-success-muted, rgba(63, 191, 127, 0.08))",
-      borderColor: "var(--status-success-border, rgba(63, 191, 127, 0.3))",
-      markerColor: "var(--status-success, #3fbf7f)",
-    };
-  }
-  const isActive =
-    isOpenAutomationRun(run) && run.status !== "cancelled" && !describeRunFailure(run);
-  if (isActive) {
-    return {
-      backgroundColor: "var(--accent-muted, rgba(255, 106, 53, 0.08))",
-      borderColor: "var(--accent-border, rgba(255, 106, 53, 0.28))",
-      markerColor: "var(--accent-primary, #ff6a35)",
-    };
-  }
-  if (describeRunFailure(run)) {
-    return {
-      backgroundColor: "var(--bg-surface, #1c1c21)",
-      borderColor: "var(--border-default, #393940)",
-      markerColor: "var(--status-error, #d55e00)",
-    };
-  }
-  return {
-    backgroundColor: "var(--bg-elevated, #232329)",
-    borderColor: "var(--border-subtle, #2e2e36)",
-    markerColor: "var(--text-subtle, #6b6b73)",
-  };
-}
 function formatDiffStats(value: string | null): string | null {
   const stats = parseRecord(value);
   const files = numberField(stats, "filesChanged") ?? numberField(stats, "files_changed");
@@ -337,26 +303,6 @@ export const RunTimelineItem = memo(function RunTimelineItem({
             >
               {formatDate(run.updatedAt)}
             </span>
-            {isLatest && onDeleteRun && isAutomationRunDeletable(run) ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={`${run.status === "running" ? "Stop and delete" : "Delete"} run ${run.runIndex}`}
-                    className="pointer-events-auto h-7 w-7 shrink-0 text-[var(--text-muted)] hover:bg-transparent hover:text-[var(--status-error)]"
-                    onClick={() => onDeleteRun?.(run)}
-                    data-testid={`automation-run-${run.id}-delete`}
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {run.status === "running" ? "Stop & delete run" : "Delete run"}
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
             <ExpandIcon className="h-4 w-4" aria-hidden="true"
               style={{ color: "var(--text-muted)" }} />
           </span>
@@ -438,24 +384,44 @@ export const RunTimelineItem = memo(function RunTimelineItem({
               }}
               data-testid={`automation-run-${run.id}-footer`}
             >
-              {run.runPrompt.trim() ? (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 border-0 bg-transparent p-0 text-xs font-medium text-[var(--text-muted)] outline-none transition-colors hover:text-[var(--text-secondary)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
-                  aria-expanded={promptOpen}
-                  onClick={() => setPromptOpen((value) => !value)}
-                  data-testid={`automation-run-${run.id}-prompt-toggle`}
-                >
-                  {promptOpen ? (
-                    <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
-                  )}
-                  Run prompt
-                </button>
-              ) : (
-                <span aria-hidden="true" />
-              )}
+              <div className="flex min-w-0 items-center gap-1">
+                {isLatest && onDeleteRun && isAutomationRunDeletable(run) ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`${run.status === "running" ? "Stop and delete" : "Delete"} run ${run.runIndex}`}
+                        className="-ml-1 h-7 w-7 shrink-0 text-[var(--text-muted)] hover:bg-transparent hover:text-[var(--status-error)]"
+                        onClick={() => onDeleteRun?.(run)}
+                        data-testid={`automation-run-${run.id}-delete`}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {run.status === "running" ? "Stop & delete run" : "Delete run"}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null}
+                {run.runPrompt.trim() ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 border-0 bg-transparent p-0 text-xs font-medium text-[var(--text-muted)] outline-none transition-colors hover:text-[var(--text-secondary)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+                    aria-expanded={promptOpen}
+                    onClick={() => setPromptOpen((value) => !value)}
+                    data-testid={`automation-run-${run.id}-prompt-toggle`}
+                  >
+                    {promptOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    Run prompt
+                  </button>
+                ) : null}
+              </div>
               <div className="flex shrink-0 items-center gap-2">
                 {run.planArtifactId ? (
                   <Tooltip>
