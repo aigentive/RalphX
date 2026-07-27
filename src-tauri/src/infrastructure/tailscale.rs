@@ -104,7 +104,6 @@ pub(crate) struct TailscaleStatus {
 #[derive(Debug, Deserialize)]
 struct TailscaleSelfStatus {
     // Read by magicdns_name(), consumed by PR 1.7's advertised-endpoints surface.
-    #[allow(dead_code)]
     #[serde(rename = "DNSName", default)]
     dns_name: String,
     /// `Option` rather than a bare `Vec`: Go marshals `ipnstate.PeerStatus.TailscaleIPs` with no
@@ -129,7 +128,6 @@ impl TailscaleStatus {
     }
 
     // Consumed by PR 1.7's advertised-endpoints surface.
-    #[allow(dead_code)]
     pub(crate) fn magicdns_name(&self) -> Option<&str> {
         self.self_status
             .as_ref()
