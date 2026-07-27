@@ -1,6 +1,6 @@
 # Remote Mobile Transport Spike — Findings
 
-> Status: **PENDING — skeleton only.** No experiment result, verdict, or owner decision is recorded by this document yet.
+> Status: **PARTIAL — E-2/E-3 socket evidence captured; E-1/E-4/E-5 remain missing or blocked.** The only overall verdict recorded below is insufficient evidence; no transport or owner decision is implied.
 >
 > Scope: PR 0.3 of the Remote Multi-Environment plan. This tracked appendix is the evidence record for R-1 and informs PR 1.1's C-15 CORS layer and the mobile transport specification; it is not a transport implementation or a substitute for the source specification.
 
@@ -14,8 +14,8 @@
 
 | Field | Required record | Status / value |
 |---|---|---|
-| Host revision | Commit SHA and dirty-tree state used for the probe | Pending |
-| Debug harness | Exact debug-only command/listener shape and cfg-gate evidence | Implemented: `debug_start_remote_transport_cors_probe` / `debug_stop_remote_transport_cors_probe` control a fixed `127.0.0.1:0` fixture; both command registration and the module are `#[cfg(debug_assertions)]`-gated. This records harness shape only, not an experiment result. |
+| Host revision | Commit SHA and dirty-tree state used for the probe | Pre-task-6 HEAD `4188b18cc305f3f22cf674ec7e97c324cc3c15cc`; worktree clean. |
+| Debug harness | Exact debug-only command/listener shape and cfg-gate evidence | Resolved: `debug_start_remote_transport_cors_probe` / `debug_stop_remote_transport_cors_probe` control the implemented command-controlled ephemeral `127.0.0.1:0` loopback listener; both command registration and the module are `#[cfg(debug_assertions)]`-gated. This resolves harness shape only, not a transport result. |
 | Tailnet access | Logged-in tailnet identity and evidence that Serve is enabled for the host | Blocked — 2026-07-27 read-only audit found no `tailscale` executable in `PATH`; no logged-in Serve-capable tailnet evidence is available. |
 | Serve endpoint | HTTPS/WSS URL used, without pairing codes, bearers, or other secrets | Blocked — no Serve-capable tailnet or endpoint is available; no request was sent. |
 | Direct-tailnet endpoint | HTTP/WS URL used, without credentials | Blocked — no tailnet endpoint is available; no request was sent. |
@@ -38,7 +38,7 @@
 - The debug-only fixture is isolated in `remote_server::transport_spike`; it binds an ephemeral loopback address only and returns that address to the caller.
 - It models only the two direct-browser preflight orderings: fixed 401-before-preflight and pre-auth `OPTIONS` with the fixed development origin `http://127.0.0.1:1420`. It accepts no bearer, pairing code, or remote-listener configuration.
 - It is absent from release module compilation and Tauri command registration via `#[cfg(debug_assertions)]`. This is cfg-gate evidence, not release-build execution evidence; the release-build verification remains the final PR 0.3 task.
-- No desktop, browser, Serve, direct-tailnet, or ATS experiment has been run or concluded by this harness implementation.
+- Apart from the actual-listener Rust socket tests recorded as E-2/E-3 below, no desktop, browser, Serve, direct-tailnet, or ATS experiment has been run or concluded by this harness implementation.
 
 ## Desktop proxy-stub code evidence (not a WKWebView capture)
 
@@ -78,19 +78,21 @@ When the desktop remote-shaped flow is exercised, does the WKWebView issue only 
 
 | Field | Record |
 |---|---|
-| Probe vehicle and version | Pending |
-| WKWebView capture | Pending |
-| Rust-proxy capture | Pending |
-| Cross-origin `fetch` observed from WKWebView | Pending |
-| Cross-origin WebSocket observed from WKWebView | Pending |
-| WKWebView preflight observed | Pending |
-| Evidence IDs | Pending |
-| Finding / verdict | Pending |
+| Probe vehicle and version | No native WKWebView probe vehicle was run. |
+| WKWebView capture | Missing — no devtools/network capture was collected. |
+| Rust-proxy capture | The debug command test records the Rust-observed fixed loopback response only; it is not a proxy connection log for a native attempt. |
+| Cross-origin `fetch` observed from WKWebView | Unobserved — no native capture. |
+| Cross-origin WebSocket observed from WKWebView | Unobserved — no native capture. |
+| WKWebView preflight observed | Unobserved — no native capture. |
+| Evidence IDs | Code/test evidence only: `desktop_proxy_command_uses_the_loopback_fixture_and_reports_its_result`; E-1 capture missing. |
+| Finding / verdict | The code/test boundary exists, but the required native proof is missing; desktop claim remains **insufficient evidence**. |
 
 ### Implication slots
 
-- PR 1.1 / C-15 desktop boundary: Pending evidence review.
-- Mobile transport specification: Pending; desktop evidence does not answer the direct-client path.
+- PR 1.1 / C-15 desktop boundary: the code/test seam is consistent with a Rust-side proxy boundary, but the required native WKWebView capture is missing; do not treat the desktop claim as confirmed.
+- Mobile transport specification / R-1: desktop code evidence does not answer the direct-client path; the residual remains open.
+
+**Recorded finding:** (a) is not confirmed. The debug Rust-side loopback test is useful boundary evidence, but it cannot establish which requests left a WKWebView.
 
 ## (b) Direct browser path: what are the CORS and pre-auth `OPTIONS` ordering results?
 
@@ -120,6 +122,8 @@ Against the debug-only direct-path listener, does auth-before-`OPTIONS` reproduc
 - PR 1.1 / C-15 router middleware ordering and restrictive-origin policy: the actual-listener socket evidence supports pre-auth `OPTIONS` and a fixed allowlist; browser evidence is still pending.
 - Mobile transport specification direct-browser behavior: Pending browser evidence review; the socket fixture is not a mobile/browser observation.
 
+**Recorded finding:** (b) confirms the debug listener's order-dependent socket behavior and fixed-origin policy, not browser-visible CORS behavior.
+
 ## (c) ATS: does Serve TLS satisfy Apple-client requirements, and does plain tailnet HTTP need exceptions?
 
 ### Question
@@ -139,8 +143,10 @@ For each named Apple probe vehicle, does HTTPS/WSS through Tailscale Serve work 
 
 ### Implication slots
 
-- PR 1.1 endpoint and CORS implementation: Pending evidence review.
-- Mobile transport specification ATS policy and any exception requirement: Pending evidence review.
+- PR 1.1 / C-15: no Serve/ATS result confirms or amends the endpoint posture. The only confirmed router implication remains pre-auth `OPTIONS` plus a fixed restrictive allowlist from E-2/E-3.
+- Mobile transport specification / R-1: ATS policy, direct-tailnet posture, and any exception requirement remain unselected because E-4/E-5 were not executed.
+
+**Recorded finding:** (c) is blocked before a transport request; neither Serve TLS nor plain direct-tailnet ATS behavior was observed.
 
 ## (d) Verdict: does Serve-only suffice?
 
@@ -148,22 +154,22 @@ For each named Apple probe vehicle, does HTTPS/WSS through Tailscale Serve work 
 
 | Field | Record |
 |---|---|
-| Verdict (`yes` / `no` / `insufficient evidence`) | Pending |
-| Rationale linked to E-1 through E-5 | Pending |
-| Direct-tailnet posture if Serve-only is not selected | Pending |
-| Owner decision required | Pending |
-| Decision date / owner | Pending |
+| Verdict (`yes` / `no` / `insufficient evidence`) | **Insufficient evidence** |
+| Rationale linked to E-1 through E-5 | E-1 lacks native WKWebView/devtools capture; E-2/E-3 establish only actual loopback socket ordering behavior; E-4/E-5 were blocked before any Apple/Serve/direct-tailnet request. |
+| Direct-tailnet posture if Serve-only is not selected | Unselected — no plain-tailnet behavior or ATS result was observed. |
+| Owner decision required | Yes — choose Serve-only or a direct-tailnet posture only after the missing evidence exists. |
+| Decision date / owner | Pending owner decision; no date recorded. |
 
 ### Downstream implications
 
-- PR 1.1: Pending — amend or confirm C-15 only after the evidence and owner verdict are recorded.
-- Mobile transport specification: Pending — document the selected direct-client transport posture and ATS requirements only after the verdict.
+- PR 1.1 / C-15: carry forward the confirmed E-2/E-3 rule: handle `OPTIONS` before bearer authentication and permit only the fixed allowlisted origin. Do not claim the desktop WKWebView boundary or Serve posture is confirmed.
+- Mobile transport specification / R-1: retain the direct-client CORS/ATS and Serve-vs-direct-tailnet questions as residual gaps; do not select a transport or ATS exception policy from this appendix.
 
 ## Open decisions and follow-up
 
 | Decision / follow-up | Owner | Needed before | Status |
 |---|---|---|---|
-| Choose the debug harness shape: command only or command-controlled throwaway listener | Pending | PR 0.3 harness implementation | Open |
+| Choose the debug harness shape: command only or command-controlled throwaway listener | Resolved in the implemented debug-only command-controlled ephemeral loopback listener | PR 0.3 harness implementation | Resolved |
 | Name the Apple ATS probe vehicle(s) and record availability | Future macOS `URLSession`/WKWebView vehicle; iOS 26.3 `iPhone 17 Pro` Simulator observed available and shutdown on 2026-07-27 | ATS experiment | Open — named vehicles were not run |
 | Provide a Serve-capable logged-in tailnet environment | Pending | Serve experiment | Blocked — `tailscale` unavailable in `PATH`; no endpoint to probe |
 | Record the Serve-only verdict from captured evidence | Pending | PR 0.3 completion; informational input to PR 1.1 | Blocked — E-4/E-5 not executed, insufficient evidence |
