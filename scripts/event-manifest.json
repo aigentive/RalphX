@@ -1,0 +1,2111 @@
+{
+  "schema_version": 1,
+  "emitted": [
+    {
+      "name": "agent:ask_user_question",
+      "file": "src-tauri/src/http_server/handlers/questions.rs",
+      "line": 78,
+      "kind": "wrapper"
+    },
+    {
+      "name": "agent:chunk",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 1721,
+      "kind": "method"
+    },
+    {
+      "name": "agent:chunk",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 3519,
+      "kind": "method"
+    },
+    {
+      "name": "agent:chunk",
+      "file": "src-tauri/src/remote_server/capture_tests.rs",
+      "line": 59,
+      "kind": "method"
+    },
+    {
+      "name": "agent:conversation_created",
+      "file": "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
+      "line": 475,
+      "kind": "method"
+    },
+    {
+      "name": "agent:conversation_created",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7737,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:conversation_created",
+      "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
+      "line": 2141,
+      "kind": "method"
+    },
+    {
+      "name": "agent:conversation_forked",
+      "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
+      "line": 2149,
+      "kind": "method"
+    },
+    {
+      "name": "agent:conversation_title_updated",
+      "file": "src-tauri/src/application/session_namer_agent.rs",
+      "line": 622,
+      "kind": "method"
+    },
+    {
+      "name": "agent:conversation_title_updated",
+      "file": "src-tauri/src/http_server/handlers/ideation/proposals.rs",
+      "line": 552,
+      "kind": "wrapper"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 3894,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 643,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1221,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1256,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1286,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1310,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1419,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1720,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1765,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 2561,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 2745,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 2790,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 3406,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/reconciliation/recovery_queue.rs",
+      "line": 421,
+      "kind": "method"
+    },
+    {
+      "name": "agent:heartbeat",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 4068,
+      "kind": "method"
+    },
+    {
+      "name": "agent:hook",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2556,
+      "kind": "method"
+    },
+    {
+      "name": "agent:hook",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2584,
+      "kind": "method"
+    },
+    {
+      "name": "agent:hook",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2605,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 1740,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 1781,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 1971,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2712,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1912,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 656,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 752,
+      "kind": "method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 3381,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 4089,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 5702,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 6625,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:message_created",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7590,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:message_queued",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 2310,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:question_resolved",
+      "file": "src-tauri/src/commands/question_commands.rs",
+      "line": 443,
+      "kind": "method"
+    },
+    {
+      "name": "agent:question_resolved",
+      "file": "src-tauri/src/http_server/handlers/questions.rs",
+      "line": 233,
+      "kind": "wrapper"
+    },
+    {
+      "name": "agent:queue_sent",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1329,
+      "kind": "method"
+    },
+    {
+      "name": "agent:queue_sent",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 2112,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:queue_sent",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7613,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 2385,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 2462,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 2970,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 1829,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 1943,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 2160,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7828,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7857,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/task_cleanup_service.rs",
+      "line": 463,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/task_transition_service/tests.rs",
+      "line": 46,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/application/throttled_emitter_tests.rs",
+      "line": 48,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/commands/agent_workspace_auto_publish_tests.rs",
+      "line": 341,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/commands/agent_workspace_auto_review_tests.rs",
+      "line": 274,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_completed",
+      "file": "src-tauri/src/http_server/handlers/ideation/verification/lifecycle.rs",
+      "line": 183,
+      "kind": "wrapper"
+    },
+    {
+      "name": "agent:run_started",
+      "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
+      "line": 1683,
+      "kind": "method"
+    },
+    {
+      "name": "agent:run_started",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 5759,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:run_started",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7071,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:session_recovered",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 2638,
+      "kind": "method"
+    },
+    {
+      "name": "agent:session_recovered",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 1239,
+      "kind": "method"
+    },
+    {
+      "name": "agent:session_recovered",
+      "file": "src-tauri/src/application/reconciliation/recovery_queue.rs",
+      "line": 335,
+      "kind": "method"
+    },
+    {
+      "name": "agent:session_recovered",
+      "file": "src-tauri/src/application/startup_jobs.rs",
+      "line": 1545,
+      "kind": "method"
+    },
+    {
+      "name": "agent:startup_progress",
+      "file": "src-tauri/src/application/agent_conversation_start_service/helpers/spawn_glue.rs",
+      "line": 104,
+      "kind": "method"
+    },
+    {
+      "name": "agent:stopped",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 2536,
+      "kind": "method"
+    },
+    {
+      "name": "agent:stopped",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7802,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:stopped",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 7848,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:stopped",
+      "file": "src-tauri/src/application/task_cleanup_service.rs",
+      "line": 454,
+      "kind": "method"
+    },
+    {
+      "name": "agent:stopped",
+      "file": "src-tauri/src/http_server/handlers/ideation/verification/lifecycle.rs",
+      "line": 165,
+      "kind": "wrapper"
+    },
+    {
+      "name": "agent:task_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2506,
+      "kind": "method"
+    },
+    {
+      "name": "agent:task_completed",
+      "file": "src-tauri/src/http_server/handlers/coordination/native_delegation.rs",
+      "line": 472,
+      "kind": "wrapper"
+    },
+    {
+      "name": "agent:task_started",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2445,
+      "kind": "method"
+    },
+    {
+      "name": "agent:task_started",
+      "file": "src-tauri/src/http_server/handlers/coordination/native_delegation.rs",
+      "line": 1221,
+      "kind": "wrapper"
+    },
+    {
+      "name": "agent:tool_call",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 1834,
+      "kind": "method"
+    },
+    {
+      "name": "agent:tool_call",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 1939,
+      "kind": "method"
+    },
+    {
+      "name": "agent:tool_call",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2685,
+      "kind": "method"
+    },
+    {
+      "name": "agent:tool_call",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 3629,
+      "kind": "method"
+    },
+    {
+      "name": "agent:turn_completed",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 2336,
+      "kind": "method"
+    },
+    {
+      "name": "agent:turn_completed",
+      "file": "src-tauri/src/commands/agent_workspace_auto_publish_tests.rs",
+      "line": 349,
+      "kind": "method"
+    },
+    {
+      "name": "agent:turn_completed",
+      "file": "src-tauri/src/commands/agent_workspace_auto_review_tests.rs",
+      "line": 276,
+      "kind": "method"
+    },
+    {
+      "name": "agent:usage_updated",
+      "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
+      "line": 369,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workflow_progress",
+      "file": "src-tauri/src/http_server/handlers/agent_workflows.rs",
+      "line": 45,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/application/agent_workspace_external_pr_reconciliation.rs",
+      "line": 640,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/application/agent_workspace_pr_supervision_recovery.rs",
+      "line": 1016,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 3978,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/agent_workspace_auto_publish.rs",
+      "line": 550,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/agent_workspace_auto_review.rs",
+      "line": 206,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/question_commands.rs",
+      "line": 295,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
+      "line": 977,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
+      "line": 4157,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
+      "line": 6177,
+      "kind": "method"
+    },
+    {
+      "name": "agent:workspace_changed",
+      "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
+      "line": 6255,
+      "kind": "method"
+    },
+    {
+      "name": "agent_terminal:event",
+      "file": "src-tauri/src/application/agent_terminal.rs",
+      "line": 794,
+      "kind": "method"
+    },
+    {
+      "name": "artifact:archived",
+      "file": "src-tauri/src/commands/artifact_commands.rs",
+      "line": 371,
+      "kind": "method"
+    },
+    {
+      "name": "automation:deleted",
+      "file": "src-tauri/src/application/automation/transition.rs",
+      "line": 138,
+      "kind": "method"
+    },
+    {
+      "name": "automation:run:updated",
+      "file": "src-tauri/src/application/automation/delete.rs",
+      "line": 172,
+      "kind": "method"
+    },
+    {
+      "name": "automation:run:updated",
+      "file": "src-tauri/src/application/automation/reopen.rs",
+      "line": 232,
+      "kind": "method"
+    },
+    {
+      "name": "automation:run:updated",
+      "file": "src-tauri/src/application/automation/transition.rs",
+      "line": 124,
+      "kind": "method"
+    },
+    {
+      "name": "automation:updated",
+      "file": "src-tauri/src/application/automation/delete.rs",
+      "line": 176,
+      "kind": "method"
+    },
+    {
+      "name": "automation:updated",
+      "file": "src-tauri/src/application/automation/reopen.rs",
+      "line": 241,
+      "kind": "method"
+    },
+    {
+      "name": "automation:updated",
+      "file": "src-tauri/src/application/automation/transition.rs",
+      "line": 110,
+      "kind": "method"
+    },
+    {
+      "name": "dependency:added",
+      "file": "src-tauri/src/http_server/helpers.rs",
+      "line": 192,
+      "kind": "wrapper"
+    },
+    {
+      "name": "dependency:removed",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_dependencies.rs",
+      "line": 37,
+      "kind": "method"
+    },
+    {
+      "name": "event",
+      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
+      "line": 126,
+      "kind": "method"
+    },
+    {
+      "name": "event",
+      "file": "src-tauri/src/tests/event_sink_coverage_tests.rs",
+      "line": 17,
+      "kind": "method"
+    },
+    {
+      "name": "event",
+      "file": "src-tauri/src/tests/event_sink_coverage_tests.rs",
+      "line": 42,
+      "kind": "method"
+    },
+    {
+      "name": "event",
+      "file": "src-tauri/src/tests/event_sink_coverage_tests.rs",
+      "line": 53,
+      "kind": "method"
+    },
+    {
+      "name": "event1",
+      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
+      "line": 108,
+      "kind": "method"
+    },
+    {
+      "name": "event2",
+      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
+      "line": 109,
+      "kind": "method"
+    },
+    {
+      "name": "execution:active_project_changed",
+      "file": "src-tauri/src/commands/execution_commands/settings.rs",
+      "line": 237,
+      "kind": "method"
+    },
+    {
+      "name": "execution:completed",
+      "file": "src-tauri/src/application/task_transition_service.rs",
+      "line": 1846,
+      "kind": "method"
+    },
+    {
+      "name": "execution:completed",
+      "file": "src-tauri/src/application/task_transition_service.rs",
+      "line": 1848,
+      "kind": "method"
+    },
+    {
+      "name": "execution:queue_changed",
+      "file": "src-tauri/src/commands/task_commands/helpers.rs",
+      "line": 55,
+      "kind": "method"
+    },
+    {
+      "name": "execution:queue_changed",
+      "file": "src-tauri/src/http_server/handlers/ideation/proposals.rs",
+      "line": 288,
+      "kind": "wrapper"
+    },
+    {
+      "name": "execution:spawn_blocked",
+      "file": "src-tauri/src/infrastructure/agents/spawner.rs",
+      "line": 800,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 1290,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
+      "line": 115,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
+      "line": 300,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
+      "line": 559,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/commands/execution_commands/settings.rs",
+      "line": 246,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/commands/execution_commands/state.rs",
+      "line": 602,
+      "kind": "method"
+    },
+    {
+      "name": "execution:status_changed",
+      "file": "src-tauri/src/commands/execution_commands/state.rs",
+      "line": 610,
+      "kind": "method"
+    },
+    {
+      "name": "external-mcp:status",
+      "file": "src-tauri/src/infrastructure/external_mcp_supervisor.rs",
+      "line": 656,
+      "kind": "method"
+    },
+    {
+      "name": "gh-auth:login_prompt",
+      "file": "src-tauri/src/commands/project_commands.rs",
+      "line": 994,
+      "kind": "method"
+    },
+    {
+      "name": "git-auth:startup_preflight",
+      "file": "src-tauri/src/application/startup_git_auth_preflight.rs",
+      "line": 280,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:child_session_created",
+      "file": "src-tauri/src/http_server/handlers/session_linking/create.rs",
+      "line": 454,
+      "kind": "wrapper"
+    },
+    {
+      "name": "ideation:finalize_pending_confirmation",
+      "file": "src-tauri/src/http_server/helpers.rs",
+      "line": 994,
+      "kind": "wrapper"
+    },
+    {
+      "name": "ideation:plan_created",
+      "file": "src-tauri/src/http_server/handlers/artifacts/create.rs",
+      "line": 212,
+      "kind": "wrapper"
+    },
+    {
+      "name": "ideation:session_accepted",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_restart.rs",
+      "line": 896,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_accepted",
+      "file": "src-tauri/src/http_server/handlers/ideation/proposals.rs",
+      "line": 249,
+      "kind": "wrapper"
+    },
+    {
+      "name": "ideation:session_created",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_cross_project.rs",
+      "line": 239,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_created",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_export.rs",
+      "line": 58,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_created",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_session.rs",
+      "line": 113,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_created",
+      "file": "src-tauri/src/http_server/handlers/external/ideation_start/start.rs",
+      "line": 864,
+      "kind": "wrapper"
+    },
+    {
+      "name": "ideation:session_imported",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_export.rs",
+      "line": 61,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_reopened",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_session.rs",
+      "line": 509,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_title_updated",
+      "file": "src-tauri/src/application/session_namer_agent.rs",
+      "line": 587,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_title_updated",
+      "file": "src-tauri/src/application/session_namer_agent.rs",
+      "line": 613,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_title_updated",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_session.rs",
+      "line": 556,
+      "kind": "method"
+    },
+    {
+      "name": "ideation:session_title_updated",
+      "file": "src-tauri/src/http_server/handlers/ideation/proposals.rs",
+      "line": 488,
+      "kind": "wrapper"
+    },
+    {
+      "name": "ideation:session_title_updated",
+      "file": "src-tauri/src/http_server/handlers/ideation/proposals.rs",
+      "line": 543,
+      "kind": "wrapper"
+    },
+    {
+      "name": "issue:updated",
+      "file": "src-tauri/src/http_server/handlers/issues.rs",
+      "line": 113,
+      "kind": "wrapper"
+    },
+    {
+      "name": "issue:updated",
+      "file": "src-tauri/src/http_server/handlers/issues.rs",
+      "line": 159,
+      "kind": "wrapper"
+    },
+    {
+      "name": "merge:completed",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
+      "line": 384,
+      "kind": "method"
+    },
+    {
+      "name": "merge:completed",
+      "file": "src-tauri/src/http_server/handlers/git.rs",
+      "line": 499,
+      "kind": "wrapper"
+    },
+    {
+      "name": "merge:conflict",
+      "file": "src-tauri/src/http_server/handlers/git.rs",
+      "line": 668,
+      "kind": "wrapper"
+    },
+    {
+      "name": "merge:incomplete",
+      "file": "src-tauri/src/http_server/handlers/git.rs",
+      "line": 819,
+      "kind": "wrapper"
+    },
+    {
+      "name": "merge:validation_start",
+      "file": "src-tauri/src/application/chat_service/chat_service_merge.rs",
+      "line": 802,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_start",
+      "file": "src-tauri/src/application/chat_service/chat_service_merge.rs",
+      "line": 809,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/install.rs",
+      "line": 105,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/install.rs",
+      "line": 216,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/install.rs",
+      "line": 283,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
+      "line": 339,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
+      "line": 384,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
+      "line": 415,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
+      "line": 531,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
+      "line": 54,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
+      "line": 169,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
+      "line": 200,
+      "kind": "method"
+    },
+    {
+      "name": "merge:validation_step",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
+      "line": 489,
+      "kind": "method"
+    },
+    {
+      "name": "notification:created",
+      "file": "src-tauri/src/application/notification_service.rs",
+      "line": 311,
+      "kind": "method"
+    },
+    {
+      "name": "notification:created",
+      "file": "src-tauri/src/remote_server/capture_tests.rs",
+      "line": 58,
+      "kind": "method"
+    },
+    {
+      "name": "notification:created",
+      "file": "src-tauri/src/remote_server/capture_tests.rs",
+      "line": 82,
+      "kind": "method"
+    },
+    {
+      "name": "notification:created",
+      "file": "src-tauri/src/remote_server/capture_tests.rs",
+      "line": 84,
+      "kind": "method"
+    },
+    {
+      "name": "notification:created",
+      "file": "src-tauri/src/remote_server/capture_tests.rs",
+      "line": 85,
+      "kind": "method"
+    },
+    {
+      "name": "notification:desktop_activated",
+      "file": "src-tauri/src/application/desktop_notification.rs",
+      "line": 37,
+      "kind": "method"
+    },
+    {
+      "name": "notification:updated",
+      "file": "src-tauri/src/application/notification_service.rs",
+      "line": 316,
+      "kind": "method"
+    },
+    {
+      "name": "permission:expired",
+      "file": "src-tauri/src/http_server/handlers/permissions.rs",
+      "line": 119,
+      "kind": "wrapper"
+    },
+    {
+      "name": "permission:request",
+      "file": "src-tauri/src/http_server/handlers/permissions.rs",
+      "line": 75,
+      "kind": "wrapper"
+    },
+    {
+      "name": "permission:resolved",
+      "file": "src-tauri/src/commands/permission_commands.rs",
+      "line": 58,
+      "kind": "method"
+    },
+    {
+      "name": "permission:resolved",
+      "file": "src-tauri/src/http_server/handlers/permissions.rs",
+      "line": 211,
+      "kind": "wrapper"
+    },
+    {
+      "name": "persona:applied",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 771,
+      "kind": "method"
+    },
+    {
+      "name": "persona:draft_applied",
+      "file": "src-tauri/src/commands/persona_commands.rs",
+      "line": 251,
+      "kind": "method"
+    },
+    {
+      "name": "persona:draft_updated",
+      "file": "src-tauri/src/commands/persona_commands.rs",
+      "line": 454,
+      "kind": "method"
+    },
+    {
+      "name": "persona:draft_updated",
+      "file": "src-tauri/src/http_server/handlers/personas.rs",
+      "line": 97,
+      "kind": "method"
+    },
+    {
+      "name": "persona:injection_skipped",
+      "file": "src-tauri/src/application/chat_service/mod.rs",
+      "line": 771,
+      "kind": "method"
+    },
+    {
+      "name": "plan:merge_complete",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/side_effects/transitions.rs",
+      "line": 219,
+      "kind": "method"
+    },
+    {
+      "name": "plan:proposals_may_need_update",
+      "file": "src-tauri/src/http_server/handlers/artifacts/events.rs",
+      "line": 55,
+      "kind": "wrapper"
+    },
+    {
+      "name": "plan_artifact:approved",
+      "file": "src-tauri/src/http_server/handlers/artifacts/approval.rs",
+      "line": 73,
+      "kind": "wrapper"
+    },
+    {
+      "name": "plan_artifact:created",
+      "file": "src-tauri/src/http_server/handlers/artifacts/create.rs",
+      "line": 164,
+      "kind": "wrapper"
+    },
+    {
+      "name": "plan_artifact:updated",
+      "file": "src-tauri/src/http_server/handlers/artifacts/events.rs",
+      "line": 30,
+      "kind": "wrapper"
+    },
+    {
+      "name": "plan_complexity:assessed",
+      "file": "src-tauri/src/application/plan_complexity_assessment.rs",
+      "line": 372,
+      "kind": "method"
+    },
+    {
+      "name": "plan_verification:status_changed",
+      "file": "src-tauri/src/application/verification_event_emitters.rs",
+      "line": 51,
+      "kind": "method"
+    },
+    {
+      "name": "pr_review_artifact:created",
+      "file": "src-tauri/src/http_server/handlers/agent_workspaces/pr_review/proposal.rs",
+      "line": 127,
+      "kind": "wrapper"
+    },
+    {
+      "name": "pr_review_artifact:updated",
+      "file": "src-tauri/src/http_server/handlers/agent_workspaces/pr_review/proposal.rs",
+      "line": 127,
+      "kind": "wrapper"
+    },
+    {
+      "name": "project:analysis_complete",
+      "file": "src-tauri/src/http_server/handlers/projects.rs",
+      "line": 240,
+      "kind": "wrapper"
+    },
+    {
+      "name": "project:analysis_failed",
+      "file": "src-tauri/src/commands/project_commands.rs",
+      "line": 647,
+      "kind": "method"
+    },
+    {
+      "name": "project:archived",
+      "file": "src-tauri/src/commands/project_commands.rs",
+      "line": 387,
+      "kind": "method"
+    },
+    {
+      "name": "project:created",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_cross_project.rs",
+      "line": 91,
+      "kind": "method"
+    },
+    {
+      "name": "proposal:archived",
+      "file": "src-tauri/src/http_server/helpers.rs",
+      "line": 860,
+      "kind": "wrapper"
+    },
+    {
+      "name": "proposal:created",
+      "file": "src-tauri/src/http_server/helpers.rs",
+      "line": 367,
+      "kind": "wrapper"
+    },
+    {
+      "name": "proposal:priority_assessed",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs",
+      "line": 359,
+      "kind": "method"
+    },
+    {
+      "name": "proposal:updated",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs",
+      "line": 217,
+      "kind": "method"
+    },
+    {
+      "name": "proposal:updated",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs",
+      "line": 263,
+      "kind": "method"
+    },
+    {
+      "name": "proposal:updated",
+      "file": "src-tauri/src/http_server/helpers.rs",
+      "line": 610,
+      "kind": "wrapper"
+    },
+    {
+      "name": "proposals:reordered",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs",
+      "line": 312,
+      "kind": "method"
+    },
+    {
+      "name": "qa_failed",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/qa.rs",
+      "line": 73,
+      "kind": "method"
+    },
+    {
+      "name": "qa_passed",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/qa.rs",
+      "line": 64,
+      "kind": "method"
+    },
+    {
+      "name": "ralphx://check-for-updates",
+      "file": "src-tauri/src/application/native_menu.rs",
+      "line": 20,
+      "kind": "method"
+    },
+    {
+      "name": "ralphx://show-release-notes",
+      "file": "src-tauri/src/application/native_menu.rs",
+      "line": 20,
+      "kind": "method"
+    },
+    {
+      "name": "recovery:prompt",
+      "file": "src-tauri/src/application/reconciliation/events.rs",
+      "line": 399,
+      "kind": "method"
+    },
+    {
+      "name": "review:action_failed",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 695,
+      "kind": "method"
+    },
+    {
+      "name": "review:ai_approved",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/review.rs",
+      "line": 393,
+      "kind": "method"
+    },
+    {
+      "name": "review:completed",
+      "file": "src-tauri/src/http_server/handlers/reviews/complete.rs",
+      "line": 566,
+      "kind": "wrapper"
+    },
+    {
+      "name": "review:escalated",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/review.rs",
+      "line": 428,
+      "kind": "method"
+    },
+    {
+      "name": "review:human_approved",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 453,
+      "kind": "method"
+    },
+    {
+      "name": "review:human_approved",
+      "file": "src-tauri/src/http_server/handlers/reviews/human.rs",
+      "line": 94,
+      "kind": "wrapper"
+    },
+    {
+      "name": "review:human_changes_requested",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 516,
+      "kind": "method"
+    },
+    {
+      "name": "review:human_changes_requested",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 742,
+      "kind": "method"
+    },
+    {
+      "name": "review:human_changes_requested",
+      "file": "src-tauri/src/http_server/handlers/reviews/human.rs",
+      "line": 180,
+      "kind": "wrapper"
+    },
+    {
+      "name": "review:re_review_requested",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 591,
+      "kind": "method"
+    },
+    {
+      "name": "review:state_exited",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/mod.rs",
+      "line": 429,
+      "kind": "method"
+    },
+    {
+      "name": "review:update",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/review.rs",
+      "line": 21,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "review:update",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/review.rs",
+      "line": 33,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "session:priorities_assessed",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs",
+      "line": 422,
+      "kind": "method"
+    },
+    {
+      "name": "settings:execution:updated",
+      "file": "src-tauri/src/commands/execution_commands/settings.rs",
+      "line": 155,
+      "kind": "method"
+    },
+    {
+      "name": "settings:global_execution:updated",
+      "file": "src-tauri/src/commands/execution_commands/settings.rs",
+      "line": 363,
+      "kind": "method"
+    },
+    {
+      "name": "step:created",
+      "file": "src-tauri/src/http_server/handlers/steps.rs",
+      "line": 417,
+      "kind": "wrapper"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/commands/task_step_commands.rs",
+      "line": 19,
+      "kind": "method"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/execution.rs",
+      "line": 284,
+      "kind": "method"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/execution.rs",
+      "line": 304,
+      "kind": "method"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/outcomes.rs",
+      "line": 146,
+      "kind": "method"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/http_server/handlers/steps.rs",
+      "line": 97,
+      "kind": "wrapper"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/http_server/handlers/steps.rs",
+      "line": 150,
+      "kind": "wrapper"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/http_server/handlers/steps.rs",
+      "line": 251,
+      "kind": "wrapper"
+    },
+    {
+      "name": "step:updated",
+      "file": "src-tauri/src/http_server/handlers/steps.rs",
+      "line": 352,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:archived",
+      "file": "src-tauri/src/application/task_cleanup_service.rs",
+      "line": 814,
+      "kind": "method"
+    },
+    {
+      "name": "task:archived",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 630,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:archived",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 913,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:archived",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 2244,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:cancelled",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1526,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:created",
+      "file": "src-tauri/src/application/task_transition_service/tests.rs",
+      "line": 80,
+      "kind": "method"
+    },
+    {
+      "name": "task:created",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 510,
+      "kind": "method"
+    },
+    {
+      "name": "task:created",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 512,
+      "kind": "method"
+    },
+    {
+      "name": "task:custom",
+      "file": "src-tauri/src/application/task_transition_service/tests.rs",
+      "line": 61,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "task:event",
+      "file": "src-tauri/src/application/startup_jobs.rs",
+      "line": 2040,
+      "kind": "method"
+    },
+    {
+      "name": "task:event",
+      "file": "src-tauri/src/application/task_transition_service.rs",
+      "line": 1148,
+      "kind": "method"
+    },
+    {
+      "name": "task:event",
+      "file": "src-tauri/src/application/task_transition_service.rs",
+      "line": 1150,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_restart.rs",
+      "line": 903,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/ideation_commands/ideation_commands_session.rs",
+      "line": 516,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/task_commands/execution_plan_controls.rs",
+      "line": 39,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 976,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1546,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 2029,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 2175,
+      "kind": "method"
+    },
+    {
+      "name": "task:list_changed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 2262,
+      "kind": "method"
+    },
+    {
+      "name": "task:merge_phases",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/mod.rs",
+      "line": 417,
+      "kind": "method"
+    },
+    {
+      "name": "task:merge_phases",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/side_effects/merge_attempt/mod.rs",
+      "line": 80,
+      "kind": "method"
+    },
+    {
+      "name": "task:merge_progress",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/logging.rs",
+      "line": 94,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:merged",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
+      "line": 369,
+      "kind": "method"
+    },
+    {
+      "name": "task:merged",
+      "file": "src-tauri/src/http_server/handlers/reviews/complete.rs",
+      "line": 586,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:on_enter_error",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/mod.rs",
+      "line": 331,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "task:paused",
+      "file": "src-tauri/src/application/tasks_feature_toggle_service.rs",
+      "line": 392,
+      "kind": "method"
+    },
+    {
+      "name": "task:paused",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1296,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:paused",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1329,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:paused",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 2011,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:provider_error_paused",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 3396,
+      "kind": "method"
+    },
+    {
+      "name": "task:provider_error_resuming",
+      "file": "src-tauri/src/application/reconciliation/handlers/execution.rs",
+      "line": 1928,
+      "kind": "method"
+    },
+    {
+      "name": "task:reconciliation_action",
+      "file": "src-tauri/src/tests/hardening/error_visibility_tests.rs",
+      "line": 431,
+      "kind": "method"
+    },
+    {
+      "name": "task:reconciliation_action",
+      "file": "src-tauri/src/tests/hardening/error_visibility_tests.rs",
+      "line": 434,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "task:reconciliation_action",
+      "file": "src-tauri/src/tests/hardening/error_visibility_tests.rs",
+      "line": 467,
+      "kind": "method"
+    },
+    {
+      "name": "task:recovery_failed",
+      "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
+      "line": 3516,
+      "kind": "method"
+    },
+    {
+      "name": "task:restarted",
+      "file": "src-tauri/src/commands/execution_commands.rs",
+      "line": 389,
+      "kind": "method"
+    },
+    {
+      "name": "task:restored",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 676,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:resumed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1689,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:resumed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1761,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:resumed",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 2165,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/application/task_transition_service.rs",
+      "line": 436,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/application/task_transition_service.rs",
+      "line": 438,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 459,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 523,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 597,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/commands/review_commands.rs",
+      "line": 749,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/domain/state_machine/services.rs",
+      "line": 116,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
+      "line": 376,
+      "kind": "method"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/http_server/handlers/git.rs",
+      "line": 507,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/http_server/handlers/git.rs",
+      "line": 677,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/http_server/handlers/git.rs",
+      "line": 828,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/http_server/handlers/reviews/complete.rs",
+      "line": 575,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/http_server/handlers/reviews/human.rs",
+      "line": 101,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:status_changed",
+      "file": "src-tauri/src/http_server/handlers/reviews/human.rs",
+      "line": 188,
+      "kind": "wrapper"
+    },
+    {
+      "name": "task:stopped",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1413,
+      "kind": "method"
+    },
+    {
+      "name": "task:stopped",
+      "file": "src-tauri/src/commands/task_commands/mutation.rs",
+      "line": 1439,
+      "kind": "method"
+    },
+    {
+      "name": "task:unblocked",
+      "file": "src-tauri/src/application/startup_jobs.rs",
+      "line": 1829,
+      "kind": "method"
+    },
+    {
+      "name": "task:unblocked",
+      "file": "src-tauri/src/application/task_transition_service.rs",
+      "line": 613,
+      "kind": "method"
+    },
+    {
+      "name": "task_blocked",
+      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
+      "line": 95,
+      "kind": "wrapper_method"
+    },
+    {
+      "name": "task_completed",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/outcomes.rs",
+      "line": 6,
+      "kind": "method"
+    },
+    {
+      "name": "task_failed",
+      "file": "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/outcomes.rs",
+      "line": 170,
+      "kind": "method"
+    },
+    {
+      "name": "task_started",
+      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
+      "line": 84,
+      "kind": "method"
+    },
+    {
+      "name": "task_started",
+      "file": "src-tauri/src/domain/state_machine/mocks_tests.rs",
+      "line": 117,
+      "kind": "method"
+    },
+    {
+      "name": "task_validation:event",
+      "file": "src-tauri/src/application/validation_events.rs",
+      "line": 342,
+      "kind": "method"
+    },
+    {
+      "name": "team:artifact_created",
+      "file": "src-tauri/src/http_server/handlers/artifacts/team_artifacts.rs",
+      "line": 311,
+      "kind": "wrapper"
+    },
+    {
+      "name": "ticketing:cache_invalidated",
+      "file": "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
+      "line": 449,
+      "kind": "method"
+    },
+    {
+      "name": "ticketing:cache_invalidated",
+      "file": "src-tauri/src/application/agent_workspace_external_pr_reconciliation.rs",
+      "line": 482,
+      "kind": "method"
+    },
+    {
+      "name": "ticketing:cache_invalidated",
+      "file": "src-tauri/src/application/ticketing_cache_invalidator.rs",
+      "line": 37,
+      "kind": "method"
+    },
+    {
+      "name": "ticketing:operation_updated",
+      "file": "src-tauri/src/application/ticketing_service.rs",
+      "line": 151,
+      "kind": "method"
+    },
+    {
+      "name": "verification:pending_confirmation",
+      "file": "src-tauri/src/application/verification_event_emitters.rs",
+      "line": 80,
+      "kind": "method"
+    },
+    {
+      "name": "workspace_review_artifact:created",
+      "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
+      "line": 1931,
+      "kind": "wrapper"
+    },
+    {
+      "name": "workspace_review_artifact:updated",
+      "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
+      "line": 1931,
+      "kind": "wrapper"
+    },
+    {
+      "name": "workspace_review_artifact:updated",
+      "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
+      "line": 2147,
+      "kind": "wrapper"
+    }
+  ],
+  "consumed": [
+    "agent:ask_user_question",
+    "agent:chunk",
+    "agent:conversation_created",
+    "agent:conversation_forked",
+    "agent:conversation_title_updated",
+    "agent:error",
+    "agent:heartbeat",
+    "agent:hook",
+    "agent:message",
+    "agent:message_created",
+    "agent:message_queued",
+    "agent:question_resolved",
+    "agent:queue_sent",
+    "agent:run_completed",
+    "agent:run_started",
+    "agent:session_recovered",
+    "agent:startup_progress",
+    "agent:stopped",
+    "agent:task_completed",
+    "agent:task_started",
+    "agent:tool_call",
+    "agent:turn_completed",
+    "agent:usage_updated",
+    "agent:workflow_progress",
+    "agent:workspace_changed",
+    "automation:deleted",
+    "automation:run:updated",
+    "automation:updated",
+    "dependency:added",
+    "dependency:removed",
+    "execution:error",
+    "execution:queue_changed",
+    "execution:status_changed",
+    "execution:stderr",
+    "file:change",
+    "ideation:child_session_created",
+    "ideation:finalize_pending_confirmation",
+    "ideation:session_accepted",
+    "ideation:session_created",
+    "ideation:session_title_updated",
+    "merge:validation_start",
+    "merge:validation_step",
+    "notification:created",
+    "notification:desktop_activated",
+    "notification:updated",
+    "permission:expired",
+    "permission:request",
+    "permission:resolved",
+    "persona:applied",
+    "persona:draft_updated",
+    "persona:injection_skipped",
+    "plan:merge_complete",
+    "plan_artifact:approved",
+    "plan_artifact:created",
+    "plan_artifact:updated",
+    "plan_verification:status_changed",
+    "pr_review_artifact:created",
+    "pr_review_artifact:updated",
+    "project:analysis_complete",
+    "project:analysis_failed",
+    "proposal:created",
+    "proposal:deleted",
+    "proposal:priority_assessed",
+    "proposal:updated",
+    "proposals:reordered",
+    "qa:prep",
+    "qa:test",
+    "recovery:prompt",
+    "review:update",
+    "session:priorities_assessed",
+    "step:created",
+    "step:deleted",
+    "step:status_changed",
+    "step:updated",
+    "steps:reordered",
+    "supervisor:alert",
+    "supervisor:event",
+    "task:archived",
+    "task:event",
+    "task:merge_phases",
+    "task:merge_progress",
+    "task:provider_error_paused",
+    "task:restored",
+    "task:status_changed",
+    "task:updated",
+    "task_validation:event",
+    "ticketing:cache_invalidated",
+    "workspace_review_artifact:created",
+    "workspace_review_artifact:updated"
+  ],
+  "classified": [
+    "task:created",
+    "task:status_changed",
+    "task:merge_progress",
+    "task:merge_phases",
+    "task:archived",
+    "task:restored",
+    "notification:created",
+    "notification:updated",
+    "agent:run_started",
+    "agent:run_completed",
+    "agent:turn_completed",
+    "agent:message_created",
+    "agent:task_started",
+    "agent:task_completed",
+    "agent:error",
+    "agent:queue_sent",
+    "agent:message_queued",
+    "agent:session_recovered",
+    "automation:updated",
+    "automation:deleted",
+    "ticketing:cache_invalidated",
+    "task_validation:event",
+    "proposal:created",
+    "step:created",
+    "plan_artifact:created",
+    "plan_artifact:approved",
+    "execution:status_changed",
+    "agent:conversation_created",
+    "agent:conversation_forked",
+    "agent:conversation_title_updated",
+    "agent:question_resolved",
+    "agent:stopped",
+    "agent:workspace_changed",
+    "automation:run:updated",
+    "dependency:added",
+    "dependency:removed",
+    "execution:error",
+    "execution:queue_changed",
+    "file:change",
+    "ideation:child_session_created",
+    "ideation:finalize_pending_confirmation",
+    "ideation:session_accepted",
+    "ideation:session_created",
+    "ideation:session_title_updated",
+    "merge:validation_start",
+    "merge:validation_step",
+    "notification:desktop_activated",
+    "persona:applied",
+    "persona:draft_updated",
+    "persona:injection_skipped",
+    "plan:merge_complete",
+    "plan_artifact:updated",
+    "plan_verification:status_changed",
+    "pr_review_artifact:created",
+    "pr_review_artifact:updated",
+    "project:analysis_complete",
+    "project:analysis_failed",
+    "proposal:deleted",
+    "proposal:priority_assessed",
+    "proposal:updated",
+    "proposals:reordered",
+    "qa:prep",
+    "qa:test",
+    "recovery:prompt",
+    "review:update",
+    "session:priorities_assessed",
+    "step:deleted",
+    "step:status_changed",
+    "step:updated",
+    "steps:reordered",
+    "supervisor:alert",
+    "supervisor:event",
+    "task:event",
+    "task:provider_error_paused",
+    "workspace_review_artifact:created",
+    "workspace_review_artifact:updated",
+    "agent:chunk",
+    "agent:usage_updated",
+    "agent:tool_call",
+    "agent:message",
+    "agent:hook",
+    "agent:ask_user_question",
+    "agent:heartbeat",
+    "agent:startup_progress",
+    "agent:workflow_progress",
+    "execution:stderr",
+    "permission:expired",
+    "permission:request",
+    "permission:resolved",
+    "agent_terminal:event",
+    "task:updated",
+    "my:event",
+    "window:focus",
+    "dock:updated",
+    "updater:status"
+  ],
+  "false_positive_allowlist": [
+    {
+      "kind": "function",
+      "target": "RecordingEventSink::emit_ticketing_operation_event",
+      "reason": "test double records a typed TicketingOperationEvent payload and does not emit to Tauri"
+    },
+    {
+      "kind": "function",
+      "target": "TauriTicketingEventSink::emit_ticketing_operation_event",
+      "reason": "the event argument is a TicketingOperationEvent payload; the inner AppHandle emit uses TICKETING_OPERATION_EVENT"
+    },
+    {
+      "kind": "receiver",
+      "target": "src-tauri/src/application/automation/provisioning.rs::self.event_emitter",
+      "reason": "typed AutomationEvent bus; the Tauri adapter emits a fixed classified name"
+    },
+    {
+      "kind": "receiver",
+      "target": "src-tauri/src/application/automation/service.rs::self.event_emitter",
+      "reason": "typed AutomationEvent bus; the Tauri adapter emits a fixed classified name"
+    },
+    {
+      "kind": "receiver",
+      "target": "src-tauri/src/application/automation/transition.rs::self.event_emitter",
+      "reason": "typed AutomationEvent bus; the Tauri adapter emits a fixed classified name"
+    }
+  ],
+  "static_event_functions": [
+    {
+      "function": "menu_event_name_for_id",
+      "names": [
+        "ralphx://check-for-updates",
+        "ralphx://show-release-notes"
+      ],
+      "reason": "native-menu ID mapping returns one of two local chrome event constants"
+    }
+  ],
+  "unmatched_classified_events": [
+    {
+      "name": "execution:error",
+      "reason_code": "no-tauri-emitter",
+      "reason": "execution error state is surfaced through query invalidation, not a Tauri emit"
+    },
+    {
+      "name": "file:change",
+      "reason_code": "no-tauri-emitter",
+      "reason": "file changes are consumed from watcher state without a Tauri emit"
+    },
+    {
+      "name": "proposal:deleted",
+      "reason_code": "no-tauri-emitter",
+      "reason": "proposal deletion has no current Tauri event producer"
+    },
+    {
+      "name": "qa:prep",
+      "reason_code": "no-tauri-emitter",
+      "reason": "QA preparation state has no current Tauri event producer"
+    },
+    {
+      "name": "qa:test",
+      "reason_code": "no-tauri-emitter",
+      "reason": "QA test state has no current Tauri event producer"
+    },
+    {
+      "name": "step:deleted",
+      "reason_code": "no-tauri-emitter",
+      "reason": "step deletion has no current Tauri event producer"
+    },
+    {
+      "name": "step:status_changed",
+      "reason_code": "no-tauri-emitter",
+      "reason": "step status changes have no current Tauri event producer"
+    },
+    {
+      "name": "steps:reordered",
+      "reason_code": "no-tauri-emitter",
+      "reason": "step reordering has no current Tauri event producer"
+    },
+    {
+      "name": "supervisor:alert",
+      "reason_code": "no-tauri-emitter",
+      "reason": "supervisor alerts have no current Tauri event producer"
+    },
+    {
+      "name": "supervisor:event",
+      "reason_code": "no-tauri-emitter",
+      "reason": "supervisor events have no current Tauri event producer"
+    },
+    {
+      "name": "execution:stderr",
+      "reason_code": "no-tauri-emitter",
+      "reason": "execution stderr is consumed from process state without a Tauri emit"
+    }
+  ]
+}
