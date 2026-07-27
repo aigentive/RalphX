@@ -77,6 +77,13 @@ pub struct RemoteInvokeInput {
     pub args: serde_json::Value,
 }
 
+/// Fetch seam as of PR 2.1: id + path only.
+///
+/// PR 2.2 migrates `backendFetch(path, init)` call sites that POST JSON bodies and branch on
+/// `res.ok`/`res.status`, so it MUST widen this additively — `method`, `body`, `headers` here,
+/// and a `{ status, body }` envelope out of `remote_fetch` — rather than reinterpreting the
+/// current bare-`Value` return. Nothing consumes the command yet, so the widening is not a
+/// break; silently keeping this shape is.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteFetchInput {
