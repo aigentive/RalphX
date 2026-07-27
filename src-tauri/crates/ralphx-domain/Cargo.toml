@@ -8,6 +8,7 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 futures = "0.3"
+ralphx-remote-protocol = { path = "../ralphx-remote-protocol" }
 rusqlite = { version = "0.32" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
