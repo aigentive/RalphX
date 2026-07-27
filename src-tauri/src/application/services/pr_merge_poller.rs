@@ -51,7 +51,7 @@ use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
     PrReviewFeedback,
 };
-use crate::domain::services::{AgentWorkspaceOutcomeAdapter, GithubServiceTrait, PrStatus};
+use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_WORKSPACE_PR_FIXER, AGENT_WORKSPACE_REPAIR,
