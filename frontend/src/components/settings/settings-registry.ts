@@ -12,6 +12,7 @@ export type SettingsSectionId =
   | "project-analysis"
   | "api-keys"
   | "external-mcp"
+  | "remote-access"
   | "integrations"
   | "github"
   | "linear"
@@ -67,10 +68,28 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "granola", groupId: "integrations", label: "Granola" },
   { id: "api-keys", groupId: "access", label: "API Keys" },
   { id: "external-mcp", groupId: "access", label: "External MCP" },
+  { id: "remote-access", groupId: "access", label: "Remote Access" },
   { id: "updates", groupId: "preferences", label: "Updates" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },
   { id: "notifications", groupId: "preferences", label: "Notifications" },
 ];
+
+/** Feature-flag slice the settings nav depends on (subset of FeatureFlags). */
+export interface SettingsSectionFlagGates {
+  remoteEnvironments?: boolean;
+}
+
+/**
+ * Sections visible for the given feature flags. `remote-access` ships dark
+ * behind `remoteEnvironments` (PR 1.7, §8 flags note).
+ */
+export function visibleSettingsSections(
+  flags: SettingsSectionFlagGates,
+): SettingsSectionMeta[] {
+  return SETTINGS_SECTIONS.filter(
+    (section) => section.id !== "remote-access" || flags.remoteEnvironments === true,
+  );
+}
 
 export type SettingsCompositeTab = "general" | "review-policy" | "autonomy-policy" | "review";
 
