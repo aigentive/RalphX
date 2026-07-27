@@ -91,6 +91,11 @@ pub struct AutomationPlanJudgeVerdict {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision_instructions: Option<String>,
     pub evaluated_artifact_id: String,
+    /// Backend-stamped artifact version at judge invocation time; not part of
+    /// the model output contract. `None` on legacy stored verdicts, which must
+    /// fail closed against the current artifact version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluated_artifact_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

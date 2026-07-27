@@ -1894,6 +1894,33 @@ fn valid_plan_revise_verdict(artifact_id: &str, instructions: &str) -> String {
     .to_string()
 }
 
+fn stored_plan_approve_verdict(artifact_id: &str, artifact_version: u32) -> String {
+    json!({
+        "decision": "approve",
+        "reason": "The plan is aligned with the automation goal and current phase.",
+        "confidence": "high",
+        "evaluatedArtifactId": artifact_id,
+        "evaluatedArtifactVersion": artifact_version
+    })
+    .to_string()
+}
+
+fn stored_plan_revise_verdict(
+    artifact_id: &str,
+    instructions: &str,
+    artifact_version: u32,
+) -> String {
+    json!({
+        "decision": "revise",
+        "reason": "The plan needs a narrower recovery and validation section.",
+        "confidence": "medium",
+        "revisionInstructions": instructions,
+        "evaluatedArtifactId": artifact_id,
+        "evaluatedArtifactVersion": artifact_version
+    })
+    .to_string()
+}
+
 fn item_status(goal_items_json: &str, id: &str) -> String {
     let value: Value = serde_json::from_str(goal_items_json).unwrap();
     value
@@ -6589,7 +6616,7 @@ async fn automation_scheduler_stored_approve_verdict_recovers_missing_approval_r
             &run_id,
             AutomationPlanJudgeState::None,
             AutomationPlanJudgeState::Done,
-            Some(valid_plan_approve_verdict("plan-artifact-1")),
+            Some(stored_plan_approve_verdict("plan-artifact-1", 1)),
             None,
         )
         .await
@@ -6631,6 +6658,120 @@ async fn automation_scheduler_stored_approve_verdict_recovers_missing_approval_r
             .as_ref()
             .map(|class| class.as_str()),
         Some("plan_mode_accepted")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_stored_approve_verdict_ignores_stale_artifact_version() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Revised plan body.", 2)
+        .await;
+    let run_id = AutomationRunId::from_string("run-1");
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &run_id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::Done,
+            Some(stored_plan_approve_verdict("plan-artifact-1", 1)),
+            None,
+        )
+        .await
+        .unwrap();
+    let scheduler = scenario.scheduler();
+
+    scheduler.tick_once().await.unwrap();
+
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+    assert!(scenario.resumer.prompts().is_empty());
+}
+
+#[tokio::test]
+async fn automation_scheduler_stored_approve_verdict_without_version_fails_closed() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let run_id = AutomationRunId::from_string("run-1");
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &run_id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::Done,
+            Some(valid_plan_approve_verdict("plan-artifact-1")),
+            None,
+        )
+        .await
+        .unwrap();
+    let scheduler = scenario.scheduler();
+
+    scheduler.tick_once().await.unwrap();
+
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+    assert!(scenario.resumer.prompts().is_empty());
+}
+
+#[tokio::test]
+async fn automation_scheduler_fresh_plan_judge_verdict_stamps_evaluated_artifact_version() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 3)
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    let latest = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+    let verdict_json = latest
+        .plan_judge_verdict_json
+        .expect("fresh approve verdict should be stored");
+    let value: Value = serde_json::from_str(&verdict_json).unwrap();
+    assert_eq!(
+        value
+            .get("evaluatedArtifactVersion")
+            .and_then(Value::as_u64),
+        Some(3)
     );
 }
 
@@ -7512,7 +7653,11 @@ async fn automation_scheduler_plan_judge_revision_recovery_rederives_lost_pendin
             &run_id,
             AutomationPlanJudgeState::None,
             AutomationPlanJudgeState::Done,
-            Some(valid_plan_revise_verdict("plan-artifact-1", instructions)),
+            Some(stored_plan_revise_verdict(
+                "plan-artifact-1",
+                instructions,
+                1,
+            )),
             None,
         )
         .await

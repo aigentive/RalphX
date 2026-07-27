@@ -641,6 +641,7 @@ impl AutomationPlanJudgeTask {
                     plan_artifact_id.as_str()
                 )
             })?;
+        let plan_artifact_version = artifact.metadata.version;
         let ArtifactContent::Inline { text } = artifact.content else {
             return Err(format!(
                 "automation plan judge plan artifact {} is not inline-readable",
@@ -649,6 +650,7 @@ impl AutomationPlanJudgeTask {
         };
         Ok(AutomationPlanJudgePayload {
             plan_artifact_id: plan_artifact_id.as_str().to_string(),
+            plan_artifact_version,
             plan_content: text,
             verification_context: self.verification_context.clone(),
         })
@@ -684,7 +686,7 @@ impl AutomationPlanJudgeTask {
             .map_err(|error| JudgeInvocationFailure::Invocation {
                 detail: error.to_string(),
             })?;
-        let verdict = parse_automation_plan_judge_verdict(
+        let mut verdict = parse_automation_plan_judge_verdict(
             &output.raw_output,
             AutomationPlanJudgeValidationContext {
                 expected_artifact_id: Some(&payload.plan_artifact_id),
@@ -694,6 +696,9 @@ impl AutomationPlanJudgeTask {
             detail: error.to_string(),
             raw_output: output.raw_output.clone(),
         })?;
+        // Backend authority: the judge evaluated the artifact version loaded into
+        // the prompt payload, regardless of what the model echoed back.
+        verdict.evaluated_artifact_version = Some(payload.plan_artifact_version);
         let verdict_json = serde_json::to_string(&verdict).map_err(|error| {
             JudgeInvocationFailure::InvalidOutput {
                 detail: format!("failed to serialize normalized plan judge verdict: {error}"),
@@ -733,12 +738,16 @@ impl AutomationPlanJudgeTask {
                 ..AutomationPlanJudgeTaskOutcome::default()
             });
         };
-        if current.plan_artifact_id != parsed.verdict.evaluated_artifact_id {
+        if current.plan_artifact_id != parsed.verdict.evaluated_artifact_id
+            || parsed.verdict.evaluated_artifact_version != Some(current.artifact_version)
+        {
             tracing::warn!(
                 automation_id = %automation.id,
                 run_id = %run.id,
                 evaluated_artifact_id = parsed.verdict.evaluated_artifact_id,
+                evaluated_artifact_version = ?parsed.verdict.evaluated_artifact_version,
                 current_artifact_id = current.plan_artifact_id,
+                current_artifact_version = current.artifact_version,
                 "Discarding automation plan judge verdict because the plan artifact changed"
             );
             self.transition_service
@@ -1043,6 +1052,7 @@ impl AutomationPlanJudgeTask {
 #[derive(Debug, Clone)]
 struct AutomationPlanJudgePayload {
     plan_artifact_id: String,
+    plan_artifact_version: u32,
     plan_content: String,
     verification_context: Option<AutomationPlanVerificationJudgeContext>,
 }
@@ -3796,12 +3806,16 @@ impl AutomationScheduler {
         let Some(current) = self.current_plan_application_context(run).await? else {
             return Ok(());
         };
-        if current.plan_artifact_id != verdict.evaluated_artifact_id {
+        if current.plan_artifact_id != verdict.evaluated_artifact_id
+            || verdict.evaluated_artifact_version != Some(current.artifact_version)
+        {
             tracing::warn!(
                 automation_id = %automation.id,
                 run_id = %run.id,
                 evaluated_artifact_id = verdict.evaluated_artifact_id,
+                evaluated_artifact_version = ?verdict.evaluated_artifact_version,
                 current_artifact_id = current.plan_artifact_id,
+                current_artifact_version = current.artifact_version,
                 "Ignoring stored automation plan judge verdict because the plan artifact changed"
             );
             self.transition_service
