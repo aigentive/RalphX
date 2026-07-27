@@ -175,8 +175,9 @@ pub(crate) trait TailnetSelfAddressProvider: Send + Sync {
 
 /// Stub provider reporting that this host has no tailnet addresses.
 ///
-/// Consequence: `RemoteExposureMode::TailnetDirect` is refused until PR 1.6 ships the real
-/// provider. Serve mode (loopback) is unaffected.
+/// Test double since PR 1.6 wired the real `TailscaleSelfAddressProvider` into
+/// production call sites; retained for listener/settings tests.
+#[allow(dead_code)]
 pub(crate) struct UnconfiguredTailnetProvider;
 
 #[async_trait::async_trait]

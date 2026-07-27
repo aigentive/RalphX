@@ -42,6 +42,8 @@ pub(crate) struct RemoteHealthBody {
     pub status: &'static str,
 }
 
+// Consumed by PR 1.7's Remote Access pane (endpoint list).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum AdvertisedEndpointKind {
@@ -49,6 +51,8 @@ pub(crate) enum AdvertisedEndpointKind {
     TailnetDirect,
 }
 
+// Consumed by PR 1.7's Remote Access pane (endpoint list).
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AdvertisedEndpoint {
@@ -58,6 +62,8 @@ pub(crate) struct AdvertisedEndpoint {
 }
 
 /// Describes remote URLs from already-observed reachability facts without granting access.
+// Consumed by PR 1.7's Remote Access pane (endpoint list).
+#[allow(dead_code)]
 pub(crate) fn advertised_endpoints(
     exposure_mode: RemoteExposureMode,
     port: u16,

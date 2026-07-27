@@ -105,6 +105,8 @@ pub(crate) struct TailscaleStatus {
 
 #[derive(Debug, Deserialize)]
 struct TailscaleSelfStatus {
+    // Read by magicdns_name(), consumed by PR 1.7's advertised-endpoints surface.
+    #[allow(dead_code)]
     #[serde(rename = "DNSName", default)]
     dns_name: String,
     #[serde(rename = "TailscaleIPs", default)]
@@ -121,6 +123,8 @@ impl TailscaleStatus {
             .collect()
     }
 
+    // Consumed by PR 1.7's advertised-endpoints surface.
+    #[allow(dead_code)]
     pub(crate) fn magicdns_name(&self) -> Option<&str> {
         self.self_status
             .as_ref()
@@ -136,6 +140,8 @@ pub(crate) fn parse_status(stdout: &str) -> Result<TailscaleStatus, TailnetProvi
 }
 
 /// Probes the descriptor route through Tailscale's MagicDNS hostname.
+// Consumed by PR 1.7's advertised-endpoints surface.
+#[allow(dead_code)]
 pub(crate) async fn probe_magicdns_reachability(magicdns_name: &str) -> bool {
     let hostname = magicdns_name.trim_end_matches('.');
     if hostname.is_empty() {
@@ -167,6 +173,8 @@ pub(crate) async fn probe_magicdns_reachability(magicdns_name: &str) -> bool {
     )
 }
 
+// Live once probe_magicdns_reachability gains its PR 1.7 caller.
+#[allow(dead_code)]
 fn install_rustls_crypto_provider() {
     static INSTALL_PROVIDER: std::sync::Once = std::sync::Once::new();
     INSTALL_PROVIDER.call_once(|| {
