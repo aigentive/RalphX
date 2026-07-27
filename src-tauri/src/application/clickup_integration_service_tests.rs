@@ -598,7 +598,7 @@ async fn prompt_expansion_renders_clickup_task_and_reports_zero_budget() {
     };
 
     let rendered = service
-        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 4096)
+        .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 4096)
         .await;
     assert!(rendered.rewritten_prompt.contains("<clickup_task"));
     assert!(rendered.rewritten_prompt.contains("Fix login"));
@@ -627,7 +627,7 @@ async fn budgeted_expansion_reports_typed_budget_auth_and_fetch_skips() {
     let reference = clickup_reference("task-1");
 
     let zero_budget = service
-        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 0)
+        .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 0)
         .await;
     assert_eq!(zero_budget.rewritten_prompt, "Base");
     assert_eq!(
@@ -648,7 +648,11 @@ async fn budgeted_expansion_reports_typed_budget_auth_and_fetch_skips() {
     }));
 
     let one = service
-        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 16 * 1024)
+        .expand_references_for_prompt_with_budget(
+            "Base",
+            std::slice::from_ref(&reference),
+            16 * 1024,
+        )
         .await;
     let one_reference_budget = one.rewritten_prompt.len() - "Base".len();
     let starved = service
@@ -667,7 +671,7 @@ async fn budgeted_expansion_reports_typed_budget_auth_and_fetch_skips() {
     let (disabled_service, _disabled_repo, _disabled_secret) =
         build_service(Arc::new(TestClickUpClient::default()));
     let disabled = disabled_service
-        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 4096)
+        .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 4096)
         .await;
     assert_eq!(
         disabled.skipped_references[0].reason,
@@ -680,7 +684,7 @@ async fn budgeted_expansion_reports_typed_budget_auth_and_fetch_skips() {
         .await
         .unwrap();
     let missing_credentials = service
-        .expand_references_for_prompt_with_budget("Base", &[reference.clone()], 4096)
+        .expand_references_for_prompt_with_budget("Base", std::slice::from_ref(&reference), 4096)
         .await;
     assert_eq!(
         missing_credentials.skipped_references[0].reason,
