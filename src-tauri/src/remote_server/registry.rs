@@ -136,9 +136,8 @@ pub fn extract_arg<T: serde::de::DeserializeOwned>(
         .or_else(|| args.get(camel_case(name)))
         .cloned()
         .unwrap_or(Value::Null);
-    serde_json::from_value(raw).map_err(|error| {
-        RemoteInvokeError::bad_args(format!("Invalid argument `{name}`: {error}"))
-    })
+    serde_json::from_value(raw)
+        .map_err(|error| RemoteInvokeError::bad_args(format!("Invalid argument `{name}`: {error}")))
 }
 
 /// Serialises a command's success value exactly as the Tauri IPC layer does.

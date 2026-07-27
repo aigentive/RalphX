@@ -80,8 +80,14 @@ pub const ARMING_TRANSITION_TARGETS: &[&str] = &[
 ];
 
 /// `InternalStatus` targets that only halt/park → authority-reducing, exempt.
-pub const HALTING_TRANSITION_TARGETS: &[&str] =
-    &["Paused", "Blocked", "Stopped", "Failed", "Cancelled", "Archived"];
+pub const HALTING_TRANSITION_TARGETS: &[&str] = &[
+    "Paused",
+    "Blocked",
+    "Stopped",
+    "Failed",
+    "Cancelled",
+    "Archived",
+];
 
 fn all_cut_sinks() -> BTreeSet<&'static str> {
     TRANSITION_SINKS
@@ -263,7 +269,10 @@ impl<'a> FileVisitor<'a> {
         let Some(current) = self.current_fn().map(str::to_string) else {
             return;
         };
-        self.graph.node_mut(&current).callees.insert(callee.to_string());
+        self.graph
+            .node_mut(&current)
+            .callees
+            .insert(callee.to_string());
     }
 
     fn record_token(&mut self, token: String) {
@@ -290,7 +299,11 @@ impl<'a> FileVisitor<'a> {
     }
 
     /// Registers a discovered background-loop entry point from a spawn/listen call argument.
-    fn record_loop_root(&mut self, kind: &str, args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>) {
+    fn record_loop_root(
+        &mut self,
+        kind: &str,
+        args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+    ) {
         let enclosing = self.current_fn().unwrap_or("<file-scope>").to_string();
         self.loop_ordinal += 1;
         let id = format!("{}::{}#{}", self.file, enclosing, self.loop_ordinal);
@@ -310,7 +323,9 @@ impl<'a> FileVisitor<'a> {
 }
 
 fn path_last_segment(path: &syn::Path) -> Option<String> {
-    path.segments.last().map(|segment| segment.ident.to_string())
+    path.segments
+        .last()
+        .map(|segment| segment.ident.to_string())
 }
 
 fn path_string(path: &syn::Path) -> String {
@@ -406,7 +421,11 @@ struct BodyScan {
 }
 
 impl BodyScan {
-    fn note(&mut self, name: &str, args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>) {
+    fn note(
+        &mut self,
+        name: &str,
+        args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+    ) {
         self.callees.insert(name.to_string());
         if all_cut_sinks().contains(name) {
             self.sink_hits.insert(SinkHit {
@@ -476,7 +495,10 @@ impl<'ast, 'a> Visit<'ast> for FileVisitor<'a> {
                 self.record_token(path_string(&path.path));
                 if all_cut_sinks().contains(name.as_str()) {
                     let targets = internal_status_targets(&node.args);
-                    self.record_sink_hit(SinkHit { sink: name, targets });
+                    self.record_sink_hit(SinkHit {
+                        sink: name,
+                        targets,
+                    });
                 }
             }
         }
@@ -623,11 +645,7 @@ pub fn parse_registered_command_names(source: &str) -> Vec<String> {
             continue;
         }
         let leaf = candidate.rsplit("::").next().unwrap_or(candidate);
-        if leaf
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !leaf.is_empty()
-        {
+        if leaf.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !leaf.is_empty() {
             names.push(leaf.to_string());
         }
     }

@@ -19,7 +19,10 @@ fn trace(graph: &CallGraph, root: &str) -> Option<Vec<String>> {
         if !node.sink_hits.is_empty() && name != root {
             let mut path = vec![format!(
                 "{name} !! {:?}",
-                node.sink_hits.iter().map(|h| h.sink.clone()).collect::<Vec<_>>()
+                node.sink_hits
+                    .iter()
+                    .map(|h| h.sink.clone())
+                    .collect::<Vec<_>>()
             )];
             let mut cur = name.clone();
             while let Some(p) = parents.get(&cur) {
