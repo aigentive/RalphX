@@ -3,7 +3,7 @@ import {
   typedInvoke,
   typedInvokeWithTransform,
 } from "@/lib/tauri";
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 import { sourcePullRequestInvokeInput } from "./chat";
 
 import {
@@ -147,7 +147,7 @@ async function postAutomationJson<TRaw, TResult>(
   transform: (raw: TRaw) => TResult,
   body?: Record<string, unknown>,
 ): Promise<TResult> {
-  const response = await fetch(backendApiUrl(endpoint), {
+  const response = await backendFetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

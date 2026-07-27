@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 import { IdeationSettingsResponseSchema } from "../types/ideation-config";
 import type { IdeationSettings } from "../types/ideation-config";
 import {
@@ -723,8 +723,8 @@ export const ideationApi = {
     getStatus: async (
       sessionId: string
     ): Promise<VerificationStatusResponse> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/verification`)
+      const res = await backendFetch(
+        `ideation/sessions/${sessionId}/verification`
       );
       if (!res.ok) {
         throw new Error(`Failed to get verification status: ${res.status}`);
@@ -745,8 +745,8 @@ export const ideationApi = {
      * Atomically transitions acceptance_status Pending → Accepted, then creates tasks.
      */
     accept: async (sessionId: string): Promise<{ status: string; sessionId: string }> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/accept-finalize`),
+      const res = await backendFetch(
+        `ideation/sessions/${sessionId}/accept-finalize`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -766,8 +766,8 @@ export const ideationApi = {
      * Resets acceptance_status to null, allowing the agent to re-finalize.
      */
     reject: async (sessionId: string): Promise<{ status: string; sessionId: string }> => {
-      const res = await fetch(
-        backendApiUrl(`ideation/sessions/${sessionId}/reject-finalize`),
+      const res = await backendFetch(
+        `ideation/sessions/${sessionId}/reject-finalize`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
