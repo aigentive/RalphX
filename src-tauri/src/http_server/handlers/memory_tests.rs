@@ -2,20 +2,16 @@ use std::sync::Arc;
 
 use axum::{extract::State, Json};
 
-use crate::application::{AppState, TeamService, TeamStateTracker};
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{MemoryBucket, ProjectId};
 use crate::http_server::handlers::memory::upsert_memories;
 use crate::http_server::types::{HttpServerState, MemoryEntryInput, UpsertMemoriesRequest};
 
 fn test_state(app_state: Arc<AppState>) -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
     HttpServerState {
         app_state,
         execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
         delegation_service: Default::default(),
     }
 }

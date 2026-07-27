@@ -249,6 +249,7 @@ async fn recovery_correlates_the_exact_pr_autofix_attempt_not_a_newer_unrelated_
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             None,
         )
@@ -487,6 +488,7 @@ async fn recovery_restores_blocked_state_only_for_the_current_pr_autofix_replace
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             None,
         )
@@ -540,6 +542,7 @@ async fn recovery_does_not_treat_an_unrelated_active_run_as_a_pr_autofix_replace
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             None,
         )

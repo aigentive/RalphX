@@ -1961,6 +1961,7 @@ async fn agent_workspace_review_feedback_starts_one_failed_exact_attempt_retry()
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -2120,6 +2121,7 @@ async fn agent_workspace_review_feedback_retry_exhaustion_blocks_same_manual_gat
         &conversation_id,
         Arc::clone(&workspace_repo),
         Some(Arc::clone(&agent_run_repo)),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await

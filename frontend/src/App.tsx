@@ -252,7 +252,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
 
   useEffect(() => {
     if (!skillsEnabled && currentView === "skills") {
-      setCurrentView(DEFAULT_PROJECT_VIEW);
+      setCurrentView(DEFAULT_APP_VIEW);
     }
   }, [currentView, setCurrentView, skillsEnabled]);
 

@@ -137,7 +137,6 @@ export interface AgentsChatHeaderProps {
   onPreloadArtifacts?: () => void;
   publishShortcutLabel?: string;
   publishShortcutWorkspace?: AgentConversationWorkspace | null;
-  suppressPublishShortcut?: boolean;
   promotePublishShortcut?: boolean;
   isPublishingWorkspace?: boolean;
   onToggleTerminal?: () => void;
@@ -318,7 +317,6 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onPreloadArtifacts,
   publishShortcutLabel = "Commit & Publish",
   publishShortcutWorkspace = null,
-  suppressPublishShortcut = false,
   promotePublishShortcut = false,
   isPublishingWorkspace = false,
   onToggleTerminal,
@@ -408,8 +406,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   // tab bar already exposes it. A current passed Review promotes publishing so
   // the user does not have to switch tabs just to reach the publish flow.
   const showPublishShortcut = Boolean(
-    !suppressPublishShortcut &&
-      conversation &&
+    conversation &&
       shouldShowAgentWorkspacePublishSurface(effectivePublishWorkspace) &&
       (!artifactOpen || showPromotedPublishShortcut),
   );

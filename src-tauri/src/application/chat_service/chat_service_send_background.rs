@@ -204,6 +204,7 @@ async fn resolve_memory_agent_runtime_for_background<R: Runtime>(
             project_id,
             None,
             crate::domain::agents::RoutingRole::MemoryCapture,
+            None,
             crate::infrastructure::agents::claude::agent_names::SHORT_MEMORY_CAPTURE,
             "memory pipeline owning conversation",
             conversation.provider_harness,

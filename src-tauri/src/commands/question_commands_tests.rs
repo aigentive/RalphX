@@ -184,7 +184,7 @@ fn continuation_metadata_can_carry_compact_plan_mode_verdict_outcome() {
     };
 
     let metadata: serde_json::Value = serde_json::from_str(
-        &plan_mode_proposal_continuation_metadata_with_outcome(Some(&outcome)),
+        &plan_mode_proposal_continuation_metadata_with_outcome("req-plan", Some(&outcome)),
     )
     .expect("metadata json");
     let captured = metadata
