@@ -193,6 +193,22 @@ describe("MockEventBus", () => {
     bus.clear();
     expect(bus.getListenerCount("agent:test")).toBe(0);
   });
+
+  it("treats repeated subscriptions of one handler reference as independent", () => {
+    const bus = new MockEventBus();
+    const handler = vi.fn();
+
+    const first = bus.subscribe("agent:test", handler);
+    bus.subscribe("agent:test", handler);
+    expect(bus.getListenerCount("agent:test")).toBe(2);
+
+    // Unsubscribing one must not silently remove the sibling subscription.
+    first();
+    expect(bus.getListenerCount("agent:test")).toBe(1);
+
+    bus.emit("agent:test", "payload");
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("createEventBus", () => {

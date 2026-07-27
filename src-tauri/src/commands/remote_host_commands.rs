@@ -20,6 +20,10 @@ use crate::AppState;
 pub struct RemoteListenerStatus {
     pub enabled: bool,
     pub exposure_mode: RemoteExposureMode,
+    /// The CONFIGURED port, not necessarily the bound one: `RALPHX_REMOTE_PORT` overrides the
+    /// bind (`effective_remote_port`, `remote_server/settings.rs`) and that override surfaces
+    /// only through `bind_address`. PR 1.7 must derive advertised URLs from `bind_address`, not
+    /// from this field, or a dev-parity host will advertise a port nothing listens on.
     pub port: u16,
     pub environment_id: String,
     pub running: bool,

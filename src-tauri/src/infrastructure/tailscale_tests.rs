@@ -39,6 +39,25 @@ const LOGGED_OUT_STATUS: &str = r#"{
   "CurrentTailnet": null
 }"#;
 
+/// The shape a real logged-out/stopped daemon actually emits: `Self` is present and its
+/// `TailscaleIPs` is an explicit `null`, because Go marshals the nil slice with no `omitempty`.
+/// `#[serde(default)]` does not cover an explicit null, so this is the fixture that catches a
+/// regression back to `Vec<IpAddr>`.
+const LOGGED_OUT_STATUS_WITH_NULL_IPS: &str = r#"{
+  "Version": "1.66.1",
+  "BackendState": "Stopped",
+  "Self": {
+    "ID": "n1234567890CNTRL",
+    "HostName": "mac-studio",
+    "DNSName": "",
+    "OS": "macOS",
+    "TailscaleIPs": null,
+    "Online": false
+  },
+  "MagicDNSSuffix": "",
+  "CurrentTailnet": null
+}"#;
+
 #[derive(Clone, Default)]
 struct RecordingTailscaleCommandRunner {
     calls: Arc<Mutex<Vec<Vec<String>>>>,
@@ -81,6 +100,16 @@ fn running_status_parses_magicdns_and_filters_self_addresses() {
 #[test]
 fn logged_out_status_is_valid_and_has_no_self_addresses() {
     let status = parse_status(LOGGED_OUT_STATUS).expect("logged-out status parses");
+
+    assert_eq!(status.magicdns_name(), None);
+    assert!(status.self_addresses().is_empty());
+}
+
+/// §5.3: a logged-out host degrades to an empty endpoint list, never a provider error.
+#[test]
+fn logged_out_status_with_null_tailscale_ips_parses_to_no_self_addresses() {
+    let status =
+        parse_status(LOGGED_OUT_STATUS_WITH_NULL_IPS).expect("explicit null TailscaleIPs parses");
 
     assert_eq!(status.magicdns_name(), None);
     assert!(status.self_addresses().is_empty());

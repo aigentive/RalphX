@@ -546,27 +546,21 @@
     "excludedFromV1": false
   },
   {
-    "name": "my:event",
+    "name": "ralphx://check-for-updates",
     "delivery": "localOnly",
-    "origin": "webview",
+    "origin": "backend",
     "excludedFromV1": false
   },
   {
-    "name": "window:focus",
+    "name": "ralphx://show-release-notes",
     "delivery": "localOnly",
-    "origin": "webview",
+    "origin": "backend",
     "excludedFromV1": false
   },
   {
-    "name": "dock:updated",
+    "name": "gh-auth:login_prompt",
     "delivery": "localOnly",
-    "origin": "webview",
-    "excludedFromV1": false
-  },
-  {
-    "name": "updater:status",
-    "delivery": "localOnly",
-    "origin": "webview",
+    "origin": "backend",
     "excludedFromV1": false
   }
 ]

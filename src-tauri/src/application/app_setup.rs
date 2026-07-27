@@ -177,7 +177,14 @@ pub(crate) fn run_app_setup(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
 
-    // PR 1.1 replaces this constant-false seam with the persisted remote_host setting.
+    // Constant-false seam, still unwired ON PURPOSE — PR 1.1 (merged) mints the
+    // `remote_host_settings` row but does NOT own this call site. PR 1.4 owns it: it replaces
+    // the constant with the persisted host-mode-configured read AND installs the durable
+    // sequencer behind it (02-phase-1-host-mode.md, "Wire capture (PR 0.1 bank) + sequencer
+    // installation into app setup, gated on host-mode-configured"; §3.4 capture-at-setup, P-23).
+    // Note for that PR: this runs BEFORE SQLite open/migration, so the settings read has to move
+    // into the async setup phase (next to `auto_start_remote_listener_from_handle` below).
+    // Until then capture never installs, and the durable feed is a no-op drain regardless.
     crate::remote_server::capture::install_if_host_mode_configured(app_handle.clone(), false);
 
     configure_bundled_runtime_env(app);

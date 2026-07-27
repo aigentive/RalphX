@@ -213,6 +213,15 @@ pub struct Manifest {
     pub false_positive_allowlist: Vec<ManifestFalsePositive>,
     pub static_event_functions: Vec<StaticEventFunction>,
     pub unmatched_classified_events: Vec<ReviewedUnmatchedEvent>,
+    /// Backend emit names the classification table deliberately does not carry into v1.
+    ///
+    /// `verify_manifest` only proves consumed ⊆ classified and classified ⇒ emitted, so without
+    /// this section the emitted→classified direction is invisible: §3.4 mandates glob expansion
+    /// (`task:*`, `team:*`, `ticketing:*` … Durable) while the seeded table narrows to
+    /// UI-consumed ∪ explicitly enumerated names. Publishing the residue makes the narrowing
+    /// auditable and diffable — the regenerate-and-diff staleness check turns any NEW
+    /// unclassified backend emit into a CI failure that forces a recorded decision.
+    pub unclassified_backend_emits: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -280,6 +289,18 @@ pub fn build_manifest(root: &Path) -> Result<Manifest> {
         .map(|entry| entry.name.to_owned())
         .collect::<Vec<_>>();
     verify_manifest(&emitted, &consumed, EVENT_CLASSIFICATIONS)?;
+    let classified_set = classified
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let unclassified_backend_emits = emitted
+        .iter()
+        .map(|site| site.name.as_str())
+        .filter(|name| !classified_set.contains(name))
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     Ok(Manifest {
         schema_version: 1,
         emitted,
@@ -288,6 +309,7 @@ pub fn build_manifest(root: &Path) -> Result<Manifest> {
         false_positive_allowlist: manifest_false_positives(),
         static_event_functions: STATIC_EVENT_FUNCTIONS.to_vec(),
         unmatched_classified_events: reviewed_unmatched_events(),
+        unclassified_backend_emits,
     })
 }
 
@@ -331,8 +353,12 @@ pub fn scan_production_rust_tree(root: &Path) -> Result<Vec<EmitSite>> {
     Ok(emitted)
 }
 
-fn verify_manifest(
-    emitted: &[EmitSite],
+/// Fails when a UI-consumed event name is absent from the classification table.
+///
+/// Exposed (rather than inlined into `verify_manifest`) so the failure direction PR 0.1's
+/// acceptance criterion #5 claims — "removing any UI-consumed name from the classification table
+/// makes the manifest test fail" — is unit-testable with injected slices.
+pub fn verify_consumed_classification(
     consumed: &[String],
     classifications: &[EventClassification],
 ) -> Result<()> {
@@ -351,6 +377,15 @@ fn verify_manifest(
             missing_classifications.join(", ")
         );
     }
+    Ok(())
+}
+
+fn verify_manifest(
+    emitted: &[EmitSite],
+    consumed: &[String],
+    classifications: &[EventClassification],
+) -> Result<()> {
+    verify_consumed_classification(consumed, classifications)?;
 
     let emitted_names = emitted
         .iter()
@@ -733,16 +768,33 @@ fn collect_call_sites(syntax: &File, file: &str) -> Vec<CallSite> {
     calls
 }
 
-fn wrapper_for_method(method: &str, current_function: Option<&str>) -> Option<&'static Wrapper> {
+/// Any registered method wrapper whose method name matches, ignoring the owning type.
+///
+/// `syn` cannot resolve a receiver's type, so the wrapper match is by method name plus the
+/// enclosing-impl guard below. This helper exposes the name-only half so a call that matches the
+/// name but fails the guard can be treated as ambiguous instead of silently skipped.
+fn method_wrapper_by_name(method: &str) -> Option<&'static Wrapper> {
     WRAPPERS.iter().find(|wrapper| {
         wrapper
             .name
             .rsplit_once("::")
             .is_some_and(|(_, name)| name == method)
-            && (method != "emit_event"
-                || current_function
-                    .is_some_and(|function| function.starts_with("AppChatService::")))
     })
+}
+
+fn wrapper_for_method(method: &str, current_function: Option<&str>) -> Option<&'static Wrapper> {
+    method_wrapper_by_name(method).filter(|_| {
+        // `emit_event` is not unique: `ExternalMcpSupervisor` and the rule-ingestion service
+        // both define one whose first argument is a status string, not an event name. Only
+        // `AppChatService`'s forwards an event name, so the wrapper applies inside that impl.
+        method != "emit_event"
+            || current_function.is_some_and(|function| function.starts_with("AppChatService::"))
+    })
+}
+
+/// True for a `self.…` / `Self::…` receiver.
+fn is_self_receiver(receiver: &Expr) -> bool {
+    matches!(peel(receiver), Expr::Path(path) if path.path.is_ident("self"))
 }
 
 fn wrapper_for_function(function: &FunctionInfo) -> Option<&'static Wrapper> {
@@ -891,6 +943,26 @@ impl<'ast> Visit<'ast> for EmitVisitor<'_> {
                         line: node.span().start().line,
                     });
                 }
+            }
+        } else if let Some(wrapper) = method_wrapper_by_name(&node.method.to_string()) {
+            // The method name matches a registered event-forwarding wrapper but the
+            // enclosing-impl guard rejected it. On a `self` receiver that is the intended
+            // same-name-different-type case (`ExternalMcpSupervisor::emit_event`). On any other
+            // receiver the callee's type is unknown, so a genuine cross-object wrapper call
+            // would silently vanish from the census — fail closed instead, matching the
+            // over-approximate-or-fail posture of every other emit shape.
+            if wrapper.event_arg.is_some()
+                && !is_self_receiver(&node.receiver)
+                && self.error.is_none()
+            {
+                self.error = Some(ScanError::UnresolvedEmit {
+                    file: self.file.clone(),
+                    line: node.span().start().line,
+                    function: format!(
+                        "cross-object `{}` call: wrapper receiver type is unresolvable",
+                        node.method
+                    ),
+                });
             }
         }
         visit::visit_expr_method_call(self, node);
@@ -1238,9 +1310,18 @@ fn module_path_for_file(root: &Path, path: &Path) -> String {
     parts.join("::")
 }
 
+/// Scans a frontend source root (`frontend/src`) for UI-consumed event names.
+///
+/// Exposed so the import-resolution and fail-closed behaviours are testable against a real
+/// directory layout rather than only through the full manifest build.
+pub fn scan_consumed_tree(frontend_src: &Path) -> Result<Vec<String>> {
+    consumed_names(frontend_src)
+}
+
 fn consumed_names(root: &Path) -> Result<Vec<String>> {
     let mut names = BTreeSet::new();
     let shared_constants = frontend_event_constants(root)?;
+    let mut module_cache = BTreeMap::new();
     for extension in ["ts", "tsx"] {
         for path in files_with_extension(root, extension)? {
             if path
@@ -1253,17 +1334,138 @@ fn consumed_names(root: &Path) -> Result<Vec<String>> {
             if !source.contains(".subscribe") {
                 continue;
             }
+            let mut constants = shared_constants.clone();
+            constants.extend(
+                imported_event_constants(root, &path, &source, &mut module_cache)
+                    .with_context(|| format!("resolve imports of {}", path.display()))?,
+            );
             names.extend(
                 scan_consumed_source_with_constants(
                     &path.display().to_string(),
                     &source,
-                    &shared_constants,
+                    &constants,
                 )
                 .with_context(|| format!("scan {}", path.display()))?,
             );
         }
     }
     Ok(names.into_iter().collect())
+}
+
+/// Resolves event-name constants a consumer imports from another frontend module.
+///
+/// The consumed scan is fail-closed: an unresolvable `subscribe(<ident>)` argument is a hard
+/// error, not a skip. Before the bus migration every consumed name was a string literal, a
+/// file-local const, or a `lib/events.ts` const; migrated consumers now import them from feature
+/// modules (`AgentTerminalDrawer.tsx` takes `AGENT_TERMINAL_EVENT` from `api/terminal.ts`), so
+/// the scan follows one level of import rather than turning a legal migration into a build break.
+fn imported_event_constants(
+    root: &Path,
+    file: &Path,
+    source: &str,
+    cache: &mut BTreeMap<PathBuf, BTreeMap<String, Vec<String>>>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut resolved = BTreeMap::new();
+    let tree = parse_tsx(source, &file.display().to_string())?;
+    let mut imports = Vec::new();
+    collect_import_bindings(tree.root_node(), source, &mut imports);
+    for (specifier, bindings) in imports {
+        let Some(module_path) = resolve_frontend_module(root, file, &specifier) else {
+            continue;
+        };
+        if !cache.contains_key(&module_path) {
+            let module_source = fs::read_to_string(&module_path)
+                .with_context(|| format!("read {}", module_path.display()))?;
+            let module_tree = parse_tsx(&module_source, &module_path.display().to_string())?;
+            let constants = collect_ts_constants(module_tree.root_node(), &module_source);
+            cache.insert(module_path.clone(), constants);
+        }
+        let constants = &cache[&module_path];
+        for (exported, local) in bindings {
+            if let Some(values) = constants.get(&exported) {
+                resolved.insert(local, values.clone());
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Maps a TS module specifier to a file under the frontend source root.
+///
+/// Handles the `@/` alias and relative specifiers only; bare package specifiers resolve to
+/// `node_modules` and can never define a RalphX event name.
+fn resolve_frontend_module(root: &Path, file: &Path, specifier: &str) -> Option<PathBuf> {
+    let base = if let Some(rest) = specifier.strip_prefix("@/") {
+        root.join(rest)
+    } else if specifier.starts_with("./") || specifier.starts_with("../") {
+        file.parent()?.join(specifier)
+    } else {
+        return None;
+    };
+    ["ts", "tsx"]
+        .into_iter()
+        .map(|extension| base.with_extension(extension))
+        .chain(
+            ["index.ts", "index.tsx"]
+                .into_iter()
+                .map(|entry| base.join(entry)),
+        )
+        .find(|candidate| candidate.is_file())
+}
+
+/// Collects `(module specifier, [(exported name, local binding)])` for every named import.
+fn collect_import_bindings(node: Node<'_>, source: &str, output: &mut Vec<(String, Vec<Names>)>) {
+    if node.kind() == "import_statement" {
+        if let Some(specifier) = node
+            .child_by_field_name("source")
+            .and_then(|child| string_value(child, source))
+        {
+            let mut bindings = Vec::new();
+            collect_import_specifiers(node, source, &mut bindings);
+            if !bindings.is_empty() {
+                output.push((specifier, bindings));
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_import_bindings(child, source, output);
+    }
+}
+
+/// `(exported name, local binding)` — they differ under `import { A as B }`.
+type Names = (String, String);
+
+fn collect_import_specifiers(node: Node<'_>, source: &str, output: &mut Vec<Names>) {
+    if node.kind() == "import_specifier" {
+        if let Some(name) = node.child_by_field_name("name") {
+            let exported = node_text(name, source).to_owned();
+            let local = node.child_by_field_name("alias").map_or_else(
+                || exported.clone(),
+                |alias| node_text(alias, source).to_owned(),
+            );
+            output.push((exported, local));
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_import_specifiers(child, source, output);
+    }
+}
+
+fn parse_tsx(source: &str, label: &str) -> Result<tree_sitter::Tree> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&LANGUAGE_TSX.into())
+        .map_err(|error| anyhow::anyhow!("{label}: configure TSX parser: {error}"))?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| anyhow::anyhow!("{label}: TSX parser returned no tree"))?;
+    if tree.root_node().has_error() {
+        bail!("{label}: invalid TS/TSX source")
+    }
+    Ok(tree)
 }
 
 pub fn scan_consumed_source(file: &str, source: &str) -> Result<Vec<String>> {
@@ -1275,16 +1477,7 @@ fn scan_consumed_source_with_constants(
     source: &str,
     shared_constants: &BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<String>> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&LANGUAGE_TSX.into())
-        .map_err(|error| anyhow::anyhow!("{file}: configure TSX parser: {error}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| anyhow::anyhow!("{file}: TSX parser returned no tree"))?;
-    if tree.root_node().has_error() {
-        bail!("{file}: invalid TS/TSX source")
-    }
+    let tree = parse_tsx(source, file)?;
     let mut constants = shared_constants.clone();
     constants.extend(collect_ts_constants(tree.root_node(), source));
     let mut values = BTreeSet::new();
@@ -1302,16 +1495,7 @@ fn scan_consumed_source_with_constants(
 fn frontend_event_constants(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
     let path = root.join("lib/events.ts");
     let source = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    let mut parser = Parser::new();
-    parser
-        .set_language(&LANGUAGE_TSX.into())
-        .map_err(|error| anyhow::anyhow!("configure TSX parser: {error}"))?;
-    let tree = parser
-        .parse(&source, None)
-        .ok_or_else(|| anyhow::anyhow!("parse {} returned no tree", path.display()))?;
-    if tree.root_node().has_error() {
-        bail!("{}: invalid TypeScript event constants", path.display());
-    }
+    let tree = parse_tsx(&source, &path.display().to_string())?;
     Ok(collect_ts_constants(tree.root_node(), &source))
 }
 
@@ -1384,6 +1568,19 @@ fn collect_subscriptions(
             }
             return Ok(());
         }
+        if subscribe_receiver(node, source) == Some(SubscribeReceiver::Unknown) {
+            let receiver = node
+                .child_by_field_name("function")
+                .and_then(|function| function.child_by_field_name("object"))
+                .map_or_else(String::new, |object| node_text(object, source).to_owned());
+            bail!(
+                "{file}:{} unrecognised `.subscribe(` receiver `{receiver}`: name event-bus \
+                 receivers `bus`/`eventBus` (or call `useEventBus()` inline) so consumed event \
+                 names stay auditable, or add the receiver to FOREIGN_SUBSCRIBE_ALLOWLIST with \
+                 a reason",
+                node.start_position().row + 1
+            );
+        }
         if is_event_bus_subscribe(node, source) {
             let argument = first_argument(node).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1448,19 +1645,58 @@ fn callback_parameter(callback: Node<'_>, source: &str) -> Option<String> {
     (pattern.kind() == "identifier").then(|| node_text(pattern, source).to_owned())
 }
 
-fn is_event_bus_subscribe(node: Node<'_>, source: &str) -> bool {
-    let Some(function) = node.child_by_field_name("function") else {
-        return false;
-    };
+/// Receiver expressions that are known NOT to be the app event bus.
+///
+/// Reviewed entries only. A genuine non-event-bus `subscribe` (a store, an observable) belongs
+/// here with a reason; anything else hard-fails so a renamed or destructured bus cannot silently
+/// escape the consumed-name census.
+const FOREIGN_SUBSCRIBE_ALLOWLIST: &[(&str, &str)] = &[(
+    "queryClient.getQueryCache()",
+    "TanStack Query cache subscription (useSyncExternalStore), carries no event name",
+)];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubscribeReceiver {
+    /// The app event bus (`bus`/`eventBus`, or a direct `useEventBus()`/`getEventBus()` call).
+    EventBus,
+    /// A reviewed non-event-bus `subscribe` receiver; deliberately ignored.
+    Foreign,
+    /// A `.subscribe(` whose receiver the scan cannot prove is not the event bus.
+    Unknown,
+}
+
+/// Classifies a `.subscribe(` call site.
+///
+/// Fail-closed by design (mirrors the emit side's over-approximate-or-fail contract): an
+/// unrecognised receiver is reported as [`SubscribeReceiver::Unknown`] and hard-fails the scan,
+/// because a renamed/destructured bus that silently escaped the census is exactly the
+/// "unclassified UI-consumed event name = undefined behaviour" hole this gate exists to close.
+fn subscribe_receiver(node: Node<'_>, source: &str) -> Option<SubscribeReceiver> {
+    let function = node.child_by_field_name("function")?;
     if function.kind() != "member_expression"
         || member_property(function, source) != Some("subscribe")
     {
-        return false;
+        return None;
     }
-    let Some(object) = function.child_by_field_name("object") else {
-        return false;
-    };
-    matches!(node_text(object, source), "bus" | "eventBus")
+    let object = function.child_by_field_name("object")?;
+    let text = node_text(object, source);
+    if matches!(text, "bus" | "eventBus" | "useEventBus()" | "getEventBus()") {
+        return Some(SubscribeReceiver::EventBus);
+    }
+    if FOREIGN_SUBSCRIBE_ALLOWLIST
+        .iter()
+        .any(|(receiver, reason)| {
+            debug_assert!(!reason.is_empty());
+            *receiver == text
+        })
+    {
+        return Some(SubscribeReceiver::Foreign);
+    }
+    Some(SubscribeReceiver::Unknown)
+}
+
+fn is_event_bus_subscribe(node: Node<'_>, source: &str) -> bool {
+    subscribe_receiver(node, source) == Some(SubscribeReceiver::EventBus)
 }
 
 fn member_property<'a>(node: Node<'a>, source: &'a str) -> Option<&'a str> {
