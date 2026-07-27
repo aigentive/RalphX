@@ -107,6 +107,9 @@ objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
 security-framework = "3.7"
 
 [dev-dependencies]
+# Build-time tooling only: the remote authority audit (PR 1.3) parses `src-tauri/src`
+# to build the command/loop call graph. Never linked into the shipped binary.
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.4", features = ["util"] }
 
