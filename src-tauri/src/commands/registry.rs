@@ -21,10 +21,20 @@ macro_rules! register_tauri_commands {
             commands::notification_commands::get_unread_notification_count,
             #[cfg(debug_assertions)]
             commands::notification_commands::debug_send_test_notification,
+            // remote auth (PR 1.2)
             commands::remote_host_commands::start_remote_listener,
             commands::remote_host_commands::stop_remote_listener,
             commands::remote_host_commands::set_remote_exposure_mode,
             commands::remote_host_commands::get_remote_listener_status,
+            commands::remote_device_commands::generate_remote_pairing_code,
+            commands::remote_device_commands::list_remote_pairing_codes,
+            commands::remote_device_commands::revoke_remote_pairing_code,
+            commands::remote_device_commands::list_remote_devices,
+            commands::remote_device_commands::set_remote_device_agent_control,
+            commands::remote_device_commands::revoke_remote_device,
+            commands::remote_device_commands::list_remote_sessions,
+            commands::remote_device_commands::disconnect_remote_session,
+            // end remote auth (PR 1.2)
             #[cfg(debug_assertions)]
             commands::remote_transport_spike_commands::debug_start_remote_transport_cors_probe,
             #[cfg(debug_assertions)]
