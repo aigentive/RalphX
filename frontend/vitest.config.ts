@@ -26,6 +26,19 @@ export default defineConfig({
         __dirname,
         "./src/mocks/tauri-plugin-notification.ts"
       ),
+      // Mirror of vite.config.ts (PR 2.2): tests must exercise the same transport
+      // seam the app ships. `@tauri-apps/api/core` resolves to the project-owned
+      // wrapper and the wrapper reaches the real module through the primitive
+      // specifier, so the two are DISTINCT module ids and `vi.mock` of either one
+      // does not recurse into the other.
+      "@tauri-apps/api/core": path.resolve(
+        __dirname,
+        "./src/lib/remote/invoke.ts"
+      ),
+      "#tauri-core-primitive": path.resolve(
+        __dirname,
+        "./node_modules/@tauri-apps/api/core.js"
+      ),
     },
   },
   test: {
