@@ -2,9 +2,13 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 
-use super::transport_spike::{cors_probe_router, DebugCorsProbeOrdering, DEBUG_CORS_PROBE_ORIGIN};
+use super::transport_spike::{
+    cors_probe_router, start_cors_probe_listener, stop_cors_probe_listener, DebugCorsProbeOrdering,
+    DEBUG_CORS_PROBE_ORIGIN,
+};
 
 fn preflight_request(origin: &'static str) -> Request<Body> {
     Request::builder()
@@ -59,19 +63,36 @@ async fn options_before_auth_returns_a_restrictive_preflight_response() {
 }
 
 #[tokio::test]
-async fn options_before_auth_never_reflects_an_unlisted_origin() {
+async fn options_before_auth_rejects_an_unlisted_origin_without_cors_headers() {
     let unlisted_origin = "https://unlisted.example";
     let response = cors_probe_router(DebugCorsProbeOrdering::OptionsBeforeAuth)
         .oneshot(preflight_request(unlisted_origin))
         .await
         .expect("probe router should respond");
 
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert_ne!(
-        response
-            .headers()
-            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-            .expect("preflight should retain the fixed allowlist"),
-        unlisted_origin
-    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .is_none());
+}
+
+#[tokio::test]
+async fn loopback_probe_binds_an_ephemeral_ipv4_port_and_stops_once() {
+    let endpoint = start_cors_probe_listener(DebugCorsProbeOrdering::OptionsBeforeAuth)
+        .await
+        .expect("loopback probe should bind");
+    let address: SocketAddr = endpoint
+        .base_url
+        .strip_prefix("http://")
+        .expect("endpoint should use HTTP")
+        .parse()
+        .expect("endpoint should contain a socket address");
+    let stopped = stop_cors_probe_listener().expect("probe listener should stop");
+    let stopped_again = stop_cors_probe_listener().expect("stop should be idempotent");
+
+    assert_eq!(address.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+    assert_ne!(address.port(), 0);
+    assert!(stopped);
+    assert!(!stopped_again);
 }

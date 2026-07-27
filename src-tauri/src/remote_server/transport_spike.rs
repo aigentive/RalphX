@@ -4,7 +4,7 @@
 //! pairing state, or production auth behavior.
 
 use axum::{
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::options,
     Router,
@@ -118,7 +118,14 @@ async fn unauthorized_probe_response() -> StatusCode {
     StatusCode::UNAUTHORIZED
 }
 
-async fn preflight_probe_response() -> Response {
+async fn preflight_probe_response(headers: HeaderMap) -> Response {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if origin.as_bytes() != DEBUG_CORS_PROBE_ORIGIN.as_bytes() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     (
         StatusCode::NO_CONTENT,
         [

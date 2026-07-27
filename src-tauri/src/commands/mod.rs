@@ -83,8 +83,6 @@ pub mod repository_settings_commands;
 mod repository_settings_commands_tests;
 #[cfg(debug_assertions)]
 pub mod remote_transport_spike_commands;
-#[cfg(all(test, debug_assertions))]
-mod remote_transport_spike_commands_tests;
 pub mod research_commands;
 pub mod review_commands;
 pub mod review_commands_types;
