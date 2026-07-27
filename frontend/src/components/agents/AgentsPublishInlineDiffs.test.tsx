@@ -160,8 +160,6 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     isShowAnywayOverridden,
     onShowAnyway,
     isFocusTarget,
-    contentMode,
-    onLoadCode,
   }: {
     file: { path: string };
     diff: unknown;
@@ -183,8 +181,6 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     isShowAnywayOverridden: boolean;
     onShowAnyway: () => void;
     isFocusTarget?: boolean;
-    contentMode?: string;
-    onLoadCode?: () => void;
   }) => (
     <div
       data-testid={`mock-file-diff-${file.path.replace(/\//g, "-")}`}
@@ -205,7 +201,6 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-hunk-annotation-count={String(hunkAnnotations?.length ?? 0)}
       data-show-anyway-overridden={String(isShowAnywayOverridden)}
       data-focus-target={String(isFocusTarget)}
-      data-content-mode={contentMode ?? "full"}
     >
       <button
         data-testid={`mock-file-toggle-${file.path.replace(/\//g, "-")}`}
@@ -220,12 +215,6 @@ vi.mock("./AgentsPublishFileDiff", () => ({
         onClick={onShowAnyway}
       >
         Show anyway
-      </button>
-      <button
-        data-testid={`mock-load-code-${file.path.replace(/\//g, "-")}`}
-        onClick={onLoadCode}
-      >
-        Load code
       </button>
       {shouldHydrate && (annotations?.length ?? 0) > 0 && (
         <div data-testid="diff-annotation-row">annotation</div>
@@ -1438,7 +1427,7 @@ describe("AgentsPublishInlineDiffs", () => {
       );
     });
 
-    it("defaults to Reviews mode when active annotations exist and shows the legend", async () => {
+    it("keeps full diffs visible until the review walkthrough is entered and shows the legend", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(
@@ -1458,67 +1447,18 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
 
-      const reviewsToggle = screen.getByTestId("inline-diffs-reviews-toggle");
-      expect(reviewsToggle).toHaveAttribute("aria-pressed", "true");
-      expect(reviewsToggle).toHaveTextContent("Reviews 2");
-      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
-        "data-content-mode",
-        "review-only",
+      expect(screen.getByTestId("publish-review-walkthrough-enter")).toHaveTextContent(
+        "▶ Walkthrough 2",
       );
-      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
-        "data-content-mode",
-        "review-only",
-      );
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toBeInTheDocument();
 
       await user.click(screen.getByTestId("inline-diffs-review-legend"));
       expect(screen.getByText("Review annotation colors")).toBeInTheDocument();
       expect(screen.getByText("failure, error, critical, high")).toBeInTheDocument();
     });
 
-    it("keeps Reviews mode separate from file code loading", async () => {
-      const user = userEvent.setup();
-      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
-      render(
-        withProviders(
-          <AgentsPublishInlineDiffs
-            conversationId="conv-1"
-            review={makeReview(changes)}
-            commits={[]}
-            isLoading={false}
-            annotations={[
-              makeAnnotation("src/Foo.tsx"),
-              makeAnnotation("src/Bar.tsx", {
-                id: "annotation-bar",
-              }),
-            ]}
-            repairMode
-          />,
-        ),
-      );
-
-      fireVirtualRange(0, 1);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
-
-      await user.click(screen.getByTestId("mock-load-code-src-Foo.tsx"));
-
-      await waitFor(() =>
-        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
-          "data-content-mode",
-          "full",
-        ),
-      );
-      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
-        "data-content-mode",
-        "review-only",
-      );
-      await waitFor(() =>
-        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Foo.tsx"),
-      );
-      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-1", "src/Bar.tsx");
-    });
-
-    it("turns off Reviews mode and restores normal visible diff fetching", async () => {
+    it("enters the walkthrough deliberately and exits back to the full diff list", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1534,20 +1474,10 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
 
-      await user.click(screen.getByTestId("inline-diffs-reviews-toggle"));
-      expect(screen.getByTestId("inline-diffs-reviews-toggle")).toHaveAttribute(
-        "aria-pressed",
-        "false",
-      );
-      fireVirtualRange(0, 0);
-
-      await waitFor(() =>
-        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Foo.tsx"),
-      );
-      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
-        "data-content-mode",
-        "full",
-      );
+      await user.click(screen.getByTestId("publish-review-walkthrough-enter"));
+      expect(screen.getByTestId("publish-review-walkthrough")).toBeInTheDocument();
+      await user.click(screen.getByTestId("publish-review-walkthrough-exit"));
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
     });
 
     it("passes staged and unstaged workspace review hunk annotations to default workspace file cards", () => {

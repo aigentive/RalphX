@@ -46,8 +46,9 @@ import type {
   ConflictDiffState,
   DiffPageSummary,
   DiffState,
-  FileDiffContentMode,
 } from "./AgentsPublishFileDiff";
+import { ReviewWalkthrough } from "./ReviewWalkthrough";
+import { buildReviewWalkthroughFindings } from "./reviewWalkthroughFindings";
 import {
   canUsePagedInlineDiff,
   requiresExplicitDiffHydration,
@@ -275,8 +276,6 @@ interface AgentsPublishVirtualFileRowProps {
   isShowAnywayOverridden: boolean;
   onShowAnywayPath: (path: string) => void;
   isFocusTarget: boolean;
-  contentMode: FileDiffContentMode;
-  onLoadCodePath: (path: string) => void;
 }
 
 const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
@@ -303,8 +302,6 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   isShowAnywayOverridden,
   onShowAnywayPath,
   isFocusTarget,
-  contentMode,
-  onLoadCodePath,
 }: AgentsPublishVirtualFileRowProps) {
   useEffect(() => {
     onRegisterMountedPath(file.path, hydrationGeneration);
@@ -325,10 +322,6 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   const handleShowAnyway = useCallback(() => {
     onShowAnywayPath(file.path);
   }, [file.path, onShowAnywayPath]);
-
-  const handleLoadCode = useCallback(() => {
-    onLoadCodePath(file.path);
-  }, [file.path, onLoadCodePath]);
 
   return (
     <AgentsPublishFileDiff
@@ -352,8 +345,6 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       isShowAnywayOverridden={isShowAnywayOverridden}
       onShowAnyway={handleShowAnyway}
       isFocusTarget={isFocusTarget}
-      contentMode={contentMode}
-      onLoadCode={handleLoadCode}
     />
   );
 });
@@ -391,8 +382,8 @@ export function AgentsPublishInlineDiffs({
   } | null>(null);
   // Show-anyway overrides — paths where the user has dismissed a generated-file placeholder.
   const [userShowAnywayPaths, setUserShowAnywayPaths] = useState<Set<string>>(new Set());
-  const [reviewModeOverride, setReviewModeOverride] = useState<boolean | null>(null);
-  const [codeLoadedPaths, setCodeLoadedPaths] = useState<Set<string>>(new Set());
+  const [isReviewWalkthroughOpen, setIsReviewWalkthroughOpen] = useState(false);
+  const [reviewWalkthroughFindingId, setReviewWalkthroughFindingId] = useState<string | null>(null);
   const [pendingFocusRequest, setPendingFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
   const [focusTargetPath, setFocusTargetPath] = useState<string | null>(null);
@@ -596,8 +587,24 @@ export function AgentsPublishInlineDiffs({
     };
   }, [annotationsByPath, currentFiles, hunkAnnotationsByPath]);
   const hasActiveReviewAnnotations = activeAnnotationSummary.count > 0;
-  const reviewModeEnabled =
-    hasActiveReviewAnnotations && (reviewModeOverride ?? true);
+  const reviewWalkthroughPath = useMemo(() => {
+    if (reviewWalkthroughFindingId === null) return null;
+    const isWorkspaceFinding = reviewWalkthroughFindingId.startsWith("workspace:");
+    const id = reviewWalkthroughFindingId.slice(
+      isWorkspaceFinding ? "workspace:".length : "pr:".length,
+    );
+    if (!id) return null;
+    for (const file of currentFiles) {
+      const candidates =
+        isWorkspaceFinding
+          ? hunkAnnotationsByPath.get(file.path)
+          : annotationsByPath.get(file.path);
+      if (candidates?.some((annotation) => annotation.id === id)) {
+        return file.path;
+      }
+    }
+    return null;
+  }, [annotationsByPath, currentFiles, hunkAnnotationsByPath, reviewWalkthroughFindingId]);
   const firstAnnotatedFilePath = useMemo(() => {
     if (annotationsByPath.size === 0 && hunkAnnotationsByPath.size === 0) {
       return null;
@@ -662,8 +669,8 @@ export function AgentsPublishInlineDiffs({
   // ── Conversation/mode changes reset presentation state. Diff hydration is
   // generation-scoped so mounted rows can re-register without an effect race. ──
   useEffect(() => {
-    setCodeLoadedPaths(new Set());
-    setReviewModeOverride(null);
+    setIsReviewWalkthroughOpen(false);
+    setReviewWalkthroughFindingId(null);
     setFocusTargetPath(null);
     setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
@@ -671,8 +678,8 @@ export function AgentsPublishInlineDiffs({
   }, [conversationId]);
 
   useEffect(() => {
-    setCodeLoadedPaths(new Set());
-    setReviewModeOverride(null);
+    setIsReviewWalkthroughOpen(false);
+    setReviewWalkthroughFindingId(null);
     setFocusTargetPath(null);
     setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
@@ -774,34 +781,43 @@ export function AgentsPublishInlineDiffs({
     () => new Set([...mountedPaths, ...bufferedVisiblePathSet]),
     [bufferedVisiblePathSet, mountedPaths],
   );
+  const fetchCandidateFiles = useMemo(
+    () =>
+      currentFiles.filter(
+        (file) =>
+          !effectiveCollapsedPaths.has(file.path) ||
+          file.path === reviewWalkthroughPath,
+      ),
+    [currentFiles, effectiveCollapsedPaths, reviewWalkthroughPath],
+  );
 
   const fetchableFiles = useMemo(
     () =>
-      expandedFiles.filter((file) => {
+      fetchCandidateFiles.filter((file) => {
         const isShowAnywayOverridden = userShowAnywayPaths.has(file.path);
-        const shouldLoadCode =
-          !reviewModeEnabled || isConflictedMode || codeLoadedPaths.has(file.path);
+        const isWalkthroughTarget = file.path === reviewWalkthroughPath;
         return (
-          shouldLoadCode &&
-          liveFetchEligiblePathSet.has(file.path) &&
-          !canUsePagedInlineDiff({
-            file,
-            isConflictMode: isConflictedMode,
-            conversationId,
-            diffPageRefKind,
-            isShowAnywayOverridden,
-          }) &&
-          (!requiresExplicitDiffHydration(file) || isShowAnywayOverridden)
+          (liveFetchEligiblePathSet.has(file.path) || isWalkthroughTarget) &&
+          (isWalkthroughTarget ||
+            !canUsePagedInlineDiff({
+              file,
+              isConflictMode: isConflictedMode,
+              conversationId,
+              diffPageRefKind,
+              isShowAnywayOverridden,
+            })) &&
+          (!requiresExplicitDiffHydration(file) ||
+            isShowAnywayOverridden ||
+            isWalkthroughTarget)
         );
       }),
     [
-      codeLoadedPaths,
       conversationId,
       diffPageRefKind,
-      expandedFiles,
+      fetchCandidateFiles,
       isConflictedMode,
       liveFetchEligiblePathSet,
-      reviewModeEnabled,
+      reviewWalkthroughPath,
       userShowAnywayPaths,
     ],
   );
@@ -811,11 +827,9 @@ export function AgentsPublishInlineDiffs({
     () =>
       expandedFiles.filter((file) => {
         const isShowAnywayOverridden = userShowAnywayPaths.has(file.path);
-        const shouldLoadCode =
-          !reviewModeEnabled || isConflictedMode || codeLoadedPaths.has(file.path);
         return (
-          shouldLoadCode &&
           liveFetchEligiblePathSet.has(file.path) &&
+          file.path !== reviewWalkthroughPath &&
           canUsePagedInlineDiff({
             file,
             isConflictMode: isConflictedMode,
@@ -826,13 +840,12 @@ export function AgentsPublishInlineDiffs({
         );
       }),
     [
-      codeLoadedPaths,
       conversationId,
       diffPageRefKind,
       expandedFiles,
       isConflictedMode,
       liveFetchEligiblePathSet,
-      reviewModeEnabled,
+      reviewWalkthroughPath,
       userShowAnywayPaths,
     ],
   );
@@ -1037,6 +1050,17 @@ export function AgentsPublishInlineDiffs({
     return map;
   }, [conflictDiffQueries, fetchableFiles, isConflictedMode]);
 
+  const reviewWalkthroughFindings = useMemo(
+    () =>
+      buildReviewWalkthroughFindings({
+        files: currentFiles,
+        annotationsByPath,
+        hunkAnnotationsByPath,
+        diffByPath,
+      }),
+    [annotationsByPath, currentFiles, diffByPath, hunkAnnotationsByPath],
+  );
+
   // ── Jump-to-file filtered list ────────────────────────────────────────
   const filteredJumpFiles = useMemo(() => {
     if (!jumpSearch.trim()) return currentFiles;
@@ -1088,26 +1112,6 @@ export function AgentsPublishInlineDiffs({
       }
       return new Set([...prev, path]);
     });
-  }, []);
-
-  const handleLoadCode = useCallback(
-    (path: string) => {
-      setCodeLoadedPaths((prev) => {
-        if (prev.has(path)) {
-          return prev;
-        }
-        return new Set([...prev, path]);
-      });
-      const index = currentFiles.findIndex((file) => file.path === path);
-      if (index >= 0) {
-        hydrateVisibleRange({ startIndex: index, endIndex: index });
-      }
-    },
-    [currentFiles, hydrateVisibleRange],
-  );
-
-  const toggleReviewMode = useCallback(() => {
-    setReviewModeOverride((current) => !(current ?? true));
   }, []);
 
   const collapseAll = useCallback(() => {
@@ -1334,27 +1338,17 @@ export function AgentsPublishInlineDiffs({
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
           onShowAnywayPath={handleShowAnyway}
           isFocusTarget={focusTargetPath === fileChange.path}
-          contentMode={
-            reviewModeEnabled &&
-            !isConflictedMode &&
-            !codeLoadedPaths.has(fileChange.path)
-              ? "review-only"
-              : "full"
-          }
-          onLoadCodePath={handleLoadCode}
         />
       </div>
     ),
     [
       annotationsByPath,
-      codeLoadedPaths,
       conversationId,
       currentFiles.length,
       conflictDiffByPath,
       diffByPath,
       effectiveCollapsedPaths,
       handleCopyPath,
-      handleLoadCode,
       handleOpenFullscreen,
       handleShowAnyway,
       handleToggle,
@@ -1363,7 +1357,6 @@ export function AgentsPublishInlineDiffs({
       hydrationGeneration,
       inlineDiffScrollParent,
       isConflictedMode,
-      reviewModeEnabled,
       diffPageRefKind,
       diffPageReloadKey,
       diffPageSummaryByPath,
@@ -1472,6 +1465,26 @@ export function AgentsPublishInlineDiffs({
     return undefined;
   }, [annotationScrollAttempt, diffByPath, pendingAnnotationScrollPath, visibleRange]);
 
+  if (isReviewWalkthroughOpen) {
+    return (
+      <div
+        ref={inlineDiffsRootRef}
+        data-testid="agents-publish-inline-diffs"
+        className="flex min-h-0 flex-1 flex-col overflow-x-hidden"
+      >
+        <ReviewWalkthrough
+          findings={reviewWalkthroughFindings}
+          onExit={() => {
+            setIsReviewWalkthroughOpen(false);
+            setReviewWalkthroughFindingId(null);
+          }}
+          onOpenFile={handleOpenFullscreen}
+          onCurrentFindingChange={setReviewWalkthroughFindingId}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       ref={inlineDiffsRootRef}
@@ -1531,30 +1544,19 @@ export function AgentsPublishInlineDiffs({
             <>
               <button
                 type="button"
-                data-testid="inline-diffs-reviews-toggle"
-                aria-pressed={reviewModeEnabled}
-                aria-label={
-                  reviewModeEnabled
-                    ? "Show full code diffs"
-                    : "Show review annotations without code"
-                }
-                onClick={toggleReviewMode}
+                data-testid="publish-review-walkthrough-enter"
+                aria-label="Start review walkthrough"
+                onClick={() => setIsReviewWalkthroughOpen(true)}
                 className="rounded border px-2 py-1 text-[0.6875rem] font-semibold transition-colors hover:bg-[var(--bg-hover)]"
                 style={{
-                  backgroundColor: reviewModeEnabled
-                    ? "var(--accent-muted)"
-                    : "transparent",
-                  borderColor: reviewModeEnabled
-                    ? "var(--accent-border)"
-                    : "var(--border-subtle)",
+                  backgroundColor: "transparent",
+                  borderColor: "var(--border-subtle)",
                   borderStyle: "solid",
                   borderWidth: "1px",
-                  color: reviewModeEnabled
-                    ? "var(--accent-primary)"
-                    : "var(--text-secondary)",
+                  color: "var(--text-secondary)",
                 }}
               >
-                Reviews {activeAnnotationSummary.count}
+                ▶ Walkthrough {activeAnnotationSummary.count}
               </button>
               <Popover modal={false}>
                 <PopoverTrigger asChild>
