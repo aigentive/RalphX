@@ -65,7 +65,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Switch } from "@/components/ui/switch";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
@@ -216,14 +215,6 @@ interface ModeFieldConfig {
   testId?: string;
 }
 
-interface TeamFieldConfig {
-  enabled: boolean;
-  onEnabledChange: (enabled: boolean) => void | Promise<unknown>;
-  disabled?: boolean;
-  pending?: boolean;
-  testId?: string;
-}
-
 export type CapabilityFieldConfig = ComposerRuntimeCapabilityField;
 
 export interface ChatFocusOption {
@@ -322,8 +313,6 @@ export interface AgentComposerSurfaceProps {
   onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
   capability?: CapabilityFieldConfig;
-  /** Legacy compatibility surface; new Agent composers use capability. */
-  team?: TeamFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
   /** Optional compact control appended to the composer toolbar. */
   personaControl?: ReactNode;
@@ -390,7 +379,6 @@ export function AgentComposerSurface({
   onIntegrationReferencesChange,
   mode,
   capability,
-  team,
   chatFocus,
   personaControl,
   slashCommands = [],
@@ -1428,9 +1416,6 @@ export function AgentComposerSurface({
       const capabilityIntent = capability
         ? ({ coordinationMode: capability.value } satisfies CapabilityIntent)
         : null;
-      const teamIntent = !capability && team?.enabled
-        ? ({ coordinationMode: "rx_native_team" } satisfies TeamIntent)
-        : null;
       return {
         message: withInternalSkillDirectives,
         ...(folderReferenceSnapshots.length > 0 ||
@@ -1438,8 +1423,7 @@ export function AgentComposerSurface({
           normalizedIntegrationReferences.length > 0 ||
           normalizedArtifactReferences.length > 0 ||
           excerptReferences.length > 0 ||
-          capabilityIntent ||
-          teamIntent
+          capabilityIntent
           ? {
               options: {
                 ...(folderReferenceSnapshots.length > 0
@@ -1454,7 +1438,6 @@ export function AgentComposerSurface({
                   : {}),
                 ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
                 ...(capabilityIntent ? { capabilityIntent } : {}),
-                ...(teamIntent ? { teamIntent } : {}),
               },
             }
           : {}),
@@ -1472,7 +1455,6 @@ export function AgentComposerSurface({
       selectedProjectReferenceList,
       skills,
       capability,
-      team?.enabled,
     ],
   );
 
@@ -2147,15 +2129,11 @@ export function AgentComposerSurface({
               </div>
             )}
 
-            {!capability && team && (
-              <ComposerTeamSwitch team={team} compact={compact} />
-            )}
-
             <Button
               type="button"
               className={cn(
                 "agent-composer-action-button shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
-                team && !capability ? "" : "ml-auto",
+                "ml-auto",
                 compact ? "h-8 px-3" : "h-10 px-4",
                 compact
                   ? "min-w-0"
@@ -2886,51 +2864,6 @@ function ComposerModeMenuSection({
         </button>
       )}
     </div>
-  );
-}
-
-function ComposerTeamSwitch({
-  team,
-  compact,
-}: {
-  team: TeamFieldConfig;
-  compact: boolean;
-}) {
-  const testId = team.testId ?? "agent-composer-team";
-  const disabled = Boolean(team.disabled || team.pending);
-
-  return (
-    <label
-      className={cn(
-        "ml-auto inline-flex h-8 shrink-0 items-center rounded-full border border-[var(--overlay-faint)] transition-colors duration-150",
-        compact ? "gap-1.5 px-2" : "gap-2 px-2.5",
-        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
-      )}
-      style={{
-        backgroundColor:
-          "color-mix(in srgb, var(--bg-base) 18%, var(--bg-surface) 82%)",
-      }}
-      data-testid={testId}
-    >
-      <span
-        className={cn(
-          "select-none font-medium text-[var(--text-secondary)]",
-          compact ? "text-[0.6875rem]" : "text-[0.75rem]",
-        )}
-      >
-        Team
-      </span>
-      <Switch
-        checked={team.enabled}
-        disabled={disabled}
-        onCheckedChange={(enabled) => {
-          void team.onEnabledChange(enabled);
-        }}
-        aria-label="Team"
-        data-testid={`${testId}-control`}
-        className="data-[state=checked]:bg-[var(--accent-primary)]"
-      />
-    </label>
   );
 }
 

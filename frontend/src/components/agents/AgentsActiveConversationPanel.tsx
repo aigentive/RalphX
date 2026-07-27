@@ -110,6 +110,7 @@ import {
   type AgentComposerSendOptions,
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
+import { buildCapabilityOptions } from "./composer/runtime/capabilityOptions";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
@@ -977,39 +978,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       ? "Codex Ultra is unavailable for the selected model or account. Switch to Defaults or choose a supported Codex runtime."
       : "This conversation's capability is disabled. Enable it in Settings > Capabilities or switch to Defaults.";
   const capabilityOptions = (() => {
-    const options: Array<{
-      id: string;
-      label: string;
-      description: string;
-      disabled?: boolean;
-    }> = [
-      {
-        id: "solo",
-        label: "Defaults",
-        description: "Use the selected provider without extra orchestration.",
-      },
-    ];
-    if (featureFlags.agentConversationTeam) {
-      options.push({
-        id: "rx_native_team",
-        label: "Team",
-        description: "Coordinate RalphX-native delegated teammates.",
-      });
-    }
-    if (featureFlags.agentConversationWorkflows) {
-      options.push({
-        id: "rx_native_workflow",
-        label: "Workflow",
-        description: "Generate and run a durable reviewed orchestration script.",
-      });
-    }
-    if (codexUltraAvailable) {
-      options.push({
-        id: "codex_native_ultra",
-        label: "Ultra",
-        description: "Activate Codex provider-native subagents and maximum reasoning.",
-      });
-    }
+    const options = buildCapabilityOptions({
+      teamEnabled: featureFlags.agentConversationTeam,
+      workflowsEnabled: featureFlags.agentConversationWorkflows,
+      codexUltraAvailable,
+    });
     if (!options.some((option) => option.id === activeConversation.coordinationMode)) {
       const labels: Record<string, string> = {
         rx_native_team: "Team (disabled)",
