@@ -1795,11 +1795,7 @@ const MIGRATIONS: &[Migration] = &[
         name: "remote_auth",
         migrate: v20260727180000_remote_auth::migrate,
     },
-<<<<<<< HEAD
     Migration {
-=======
-    MigrationEntry {
->>>>>>> a5d6fc5c1df7e1dc76fe2dfd5f6b2482caecb598
         version: 20260727191500,
         name: "remote_environments",
         migrate: v20260727191500_remote_environments::migrate,
