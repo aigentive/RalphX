@@ -57,6 +57,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatBranchDisplay } from "@/lib/branch-utils";
+import type { Unsubscribe } from "@/lib/event-bus";
 import { useEventBus } from "@/providers/EventProvider";
 import {
   RALPHX_TERMINAL_DOCK_DRAG_TYPE,
@@ -415,7 +416,7 @@ export function AgentTerminalDrawer({
     let initFrame: number | null = null;
     let initTimer: number | null = null;
     let resizeObserver: ResizeObserver | null = null;
-    let unsubscribe: (() => void) | null = null;
+    let unsubscribe: Unsubscribe | null = null;
 
     const scheduleFit = () => {
       if (resizeFrame !== null) {
@@ -458,6 +459,7 @@ export function AgentTerminalDrawer({
           applyEvent(parsed.data);
         }
       });
+      await unsubscribe.ready;
 
       if (disposed) {
         return;

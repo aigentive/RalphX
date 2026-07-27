@@ -96,6 +96,8 @@ const workspace = (
   ...overrides,
 });
 
+const readyUnsubscribe = () => Object.assign(vi.fn(), { ready: Promise.resolve() });
+
 describe("AgentTerminalDrawer", () => {
   let rafCallbacks: FrameRequestCallback[];
 
@@ -136,7 +138,7 @@ describe("AgentTerminalDrawer", () => {
       dragOverDock: null,
     });
 
-    subscribeMock.mockReturnValue(vi.fn());
+    subscribeMock.mockReturnValue(readyUnsubscribe());
     terminalEventSafeParseMock.mockReturnValue({ success: false });
     openAgentTerminalMock.mockResolvedValue({
       status: "running",
@@ -278,7 +280,7 @@ describe("AgentTerminalDrawer", () => {
       terminalEventListener = (event) => {
         (listener as (payload: unknown) => void)(event.payload);
       };
-      return vi.fn();
+      return readyUnsubscribe();
     });
     terminalEventSafeParseMock.mockImplementation((payload) => ({
       success: true,
@@ -882,7 +884,7 @@ describe("AgentTerminalDrawer", () => {
   it("unsubscribes from terminal events on unmount", async () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
-    const unsubscribe = vi.fn();
+    const unsubscribe = readyUnsubscribe();
     subscribeMock.mockReturnValue(unsubscribe);
 
     const { unmount } = render(
