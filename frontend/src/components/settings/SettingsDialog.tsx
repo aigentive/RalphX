@@ -19,6 +19,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useUiStore } from "@/stores/uiStore";
 import type { ProjectSettings } from "@/types/settings";
 
@@ -27,6 +28,7 @@ import {
   SETTINGS_GROUPS,
   SETTINGS_SECTIONS,
   resolveSettingsDestination,
+  visibleSettingsSections,
   type SettingsDestination,
   type SettingsSectionId,
 } from "./settings-registry";
@@ -152,6 +154,9 @@ export default function SettingsDialog({
     }
   }, [isOpen, modalContext, persistActiveSection]);
 
+  const { data: featureFlags } = useFeatureFlags();
+  const navSections = visibleSettingsSections(featureFlags);
+
   const activeSectionMeta = SETTINGS_SECTIONS.find(
     (section) => section.id === activeSection,
   );
@@ -216,7 +221,7 @@ export default function SettingsDialog({
           {/* Left rail — hidden below lg breakpoint */}
           <nav className="settings-nav hidden lg:flex flex-shrink-0 flex-col overflow-y-auto">
             {SETTINGS_GROUPS.map((group) => {
-               const groupSections = SETTINGS_SECTIONS.filter(
+               const groupSections = navSections.filter(
                 (s) => s.groupId === group.id
               );
               return (
@@ -263,7 +268,7 @@ export default function SettingsDialog({
               className="settings-input w-full focus:outline-none"
             >
               {SETTINGS_GROUPS.map((group) => {
-                const groupSections = SETTINGS_SECTIONS.filter(
+                const groupSections = navSections.filter(
                   (s) => s.groupId === group.id
                 );
                 return (

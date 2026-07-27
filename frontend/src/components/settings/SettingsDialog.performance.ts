@@ -26,6 +26,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   granola: () => import("./GranolaIntegrationSettingsPanel"),
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
+  "remote-access": () => import("./remote-access/RemoteAccessSection"),
   mcp: () => import("./McpSettingsSection"),
   updates: () => import("./UpdatesSettingsSection"),
   accessibility: () => import("./AccessibilitySection"),
