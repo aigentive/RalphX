@@ -462,6 +462,11 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     description: "Optional blocker explanation when the PR fix cannot be completed safely",
                 },
+                fix_commit_sha: {
+                    type: "string",
+                    pattern: "^[0-9a-f]{40}$",
+                    description: "Full 40-character SHA of the current committed workspace HEAD. Required when blocker is absent; omit it when reporting a blocker.",
+                },
             },
             required: ["conversation_id", "summary"],
         },
@@ -505,8 +510,7 @@ export const AGENT_WORKSPACE_TOOLS = [
     },
     {
         name: "submit_agent_workspace_pr_description",
-        description: "Submit the completed pull request title/body for an agent workspace publish. " +
-            "Call this exactly once after writing a reviewer-focused body that follows the supplied pull request template.",
+        description: "Submit a preserve-or-patch decision for an agent workspace pull request's metadata.",
         inputSchema: {
             type: "object",
             properties: {
@@ -516,14 +520,19 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 title: {
                     type: "string",
-                    description: "Optional pull request title. Omit unless the prompt context supports a better title.",
+                    description: "Optional improved pull request title; only valid for a patch decision.",
                 },
                 body_markdown: {
                     type: "string",
-                    description: "Complete Markdown pull request body following the supplied template",
+                    description: "Optional reviewer-focused editable Markdown body; valid only for a new PR or when the existing PR prompt marks the editable body patch_allowed=true. Exclude RalphX-managed Plan/signature content and every preserved trailing integration block.",
+                },
+                decision: {
+                    type: "string",
+                    enum: ["preserve", "patch"],
+                    description: "Preserve existing metadata, or patch one or both fields.",
                 },
             },
-            required: ["conversation_id", "body_markdown"],
+            required: ["conversation_id", "decision"],
         },
     },
 ];
@@ -566,7 +575,7 @@ export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args
         case "read_agent_workspace_pr_comment":
             return callReadAgentWorkspacePrCommentTool(callTauriGet, args);
         case "complete_agent_workspace_pr_fix":
-            return callCompleteAgentWorkspacePrFixTool(callTauri, args);
+            return callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext);
         case "complete_agent_workspace_repair":
             return callCompleteAgentWorkspaceRepairTool(callTauri, args);
         case "submit_agent_workspace_pr_description":
@@ -616,6 +625,7 @@ export async function callUpdateAgentWorkspaceFromBaseTool(callTauri, args, runt
         base_ref_kind,
         base_ref,
         base_display_name,
+        created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     });
 }
 export async function callPublishAgentWorkspaceTool(callTauri, args, runtimeContext) {
@@ -751,11 +761,13 @@ export async function callReadAgentWorkspacePrCommentTool(callTauriGet, args) {
     const { conversation_id, comment_id } = args;
     return callTauriGet(`agent-workspaces/${conversation_id}/pr-comments/${encodeURIComponent(comment_id)}`);
 }
-export async function callCompleteAgentWorkspacePrFixTool(callTauri, args) {
-    const { conversation_id, summary, blocker } = args;
+export async function callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext) {
+    const { conversation_id, summary, blocker, fix_commit_sha } = args;
     return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
         summary,
         blocker,
+        fix_commit_sha,
+        created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     });
 }
 export async function callCompleteAgentWorkspaceRepairTool(callTauri, args) {
@@ -768,8 +780,9 @@ export async function callCompleteAgentWorkspaceRepairTool(callTauri, args) {
     });
 }
 export async function callSubmitAgentWorkspacePrDescriptionTool(callTauri, args) {
-    const { conversation_id, title, body_markdown } = args;
+    const { conversation_id, decision, title, body_markdown } = args;
     return callTauri(`agent-workspaces/${conversation_id}/pr-description`, {
+        decision,
         title,
         body_markdown,
     });

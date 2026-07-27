@@ -13,6 +13,7 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
   { id: "mcp", heading: "MCP" },
+  { id: "updates", heading: "Updates" },
   { id: "accessibility", heading: "Accessibility" },
 ] as const;
 
@@ -117,6 +118,48 @@ test.describe("Settings Dialog", () => {
     });
   }
 
+  test("Updates defaults to Stable and persists the Nightly radio selection", async () => {
+    await settingsPage.openViaStore("updates");
+    await settingsPage.waitForSection("updates", "Updates");
+
+    await expect(settingsPage.updateChannelGroup).toBeVisible();
+    await expect(settingsPage.stableUpdateChannel).toHaveAttribute("aria-checked", "true");
+    await expect(settingsPage.nightlyUpdateChannel).toHaveAttribute("aria-checked", "false");
+
+    await settingsPage.selectUpdateChannel("nightly");
+    await expect(settingsPage.nightlyUpdateChannel).toHaveAttribute("aria-checked", "true");
+    await expect(settingsPage.nightlyUpdateChannel).toContainText(
+      "Switching back to Stable stops future Nightly delivery but never downgrades the installed app; updates resume when Stable advances beyond it.",
+    );
+    await settingsPage.waitForAnimations();
+
+    await expect(settingsPage.settingsDialog).toHaveScreenshot(
+      "settings-dialog-section-updates-nightly.png",
+      { maxDiffPixelRatio: 0.01 },
+    );
+  });
+
+  test("matches the Updates save error state", async ({ page }) => {
+    await page.addInitScript(() => {
+      (
+        window as Window & { __mockUpdateChannelError?: "read" | "write" }
+      ).__mockUpdateChannelError = "write";
+    });
+    await setupSettings(page);
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("updates");
+    await settingsPage.waitForSection("updates", "Updates");
+
+    await settingsPage.selectUpdateChannel("nightly");
+    await expect(settingsPage.updateChannelSaveError).toBeVisible();
+    await settingsPage.waitForAnimations();
+
+    await expect(settingsPage.settingsDialog).toHaveScreenshot(
+      "settings-dialog-section-updates-save-error.png",
+      { maxDiffPixelRatio: 0.01 },
+    );
+  });
+
   test("matches populated Agents expanded editor", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("agents");
@@ -130,9 +173,7 @@ test.describe("Settings Dialog", () => {
     await settingsPage.settingsDialog
       .getByRole("button", { name: "Edit Edit" })
       .click();
-    await expect(
-      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
-    ).toBeVisible();
+    await expect(settingsPage.agentRuntimePicker).toBeVisible();
     await settingsPage.waitForAnimations();
 
     await expect(settingsPage.settingsDialog).toHaveScreenshot(
@@ -158,9 +199,7 @@ test.describe("Settings Dialog", () => {
     await settingsPage.settingsDialog
       .getByRole("button", { name: "Edit Edit" })
       .click();
-    await expect(
-      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
-    ).toBeVisible();
+    await expect(settingsPage.agentRuntimePicker).toBeVisible();
     await settingsPage.waitForAnimations();
     await expect(
       settingsPage.settingsDialog
@@ -169,12 +208,8 @@ test.describe("Settings Dialog", () => {
         .getByRole("button")
         .first(),
     ).toHaveAttribute("aria-expanded", "true");
-    await expect(
-      settingsPage.settingsDialog.getByRole("combobox", { name: "Edit provider" }),
-    ).toBeVisible();
-    await settingsPage.settingsDialog
-      .getByRole("combobox", { name: "Edit provider" })
-      .scrollIntoViewIfNeeded();
+    await expect(settingsPage.agentRuntimePicker).toBeVisible();
+    await settingsPage.agentRuntimePicker.scrollIntoViewIfNeeded();
 
     await expect(settingsPage.settingsDialog).toHaveScreenshot(
       "settings-dialog-section-agents-narrow.png",

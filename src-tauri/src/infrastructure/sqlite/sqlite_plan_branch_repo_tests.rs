@@ -169,6 +169,13 @@ async fn test_startup_pr_recovery_candidates_filter_historical_branches() {
 
     let mut not_pr_eligible = make_branch("not-pr-eligible", project_id.clone());
     not_pr_eligible.merge_task_id = Some(TaskId::from_string("merge-not-pr".to_string()));
+    let not_pr_eligible_id = not_pr_eligible.id.clone();
+
+    let mut numbered_not_pr_eligible = make_branch("numbered-not-pr-eligible", project_id.clone());
+    numbered_not_pr_eligible.merge_task_id =
+        Some(TaskId::from_string("merge-numbered-not-pr".to_string()));
+    numbered_not_pr_eligible.pr_number = Some(123);
+    let numbered_not_pr_eligible_id = numbered_not_pr_eligible.id.clone();
 
     let mut other_project = make_branch(
         "other-project",
@@ -182,6 +189,7 @@ async fn test_startup_pr_recovery_candidates_filter_historical_branches() {
         no_merge_task,
         merged,
         not_pr_eligible,
+        numbered_not_pr_eligible,
         other_project,
     ] {
         repo.create(branch).await.unwrap();
@@ -191,8 +199,14 @@ async fn test_startup_pr_recovery_candidates_filter_historical_branches() {
         .get_startup_pr_recovery_candidates_by_project_id(&project_id)
         .await
         .unwrap();
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].id, candidate_id);
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().any(|branch| branch.id == candidate_id));
+    assert!(candidates
+        .iter()
+        .any(|branch| branch.id == numbered_not_pr_eligible_id));
+    assert!(candidates
+        .iter()
+        .all(|branch| branch.id != not_pr_eligible_id));
 }
 
 #[tokio::test]
@@ -659,6 +673,49 @@ async fn test_create_or_update_conflict_returns_existing_id() {
         "create_or_update must return existing row id on conflict"
     );
     assert_eq!(returned.branch_name, "ralphx/updated-branch");
+}
+
+#[tokio::test]
+async fn test_create_or_update_conflict_preserves_existing_pr_number() {
+    let (_db, repo) = setup_repo();
+
+    let mut original = create_test_branch();
+    original.pr_number = Some(42);
+    let session_id = original.session_id.clone();
+    repo.create(original).await.unwrap();
+
+    let stale_without_pr = PlanBranch::new(
+        ArtifactId::from_string("art-stale-without-pr"),
+        session_id.clone(),
+        ProjectId::from_string("proj-test-1".to_string()),
+        "ralphx/stale-without-pr".to_string(),
+        "main".to_string(),
+    );
+    let returned = repo.create_or_update(stale_without_pr).await.unwrap();
+    assert_eq!(returned.pr_number, Some(42));
+
+    let mut stale_with_different_pr = PlanBranch::new(
+        ArtifactId::from_string("art-stale-different-pr"),
+        session_id.clone(),
+        ProjectId::from_string("proj-test-1".to_string()),
+        "ralphx/stale-different-pr".to_string(),
+        "main".to_string(),
+    );
+    stale_with_different_pr.pr_number = Some(99);
+    let returned = repo
+        .create_or_update(stale_with_different_pr)
+        .await
+        .unwrap();
+
+    assert_eq!(returned.pr_number, Some(42));
+    assert_eq!(
+        repo.get_by_session_id(&session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .pr_number,
+        Some(42)
+    );
 }
 
 #[tokio::test]

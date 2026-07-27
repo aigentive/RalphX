@@ -155,4 +155,19 @@ describe("ChatMessageList live transcript rows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ kind: "tool_group", count: 1 });
   });
+
+  it("suppresses every live alias for a job once its persisted representative is available", () => {
+    const delegated = delegatedTask("lifecycle-alias");
+    const rows = buildLiveTranscriptRows(
+      [
+        toolBlock(1, "delegate_start"),
+        { type: "task", toolUseId: delegated.toolUseId, seq: 2 },
+      ],
+      new Map([[delegated.toolUseId, delegated]]),
+      (toolCall) => toolCall.name === "delegate_start",
+      (task) => task.delegatedJobId === delegated.delegatedJobId,
+    );
+
+    expect(rows).toEqual([]);
+  });
 });

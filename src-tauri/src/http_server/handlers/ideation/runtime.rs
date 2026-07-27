@@ -19,7 +19,6 @@ use crate::http_server::types::{
     SendSessionMessageResponse, SessionMessageResponse,
 };
 
-use super::super::session_linking::session_is_team_mode;
 use super::{json_error, JsonError};
 
 /// Get messages for an ideation session (context recovery for agents)
@@ -409,11 +408,9 @@ pub async fn send_ideation_session_message_handler(
     }
 
     // Step 4: Agent not running — construct the shared chat service and spawn.
-    let is_team_mode = session_is_team_mode(&session);
     let app = &state.app_state;
-    let mut chat_service =
+    let chat_service =
         app.build_chat_service_with_execution_state(Arc::clone(&state.execution_state));
-    chat_service = chat_service.with_team_mode(is_team_mode);
 
     match chat_service
         .send_message(

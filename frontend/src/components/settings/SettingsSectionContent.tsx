@@ -89,6 +89,11 @@ const LazyNotificationSettingsPanel = lazy(() =>
     default: module.NotificationSettingsPanel,
   })),
 );
+const LazyUpdatesSettingsSection = lazy(() =>
+  import("./UpdatesSettingsSection").then((module) => ({
+    default: module.UpdatesSettingsSection,
+  })),
+);
 const LazyPersonasSection = lazy(() =>
   import("./PersonasSection").then((module) => ({
     default: module.PersonasSection,
@@ -184,6 +189,7 @@ export function SettingsSectionContent({
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "mcp" && <LazyMcpSettingsSection />}
       {section === "app-preferences" && <LazyAppPreferencesSection />}
+      {section === "updates" && <LazyUpdatesSettingsSection />}
       {section === "accessibility" && <LazyAccessibilitySection />}
       {section === "notifications" && <LazyNotificationSettingsPanel />}
     </Suspense>

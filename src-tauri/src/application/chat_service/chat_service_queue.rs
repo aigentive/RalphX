@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::chat_service_context;
-use super::chat_service_helpers::{effective_team_mode_for_harness, get_assistant_role};
+use super::chat_service_helpers::get_assistant_role;
 use super::chat_service_streaming::{
     persist_message_text_timeline_item, process_stream_background,
 };
@@ -18,8 +18,8 @@ use super::chat_service_types::{
 };
 use super::has_meaningful_output;
 use super::{
-    coordination_mode_enables_team, persona_resolve_flags_for_conversation,
-    team_intent_for_persisted_coordination_mode, ChatService, SendMessageOptions,
+    persona_resolve_flags_for_conversation, team_intent_for_persisted_coordination_mode,
+    ChatService, SendMessageOptions,
 };
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
@@ -28,7 +28,11 @@ use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
-use crate::domain::agents::AgentHarnessKind;
+use crate::domain::agents::{
+    default_effort_for_provider, default_model_for_provider, AgentHarnessKind,
+    AgentProviderSettings, LogicalEffort as AgentLogicalEffort, ManualRoleRuntimeOverride,
+    ManualServiceTier,
+};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
     ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, CoordinationMode,
@@ -41,7 +45,8 @@ use crate::domain::repositories::{
     QueuedMessageRepository, TaskRepository,
 };
 use crate::domain::services::{
-    MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    AttachProcessResult, MessageQueue, QueueKey, QueuedMessage, RunningAgentKey,
+    RunningAgentRegistry, TryRegisterError,
 };
 use crate::utils::secret_redactor::redact;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +55,49 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct QueueProcessingOutcome {
     pub total_processed: u32,
     pub last_run_id: Option<String>,
+}
+
+pub(super) struct CompleteRuntimeQueueSnapshot {
+    pub harness: AgentHarnessKind,
+    pub model: Option<String>,
+    pub effort: Option<AgentLogicalEffort>,
+    pub service_tier: Option<String>,
+}
+
+pub(super) fn resolve_complete_runtime_for_queue(
+    runtime: &ManualRoleRuntimeOverride,
+    provider: &AgentProviderSettings,
+) -> CompleteRuntimeQueueSnapshot {
+    let service_tier = match runtime.service_tier {
+        ManualServiceTier::ProviderDefault => Some(
+            provider
+                .service_tier
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("standard")
+                .to_ascii_lowercase(),
+        ),
+        ManualServiceTier::Standard => Some("standard".to_string()),
+        ManualServiceTier::Fast => Some("fast".to_string()),
+    };
+    CompleteRuntimeQueueSnapshot {
+        harness: runtime.harness,
+        model: Some(
+            runtime
+                .model
+                .clone()
+                .or_else(|| provider.model.clone())
+                .unwrap_or_else(|| default_model_for_provider(runtime.harness).to_string()),
+        ),
+        effort: Some(
+            runtime
+                .effort
+                .or(provider.effort)
+                .unwrap_or_else(|| default_effort_for_provider(runtime.harness)),
+        ),
+        service_tier,
+    }
 }
 
 impl QueueProcessingOutcome {
@@ -418,6 +466,8 @@ fn provider_switch_send_options_for_queued_message(
         conversation_id_override: Some(conversation_id),
         logical_effort_override: queued_msg.logical_effort_override,
         service_tier_override: queued_msg.service_tier_override.clone(),
+        preserve_conversation_provider_session_ref: queued_msg
+            .preserve_conversation_provider_session_ref,
         composer_project_references: queued_msg.composer_project_references.clone(),
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
@@ -428,13 +478,6 @@ fn provider_switch_send_options_for_queued_message(
         force_new_provider_session,
         ..Default::default()
     }
-}
-
-fn effective_queue_team_mode(
-    team_mode: bool,
-    conversation_coordination_mode: Option<CoordinationMode>,
-) -> bool {
-    team_mode || conversation_coordination_mode.is_some_and(coordination_mode_enables_team)
 }
 
 fn queued_target_harness(
@@ -968,7 +1011,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     app_handle: Option<AppHandle<R>>,
     project_id: Option<&str>,
     conversation_coordination_mode: Option<CoordinationMode>,
-    team_mode: bool,
     cancellation_token: CancellationToken,
     run_chain_id: Option<&str>,
     parent_run_id: Option<&str>,
@@ -978,7 +1020,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     let mut last_run_id: Option<String> = None;
     let mut fresh_provider_harness: Option<AgentHarnessKind> = None;
     let queue_key = QueueKey::new(context_type, queue_context_id);
-    let queue_team_mode = effective_queue_team_mode(team_mode, conversation_coordination_mode);
     let queue_team_intent =
         conversation_coordination_mode.and_then(team_intent_for_persisted_coordination_mode);
 
@@ -1565,26 +1606,70 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             );
             let queued_run_id = queued_run.id.as_str().to_string();
             if let Err(error) = agent_run_repo.create(queued_run).await {
+                let error_string =
+                    format!("Failed to persist queued continuation agent run: {error}");
                 tracing::warn!(
                     error = %error,
                     queued_run_id,
                     conversation_id = %conversation_id,
                     "[QUEUE] Failed to persist queued continuation agent run"
                 );
+                emit_queued_preflight_error(
+                    app_handle.as_ref(),
+                    &conversation_id,
+                    context_type,
+                    context_id,
+                    Some(queued_run_id.clone()),
+                    error_string,
+                );
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id: Some(queued_run_id),
+                };
             }
             let queue_registry_key =
                 RunningAgentKey::new(context_type.to_string(), queue_context_id);
             let queue_conversation_id = conversation_id.as_str().to_string();
-            running_agent_registry
-                .register(
+            if let Err(error) = running_agent_registry
+                .try_register(
                     queue_registry_key.clone(),
-                    0,
                     queue_conversation_id.clone(),
                     queued_run_id.clone(),
-                    Some(working_directory.to_string_lossy().to_string()),
-                    Some(cancellation_token.clone()),
+                )
+                .await
+            {
+                let error_string = match error {
+                    TryRegisterError::Occupied(existing) => format!(
+                        "queued continuation launch slot is owned by agent run {}",
+                        existing.agent_run_id
+                    ),
+                    TryRegisterError::Storage(error) => {
+                        format!("failed to reserve queued continuation launch slot: {error}")
+                    }
+                };
+                fail_queued_agent_run(
+                    agent_run_repo,
+                    running_agent_registry,
+                    &queue_registry_key,
+                    app_handle.as_ref(),
+                    &queued_run_id,
+                    &error_string,
                 )
                 .await;
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id: Some(queued_run_id),
+                };
+            }
+            let launch_reservation_guard = super::launch_reservation::LaunchReservationGuard::new(
+                Arc::clone(running_agent_registry),
+                queue_registry_key.clone(),
+                queued_run_id.clone(),
+                std::time::Duration::from_secs(
+                    crate::infrastructure::agents::claude::stream_timeouts()
+                        .launch_reservation_lease_secs,
+                ),
+            );
             last_run_id = Some(queued_run_id.clone());
             tracing::info!(
                 queued_run_id = %queued_run_id,
@@ -2118,7 +2203,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     } else {
                         None
                     },
-                    team_mode,
                     Arc::clone(chat_attachment_repo),
                     Arc::clone(artifact_repo),
                     agent_lane_settings_repo,
@@ -2252,7 +2336,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");
             match spawnable.spawn().await {
-                Ok(child) => {
+                Ok(mut child) => {
                     super::record_persona_run_attribution(
                         agent_run_repo,
                         app_handle.as_ref(),
@@ -2264,25 +2348,54 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         persona_injection_skipped_reason,
                     )
                     .await;
-                    if let Some(pid) = child.id() {
-                        if let Err(error) = running_agent_registry
-                            .update_agent_process(
+                    let Some(pid) = child.id() else {
+                        launch_reservation_guard.stop();
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            app_handle.as_ref(),
+                            &queued_run_id,
+                            "spawned queued continuation has no process id",
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id: Some(queued_run_id),
+                        };
+                    };
+                    launch_reservation_guard.stop();
+                    match running_agent_registry
+                        .attach_process(
+                            &queue_registry_key,
+                            &queued_run_id,
+                            pid,
+                            Some(working_directory.to_string_lossy().to_string()),
+                            Some(cancellation_token.clone()),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(AttachProcessResult::Attached) => {}
+                        Ok(AttachProcessResult::ClaimLost) | Err(_) => {
+                            let error_string = "queued continuation lost its launch reservation";
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            fail_queued_agent_run(
+                                agent_run_repo,
+                                running_agent_registry,
                                 &queue_registry_key,
-                                pid,
-                                &queue_conversation_id,
+                                app_handle.as_ref(),
                                 &queued_run_id,
-                                Some(working_directory.to_string_lossy().to_string()),
-                                Some(cancellation_token.clone()),
-                                None,
+                                error_string,
                             )
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %error,
-                                queued_run_id,
-                                pid,
-                                "[QUEUE] Failed to update queued continuation process registry"
-                            );
+                            .await;
+                            return QueueProcessingOutcome {
+                                total_processed,
+                                last_run_id: Some(queued_run_id),
+                            };
                         }
                     }
                     let split_verification_transcript =
@@ -2332,8 +2445,6 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         Some(queue_assistant_msg_id.clone()),
                         question_state.clone(),
                         cancellation_token.clone(),
-                        None, // Queue processing doesn't need team events
-                        effective_team_mode_for_harness(queue_team_mode, harness),
                         streaming_state_cache.clone(),
                         None, // Queue processing doesn't have registry in scope
                         Some(Arc::clone(agent_run_repo)),
@@ -2801,7 +2912,6 @@ pub async fn process_queued_messages_for_test_with_persona_feature<R: Runtime + 
         Some(app_handle),
         None,
         None,
-        false,
         CancellationToken::new(),
         None,
         None,

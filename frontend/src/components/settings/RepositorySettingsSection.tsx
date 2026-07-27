@@ -7,7 +7,10 @@ import { api, getGitDefaultBranch } from "@/lib/tauri";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
-import type { MergeValidationMode } from "@/types/project";
+import {
+  getProjectRepositoryCapability,
+  type MergeValidationMode,
+} from "@/types/project";
 import { RepositoryEnvironmentSettings } from "./RepositoryEnvironmentSettings";
 import {
   SectionCard,
@@ -15,10 +18,7 @@ import {
   SettingRow,
   ToggleSettingRow,
 } from "./SettingsView.shared";
-import {
-  useGitRemoteUrl,
-  useUpdateGithubPrEnabled,
-} from "@/hooks/useGithubSettings";
+import { useUpdateGithubPrEnabled } from "@/hooks/useGithubSettings";
 
 const VALIDATION_MODE_OPTIONS: {
   value: MergeValidationMode;
@@ -66,25 +66,6 @@ function SubsectionLabel({
       )}
     </div>
   );
-}
-
-function isGithubRemoteUrl(remoteUrl: string | null | undefined): boolean {
-  if (!remoteUrl) return false;
-
-  const trimmed = remoteUrl.trim();
-  if (trimmed.startsWith("git@github.com:")) {
-    return true;
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    return (
-      parsed.hostname === "github.com" &&
-      (parsed.protocol === "https:" || parsed.protocol === "ssh:")
-    );
-  } catch {
-    return false;
-  }
 }
 
 function TextSettingRow({
@@ -158,9 +139,6 @@ export function RepositorySettingsSection() {
   const [pendingBaseBranch, setPendingBaseBranch] = useState<string | null>(null);
   const [pendingWorktreeDir, setPendingWorktreeDir] = useState<string | null>(null);
 
-  const { data: remoteUrl, isLoading: isLoadingRemote } = useGitRemoteUrl(
-    project?.id ?? null
-  );
   const { data: ghStatus, isLoading: isLoadingAuth } = useGitHubConnectionStatus();
   const updatePrEnabled = useUpdateGithubPrEnabled();
 
@@ -284,7 +262,13 @@ export function RepositorySettingsSection() {
   const worktreeParentDirectory =
     pendingWorktreeDir ?? project.worktreeParentDirectory ?? "~/ralphx-worktrees";
 
-  const isGithubRemote = isGithubRemoteUrl(remoteUrl);
+  const repositoryCapability = getProjectRepositoryCapability(project);
+  const isGithubRemote = repositoryCapability.kind === "github";
+  const remoteUrl =
+    repositoryCapability.kind === "github" ||
+    repositoryCapability.kind === "otherRemote"
+      ? repositoryCapability.pushUrl
+      : null;
   const ghState = ghStatus?.state;
   const ghNeedsCredentialRepair =
     ghState === "unauthenticated" || ghState === "credential_rejected";
@@ -340,8 +324,12 @@ export function RepositorySettingsSection() {
         id="github-pr-enabled"
         label="GitHub PR Mode"
         description={
-          !isGithubRemote
-            ? "Remote is not GitHub — PR mode unavailable"
+          repositoryCapability.kind === "localOnly"
+            ? "No GitHub remote is configured. Local workflows remain available."
+            : repositoryCapability.kind === "otherRemote"
+              ? "This remote is not supported by GitHub PR workflows."
+              : repositoryCapability.kind === "inspectionFailed"
+                ? "Repository configuration could not be inspected. Refresh before enabling PR mode."
             : ghNeedsCredentialRepair
             ? "Enable to create draft PRs when plans execute (gh auth required for PR operations)"
             : ghTransientUnavailable
@@ -356,17 +344,28 @@ export function RepositorySettingsSection() {
       <SubsectionLabel hint="read-only">Diagnostics</SubsectionLabel>
       <div className="settings-diagnostics">
         <SettingRow
+          id="repository-capability"
+          label="Repository capability"
+          description="Local Git workflows remain available without a remote"
+        >
+          <span className="settings-readonly-value">
+            {repositoryCapability.kind === "localOnly"
+              ? "Local workflows available"
+              : repositoryCapability.kind === "otherRemote"
+                ? "GitHub PR mode unavailable"
+                : repositoryCapability.kind === "inspectionFailed"
+                  ? "Could not inspect repository"
+                  : "GitHub PR capable"}
+          </span>
+        </SettingRow>
+        <SettingRow
           id="github-remote-url"
           label="Remote URL"
           description="Git remote origin for this project"
         >
-          {isLoadingRemote ? (
-            <Loader2 className="w-4 h-4 animate-spin text-[var(--text-muted)]" />
-          ) : (
-            <span className="settings-readonly-value max-w-[240px] truncate">
-              {remoteUrl ?? "Not configured"}
-            </span>
-          )}
+          <span className="settings-readonly-value max-w-[240px] truncate">
+            {remoteUrl ?? "Not configured"}
+          </span>
         </SettingRow>
         <SettingRow
           id="gh-auth-status"

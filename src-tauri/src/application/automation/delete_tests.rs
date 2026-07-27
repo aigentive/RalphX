@@ -900,6 +900,154 @@ async fn delete_automation_run_skips_project_default_branch_cleanup() {
     assert_eq!(github.state().delete_remote_branch_calls, 0);
 }
 
+#[tokio::test]
+async fn delete_automation_run_is_fail_open_when_archive_worktree_and_remote_cleanup_fail() {
+    let (_temp, state, project_id, github) = setup_state().await;
+    github.state().delete_remote_branch_result = Some(Err(AppError::Infrastructure(
+        "remote branch cleanup failed".to_string(),
+    )));
+    let stopped = automation(
+        "automation-delete-cleanup-failures",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let run = deletable_run(
+        "run-delete-cleanup-failures",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    let (run, conversation_id) = seed_run_with_workspace(
+        &state,
+        &project_id,
+        &stopped.id,
+        run,
+        "ralphx/cleanup-failures",
+        std::path::Path::new("relative-unsafe-worktree"),
+    )
+    .await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_plan_branch_id = Some(crate::domain::entities::PlanBranchId::from_string(
+        "missing-plan-branch".to_string(),
+    ));
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("cleanup failures must not resurrect an authority-deleted run");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 1);
+    assert_eq!(
+        github.state().last_delete_remote_branch_name.as_deref(),
+        Some("ralphx/cleanup-failures")
+    );
+}
+
+#[tokio::test]
+async fn delete_automation_run_uses_run_branch_without_workspace_or_conversation() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-run-branch",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let mut run = deletable_run(
+        "run-delete-run-branch",
+        &stopped.id,
+        1,
+        AutomationRunStatus::Cancelled,
+        AutomationJudgeState::Failed,
+    );
+    run.branch_name = Some("ralphx/run-only-branch".to_string());
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("run-owned branch cleanup should be best effort");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 1);
+    assert_eq!(
+        github.state().last_delete_remote_branch_name.as_deref(),
+        Some("ralphx/run-only-branch")
+    );
+    drop(temp);
+}
+
+#[tokio::test]
+async fn delete_automation_run_skips_branch_cleanup_when_project_disappears() {
+    let (temp, state, project_id, github) = setup_state().await;
+    let stopped = automation(
+        "automation-delete-missing-project",
+        &project_id,
+        AutomationStatus::Stopped,
+    );
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let mut run = deletable_run(
+        "run-delete-missing-project",
+        &stopped.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    run.branch_name = Some("ralphx/project-disappeared".to_string());
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .unwrap();
+    state.project_repo.delete(&project_id).await.unwrap();
+
+    delete_automation_run_with_archive(&state, &stopped.id, &run.id)
+        .await
+        .expect("missing cleanup project must not block run deletion");
+
+    assert!(state
+        .automation_run_repo
+        .get_by_id(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 0);
+    drop(temp);
+}
+
 async fn seed_plan_artifact_chain(state: &AppState, prefix: &str) -> (ArtifactId, ArtifactId) {
     let mut first = Artifact::new_inline(
         "Run Plan",

@@ -6,8 +6,14 @@ pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
 #[cfg(test)]
 mod agent_conversation_workspace_tests;
+pub mod agent_workspace_pr_metadata;
+#[cfg(test)]
+mod agent_workspace_pr_metadata_tests;
 pub mod agent_run;
 pub mod agent_task;
+pub mod agent_task_assignment;
+#[cfg(test)]
+mod agent_task_assignment_tests;
 pub mod agent_workflow_protocol;
 #[cfg(test)]
 mod agent_workflow_protocol_tests;
@@ -68,8 +74,13 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
+#[cfg(test)]
+mod team_tests;
 pub mod ticket_canonical_branch;
 pub mod types;
+pub mod usage;
+#[cfg(test)]
+mod usage_tests;
 pub mod validation_run;
 pub mod workflow;
 
@@ -95,7 +106,8 @@ pub use agent_conversation_linear_issue::{
     AgentConversationLinearIssueLink, AgentConversationLinearRefreshStatus,
 };
 pub use agent_conversation_workspace::{
-    is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+    is_open_pr, is_pr_status_pollable_push_status, is_publication_push_active,
+    is_terminal_publication_pr_status,
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
@@ -104,22 +116,28 @@ pub use agent_conversation_workspace::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewHunkAnnotation,
     AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
+pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;
 pub use agent_run::{
     AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
-    AgentRunUsage,
     InterruptedConversation,
 };
 pub use agent_task::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
     AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
     AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
+};
+pub use agent_task_assignment::{
+    AgentTaskAssignment, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
+    AgentTaskAssignmentSettlement, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
+    AgentTaskAssignmentView,
 };
 pub use api_key::{
     ApiKey, AuditLogEntry, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX,
@@ -130,7 +148,6 @@ pub use artifact::{
     Artifact, ArtifactBucket, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata,
     ArtifactRelation, ArtifactRelationId, ArtifactRelationType, ArtifactType,
     ParseArtifactRelationTypeError, ParseArtifactTypeError, ProcessId, TeamArtifactMetadata,
-    VerificationFindingGap, VerificationFindingMetadata,
 };
 pub use artifact_flow::{
     create_plan_updated_sync_flow, create_research_to_dev_flow, ArtifactFlow, ArtifactFlowContext,
@@ -247,6 +264,9 @@ pub use review_issue::{
     SeverityBreakdown, SeverityCount,
 };
 pub use status::{InternalStatus, ParseInternalStatusError};
+pub use usage::{
+    processed_tokens, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+};
 pub use task::{Task, TaskCategory};
 pub use task_context::{
     create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
@@ -263,10 +283,8 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId,
-    TeamMessageRecord,
-    TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
-    TeammateSnapshot,
+    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageTarget,
+    TeamMessageTargetKind,
 };
 pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{

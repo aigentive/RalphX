@@ -15,6 +15,70 @@ export type GitMode = z.infer<typeof GitModeSchema>;
 export const MergeValidationModeSchema = z.enum(["block", "auto_fix", "warn", "off"]);
 export type MergeValidationMode = z.infer<typeof MergeValidationModeSchema>;
 
+/** Live transport capability for future GitHub pull-request workflows. */
+export const RepositoryCapabilityResponseSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("local_only") }),
+  z.object({
+    kind: z.literal("github"),
+    fetch_url: z.string().nullable(),
+    push_url: z.string(),
+  }),
+  z.object({
+    kind: z.literal("other_remote"),
+    fetch_url: z.string().nullable(),
+    push_url: z.string(),
+  }),
+  z.object({ kind: z.literal("inspection_failed"), message: z.string() }),
+]);
+
+export type RepositoryCapability =
+  | { kind: "localOnly" }
+  | { kind: "github"; fetchUrl: string | null; pushUrl: string }
+  | { kind: "otherRemote"; fetchUrl: string | null; pushUrl: string }
+  | { kind: "inspectionFailed"; message: string };
+
+export type ProjectWorkspacePublishMode =
+  | { kind: "persistedPr" }
+  | { kind: "newPr" }
+  | { kind: "localCommit"; guidance: string }
+  | { kind: "unavailable"; guidance: string };
+
+const UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE =
+  "Repository capability is unavailable. Refresh the project before starting a PR workflow.";
+const UNKNOWN_REPOSITORY_CAPABILITY: RepositoryCapability = {
+  kind: "inspectionFailed",
+  message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
+};
+
+export function transformRepositoryCapability(
+  capability: z.infer<typeof RepositoryCapabilityResponseSchema>
+): RepositoryCapability {
+  switch (capability.kind) {
+    case "local_only":
+      return { kind: "localOnly" };
+    case "github":
+      return {
+        kind: "github",
+        fetchUrl: capability.fetch_url,
+        pushUrl: capability.push_url,
+      };
+    case "other_remote":
+      return {
+        kind: "otherRemote",
+        fetchUrl: capability.fetch_url,
+        pushUrl: capability.push_url,
+      };
+    case "inspection_failed":
+      return { kind: "inspectionFailed", message: capability.message };
+  }
+}
+
+export function isGithubRepositoryCapability(
+  capability: RepositoryCapability
+): boolean {
+  return capability.kind === "github";
+}
+
 /**
  * Backend response schema - expects snake_case from Rust serialization
  */
@@ -31,6 +95,7 @@ export const ProjectResponseSchema = z.object({
   custom_analysis: z.string().nullish(),
   analyzed_at: z.string().nullish(),
   github_pr_enabled: z.boolean().default(false),
+  repository_capability: RepositoryCapabilityResponseSchema.optional(),
   // Accept RFC3339 timestamps with offset (e.g., +00:00) not just Z
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
@@ -52,8 +117,45 @@ export interface Project {
   customAnalysis: string | null;
   analyzedAt: string | null;
   githubPrEnabled: boolean;
+  repositoryCapability?: RepositoryCapability;
   createdAt: string;
   updatedAt: string;
+}
+
+export function getProjectRepositoryCapability(
+  project: Pick<Project, "repositoryCapability"> | null | undefined,
+): RepositoryCapability {
+  return project?.repositoryCapability ?? UNKNOWN_REPOSITORY_CAPABILITY;
+}
+
+export function getProjectWorkspacePublishMode(
+  project: Pick<Project, "githubPrEnabled" | "repositoryCapability"> | null | undefined,
+  hasPersistedPr: boolean,
+): ProjectWorkspacePublishMode {
+  if (hasPersistedPr) {
+    return { kind: "persistedPr" };
+  }
+
+  const capability = getProjectRepositoryCapability(project);
+  if (capability.kind === "github" && project?.githubPrEnabled === true) {
+    return { kind: "newPr" };
+  }
+  if (capability.kind === "localOnly" || capability.kind === "otherRemote") {
+    return {
+      kind: "localCommit",
+      guidance: "This repository cannot open GitHub pull requests. Commit changes to the isolated workspace branch without pushing or merging.",
+    };
+  }
+  if (capability.kind === "github") {
+    return {
+      kind: "localCommit",
+      guidance: "GitHub PR mode is off for this project. Commit locally, or enable GitHub PR mode in project settings to open a pull request.",
+    };
+  }
+  return {
+    kind: "unavailable",
+    guidance: "RalphX could not inspect this repository's remote configuration. Refresh the project before starting a PR workflow.",
+  };
 }
 
 /**
@@ -75,6 +177,12 @@ export function transformProject(
     customAnalysis: response.custom_analysis ?? null,
     analyzedAt: response.analyzed_at ?? null,
     githubPrEnabled: response.github_pr_enabled,
+    repositoryCapability: transformRepositoryCapability(
+      response.repository_capability ?? {
+        kind: "inspection_failed",
+        message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
+      },
+    ),
     createdAt: response.created_at,
     updatedAt: response.updated_at,
   };

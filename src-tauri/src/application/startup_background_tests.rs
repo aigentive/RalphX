@@ -1,8 +1,8 @@
 use super::automation::plan_gate::{AutomationRunResumer, ResumeDelivery};
 use super::chat_service::{MockChatService, SendCallerContext};
 use super::startup_background::{
-    automation_run_resumer_for_test, automation_run_starter_for_test,
-    resume_automation_run_with_prompt_via_chat_service,
+    automation_run_resumer_for_test, automation_run_starter_for_test, external_mcp_startup_timeout,
+    resume_automation_run_with_prompt_via_chat_service, try_start_recurring_service,
 };
 use super::AppState;
 use crate::application::automation::provisioning::{
@@ -13,6 +13,27 @@ use crate::domain::entities::{
     ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::error::AppError;
+
+#[test]
+fn recurring_startup_services_are_claimed_exactly_once() {
+    const SERVICE: &str = "startup_background_tests_unique_service";
+
+    assert!(try_start_recurring_service(SERVICE));
+    assert!(!try_start_recurring_service(SERVICE));
+}
+
+#[test]
+fn external_mcp_startup_uses_the_configured_timeout() {
+    let config = crate::infrastructure::agents::claude::ExternalMcpConfig {
+        startup_timeout_secs: 17,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        external_mcp_startup_timeout(&config),
+        std::time::Duration::from_secs(17)
+    );
+}
 
 #[tokio::test]
 async fn automation_run_starter_validates_request_before_runtime_start() {

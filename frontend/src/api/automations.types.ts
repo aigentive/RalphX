@@ -84,6 +84,10 @@ export interface Automation {
   baseRefKind: AutomationBaseRefKind;
   baseRef: string;
   baseDisplayName: string | null;
+  // Final merge target (fork point, e.g. `main`) when the automation runs on its own
+  // integration branch (`baseRef`); populated on the detail response only.
+  baseTargetRef?: string;
+  baseTargetDisplayName?: string;
   baseSourcePullRequestJson: string | null;
   goalItemsJson: string | null;
   chainMode: AutomationChainMode;

@@ -118,7 +118,6 @@ export function ChildSessionTranscriptModal({
                   isLastInList={index === messages.length - 1}
                   toolCalls={message.toolCalls}
                   contentBlocks={message.contentBlocks}
-                  teammateName={message.sender}
                   providerHarness={message.providerHarness}
                   providerSessionId={message.providerSessionId}
                   upstreamProvider={message.upstreamProvider}

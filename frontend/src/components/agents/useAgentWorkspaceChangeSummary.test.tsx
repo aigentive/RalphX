@@ -10,7 +10,10 @@ import type {
   FileChange,
 } from "@/api/diff";
 
-import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
+import {
+  getAgentWorkspaceChangeFacts,
+  useAgentWorkspaceChangeSummary,
+} from "./useAgentWorkspaceChangeSummary";
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -110,6 +113,42 @@ describe("useAgentWorkspaceChangeSummary", () => {
     expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
   });
 
+  it("uses review changes for workspace count when a clean live summary is present", () => {
+    const reviewChanges = [
+      {
+        path: "src/committed.ts",
+        status: "modified" as const,
+        additions: 3,
+        deletions: 1,
+        isGenerated: false,
+      },
+      {
+        path: "src/also-committed.ts",
+        status: "added" as const,
+        additions: 4,
+        deletions: 0,
+        isGenerated: false,
+      },
+    ];
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview(reviewChanges),
+          liveSummary: makeLiveSummary(),
+        }),
+      { wrapper: makeWrapper() },
+    );
+
+    expect(result.current.effectiveMode).toBe("uncommitted");
+    expect(result.current.workspaceChangeCount).toBe(reviewChanges.length);
+    expect(result.current.currentFileCount).toBe(reviewChanges.length);
+    expect(result.current.currentFiles).toEqual(reviewChanges);
+    expect(result.current.stagedCount).toBe(0);
+    expect(result.current.unstagedCount).toBe(0);
+  });
+
   it("hydrates staged files only when live summary selects staged mode", async () => {
     const stagedFile: FileChange = {
       path: "src/staged.ts",
@@ -128,13 +167,29 @@ describe("useAgentWorkspaceChangeSummary", () => {
       () =>
         useAgentWorkspaceChangeSummary({
           conversationId: "conversation-1",
-          review: makeReview(),
+          review: makeReview([
+            {
+              path: "src/committed.ts",
+              status: "modified",
+              additions: 3,
+              deletions: 1,
+              isGenerated: false,
+            },
+            {
+              path: "src/also-committed.ts",
+              status: "added",
+              additions: 4,
+              deletions: 0,
+              isGenerated: false,
+            },
+          ]),
           liveSummary,
         }),
       { wrapper: makeWrapper() },
     );
 
     expect(result.current.effectiveMode).toBe("staged");
+    expect(result.current.workspaceChangeCount).toBe(2);
     expect(result.current.currentFileCount).toBe(1);
     expect(result.current.totalAdditions).toBe(2);
     expect(result.current.totalDeletions).toBe(1);
@@ -406,5 +461,52 @@ describe("useAgentWorkspaceChangeSummary", () => {
       expect(state.currentFilesError).toBeNull();
       expect(state.isCurrentFilesLoading).toBe(false);
     }
+  });
+});
+
+describe("getAgentWorkspaceChangeFacts", () => {
+  it("aggregates live staged, unstaged, and conflicted files without fabricating conflict deltas", () => {
+    expect(
+      getAgentWorkspaceChangeFacts(
+        makeLiveSummary({
+          staged: { fileCount: 2, additions: 6, deletions: 2 },
+          unstaged: { fileCount: 1, additions: 3, deletions: 1 },
+          conflicted: { fileCount: 2, files: ["a.ts", "b.ts"] },
+        }),
+        makeReview(),
+      ),
+    ).toEqual({
+      fileCount: 5,
+      additions: 9,
+      deletions: 3,
+    });
+  });
+
+  it("falls back to loaded review changes when live worktree facts are unavailable", () => {
+    expect(
+      getAgentWorkspaceChangeFacts(
+        makeLiveSummary({
+          supportsWorktreeModes: false,
+          staged: { fileCount: 9, additions: 90, deletions: 9 },
+        }),
+        makeReview([
+          {
+            path: "src/review.ts",
+            status: "modified",
+            additions: 4,
+            deletions: 2,
+            isGenerated: false,
+          },
+        ]),
+      ),
+    ).toEqual({
+      fileCount: 1,
+      additions: 4,
+      deletions: 2,
+    });
+  });
+
+  it("returns null while neither live nor review facts are known", () => {
+    expect(getAgentWorkspaceChangeFacts(null, null)).toBeNull();
   });
 });

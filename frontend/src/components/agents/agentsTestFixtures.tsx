@@ -26,7 +26,12 @@ export const agentProjectFixture = {
   detectedAnalysis: null,
   customAnalysis: null,
   analyzedAt: null,
-  githubPrEnabled: false,
+  githubPrEnabled: true,
+  repositoryCapability: {
+    kind: "github" as const,
+    fetchUrl: "https://github.com/ralphx/ralphx.git",
+    pushUrl: "git@github.com:ralphx/ralphx.git",
+  },
   createdAt: "2026-04-23T09:00:00Z",
   updatedAt: "2026-04-23T09:00:00Z",
 };

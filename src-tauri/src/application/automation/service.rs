@@ -48,6 +48,8 @@ const DEFAULT_PROVIDER_HARNESS: &str = "claude";
 const DEFAULT_MODEL_ID: &str = "sonnet";
 const DEFAULT_RUN_MODE: &str = "edit";
 const DEFAULT_BASE_REF_KIND: &str = "project_default";
+/// Base-ref kind for an automation whose base is its own integration branch.
+pub(crate) const LOCAL_BRANCH_BASE_REF_KIND: &str = "local_branch";
 const DEFAULT_CHAIN_MODE: &str = "merged_base";
 const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
 const JUDGE_FAILED_PAUSED_REASON_CODE: &str = "judge_failed";
@@ -397,6 +399,20 @@ impl AutomationService {
         let spec_artifact_id = self
             .resolve_spec_artifact_id(&automation, input.spec_content, input.spec_artifact_id)
             .await?;
+        // The automation's base is fixed at creation to its own integration branch
+        // (`local_branch`): runs base on it and their PRs merge into it, and the integration
+        // branch later merges to the project default. The setup agent finalizing config must
+        // NOT downgrade that base to the project default (the fork point, e.g. `main`) — doing
+        // so silently makes every run open its PR against `main` instead of the integration
+        // branch. Preserve the `local_branch` base against a `project_default` overwrite
+        // (a `None` patch field keeps the current stored value via COALESCE).
+        let downgrades_integration_base = automation.base_ref_kind == LOCAL_BRANCH_BASE_REF_KIND
+            && input.base_ref_kind.as_deref() == Some(DEFAULT_BASE_REF_KIND);
+        let (base_ref_kind, base_ref, base_display_name) = if downgrades_integration_base {
+            (None, None, None)
+        } else {
+            (input.base_ref_kind, input.base_ref, input.base_display_name)
+        };
         let goal_items_were_updated = input.goal_items_json.is_some();
         let patch = AutomationConfigPatch {
             goal_prompt: input.goal_prompt,
@@ -405,9 +421,9 @@ impl AutomationService {
             model_id: input.model_id,
             logical_effort: input.logical_effort,
             run_mode: input.run_mode,
-            base_ref_kind: input.base_ref_kind,
-            base_ref: input.base_ref,
-            base_display_name: input.base_display_name,
+            base_ref_kind,
+            base_ref,
+            base_display_name,
             goal_items_json: input.goal_items_json,
             chain_mode: input.chain_mode,
             completion_signal,

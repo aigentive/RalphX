@@ -115,6 +115,28 @@ fn verify_plan_action_metadata_is_typed_and_roundtrips() {
 }
 
 #[test]
+fn workspace_review_fixer_action_metadata_is_typed_and_roundtrips() {
+    let parsed = AgentRunAction::from_metadata_json(Some(
+        r#"{"ralphx_action_kind":"workspace_review_fixer","ralphx_action_context_id":"conversation-1","ralphx_action_target_id":"attempt-1"}"#,
+    ))
+    .expect("complete action tuple");
+
+    assert_eq!(parsed.kind, AgentRunActionKind::WorkspaceReviewFixer);
+    assert_eq!(parsed.context_id, "conversation-1");
+    assert_eq!(parsed.target_id, "attempt-1");
+    assert_eq!(
+        AgentRunActionKind::WorkspaceReviewFixer.to_string(),
+        "workspace_review_fixer"
+    );
+    assert_eq!(
+        "workspace_review_fixer"
+            .parse::<AgentRunActionKind>()
+            .unwrap(),
+        AgentRunActionKind::WorkspaceReviewFixer
+    );
+}
+
+#[test]
 fn malformed_or_partial_action_metadata_is_not_authoritative() {
     for metadata in [
         None,
@@ -134,6 +156,19 @@ fn malformed_or_partial_action_metadata_is_not_authoritative() {
         assert_eq!(run.action_context_id, None);
         assert_eq!(run.action_target_id, None);
     }
+}
+
+#[test]
+fn pr_autofix_action_metadata_roundtrips() {
+    let parsed = AgentRunAction::from_metadata_json(Some(
+        r#"{"ralphx_action_kind":"pr_autofix","ralphx_action_context_id":"42","ralphx_action_target_id":"github_pr_autofix:42:abc"}"#,
+    ))
+    .unwrap();
+
+    assert_eq!(parsed.kind, AgentRunActionKind::PrAutofix);
+    assert_eq!(parsed.context_id, "42");
+    assert_eq!(parsed.target_id, "github_pr_autofix:42:abc");
+    assert_eq!(AgentRunActionKind::PrAutofix.to_string(), "pr_autofix");
 }
 
 #[test]

@@ -89,6 +89,32 @@ impl ManualRoleDefaultService {
         project_root: Option<&Path>,
         role: RoutingRole,
     ) -> AppResult<ResolvedManualRoleDefault> {
+        let resolved = self
+            .resolve_unvalidated(project_id, project_root, role)
+            .await?;
+        self.validate_value(role, &resolved.value).await?;
+        Ok(resolved)
+    }
+
+    /// Resolve the configured role entry without validating runtime fields that
+    /// a complete per-launch override replaces. The caller must validate the
+    /// materialized explicit runtime before spawning.
+    pub async fn resolve_for_explicit_runtime(
+        &self,
+        project_id: Option<&str>,
+        project_root: Option<&Path>,
+        role: RoutingRole,
+    ) -> AppResult<ResolvedManualRoleDefault> {
+        self.resolve_unvalidated(project_id, project_root, role)
+            .await
+    }
+
+    async fn resolve_unvalidated(
+        &self,
+        project_id: Option<&str>,
+        project_root: Option<&Path>,
+        role: RoutingRole,
+    ) -> AppResult<ResolvedManualRoleDefault> {
         if let Some(project_id) = project_id {
             if let Some(row) = self
                 .manual_repo
@@ -96,7 +122,6 @@ impl ManualRoleDefaultService {
                 .await
                 .map_err(|error| repository_error("project manual role default", error))?
             {
-                self.validate_value(role, &row.value).await?;
                 return Ok(resolved(role, row.value, ManualDefaultSource::ProjectUi));
             }
         }
@@ -108,7 +133,6 @@ impl ManualRoleDefaultService {
                 load_manual_router_file(project_root, &project_router)?,
                 ManualDefaultSource::ProjectYaml,
             )? {
-                self.validate_value(role, &resolved.value).await?;
                 return Ok(resolved);
             }
         }
@@ -119,7 +143,6 @@ impl ManualRoleDefaultService {
             .await
             .map_err(|error| repository_error("global manual role default", error))?
         {
-            self.validate_value(role, &row.value).await?;
             return Ok(resolved(role, row.value, ManualDefaultSource::GlobalUi));
         }
 
@@ -131,7 +154,6 @@ impl ManualRoleDefaultService {
             load_manual_router_file(global_root, &self.global_router_path)?,
             ManualDefaultSource::GlobalYaml,
         )? {
-            self.validate_value(role, &resolved.value).await?;
             return Ok(resolved);
         }
 
@@ -151,7 +173,6 @@ impl ManualRoleDefaultService {
                 .map_err(|error| repository_error("global legacy lane default", error))?;
             if let Some(row) = project_row.or(global_row) {
                 let value = ManualRoleDefault::from_legacy(&row.settings);
-                self.validate_value(role, &value).await?;
                 return Ok(resolved(role, value, ManualDefaultSource::LegacyLane));
             }
         }
@@ -163,7 +184,6 @@ impl ManualRoleDefaultService {
             .map_err(|error| repository_error("default provider settings", error))?
             .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(DEFAULT_AGENT_HARNESS));
         let value = provider_default(provider);
-        validate_role_value(role, &value)?;
         Ok(resolved(role, value, ManualDefaultSource::ProviderDefault))
     }
 
@@ -195,6 +215,40 @@ impl ManualRoleDefaultService {
             )));
         }
         Ok(())
+    }
+
+    /// Validate a complete explicit runtime value against the same role,
+    /// provider, capability, and persona rules used by persisted defaults.
+    pub async fn validate_explicit_value(
+        &self,
+        role: RoutingRole,
+        value: &ManualRoleDefault,
+    ) -> AppResult<()> {
+        self.validate_value(role, value).await
+    }
+
+    /// Resolve the enabled provider settings used by an explicit launch selection.
+    pub async fn resolve_enabled_provider_settings(
+        &self,
+        harness: crate::domain::agents::AgentHarnessKind,
+        surface_name: &str,
+    ) -> AppResult<AgentProviderSettings> {
+        crate::application::ensure_provider_spawn_enabled(
+            &self.provider_repo,
+            harness,
+            surface_name,
+        )
+        .await
+        .map_err(AppError::Validation)?;
+        self.provider_repo
+            .get(harness)
+            .await
+            .map_err(|error| repository_error("selected provider settings", error))?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "{surface_name}: {harness} is not configured in Settings > Harness > Providers."
+                ))
+            })
     }
 }
 
@@ -264,11 +318,6 @@ fn provider_default(provider: AgentProviderSettings) -> ManualRoleDefault {
 }
 
 pub fn validate_role_value(role: RoutingRole, value: &ManualRoleDefault) -> AppResult<()> {
-    if value.coordination_mode == Some(CoordinationMode::LegacyClaudeTeam) {
-        return Err(AppError::Validation(
-            "legacy_claude_team cannot be used as a manual role default".into(),
-        ));
-    }
     if value.service_tier == ManualServiceTier::Fast
         && value.harness != crate::domain::agents::AgentHarnessKind::Codex
     {

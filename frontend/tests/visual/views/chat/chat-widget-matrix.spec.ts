@@ -42,4 +42,19 @@ test.describe("shared chat activity presentation", () => {
       fullPage: true,
     });
   });
+
+  test("shows provider-correct processed and cached-input usage", async ({ page }) => {
+    await openChatActivityPage(page, { theme: "dark", width: 1180 });
+
+    await page.getByRole("button", { name: "Conversation stats" }).click();
+    await expect(page.getByText("9.1m")).toHaveCount(2);
+    await expect(page.getByText("Cached input", { exact: true })).toBeVisible();
+    await expect(page.getByText(/already included in Codex Input/)).toBeVisible();
+    await expect(page.getByText("1 provider-fallback sample(s)")).toBeVisible();
+
+    await expect(page).toHaveScreenshot("chat-usage-provider-correct-dark.png", {
+      animations: "disabled",
+      fullPage: true,
+    });
+  });
 });

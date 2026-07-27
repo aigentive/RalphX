@@ -4,6 +4,7 @@ use chrono::Utc;
 
 use crate::application::tasks_feature_policy::authorize_tasks_session_sync;
 use crate::application::AppState;
+use crate::domain::agents::ManualRoleRuntimeOverride;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
     IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus,
@@ -115,6 +116,7 @@ pub(crate) async fn activate_agent_task_pipeline(
     state: &AppState,
     conversation_id: &str,
     session_id: &str,
+    runtime_override: Option<&ManualRoleRuntimeOverride>,
 ) -> Result<AgentConversationWorkspace, String> {
     let requested_session = IdeationSessionId::from_string(session_id.to_string());
     let conversation_id_typed = ChatConversationId::from_string(conversation_id.to_string());
@@ -151,6 +153,15 @@ pub(crate) async fn activate_agent_task_pipeline(
 
     let tx_conversation_id = conversation_id.to_string();
     let tx_session_id = session_id.to_string();
+    let runtime_bindings = runtime_override.map(|runtime| {
+        (
+            runtime.coordination_mode.unwrap_or_default().to_string(),
+            runtime
+                .persona_id
+                .as_ref()
+                .map(|persona_id| persona_id.to_string()),
+        )
+    });
     state
         .db
         .run_transaction(move |conn| {
@@ -167,12 +178,22 @@ pub(crate) async fn activate_agent_task_pipeline(
                     "Task pipeline activation was already consumed or changed".to_string(),
                 ));
             }
-            let updated_conversation = conn.execute(
-                "UPDATE chat_conversations
-                 SET agent_mode = 'tasks', updated_at = ?2
-                 WHERE id = ?1 AND agent_mode = 'plan'",
-                rusqlite::params![tx_conversation_id, Utc::now().to_rfc3339()],
-            )?;
+            let now = Utc::now().to_rfc3339();
+            let updated_conversation = match runtime_bindings {
+                Some((coordination_mode, persona_id)) => conn.execute(
+                    "UPDATE chat_conversations
+                     SET agent_mode = 'tasks', coordination_mode = ?2,
+                         persona_id = ?3, updated_at = ?4
+                     WHERE id = ?1 AND agent_mode = 'plan'",
+                    rusqlite::params![tx_conversation_id, coordination_mode, persona_id, now],
+                )?,
+                None => conn.execute(
+                    "UPDATE chat_conversations
+                     SET agent_mode = 'tasks', updated_at = ?2
+                     WHERE id = ?1 AND agent_mode = 'plan'",
+                    rusqlite::params![tx_conversation_id, now],
+                )?,
+            };
             if updated_conversation != 1 {
                 return Err(AppError::Conflict(
                     "Task pipeline conversation projection changed before activation".to_string(),

@@ -4,11 +4,11 @@ import { toast } from "sonner";
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { automationsApi } from "@/api/automations";
 import { permissionApi } from "@/api/permission";
-import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
   navigateToAgentPlan,
   navigateToIdeationSession,
+  openTaskInAgents,
 } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -100,26 +100,11 @@ export async function navigateNotification(
 
   const { target } = item;
   if (target.kind === "task" && target.taskId) {
-    try {
-      await tasksApi.get(target.taskId);
-    } catch {
-      toast.error("This task no longer exists.");
-      return false;
-    }
-
-    const projectState = useProjectStore.getState();
-    if (target.projectId && projectState.activeProjectId !== target.projectId) {
-      const uiState = useUiStore.getState();
-      useUiStore.setState({
-        viewByProject: { ...uiState.viewByProject, [target.projectId]: "kanban" },
-        selectedTaskByProject: { ...uiState.selectedTaskByProject, [target.projectId]: target.taskId },
-      });
-      projectState.selectProject(target.projectId);
-    } else {
-      useUiStore.getState().navigateToTask(target.taskId);
-    }
-    options.onClose?.();
-    return true;
+    const applied = await openTaskInAgents(target.taskId, "graph", {
+      ...(target.projectId ? { projectId: target.projectId } : {}),
+    });
+    if (applied) options.onClose?.();
+    return applied;
   }
   if (target.kind === "agent_conversation") {
     if (target.projectId && target.conversationId) {

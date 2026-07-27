@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::application::{AppState, TeamService, TeamStateTracker};
+use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     AgentConversationResponse, AgentConversationWorkspaceResponse, SendAgentMessageResponse,
 };
@@ -31,21 +31,15 @@ use crate::http_server::handlers::artifacts::EditError;
 pub struct HttpServerState {
     pub app_state: Arc<AppState>,
     pub execution_state: Arc<ExecutionState>,
-    pub team_tracker: TeamStateTracker,
-    pub team_service: Arc<TeamService>,
     pub delegation_service: Arc<DelegationService>,
 }
 
 #[cfg(test)]
 impl HttpServerState {
     pub(crate) fn new_test(app_state: Arc<AppState>) -> Self {
-        let tracker = TeamStateTracker::new();
-        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
         Self {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
-            team_tracker: tracker,
-            team_service,
             delegation_service: Default::default(),
         }
     }
@@ -153,6 +147,7 @@ pub struct DelegatedRunSummary {
     pub output_tokens: Option<u64>,
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
+    pub processed_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
 }
 
@@ -518,6 +513,34 @@ pub struct CompleteAgentTaskRequest {
     #[serde(alias = "task_id")]
     pub task_ref: String,
     pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompleteDelegateAssignmentRequest {
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleaseDelegateAssignmentRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DelegateAssignmentDto {
+    pub task_number: i64,
+    pub title: String,
+    pub details: String,
+    pub task_state: String,
+    pub assignment_state: String,
+    pub delegate_agent_name: String,
+    pub caller_scope_type: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DelegateAssignmentResponse {
+    pub success: bool,
+    pub assignment: Option<DelegateAssignmentDto>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -920,6 +943,10 @@ pub struct TaskResponse {
 pub struct RegisterProjectExternalRequest {
     pub working_directory: String,
     pub name: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub worktree_parent_directory: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2044,12 +2071,6 @@ pub struct CreateChildSessionRequest {
     #[serde(default = "default_inherit_context")]
     pub inherit_context: bool,
     pub initial_prompt: Option<String>,
-    /// Team mode override: "solo", "research", or "debate"
-    /// If omitted and inherit_context=true, inherits from parent session
-    pub team_mode: Option<String>,
-    /// Team constraints override (max_teammates, model_ceiling, etc.)
-    /// If omitted and inherit_context=true, inherits from parent session
-    pub team_config: Option<TeamConfigInput>,
     /// Purpose of the child session: "general" (default) or "verification"
     pub purpose: Option<String>,
     /// When true, the child session origin is set to External (triggered via external MCP).
@@ -2069,15 +2090,6 @@ pub struct CreateChildSessionRequest {
     pub blocker_fingerprint: Option<String>,
 }
 
-/// Team configuration input for create_child_session
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TeamConfigInput {
-    pub max_teammates: Option<i32>,
-    pub model_ceiling: Option<String>,
-    pub budget_limit: Option<f64>,
-    pub composition_mode: Option<String>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct DelegateStartRequest {
     pub caller_agent_name: Option<String>,
@@ -2091,6 +2103,7 @@ pub struct DelegateStartRequest {
     pub parent_tool_use_id: Option<String>,
     pub delegated_session_id: Option<String>,
     pub child_session_id: Option<String>,
+    pub task_ref: Option<String>,
     pub agent_name: String,
     #[serde(alias = "message")]
     pub prompt: String,
@@ -2137,12 +2150,6 @@ pub struct CreateChildSessionResponse {
     pub parent_context: Option<ParentContextResponse>,
     /// Whether an orchestrator job was enqueued (true when description is provided)
     pub orchestration_triggered: bool,
-    /// Resolved team mode: inherited from parent or explicitly set via request
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team_mode: Option<String>,
-    /// Resolved team configuration: inherited from parent or explicitly set via request
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team_config: Option<TeamConfigInput>,
     /// Verification generation number; only set when purpose == "verification" and initialization succeeded
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<i32>,
@@ -2237,123 +2244,6 @@ pub struct GetSessionMessagesResponse {
     pub total_available: usize,
 }
 
-// ============================================================================
-// Request/Response Types - Team Endpoints
-// ============================================================================
-
-/// POST /api/team/plan/request — Phase 1: register team plan and return plan_id immediately
-#[derive(Debug, Serialize)]
-pub struct TeamPlanRegisterResponse {
-    pub success: bool,
-    pub plan_id: String,
-    pub message: String,
-    /// Whether the plan was auto-approved (spawning happened in Phase 1, no Phase 2 needed)
-    pub auto_approved: bool,
-    /// Teammates spawned during auto-approve (empty when auto_approved is false)
-    pub teammates_spawned: Vec<SpawnedTeammateInfo>,
-}
-
-/// GET /api/team/plan/pending/:context_id — frontend reconciliation response
-#[derive(Debug, Serialize)]
-pub struct GetPendingPlanResponse {
-    pub has_pending: bool,
-    pub plan_id: Option<String>,
-    pub context_id: String,
-    pub process: Option<String>,
-    pub teammate_count: Option<usize>,
-    pub created_at: Option<String>,
-}
-
-/// POST /api/team/plan — request approval for a team plan
-#[derive(Debug, Deserialize)]
-pub struct RequestTeamPlanRequest {
-    pub context_type: String,
-    pub context_id: String,
-    pub process: String,
-    pub teammates: Vec<TeamPlanTeammate>,
-    /// Team name from the lead agent's TeamCreate call.
-    /// Must match the Claude Code team registry name so teammates join the right team.
-    pub team_name: String,
-    /// Lead agent's Claude Code session ID (from RALPHX_LEAD_SESSION_ID env var).
-    /// When present, used as parent-session-id for teammate spawns instead of
-    /// reading from the team config file.
-    pub lead_session_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TeamPlanTeammate {
-    pub role: String,
-    pub tools: Vec<String>,
-    pub mcp_tools: Vec<String>,
-    pub model: String,
-    pub preset: Option<String>,
-    pub prompt_summary: String,
-    /// Full prompt for the teammate — required for batch-spawn on plan approval.
-    /// When present, approve_team_plan can spawn without further MCP calls.
-    pub prompt: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RequestTeamPlanResponse {
-    pub success: bool,
-    pub plan_id: String,
-    /// When approved: team name
-    pub team_name: Option<String>,
-    /// When approved: list of spawned teammates
-    pub teammates_spawned: Vec<SpawnedTeammateInfo>,
-    pub message: String,
-}
-
-/// POST /api/team/plan/approve — approve a validated team plan and batch-spawn
-#[derive(Debug, Deserialize)]
-pub struct ApproveTeamPlanRequest {
-    pub plan_id: String,
-    /// Context for the team (e.g., ideation session context_type + context_id).
-    /// Required so the backend can create the team and attach teammates.
-    pub context_type: String,
-    pub context_id: String,
-}
-
-/// POST /api/team/plan/reject — reject a team plan
-#[derive(Debug, Deserialize)]
-pub struct RejectTeamPlanRequest {
-    pub plan_id: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApproveTeamPlanResponse {
-    pub success: bool,
-    pub team_name: String,
-    pub teammates_spawned: Vec<SpawnedTeammateInfo>,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SpawnedTeammateInfo {
-    pub name: String,
-    pub role: String,
-    pub model: String,
-    pub color: String,
-}
-
-/// POST /api/team/spawn — request to spawn a single teammate
-#[derive(Debug, Deserialize)]
-pub struct RequestTeammateSpawnRequest {
-    pub role: String,
-    pub prompt: String,
-    pub model: String,
-    pub tools: Vec<String>,
-    pub mcp_tools: Vec<String>,
-    pub preset: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RequestTeammateSpawnResponse {
-    pub success: bool,
-    pub message: String,
-    pub teammate_name: String,
-}
-
 /// POST /api/team/artifact — create a team artifact
 #[derive(Debug, Deserialize)]
 pub struct CreateTeamArtifactRequest {
@@ -2368,36 +2258,6 @@ pub struct CreateTeamArtifactRequest {
 pub struct CreateTeamArtifactResponse {
     pub artifact_id: String,
 }
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct VerificationFindingGapPayload {
-    pub severity: String,
-    pub category: String,
-    pub description: String,
-    pub why_it_matters: Option<String>,
-    pub source: Option<String>,
-    pub lens: Option<String>,
-}
-
-/// POST /api/team/verification_finding — publish a typed verification finding
-#[derive(Debug, Deserialize)]
-pub struct PublishVerificationFindingRequest {
-    pub session_id: String,
-    pub critic: String,
-    pub round: u32,
-    pub status: String,
-    pub coverage: Option<String>,
-    pub summary: String,
-    #[serde(default)]
-    pub gaps: Vec<VerificationFindingGapPayload>,
-    pub title_suffix: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PublishVerificationFindingResponse {
-    pub artifact_id: String,
-}
-
 /// GET /api/team/artifacts/:session_id response
 #[derive(Debug, Serialize)]
 pub struct TeamArtifactSummary {
@@ -2414,66 +2274,6 @@ pub struct TeamArtifactSummary {
 pub struct GetTeamArtifactsResponse {
     pub artifacts: Vec<TeamArtifactSummary>,
     pub count: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VerificationFindingQuery {
-    pub critic: Option<String>,
-    pub round: Option<u32>,
-    pub created_after: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct VerificationFindingSummary {
-    pub artifact_id: String,
-    pub title: String,
-    pub created_at: String,
-    pub author_teammate: Option<String>,
-    pub critic: String,
-    pub round: u32,
-    pub status: String,
-    pub coverage: Option<String>,
-    pub summary: String,
-    pub gaps: Vec<VerificationFindingGapPayload>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GetVerificationFindingsResponse {
-    pub findings: Vec<VerificationFindingSummary>,
-    pub count: usize,
-}
-
-/// GET /api/team/session_state/:session_id response
-#[derive(Debug, Serialize)]
-pub struct TeamSessionStateResponse {
-    pub session_id: String,
-    pub team_name: Option<String>,
-    pub phase: String,
-    pub team_composition: Vec<TeamCompositionEntry>,
-    pub artifact_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TeamCompositionEntry {
-    pub name: String,
-    pub role: String,
-    pub prompt: String,
-    pub model: String,
-}
-
-/// POST /api/team/session_state — save team session state
-#[derive(Debug, Deserialize)]
-pub struct SaveTeamSessionStateRequest {
-    pub session_id: String,
-    pub team_composition: Vec<TeamCompositionEntry>,
-    pub phase: String,
-    pub artifact_ids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SaveTeamSessionStateResponse {
-    pub success: bool,
-    pub message: String,
 }
 
 // ============================================================================
@@ -2558,9 +2358,6 @@ pub struct ActiveStreamingTask {
     /// Agent ID if available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    /// Teammate name if this is a team member task
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub teammate_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_job_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2610,6 +2407,14 @@ pub struct ActiveStreamingTask {
     pub estimated_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_provenance: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStreamingTask {
@@ -2621,7 +2426,6 @@ impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStrea
             model: cached.model,
             status: cached.status,
             agent_id: cached.agent_id,
-            teammate_name: cached.teammate_name,
             delegated_job_id: cached.delegated_job_id,
             delegated_session_id: cached.delegated_session_id,
             delegated_conversation_id: cached.delegated_conversation_id,
@@ -2645,6 +2449,10 @@ impl From<crate::application::chat_service::CachedStreamingTask> for ActiveStrea
             cache_read_tokens: cached.cache_read_tokens,
             estimated_usd: cached.estimated_usd,
             text_output: cached.text_output,
+            started_at: cached.started_at,
+            completed_at: cached.completed_at,
+            timestamp_provenance: cached.timestamp_provenance,
+            seq: cached.seq,
         }
     }
 }

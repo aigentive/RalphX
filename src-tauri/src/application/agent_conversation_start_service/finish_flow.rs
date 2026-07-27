@@ -489,13 +489,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         );
 
         let service_create_started = Instant::now();
-        let mut service = self.deps.state.build_chat_service_for_runtime(
+        let service = self.deps.state.build_chat_service_for_runtime(
             Some(Arc::clone(self.deps.execution_state)),
             Some(self.deps.app_handle.clone()),
         );
-        if let Some(team_service) = self.deps.team_service {
-            service = service.with_team_service(team_service);
-        }
         log_start_agent_conversation_phase(
             &context_log_id,
             Some(&conversation.id),

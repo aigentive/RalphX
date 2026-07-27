@@ -23,10 +23,7 @@ let uiState = {
   featureFlags: {
     activityPage: true,
     extensibilityPage: true,
-    ideationPage: false,
     automationsPage: false,
-    battleMode: true,
-    teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: false,
   },
@@ -87,10 +84,7 @@ function resetState() {
     featureFlags: {
       activityPage: true,
       extensibilityPage: true,
-      ideationPage: false,
       automationsPage: false,
-      battleMode: true,
-      teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
     },

@@ -26,6 +26,7 @@ import {
   transformArtifactResponse,
 } from "@/api/artifact";
 import type { Artifact } from "@/types/artifact";
+import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
 import {
   RunningIdeationSessionSchema,
@@ -76,7 +77,7 @@ export interface ChatMessageResponse {
   contentBlocks: ContentBlockItem[] | null;
   /** Optimistic frontend-only attachments for messages not yet hydrated from backend. */
   attachments?: MessageAttachment[];
-  /** Sender name for team mode messages (teammate name or "lead") */
+  /** Optional upstream sender attribution. */
   sender: string | null;
   attributionSource?: string | null;
   providerHarness?: string | null;
@@ -92,12 +93,19 @@ export interface ChatMessageResponse {
   cacheCreationTokens?: number | null;
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
+  usageProvenance?: UsageProvenance | null;
   timelineStatus?: string | null;
   timelineKind?: string | null;
   timelineSequence?: number | null;
   runId?: string | null;
   createdAt: string;
 }
+
+export type UsageProvenance =
+  | "provider_turn_delta"
+  | "derived_cumulative_delta"
+  | "provider_snapshot_fallback"
+  | "cumulative_baseline_only";
 
 export interface AgentToolCallDetailResponse {
   toolCall: ToolCall;
@@ -487,7 +495,6 @@ export interface ActiveStreamingTaskResponse {
   model?: string;
   status: string;
   agent_id?: string;
-  teammate_name?: string;
   delegated_job_id?: string;
   delegated_session_id?: string;
   delegated_conversation_id?: string;
@@ -514,6 +521,10 @@ export interface ActiveStreamingTaskResponse {
   cache_read_tokens?: number;
   estimated_usd?: number;
   text_output?: string;
+  started_at?: string;
+  completed_at?: string;
+  timestamp_provenance?: "delegated_run" | "delegation_job";
+  seq?: number;
 }
 
 /**
@@ -535,7 +546,14 @@ const ConversationActiveStateResponseSchema = z.object({
   streaming_tasks: z.array(z.custom<ActiveStreamingTaskResponse>((value) => {
     if (value == null || typeof value !== "object") return false;
     const record = value as Record<string, unknown>;
-    return typeof record.tool_use_id === "string" && typeof record.status === "string";
+    return typeof record.tool_use_id === "string"
+      && typeof record.status === "string"
+      && (record.started_at == null || typeof record.started_at === "string")
+      && (record.completed_at == null || typeof record.completed_at === "string")
+      && (record.timestamp_provenance == null
+        || record.timestamp_provenance === "delegated_run"
+        || record.timestamp_provenance === "delegation_job")
+      && (record.seq == null || (typeof record.seq === "number" && Number.isFinite(record.seq)));
   })).default([]),
   partial_text: z.string().default(""),
 });
@@ -819,6 +837,7 @@ export interface UsageTotalsResponse {
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
+  processedTokens: number | null;
   estimatedUsd: number | null;
 }
 
@@ -833,6 +852,11 @@ export interface ConversationUsageCoverageResponse {
   providerMessagesWithUsage: number;
   runCount: number;
   runsWithUsage: number;
+  effectiveRunConversationCount: number;
+  effectiveMessageConversationCount: number;
+  legacyEstimatedSampleCount: number;
+  fallbackEstimatedSampleCount: number;
+  uncountedSampleCount: number;
   effectiveTotalsSource: string;
 }
 
@@ -887,6 +911,7 @@ const SnakeUsageTotalsResponseSchema = z.object({
   output_tokens: z.number(),
   cache_creation_tokens: z.number(),
   cache_read_tokens: z.number(),
+  processed_tokens: z.number().nullable(),
   estimated_usd: z.number().nullable(),
 });
 
@@ -895,6 +920,7 @@ const CamelUsageTotalsResponseSchema = z.object({
   outputTokens: z.number(),
   cacheCreationTokens: z.number(),
   cacheReadTokens: z.number(),
+  processedTokens: z.number().nullable(),
   estimatedUsd: z.number().nullable(),
 });
 
@@ -914,6 +940,11 @@ const SnakeConversationUsageCoverageResponseSchema = z.object({
   provider_messages_with_usage: z.number(),
   run_count: z.number(),
   runs_with_usage: z.number(),
+  effective_run_conversation_count: z.number(),
+  effective_message_conversation_count: z.number(),
+  legacy_estimated_sample_count: z.number(),
+  fallback_estimated_sample_count: z.number(),
+  uncounted_sample_count: z.number(),
   effective_totals_source: z.string(),
 });
 
@@ -922,6 +953,11 @@ const CamelConversationUsageCoverageResponseSchema = z.object({
   providerMessagesWithUsage: z.number(),
   runCount: z.number(),
   runsWithUsage: z.number(),
+  effectiveRunConversationCount: z.number(),
+  effectiveMessageConversationCount: z.number(),
+  legacyEstimatedSampleCount: z.number(),
+  fallbackEstimatedSampleCount: z.number(),
+  uncountedSampleCount: z.number(),
   effectiveTotalsSource: z.string(),
 });
 
@@ -1001,6 +1037,7 @@ function transformUsageTotals(
       outputTokens: raw.outputTokens,
       cacheCreationTokens: raw.cacheCreationTokens,
       cacheReadTokens: raw.cacheReadTokens,
+      processedTokens: raw.processedTokens,
       estimatedUsd: raw.estimatedUsd,
     };
   }
@@ -1010,6 +1047,7 @@ function transformUsageTotals(
     outputTokens: raw.output_tokens,
     cacheCreationTokens: raw.cache_creation_tokens,
     cacheReadTokens: raw.cache_read_tokens,
+    processedTokens: raw.processed_tokens,
     estimatedUsd: raw.estimated_usd,
   };
 }
@@ -1033,6 +1071,11 @@ function transformUsageCoverage(
       providerMessagesWithUsage: raw.providerMessagesWithUsage,
       runCount: raw.runCount,
       runsWithUsage: raw.runsWithUsage,
+      effectiveRunConversationCount: raw.effectiveRunConversationCount,
+      effectiveMessageConversationCount: raw.effectiveMessageConversationCount,
+      legacyEstimatedSampleCount: raw.legacyEstimatedSampleCount,
+      fallbackEstimatedSampleCount: raw.fallbackEstimatedSampleCount,
+      uncountedSampleCount: raw.uncountedSampleCount,
       effectiveTotalsSource: raw.effectiveTotalsSource,
     };
   }
@@ -1042,6 +1085,11 @@ function transformUsageCoverage(
     providerMessagesWithUsage: raw.provider_messages_with_usage,
     runCount: raw.run_count,
     runsWithUsage: raw.runs_with_usage,
+    effectiveRunConversationCount: raw.effective_run_conversation_count,
+    effectiveMessageConversationCount: raw.effective_message_conversation_count,
+    legacyEstimatedSampleCount: raw.legacy_estimated_sample_count,
+    fallbackEstimatedSampleCount: raw.fallback_estimated_sample_count,
+    uncountedSampleCount: raw.uncounted_sample_count,
     effectiveTotalsSource: raw.effective_totals_source,
   };
 }
@@ -1153,6 +1201,12 @@ const AgentMessageSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
+  usage_provenance: z.enum([
+    "provider_turn_delta",
+    "derived_cumulative_delta",
+    "provider_snapshot_fallback",
+    "cumulative_baseline_only",
+  ]).nullable().optional(),
   created_at: z.string(),
 });
 
@@ -1202,6 +1256,12 @@ const AgentTimelineItemSchema = z.object({
   cache_creation_tokens: z.number().nullable().optional(),
   cache_read_tokens: z.number().nullable().optional(),
   estimated_usd: z.number().nullable().optional(),
+  usage_provenance: z.enum([
+    "provider_turn_delta",
+    "derived_cumulative_delta",
+    "provider_snapshot_fallback",
+    "cumulative_baseline_only",
+  ]).nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
   finalized_at: z.string().nullable().optional(),
@@ -1248,6 +1308,7 @@ function transformAgentMessage(
     cacheCreationTokens: raw.cache_creation_tokens ?? null,
     cacheReadTokens: raw.cache_read_tokens ?? null,
     estimatedUsd: raw.estimated_usd ?? null,
+    usageProvenance: raw.usage_provenance ?? null,
     content: raw.content,
     metadata: raw.metadata ?? null,
     parentMessageId: null,
@@ -1303,6 +1364,7 @@ function transformTimelineItem(
     cacheCreationTokens: raw.cache_creation_tokens ?? null,
     cacheReadTokens: raw.cache_read_tokens ?? null,
     estimatedUsd: raw.estimated_usd ?? null,
+    usageProvenance: raw.usage_provenance ?? null,
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,
@@ -1785,6 +1847,7 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
@@ -1937,6 +2000,7 @@ export interface SendAgentMessageOptions {
   modelId?: string | null;
   logicalEffort?: string | null;
   codexFastMode?: boolean | null;
+  runtimeOverride?: ManualRoleRuntimeSelection;
   suppressUserMessage?: boolean;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
@@ -2057,6 +2121,7 @@ export interface SwitchAgentConversationModeInput {
   conversationId: string;
   mode: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
+  runtimeOverride?: ManualRoleRuntimeSelection;
 }
 
 export interface SwitchAgentConversationModeResult {
@@ -2097,6 +2162,25 @@ export interface PublishAgentConversationWorkspaceResult {
   createdPr: boolean;
   prNumber: number | null;
   prUrl: string | null;
+}
+
+export interface CommitAgentConversationWorkspaceLocallyInput {
+  expectedHeadSha: string;
+  reviewArtifactId: string | null;
+  reviewArtifactVersion: number | null;
+  reviewedHeadSha: string | null;
+  reviewedDiffFingerprint: string | null;
+  attemptToken: string;
+}
+
+export interface CommitAgentConversationWorkspaceLocallyResult {
+  workspace: AgentConversationWorkspace;
+  outcome: "committed_local" | "already_committed" | "no_changes";
+  branchName: string;
+  previousHeadSha: string;
+  commitSha: string;
+  hadChanges: boolean;
+  attemptToken: string;
 }
 
 export interface PrecomputeAgentConversationWorkspacePrDescriptionResult {
@@ -2389,6 +2473,36 @@ export interface StartAgentWorkspaceReviewFixerResult {
   shouldShowTab: boolean;
   started: boolean;
   skippedReason: string | null;
+}
+
+export interface AgentWorkspaceReviewFixerConfirmation {
+  targetScope: AgentWorkspaceReviewTargetScope;
+  diffFingerprint: string;
+  artifactId: string;
+  artifactVersion: number;
+  blockingFingerprint: string;
+}
+
+function roleRuntimeOverrideInvokeInput(value: ManualRoleRuntimeSelection) {
+  return {
+    harness: value.provider,
+    model: value.model,
+    effort: value.effort,
+    serviceTier: value.serviceTier,
+    coordinationMode: value.coordinationMode,
+    personaId: value.personaId,
+  };
+}
+
+function roleRuntimeOverrideHttpInput(value: ManualRoleRuntimeSelection) {
+  return {
+    provider: value.provider,
+    model: value.model,
+    effort: value.effort,
+    service_tier: value.serviceTier,
+    coordination_mode: value.coordinationMode,
+    persona_id: value.personaId,
+  };
 }
 
 export interface ApproveAgentWorkspaceReviewAnywayInput {
@@ -2873,6 +2987,15 @@ const PublishAgentConversationWorkspaceResponseSchema = z.object({
   pr_number: z.number().nullable(),
   pr_url: z.string().nullable(),
 });
+const CommitAgentConversationWorkspaceLocallyResponseSchema = z.object({
+  workspace: AgentConversationWorkspaceResponseSchema,
+  outcome: z.enum(["committed_local", "already_committed", "no_changes"]),
+  branch_name: z.string(),
+  previous_head_sha: z.string(),
+  commit_sha: z.string(),
+  had_changes: z.boolean(),
+  attempt_token: z.string(),
+});
 const PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema =
   z.object({
     conversation_id: z.string(),
@@ -2912,6 +3035,9 @@ type RawAgentConversationPlanSeedResponse = z.infer<
 >;
 type RawPublishAgentConversationWorkspaceResponse = z.infer<
   typeof PublishAgentConversationWorkspaceResponseSchema
+>;
+type RawCommitAgentConversationWorkspaceLocallyResponse = z.infer<
+  typeof CommitAgentConversationWorkspaceLocallyResponseSchema
 >;
 type RawPrecomputeAgentConversationWorkspacePrDescriptionResponse = z.infer<
   typeof PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema
@@ -3022,6 +3148,20 @@ function transformAgentConversationWorkspace(
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformCommitAgentConversationWorkspaceLocallyResponse(
+  raw: RawCommitAgentConversationWorkspaceLocallyResponse,
+): CommitAgentConversationWorkspaceLocallyResult {
+  return {
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    outcome: raw.outcome,
+    branchName: raw.branch_name,
+    previousHeadSha: raw.previous_head_sha,
+    commitSha: raw.commit_sha,
+    hadChanges: raw.had_changes,
+    attemptToken: raw.attempt_token,
   };
 }
 
@@ -3669,6 +3809,7 @@ export async function startAgentWorkspaceReview(
   options: {
     force?: boolean;
     confirmation?: AgentWorkspaceReviewStartConfirmation;
+    runtimeOverride?: ManualRoleRuntimeSelection;
   } = {},
 ): Promise<StartAgentWorkspaceReviewResult> {
   const raw = await fetchAgentWorkspaceJson(
@@ -3692,6 +3833,9 @@ export async function startAgentWorkspaceReview(
                 options.confirmation.restoreAfterPublish,
             }
           : undefined,
+        runtime_override: options.runtimeOverride
+          ? roleRuntimeOverrideHttpInput(options.runtimeOverride)
+          : undefined,
       }),
     },
   );
@@ -3700,6 +3844,10 @@ export async function startAgentWorkspaceReview(
 
 export async function startAgentWorkspaceReviewFixer(
   conversationId: string,
+  input: {
+    confirmation: AgentWorkspaceReviewFixerConfirmation;
+    runtimeOverride?: ManualRoleRuntimeSelection;
+  },
 ): Promise<StartAgentWorkspaceReviewFixerResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-fixer-runs`,
@@ -3707,6 +3855,18 @@ export async function startAgentWorkspaceReviewFixer(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirmation: {
+          target_scope: input.confirmation.targetScope,
+          diff_fingerprint: input.confirmation.diffFingerprint,
+          artifact_id: input.confirmation.artifactId,
+          artifact_version: input.confirmation.artifactVersion,
+          blocking_fingerprint: input.confirmation.blockingFingerprint,
+        },
+        runtime_override: input.runtimeOverride
+          ? roleRuntimeOverrideHttpInput(input.runtimeOverride)
+          : undefined,
+      }),
     },
   );
   return transformStartAgentWorkspaceReviewFixerResponse(raw);
@@ -4120,6 +4280,18 @@ export async function publishAgentConversationWorkspace(
   return transformPublishAgentConversationWorkspaceResponse(raw);
 }
 
+export async function commitAgentConversationWorkspaceLocally(
+  conversationId: string,
+  input: CommitAgentConversationWorkspaceLocallyInput,
+): Promise<CommitAgentConversationWorkspaceLocallyResult> {
+  const raw = await typedInvoke(
+    "commit_agent_conversation_workspace_locally",
+    { input: { conversationId, ...input } },
+    CommitAgentConversationWorkspaceLocallyResponseSchema,
+  );
+  return transformCommitAgentConversationWorkspaceLocallyResponse(raw);
+}
+
 export async function setAgentConversationWorkspacePrSupervision(
   conversationId: string,
   input: SetAgentConversationWorkspacePrSupervisionInput,
@@ -4219,6 +4391,9 @@ export async function switchAgentConversationMode(
       input: {
         conversationId: input.conversationId,
         mode: input.mode,
+        ...(input.runtimeOverride
+          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          : {}),
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
@@ -4298,6 +4473,7 @@ export async function importAgentConversationPlan(
 export async function activateAgentTaskPipeline(input: {
   conversationId: string;
   sessionId: string;
+  runtimeOverride?: ManualRoleRuntimeSelection;
 }): Promise<AgentConversationWorkspace> {
   const raw = await typedInvoke(
     "activate_agent_task_pipeline",
@@ -4305,6 +4481,9 @@ export async function activateAgentTaskPipeline(input: {
       input: {
         conversationId: input.conversationId,
         sessionId: input.sessionId,
+        ...(input.runtimeOverride
+          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(input.runtimeOverride) }
+          : {}),
       },
     },
     AgentConversationWorkspaceResponseSchema,
@@ -4358,7 +4537,6 @@ export async function sendAgentMessage(
   contextId: string,
   content: string,
   attachmentIds?: string[],
-  target?: string,
   options?: SendAgentMessageOptions,
 ): Promise<SendAgentMessageResult> {
   const raw = await typedInvoke(
@@ -4370,7 +4548,6 @@ export async function sendAgentMessage(
         content,
         ...(attachmentIds !== undefined &&
           attachmentIds.length > 0 && { attachmentIds }),
-        ...(target !== undefined && { target }),
         ...(options?.conversationId
           ? { conversationId: options.conversationId }
           : {}),
@@ -4383,6 +4560,9 @@ export async function sendAgentMessage(
           : {}),
         ...(options?.codexFastMode != null
           ? { codexFastMode: options.codexFastMode }
+          : {}),
+        ...(options?.runtimeOverride
+          ? { runtimeOverride: roleRuntimeOverrideInvokeInput(options.runtimeOverride) }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.capabilityIntent

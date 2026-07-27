@@ -19,11 +19,12 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
-    GithubConnectionStatus, GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest,
-    PrBranchMatch, PrDetail, PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck,
-    PrIssueCommentSummary, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
-    PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrReviewThreadComment,
-    PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
+    validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait,
+    PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch, PrDetail, PrDiffAnnotation,
+    PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
+    PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrReviewSubmissionEvent,
+    PrReviewThread, PrReviewThreadComment, PrSearchResult, PrStatus, PrSubmittedReview,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -299,16 +300,20 @@ fn build_create_issue_args(repository: &str, title: &str, body_file: &str) -> Ve
     ]
 }
 
-fn build_update_pr_args(pr_number: i64, title: &str, body_file: &str) -> Vec<String> {
-    vec![
-        "pr".to_string(),
-        "edit".to_string(),
-        pr_number.to_string(),
-        "--title".to_string(),
-        title.to_string(),
-        "--body-file".to_string(),
-        body_file.to_string(),
-    ]
+fn build_update_pr_args(
+    pr_number: i64,
+    title: Option<&str>,
+    body_file: Option<&str>,
+) -> AppResult<Vec<String>> {
+    validate_pr_metadata_patch(title, body_file.map(Path::new))?;
+    let mut args = vec!["pr".to_string(), "edit".to_string(), pr_number.to_string()];
+    if let Some(title) = title {
+        args.extend(["--title".to_string(), title.to_string()]);
+    }
+    if let Some(body_file) = body_file {
+        args.extend(["--body-file".to_string(), body_file.to_string()]);
+    }
+    Ok(args)
 }
 
 fn build_update_pr_base_args(pr_number: i64, base: &str) -> Vec<String> {
@@ -636,7 +641,26 @@ impl GithubServiceTrait for GhCliGithubService {
                 AppError::Infrastructure("body_file path is not valid UTF-8".to_string())
             })?
             .to_string();
-        let args = build_update_pr_args(pr_number, title, &body_file_str);
+        let args = build_update_pr_args(pr_number, Some(title), Some(&body_file_str))?;
+        self.runner.run_gh(working_dir, &args).await?;
+        Ok(())
+    }
+
+    async fn patch_pr_metadata(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        title: Option<&str>,
+        body_file: Option<&Path>,
+    ) -> AppResult<()> {
+        let body_file = body_file
+            .map(|path| {
+                path.to_str().ok_or_else(|| {
+                    AppError::Infrastructure("body_file path is not valid UTF-8".to_string())
+                })
+            })
+            .transpose()?;
+        let args = build_update_pr_args(pr_number, title, body_file)?;
         self.runner.run_gh(working_dir, &args).await?;
         Ok(())
     }

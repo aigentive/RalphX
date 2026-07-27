@@ -3,18 +3,95 @@ import { describe, expect, it } from "vitest";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
+  AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
 import {
   canInspectAgentWorkspaceBaseFreshness,
   canInspectAgentWorkspacePublishDiffs,
+  classifyAgentWorkspacePublishTerminalEvent,
+  getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
+  getAgentWorkspaceDescriptionFailurePresentation,
   getAgentWorkspacePrConflictSummary,
+  getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  isAgentWorkspacePublishActive,
   isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+
+describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
+  it("distinguishes an unopened PR from an existing linked target", () => {
+    expect(getAgentWorkspaceDescriptionFailurePresentation(null).summary).toContain(
+      "no pull request was opened",
+    );
+
+    const linked = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
+    expect(linked.summary).toContain("metadata step for PR #888");
+    expect(linked.summary).toContain("did not apply an unsafe replacement body");
+    expect(linked.summary).not.toContain("no pull request was opened");
+    expect(linked.summary).not.toContain("branch was unchanged");
+  });
+});
+
+describe("getAgentWorkspaceReviewActionBlocker", () => {
+  it("blocks Review actions while an authoritative repair is active", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          publicationPushStatus: "needs_agent",
+          prSupervisionStatus: "fixing",
+        }),
+      ),
+    ).toEqual({
+      kind: "repair",
+      message: "Finish or abort the current repair, then retry Review.",
+    });
+  });
+
+  it("blocks Review actions for a recovered unresolved conflict", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          publicationPushStatus: "failed",
+          prSupervisionStatus: "blocked",
+          prSupervisionSummary: "Merge conflict remains in src/main.rs",
+        }),
+      ),
+    ).toEqual({
+      kind: "conflict",
+      message: "Resolve conflicts before retrying Review.",
+    });
+  });
+
+  it("allows Review after repair and conflicts are settled", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          publicationPushStatus: "refreshed",
+          prSupervisionStatus: "monitoring",
+        }),
+      ),
+    ).toBeNull();
+  });
+});
+
+function publicationEvent(
+  overrides: Partial<AgentConversationWorkspacePublicationEvent> = {},
+): AgentConversationWorkspacePublicationEvent {
+  return {
+    id: "event-1",
+    conversationId: "conversation-1",
+    step: "checking",
+    status: "started",
+    summary: "Checking workspace",
+    classification: null,
+    createdAt: "2026-04-23T09:00:01Z",
+    ...overrides,
+  };
+}
 
 function workspace(
   overrides: Partial<AgentConversationWorkspace> = {},
@@ -77,6 +154,215 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("isAgentWorkspacePublishActive", () => {
+  it.each(["checking", "committing", "refreshing", "describing", "pushing"])(
+    "treats %s as an active publish status",
+    (publicationPushStatus) => {
+      expect(
+        isAgentWorkspacePublishActive(workspace({ publicationPushStatus })),
+      ).toBe(true);
+    },
+  );
+
+  it("normalizes casing and whitespace for active publish statuses", () => {
+    expect(
+      isAgentWorkspacePublishActive(
+        workspace({ publicationPushStatus: "  PuShInG  " }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    null,
+    "pending",
+    "pushed",
+    "published",
+    "refreshed",
+    "failed",
+    "description_failed",
+    "needs_agent",
+    "future_status",
+  ])("does not treat %s as active publishing", (publicationPushStatus) => {
+    expect(
+      isAgentWorkspacePublishActive(workspace({ publicationPushStatus })),
+    ).toBe(false);
+  });
+
+  it.each(["merged", "closed"])(
+    "keeps terminal %s pull requests out of the active publish lock",
+    (publicationPrStatus) => {
+      expect(
+        isAgentWorkspacePublishActive(
+          workspace({ publicationPrStatus, publicationPushStatus: "pushing" }),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("handles a missing workspace", () => {
+    expect(isAgentWorkspacePublishActive(null)).toBe(false);
+  });
+});
+
+describe("getPostBaselinePublicationEvents", () => {
+  const startedAtMs = new Date("2026-04-23T09:00:00Z").getTime();
+  const events = [
+    publicationEvent({ id: "old", createdAt: "2026-04-23T08:59:59Z" }),
+    publicationEvent({ id: "checking" }),
+    publicationEvent({
+      id: "published",
+      step: "published",
+      status: "succeeded",
+      createdAt: "2026-04-23T09:00:02Z",
+    }),
+  ];
+
+  it("returns only the ordered suffix after an exact event baseline", () => {
+    expect(
+      getPostBaselinePublicationEvents(events, "old", startedAtMs)?.map(
+        (event) => event.id,
+      ),
+    ).toEqual(["checking", "published"]);
+  });
+
+  it("accepts all valid later events after an authoritatively empty baseline", () => {
+    expect(
+      getPostBaselinePublicationEvents(events.slice(1), null, startedAtMs)?.map(
+        (event) => event.id,
+      ),
+    ).toEqual(["checking", "published"]);
+  });
+
+  it("fails closed when the non-empty baseline disappears", () => {
+    expect(
+      getPostBaselinePublicationEvents(events.slice(1), "old", startedAtMs),
+    ).toBeNull();
+  });
+
+  it("excludes malformed and implausibly old timestamps from terminal authority", () => {
+    const suffix = getPostBaselinePublicationEvents(
+      [
+        publicationEvent({ id: "baseline" }),
+        publicationEvent({
+          id: "malformed",
+          step: "published",
+          status: "succeeded",
+          createdAt: "not-a-date",
+        }),
+        publicationEvent({
+          id: "stale",
+          step: "published",
+          status: "succeeded",
+          createdAt: "2026-04-23T08:00:00Z",
+        }),
+      ],
+      "baseline",
+      startedAtMs,
+    );
+
+    expect(suffix).toEqual([]);
+  });
+});
+
+describe("classifyAgentWorkspacePublishTerminalEvent", () => {
+  const currentWorkspace = workspace({
+    publicationPrNumber: 78,
+    publicationPushStatus: "pushed",
+  });
+  const currentFreshness = freshness({
+    isBaseAhead: false,
+    hasUncommittedChanges: false,
+    unpublishedCommitCount: 0,
+  });
+
+  it("authorizes published success only with current workspace and full freshness", () => {
+    const published = publicationEvent({
+      step: "published",
+      status: "succeeded",
+    });
+
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [published],
+        currentWorkspace,
+        currentFreshness,
+      ),
+    ).toEqual({ event: published, kind: "success" });
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [published],
+        workspace({ publicationPushStatus: "pushed" }),
+        currentFreshness,
+      ),
+    ).toBeNull();
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [published],
+        currentWorkspace,
+        undefined,
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    ["needs_agent", "failed", "agent_fixable", "needs_agent"],
+    ["failed", "failed", "operational", "failure"],
+    ["description_failed", "failed", "operational", "failure"],
+    ["no_changes", "skipped", null, "no_changes"],
+  ] as const)(
+    "classifies %s/%s as %s",
+    (step, status, classification, expectedKind) => {
+      const event = publicationEvent({ step, status, classification });
+      expect(
+        classifyAgentWorkspacePublishTerminalEvent(
+          [event],
+          workspace({ publicationPushStatus: step }),
+          undefined,
+        ),
+      ).toEqual({ event, kind: expectedKind });
+    },
+  );
+
+  it("keeps a terminal failure visible when later repair events are appended", () => {
+    const failure = publicationEvent({
+      id: "failure",
+      step: "needs_agent",
+      status: "failed",
+      classification: "agent_fixable",
+    });
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [
+          publicationEvent({ step: "checking", status: "started" }),
+          failure,
+          publicationEvent({
+            id: "repair",
+            step: "repair_sent",
+            status: "succeeded",
+          }),
+        ],
+        workspace({ publicationPushStatus: "needs_agent" }),
+        undefined,
+      ),
+    ).toEqual({ event: failure, kind: "needs_agent" });
+  });
+
+  it("ignores progress, repair-only, unknown, and mismatched needs-agent evidence", () => {
+    expect(
+      classifyAgentWorkspacePublishTerminalEvent(
+        [
+          publicationEvent({ step: "checking", status: "started" }),
+          publicationEvent({ step: "repair_sent", status: "succeeded" }),
+          publicationEvent({ step: "future_step", status: "succeeded" }),
+          publicationEvent({ step: "needs_agent", status: "succeeded" }),
+        ],
+        workspace(),
+        undefined,
+      ),
+    ).toBeNull();
+  });
+});
 
 describe("getAgentWorkspaceEffectiveBaseLabel", () => {
   it("uses the actual base ref for linked workspaces when the stored display name is the source branch", () => {

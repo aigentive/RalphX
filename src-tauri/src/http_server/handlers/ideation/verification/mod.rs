@@ -11,9 +11,7 @@ use crate::application::app_state::AppState;
 use crate::application::chat_service::{AgentRunCompletedPayload, ChatService, SendMessageOptions};
 use crate::application::verification_event_emitters::emit_verification_status_changed;
 use crate::application::InteractiveProcessKey;
-use crate::domain::entities::{
-    ChatContextType, IdeationSessionId, IdeationSessionStatus,
-};
+use crate::domain::entities::{ChatContextType, IdeationSessionId, IdeationSessionStatus};
 use crate::domain::repositories::ExternalEventsRepository;
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 use crate::domain::state_machine::services::WebhookPublisher;
@@ -24,7 +22,6 @@ use crate::http_server::types::{
     VerificationInfraFailureRequest, VerificationResponse,
 };
 
-use super::super::session_linking::session_is_team_mode;
 use super::{json_error, JsonError};
 
 mod auto_propose;

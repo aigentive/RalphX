@@ -16,6 +16,9 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_pr_autofix_attempt::{
+    load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
+};
 use crate::application::agent_workspace_publish_repair_state::{
     claim_agent_workspace_repair, repair_run_event_classification,
     settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
@@ -2072,11 +2075,11 @@ enum AgentWorkspacePrAutofixIssueKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AgentWorkspacePrAutofixIssue {
+pub(crate) struct AgentWorkspacePrAutofixIssue {
     kind: AgentWorkspacePrAutofixIssueKind,
     summary: String,
     details: Vec<String>,
-    classification: String,
+    pub(crate) classification: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2398,13 +2401,52 @@ async fn route_agent_workspace_pr_autofix_for_target(
         }
         return Ok(false);
     };
+    if !agent_workspace_pr_health_has_head(&health) {
+        workspace_repo
+            .update_pr_auto_merge_state(
+                conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("blocked"),
+                Some(
+                    "PR autofix is blocked because GitHub did not report the current head commit.",
+                ),
+            )
+            .await?;
+        return Ok(false);
+    }
 
-    let already_routed = workspace_repo
+    let legacy_event_exists = workspace_repo
         .list_publication_events(conversation_id)
         .await?
         .into_iter()
         .any(|event| event.classification.as_deref() == Some(issue.classification.as_str()));
-    if already_routed {
+    let Some(agent_run_repo) = agent_run_repo.as_ref() else {
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            pr_number = target.pr_number,
+            "Agent workspace PR autofix requires an AgentRun repository"
+        );
+        return Ok(false);
+    };
+    let attempt_decision = load_pr_autofix_attempt_decision(
+        agent_run_repo.as_ref(),
+        conversation_id,
+        target.pr_number,
+        &issue.classification,
+        legacy_event_exists,
+    )
+    .await?;
+    if !attempt_decision.allows_start() {
+        if let Some(summary) = attempt_decision.manual_summary() {
+            workspace_repo
+                .update_pr_auto_merge_state(
+                    conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(summary),
+                )
+                .await?;
+        }
         return Ok(false);
     }
 
@@ -2415,7 +2457,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         return Ok(false);
     }
 
-    let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
+    let auto_merge_current = match prepare_agent_workspace_pr_repair_auto_merge_state(
         Arc::clone(&github),
         working_dir,
         target.pr_number,
@@ -2423,91 +2465,321 @@ async fn route_agent_workspace_pr_autofix_for_target(
         &health,
         Arc::clone(&workspace_repo),
     )
-    .await?
-    else {
-        return Ok(false);
+    .await
+    {
+        Ok(Some(auto_merge_current)) => auto_merge_current,
+        Ok(None) => return Ok(false),
+        Err(error) => {
+            let summary =
+                format!("PR autofix could not persist the GitHub auto-merge disarm state: {error}");
+            record_agent_workspace_pr_autofix_pre_start_failure(
+                Arc::clone(&github),
+                working_dir,
+                target.pr_number,
+                workspace_repo.as_ref(),
+                conversation_id,
+                health.auto_merge_request.is_some(),
+                &summary,
+            )
+            .await?;
+            return Ok(false);
+        }
     };
 
     let Some(workspace_for_options) =
         authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
             .await?
     else {
-        return Ok(false);
-    };
-    let send_options = agent_workspace_pr_fixer_send_options(
-        &workspace_for_options,
-        working_dir,
-        agent_run_repo.as_ref(),
-    )
-    .await?;
-    let Some(workspace) =
-        authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
-            .await?
-    else {
-        return Ok(false);
-    };
-    let message = build_agent_workspace_pr_autofix_message(
-        target.pr_number,
-        target.pr_url.as_deref(),
-        target.label(),
-        &workspace,
-        &issue,
-    );
-    chat_service
-        .send_message(
-            ChatContextType::Project,
-            workspace.project_id.as_str(),
-            &message,
-            send_options,
+        record_agent_workspace_pr_autofix_pre_start_failure(
+            Arc::clone(&github),
+            working_dir,
+            target.pr_number,
+            workspace_repo.as_ref(),
+            conversation_id,
+            health.auto_merge_request.is_some(),
+            "PR autofix authorization changed after GitHub auto-merge was disabled.",
         )
-        .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
-
+        .await?;
+        return Ok(false);
+    };
     let pr_status = if issue.kind == AgentWorkspacePrAutofixIssueKind::Review {
         Some("changes_requested")
     } else {
         Some("open")
     };
-    if target.updates_workspace_publication() {
-        workspace_repo
+    let message = build_agent_workspace_pr_autofix_message(
+        target.pr_number,
+        target.pr_url.as_deref(),
+        target.label(),
+        &workspace_for_options,
+        &issue,
+    );
+    dispatch_agent_workspace_pr_autofix(
+        workspace_repo,
+        agent_run_repo,
+        chat_service,
+        working_dir,
+        conversation_id,
+        &workspace_for_options,
+        target.pr_number,
+        &issue.classification,
+        Some(auto_merge_current),
+        AgentWorkspacePrAutofixDispatch {
+            repair_summary: &issue.summary,
+            publication_status: if target.updates_workspace_publication() {
+                pr_status
+            } else {
+                None
+            },
+            message,
+            audit_step: "pr_autofix",
+            audit_summary: issue.summary.clone(),
+            dispatch_label: "PR autofix",
+        },
+    )
+    .await
+}
+
+async fn settle_agent_workspace_pr_autofix_dispatch_failure(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    claim: &AgentWorkspaceRepairClaim,
+    summary: &str,
+) -> crate::AppResult<()> {
+    if !settle_agent_workspace_repair_failure(workspace_repo, claim, summary).await? {
+        tracing::debug!(
+            conversation_id = claim.conversation_id.as_str(),
+            "PR autofix dispatch failure did not own the current workspace repair claim"
+        );
+    }
+    Ok(())
+}
+
+struct AgentWorkspacePrAutofixDispatch<'a> {
+    repair_summary: &'a str,
+    publication_status: Option<&'a str>,
+    message: String,
+    audit_step: &'static str,
+    audit_summary: String,
+    dispatch_label: &'static str,
+}
+
+async fn dispatch_agent_workspace_pr_autofix(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    chat_service: Arc<dyn ChatService>,
+    working_dir: &Path,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+    classification: &str,
+    auto_merge_current: Option<bool>,
+    dispatch: AgentWorkspacePrAutofixDispatch<'_>,
+) -> crate::AppResult<bool> {
+    let preallocated_run_id = AgentRunId::new();
+    let Some(claim) = claim_agent_workspace_repair(
+        Arc::clone(&workspace_repo),
+        conversation_id,
+        dispatch.repair_summary,
+        auto_merge_current,
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    let mut send_options =
+        match agent_workspace_pr_fixer_send_options(workspace, working_dir, Some(agent_run_repo))
+            .await
+        {
+            Ok(options) => options,
+            Err(error) => {
+                let summary = format!(
+                    "{} could not prepare its reserved run for dispatch: {error}",
+                    dispatch.dispatch_label
+                );
+                settle_agent_workspace_pr_autofix_dispatch_failure(
+                    Arc::clone(&workspace_repo),
+                    &claim,
+                    &summary,
+                )
+                .await?;
+                return Ok(false);
+            }
+        };
+    send_options.preallocated_agent_run_id = Some(preallocated_run_id.clone());
+    send_options.queue_policy = SendQueuePolicy::RequireImmediateStart;
+    send_options.metadata = Some(pr_autofix_action_metadata(pr_number, classification));
+
+    if let Some(pr_status) = dispatch.publication_status {
+        if let Err(error) = workspace_repo
             .update_publication(
                 conversation_id,
                 workspace.publication_pr_number,
                 workspace.publication_pr_url.as_deref(),
-                pr_status,
+                Some(pr_status),
                 Some("needs_agent"),
             )
+            .await
+        {
+            let summary = format!(
+                "{} could not prepare workspace state for dispatch: {error}",
+                dispatch.dispatch_label
+            );
+            settle_agent_workspace_pr_autofix_dispatch_failure(
+                Arc::clone(&workspace_repo),
+                &claim,
+                &summary,
+            )
             .await?;
+            return Ok(false);
+        }
     }
+
+    let send_result = match chat_service
+        .send_message(
+            ChatContextType::Project,
+            workspace.project_id.as_str(),
+            &dispatch.message,
+            send_options,
+        )
+        .await
+    {
+        Ok(result)
+            if !result.was_queued
+                && !result.queued_as_pending
+                && result.conversation_id == conversation_id.as_str()
+                && result.agent_run_id == preallocated_run_id.as_str() =>
+        {
+            result
+        }
+        Ok(_) => {
+            let summary = format!(
+                "{} did not start immediately with its reserved run identity.",
+                dispatch.dispatch_label
+            );
+            settle_agent_workspace_pr_autofix_dispatch_failure(
+                Arc::clone(&workspace_repo),
+                &claim,
+                &summary,
+            )
+            .await?;
+            return Ok(false);
+        }
+        Err(error) => {
+            let summary = format!("{} dispatch failed: {error}", dispatch.dispatch_label);
+            settle_agent_workspace_pr_autofix_dispatch_failure(
+                Arc::clone(&workspace_repo),
+                &claim,
+                &summary,
+            )
+            .await?;
+            return Ok(false);
+        }
+    };
+    debug_assert_eq!(send_result.agent_run_id, preallocated_run_id.as_str());
+
+    append_agent_workspace_pr_autofix_post_start_audit(
+        workspace_repo,
+        conversation_id,
+        pr_number,
+        &preallocated_run_id,
+        dispatch,
+        classification,
+    )
+    .await;
+
+    Ok(true)
+}
+
+async fn append_agent_workspace_pr_autofix_post_start_audit(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    agent_run_id: &AgentRunId,
+    dispatch: AgentWorkspacePrAutofixDispatch<'_>,
+    classification: &str,
+) {
+    if let Err(error) = workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            dispatch.audit_step,
+            "needs_agent",
+            dispatch.audit_summary,
+            Some(classification.to_string()),
+        ))
+        .await
+    {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            agent_run_id = agent_run_id.as_str(),
+            error = %error,
+            "PR autofix started with authoritative run identity but its audit event could not be recorded"
+        );
+    }
+}
+
+async fn record_agent_workspace_pr_autofix_pre_start_failure(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    restore_auto_merge: bool,
+    summary: &str,
+) -> crate::AppResult<()> {
+    let workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    workspace_repo
+        .update_publication(
+            conversation_id,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.as_deref(),
+            workspace.publication_pr_status.as_deref(),
+            Some("failed"),
+        )
+        .await?;
+    workspace_repo
+        .update_pr_auto_merge_state(conversation_id, Some(false), Some("blocked"), Some(summary))
+        .await?;
+
+    if !restore_auto_merge || !workspace.pr_auto_merge_desired {
+        return Ok(());
+    }
+
+    let (auto_merge_current, final_summary) = match github
+        .enable_pr_auto_merge(working_dir, pr_number, &workspace.pr_auto_merge_method)
+        .await
+    {
+        Ok(()) => (true, format!("{summary} GitHub auto-merge was restored.")),
+        Err(error) => (
+            false,
+            format!("{summary} {}", auto_merge_enable_failure_summary(&error)),
+        ),
+    };
     workspace_repo
         .update_pr_auto_merge_state(
             conversation_id,
             Some(auto_merge_current),
-            Some("fixing"),
-            Some(&issue.summary),
+            Some("blocked"),
+            Some(&final_summary),
         )
-        .await?;
-    workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            "pr_autofix",
-            "needs_agent",
-            issue.summary,
-            Some(issue.classification),
-        ))
-        .await?;
-
-    Ok(true)
+        .await
 }
 
 async fn agent_workspace_pr_autofix_repair_in_flight(
     workspace: &AgentConversationWorkspace,
     agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,
 ) -> crate::AppResult<bool> {
-    if matches!(
-        workspace.publication_push_status.as_deref(),
-        Some("needs_agent")
-    ) {
+    if workspace.publication_push_status.as_deref() == Some("needs_agent")
+        && workspace.pr_supervision_status.as_deref() == Some("fixing")
+    {
         return Ok(true);
     }
 
@@ -2898,7 +3170,7 @@ pub async fn sync_agent_workspace_auto_merge_preference_for_workspace(
     .await
 }
 
-fn classify_agent_workspace_pr_autofix_issue(
+pub(crate) fn classify_agent_workspace_pr_autofix_issue(
     pr_number: i64,
     health: &PrHealth,
 ) -> Option<AgentWorkspacePrAutofixIssue> {
@@ -2909,15 +3181,7 @@ fn classify_agent_workspace_pr_autofix_issue(
         .trim()
         .to_ascii_lowercase();
     if review_decision == "changes_requested" {
-        let details = vec!["GitHub review decision is CHANGES_REQUESTED".to_string()];
-        return Some(AgentWorkspacePrAutofixIssue {
-            kind: AgentWorkspacePrAutofixIssueKind::Review,
-            summary: format!("PR #{pr_number} has requested changes"),
-            classification: agent_workspace_pr_autofix_event_classification(
-                pr_number, health, "review", &details,
-            ),
-            details,
-        });
+        return Some(agent_workspace_pr_review_issue(pr_number, health));
     }
 
     let failing_checks: Vec<String> = health
@@ -2980,6 +3244,29 @@ fn classify_agent_workspace_pr_autofix_issue(
     }
 
     None
+}
+
+fn agent_workspace_pr_review_issue(
+    pr_number: i64,
+    health: &PrHealth,
+) -> AgentWorkspacePrAutofixIssue {
+    let details = vec!["GitHub review decision is CHANGES_REQUESTED".to_string()];
+    AgentWorkspacePrAutofixIssue {
+        kind: AgentWorkspacePrAutofixIssueKind::Review,
+        summary: format!("PR #{pr_number} has requested changes"),
+        classification: agent_workspace_pr_autofix_event_classification(
+            pr_number, health, "review", &details,
+        ),
+        details,
+    }
+}
+
+fn agent_workspace_pr_health_has_head(health: &PrHealth) -> bool {
+    health
+        .sync_state
+        .head_ref_oid
+        .as_deref()
+        .is_some_and(|head| !head.trim().is_empty())
 }
 
 fn agent_workspace_pr_merge_conflict_details(health: &PrHealth) -> Vec<String> {
@@ -3346,16 +3633,6 @@ async fn route_agent_workspace_review_feedback_if_present(
         return Ok(false);
     };
 
-    let classification = agent_workspace_review_event_classification(&feedback.review_id);
-    let already_routed = workspace_repo
-        .list_publication_events(conversation_id)
-        .await?
-        .into_iter()
-        .any(|event| event.classification.as_deref() == Some(classification.as_str()));
-    if already_routed {
-        return Ok(false);
-    }
-
     if authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
         .await?
         .is_none()
@@ -3364,7 +3641,63 @@ async fn route_agent_workspace_review_feedback_if_present(
     }
 
     let health = github.fetch_pr_health(working_dir, pr_number).await?;
-    let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
+    let issue = agent_workspace_pr_review_issue(pr_number, &health);
+    if !agent_workspace_pr_health_has_head(&health) {
+        workspace_repo
+            .update_pr_auto_merge_state(
+                conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("blocked"),
+                Some(
+                    "PR autofix is blocked because GitHub did not report the current head commit.",
+                ),
+            )
+            .await?;
+        return Ok(false);
+    }
+    let legacy_classification = agent_workspace_review_event_classification(&feedback.review_id);
+    let publication_events = workspace_repo
+        .list_publication_events(conversation_id)
+        .await?;
+    let legacy_event_exists = publication_events.iter().any(|event| {
+        matches!(
+            event.classification.as_deref(),
+            Some(value)
+                if value == issue.classification.as_str()
+                    || value == legacy_classification.as_str()
+        )
+    });
+    let Some(agent_run_repo) = agent_run_repo.as_ref() else {
+        tracing::error!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            "Agent workspace PR review autofix requires an AgentRun repository"
+        );
+        return Ok(false);
+    };
+    let attempt_decision = load_pr_autofix_attempt_decision(
+        agent_run_repo.as_ref(),
+        conversation_id,
+        pr_number,
+        &issue.classification,
+        legacy_event_exists,
+    )
+    .await?;
+    if !attempt_decision.allows_start() {
+        if let Some(summary) = attempt_decision.manual_summary() {
+            workspace_repo
+                .update_pr_auto_merge_state(
+                    conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(summary),
+                )
+                .await?;
+        }
+        return Ok(false);
+    }
+
+    let auto_merge_current = match prepare_agent_workspace_pr_repair_auto_merge_state(
         Arc::clone(&github),
         working_dir,
         pr_number,
@@ -3372,93 +3705,89 @@ async fn route_agent_workspace_review_feedback_if_present(
         &health,
         Arc::clone(&workspace_repo),
     )
-    .await?
-    else {
-        return Ok(false);
+    .await
+    {
+        Ok(Some(auto_merge_current)) => auto_merge_current,
+        Ok(None) => return Ok(false),
+        Err(error) => {
+            let summary = format!(
+                "PR review autofix could not persist the GitHub auto-merge disarm state: {error}"
+            );
+            record_agent_workspace_pr_autofix_pre_start_failure(
+                Arc::clone(&github),
+                working_dir,
+                pr_number,
+                workspace_repo.as_ref(),
+                conversation_id,
+                health.auto_merge_request.is_some(),
+                &summary,
+            )
+            .await?;
+            return Ok(false);
+        }
     };
 
-    let Some(workspace_for_options) =
+    let Some(_workspace_for_options) =
         authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
             .await?
     else {
-        return Ok(false);
-    };
-    let send_options = agent_workspace_pr_fixer_send_options(
-        &workspace_for_options,
-        working_dir,
-        agent_run_repo.as_ref(),
-    )
-    .await?;
-    let Some(workspace) =
-        authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
-            .await?
-    else {
-        return Ok(false);
-    };
-    let message = build_agent_workspace_pr_review_message(pr_number, &workspace, &feedback);
-    chat_service
-        .send_message(
-            ChatContextType::Project,
-            workspace.project_id.as_str(),
-            &message,
-            send_options,
-        )
-        .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
-
-    workspace_repo
-        .update_publication(
+        record_agent_workspace_pr_autofix_pre_start_failure(
+            Arc::clone(&github),
+            working_dir,
+            pr_number,
+            workspace_repo.as_ref(),
             conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            Some("changes_requested"),
-            Some("needs_agent"),
+            health.auto_merge_request.is_some(),
+            "PR review-fixer authorization changed after GitHub auto-merge was disabled.",
         )
         .await?;
-    workspace_repo
-        .update_pr_auto_merge_state(
-            conversation_id,
-            Some(auto_merge_current),
-            Some("fixing"),
-            Some("GitHub requested changes routed to the PR fixer."),
-        )
-        .await?;
+        return Ok(false);
+    };
+    let repair_summary = "GitHub requested changes routed to the PR fixer.";
     let summary = format!(
         "GitHub PR #{pr_number} requested changes from @{}",
         feedback.author
     );
-    let event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "github_review",
-        "needs_agent",
-        summary.clone(),
-        Some(classification.clone()),
-    );
-    workspace_repo
-        .append_publication_event(event.clone())
-        .await?;
-    let adapter = AgentWorkspaceOutcomeAdapter::new(task_outcome_repo);
-    if let Err(error) = adapter
-        .record_pr_review_requested_changes(
-            &workspace,
-            Some(&event),
+    let Some(workspace_for_dispatch) =
+        authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
+            .await?
+    else {
+        record_agent_workspace_pr_autofix_pre_start_failure(
+            Arc::clone(&github),
+            working_dir,
             pr_number,
-            Some(feedback.author.as_str()),
-            &summary,
-            Some(classification.as_str()),
+            workspace_repo.as_ref(),
+            conversation_id,
+            health.auto_merge_request.is_some(),
+            "PR review-fixer authorization changed before dispatch.",
         )
-        .await
-    {
-        tracing::warn!(
-            conversation_id = conversation_id.as_str(),
-            pr_number,
-            review_id = feedback.review_id.as_str(),
-            error = %error,
-            "Failed to record direct agent workspace PR review outcome"
-        );
-    }
-
-    Ok(true)
+        .await?;
+        return Ok(false);
+    };
+    dispatch_agent_workspace_pr_autofix(
+        workspace_repo,
+        agent_run_repo,
+        chat_service,
+        working_dir,
+        conversation_id,
+        &workspace_for_dispatch,
+        pr_number,
+        &issue.classification,
+        Some(auto_merge_current),
+        AgentWorkspacePrAutofixDispatch {
+            repair_summary,
+            publication_status: Some("changes_requested"),
+            message: build_agent_workspace_pr_review_message(
+                pr_number,
+                &workspace_for_dispatch,
+                &feedback,
+            ),
+            audit_step: "github_review",
+            audit_summary: summary,
+            dispatch_label: "PR review autofix",
+        },
+    )
+    .await
 }
 
 fn agent_workspace_review_event_classification(review_id: &str) -> String {

@@ -256,7 +256,7 @@ export const IDEATION_TOOLS: Tool[] = [
   },
 
   // ========================================================================
-  // ACCEPTANCE GATE TOOLS (ralphx-ideation and ralphx-ideation-team-lead only)
+  // ACCEPTANCE GATE TOOLS (ralphx-ideation)
   // ========================================================================
   {
     name: "get_acceptance_status",
@@ -415,7 +415,7 @@ export const IDEATION_TOOLS: Tool[] = [
     description:
       "Create a new ideation session as a child of an existing session. Use when you want to create follow-on work that inherits context from the parent session. " +
       "The child session starts with 'active' status. " +
-      "When inherit_context is true (default), the child receives a read-only reference to the parent's plan artifact AND inherits the parent's team_mode and team_config. " +
+      "When inherit_context is true (default), the child receives a read-only reference to the parent's plan artifact. " +
       "The inherited plan cannot be modified — call create_plan_artifact to create an independent plan for the child session. " +
       "Parent proposals are NOT copied to the child — use get_parent_session_context to access them.",
     inputSchema: {
@@ -435,40 +435,11 @@ export const IDEATION_TOOLS: Tool[] = [
         },
         inherit_context: {
           type: "boolean",
-          description: "If true, child receives a read-only reference to parent's plan artifact and inherits team_mode/team_config from parent. To create a new plan, call create_plan_artifact — it creates an independent plan for the child. Parent proposals accessible via get_parent_session_context. Default: true.",
+          description: "If true, child receives a read-only reference to the parent's plan artifact. To create a new plan, call create_plan_artifact — it creates an independent plan for the child. Parent proposals remain accessible via get_parent_session_context. Default: true.",
         },
         initial_prompt: {
           type: "string",
           description: "Optional initial prompt/message to forward to the child session's agent. This is the user's message that triggered the child session creation.",
-        },
-        team_mode: {
-          type: "string",
-          enum: ["solo", "research", "debate"],
-          description: "Team mode for the child session. If omitted and inherit_context=true, inherits from parent session. Use 'solo' for single-agent execution, 'research' for parallel research teams, 'debate' for adversarial analysis.",
-        },
-        team_config: {
-          type: "object",
-          description: "Team constraints override. If omitted and inherit_context=true, inherits from parent session. Explicit values replace inherited config. Validated against current project constraints.",
-          properties: {
-            max_teammates: {
-              type: "number",
-              description: "Maximum number of teammates allowed (capped at project constraint)",
-            },
-            model_ceiling: {
-              type: "string",
-              enum: ["haiku", "sonnet", "opus"],
-              description: "Maximum model tier allowed for teammates",
-            },
-            budget_limit: {
-              type: "number",
-              description: "Budget limit for this session (not inherited)",
-            },
-            composition_mode: {
-              type: "string",
-              enum: ["dynamic", "constrained"],
-              description: "dynamic: ad-hoc teammate selection, constrained: use predefined presets",
-            },
-          },
         },
         purpose: {
           type: "string",
@@ -783,13 +754,10 @@ export const IDEATION_TOOLS: Tool[] = [
           description:
             "Optional parent tool_use id for future collapsed subagent/task widget parity in the invoker chat.",
         },
-        delegated_session_id: {
+        task_ref: {
           type: "string",
-          description: "Optional existing delegated session to reuse for RalphX-side continuity.",
-        },
-        child_session_id: {
-          type: "string",
-          description: "Deprecated alias for delegated_session_id.",
+          description:
+            "Optional task number or task_id from the caller's current ledger to assign atomically to this delegate.",
         },
         agent_name: {
           type: "string",
@@ -831,6 +799,7 @@ export const IDEATION_TOOLS: Tool[] = [
         },
       },
       required: ["agent_name", "prompt"],
+      additionalProperties: false,
     },
   },
   {

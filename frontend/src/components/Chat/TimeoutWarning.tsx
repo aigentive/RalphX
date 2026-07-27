@@ -2,8 +2,7 @@
  * TimeoutWarning - Banner warning when a bash tool call is approaching the agent timeout
  *
  * Displays when elapsed time since a bash tool call started exceeds 70% of the
- * effective timeout threshold. Context-aware thresholds: 600s (non-team) or
- * 3600s (team mode).
+ * configured timeout threshold.
  */
 
 import { useState, useEffect } from "react";
@@ -19,7 +18,7 @@ const WARNING_THRESHOLD_RATIO = 0.7;
 export interface TimeoutWarningProps {
   /** Unix timestamp (ms) when the bash tool call started */
   toolCallStartTime: number;
-  /** Effective timeout in ms: 600_000 (non-team) or 3_600_000 (team) */
+  /** Effective timeout in milliseconds. */
   effectiveTimeoutMs: number;
   /** Called when user clicks the dismiss button */
   onDismiss: () => void;

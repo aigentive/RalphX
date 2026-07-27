@@ -9,11 +9,8 @@
  */
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { useChatStore, getContextKey } from "@/stores/chatStore";
-import { useTeamStore } from "@/stores/teamStore";
-import { useIdeationStore } from "@/stores/ideationStore";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { chatKeys } from "@/hooks/useChat";
 import type { ChatContext } from "@/types/chat";
@@ -169,7 +166,7 @@ export function useChatPanelContext({
 
   // Cleanup on unmount: clear isSending for the current context key
   // agentStatus is intentionally NOT cleared here — it is owned by useGlobalAgentLifecycle
-  // and must survive unmount/remount cycles (e.g., PlanningView key={session.id} switches).
+  // and must survive unmount/remount cycles when Agents changes artifact/session scope.
   useEffect(() => {
     return () => {
       setSending(storeContextKeyRef.current, false);
@@ -264,25 +261,6 @@ export function useChatPanelContext({
       if (prevStoreContextKeyRef.current) {
         setSending(prevStoreContextKeyRef.current, false);
 
-        // Read pending plan BEFORE clearing — used for toast notification below
-        const oldPendingPlan = useTeamStore.getState().pendingPlans[prevStoreContextKeyRef.current];
-
-        // Notify user if they're switching away from a session with a pending team plan approval
-        if (oldPendingPlan) {
-          const sessionId = oldPendingPlan.originContextId;
-          toast("Team plan approval still pending — switch back to approve", {
-            duration: 5000,
-            action: {
-              label: "Go back",
-              onClick: () => { useIdeationStore.getState().setActiveSession(sessionId); },
-            },
-          });
-        }
-
-        // Clear frontend pending plan state only — backend plan survives for re-discovery
-        // when user returns to this session (via useTeamEvents Effect 3 hydration).
-        // Backend TTL (14 min) is the safety net for true abandonment.
-        useTeamStore.getState().clearPendingPlan(prevStoreContextKeyRef.current);
       }
 
       // Reset auto-select flag when context changes

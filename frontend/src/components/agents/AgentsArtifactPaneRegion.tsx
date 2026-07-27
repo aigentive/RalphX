@@ -12,6 +12,7 @@ import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { cn } from "@/lib/utils";
 import type {
   AgentArtifactTab,
+  AgentRuntimeSelection,
   AgentTaskArtifactMode,
 } from "@/stores/agentSessionStore";
 
@@ -22,6 +23,7 @@ import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentPublishSubTabRequest } from "./agentPublishSubTab";
+import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
@@ -74,6 +76,7 @@ interface AgentsArtifactPaneRegionProps {
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
+  publishAttempt: AgentWorkspacePublishAttempt | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
   publishSubTabRequest: AgentPublishSubTabRequest | null;
   taskFocusRequest: AgentTaskArtifactFocusRequest | null;
@@ -96,7 +99,10 @@ interface AgentsArtifactPaneRegionProps {
     conversationId: string,
     options?: AutomationRunFocusOptions,
   ) => void;
-  onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusWorkspaceReview: (
+    conversationId: string,
+    runtimeHint?: AgentRuntimeSelection,
+  ) => void;
   onFocusTaskRuntime: (
     taskId: string,
     contextType: AgentTaskRuntimeContextType
@@ -129,6 +135,7 @@ export function AgentsArtifactPaneRegion({
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace,
+  publishAttempt,
   publishFocusRequest,
   publishSubTabRequest,
   taskFocusRequest,
@@ -205,6 +212,7 @@ export function AgentsArtifactPaneRegion({
                     onTaskModeChange={onTaskModeChange}
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}
+                    publishAttempt={publishAttempt}
                     publishFocusRequest={publishFocusRequest}
                     publishSubTabRequest={publishSubTabRequest}
                     taskFocusRequest={taskFocusRequest}

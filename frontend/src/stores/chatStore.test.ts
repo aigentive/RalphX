@@ -8,6 +8,7 @@ import {
   selectIsAgentRunning,
   selectActiveConversationId,
   selectActiveAgentRunId,
+  selectActiveAgentRunHarness,
   selectToolCallStartTimes,
   selectEffectiveModel,
   getContextKey,
@@ -45,11 +46,11 @@ describe("chatStore", () => {
       isLoading: false,
       activeConversationIds: {},
       activeAgentRunIds: {},
+      activeAgentRunHarnesses: {},
       queuedMessages: {},
       agentStatus: {},
       agentActivityLabels: {},
       isSending: {},
-      isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
       lastToolCallCompletionTimestamp: {},
@@ -84,6 +85,7 @@ describe("chatStore", () => {
     it("has empty activeAgentRunIds", () => {
       const state = useChatStore.getState();
       expect(state.activeAgentRunIds).toEqual({});
+      expect(state.activeAgentRunHarnesses).toEqual({});
     });
 
     it("has empty queuedMessages", () => {
@@ -479,33 +481,60 @@ describe("chatStore", () => {
     const storeKey = "project:conversation-1";
 
     it("sets activeAgentRunIds for a storeKey", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude");
 
       const state = useChatStore.getState();
       expect(state.activeAgentRunIds[storeKey]).toBe("run-123");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBe("claude");
     });
 
     it("replaces previous active run id for same storeKey", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-old");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-old", "claude");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new", "codex");
+
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBe("codex");
+    });
+
+    it("replaces a known harness with an unknown pair without leaking the old harness", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-old", "claude");
       useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
 
       const state = useChatStore.getState();
       expect(state.activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBeNull();
     });
 
     it("clears active run id only when the expected run id matches", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new", "codex");
       useChatStore.getState().clearActiveAgentRun(storeKey, "run-old");
 
       expect(useChatStore.getState().activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(useChatStore.getState().activeAgentRunHarnesses[storeKey]).toBe("codex");
 
       useChatStore.getState().clearActiveAgentRun(storeKey, "run-new");
 
       expect(useChatStore.getState().activeAgentRunIds[storeKey]).toBeUndefined();
+      expect(useChatStore.getState().activeAgentRunHarnesses[storeKey]).toBeUndefined();
+    });
+
+    it("keeps a newer unknown pair and another context intact when an old id clears", () => {
+      const otherStoreKey = "task:task-2";
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
+      useChatStore.getState().setActiveAgentRun(otherStoreKey, "run-other", "claude");
+
+      useChatStore.getState().clearActiveAgentRun(storeKey, "run-old");
+
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds[storeKey]).toBe("run-new");
+      expect(state.activeAgentRunHarnesses[storeKey]).toBeNull();
+      expect(state.activeAgentRunIds[otherStoreKey]).toBe("run-other");
+      expect(state.activeAgentRunHarnesses[otherStoreKey]).toBe("claude");
     });
 
     it("clears active run id when agent status is set to idle", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude");
       useChatStore.getState().setAgentStatus(storeKey, "generating");
       useChatStore.getState().setAgentActivityLabel(storeKey, "Agent working");
       useChatStore.getState().setAgentStatus(storeKey, "idle");
@@ -513,7 +542,20 @@ describe("chatStore", () => {
       const state = useChatStore.getState();
       expect(state.agentStatus[storeKey]).toBeUndefined();
       expect(state.activeAgentRunIds[storeKey]).toBeUndefined();
+      expect(state.activeAgentRunHarnesses[storeKey]).toBeUndefined();
       expect(state.agentActivityLabels[storeKey]).toBeUndefined();
+    });
+
+    it("keeps run pairs isolated by store key and clears both during task cleanup", () => {
+      useChatStore.getState().setActiveAgentRun("task:task-1", "run-task", "claude");
+      useChatStore.getState().setActiveAgentRun("project:conversation-1", "run-project", "codex");
+
+      useChatStore.getState().clearAgentRunningForTask("task-1");
+
+      expect(useChatStore.getState().activeAgentRunIds["task:task-1"]).toBeUndefined();
+      expect(useChatStore.getState().activeAgentRunHarnesses["task:task-1"]).toBeUndefined();
+      expect(useChatStore.getState().activeAgentRunIds["project:conversation-1"]).toBe("run-project");
+      expect(useChatStore.getState().activeAgentRunHarnesses["project:conversation-1"]).toBe("codex");
     });
 
     it("clears an activity label when idle is set before a run id exists", () => {
@@ -524,10 +566,11 @@ describe("chatStore", () => {
       expect(useChatStore.getState().agentActivityLabels[storeKey]).toBeUndefined();
     });
 
-    it("selectActiveAgentRunId returns the stored active run id", () => {
-      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+    it("selectors return the paired active run identity and harness", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude");
 
       expect(selectActiveAgentRunId(storeKey)(useChatStore.getState())).toBe("run-123");
+      expect(selectActiveAgentRunHarness(storeKey)(useChatStore.getState())).toBe("claude");
     });
   });
 
@@ -1181,6 +1224,7 @@ describe("selectors", () => {
       isLoading: false,
       activeConversationIds: {},
       activeAgentRunIds: {},
+      activeAgentRunHarnesses: {},
       queuedMessages: {},
       agentStatus: {},
       agentActivityLabels: {},

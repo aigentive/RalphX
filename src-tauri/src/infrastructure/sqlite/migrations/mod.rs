@@ -533,12 +533,36 @@ mod v20260720102513_add_tasks_feature_state_tests;
 mod v20260720131416_review_pr_disable_pr_automation;
 #[cfg(test)]
 mod v20260720131416_review_pr_disable_pr_automation_tests;
+mod v20260720140000_remove_legacy_claude_team;
+#[cfg(test)]
+mod v20260720140000_remove_legacy_claude_team_tests;
 mod v20260720200633_auto_verify_draft_plans;
+mod v20260721190000_workspace_review_fixer_attempt;
 #[cfg(test)]
 mod v20260720200633_auto_verify_draft_plans_tests;
+#[cfg(test)]
+mod v20260721190000_workspace_review_fixer_attempt_tests;
+mod v20260722022339_usage_capture_provenance_and_raw_snapshots;
+#[cfg(test)]
+mod v20260722022339_usage_capture_provenance_and_raw_snapshots_tests;
 mod v20260722132100_automation_run_goal_item;
 #[cfg(test)]
 mod v20260722132100_automation_run_goal_item_tests;
+mod v20260723012559_agent_workspace_pr_metadata_decision;
+#[cfg(test)]
+mod v20260723012559_agent_workspace_pr_metadata_decision_tests;
+mod v20260723065349_pr_autofix_completed_supervision_history;
+#[cfg(test)]
+mod v20260723065349_pr_autofix_completed_supervision_history_tests;
+mod v20260723100604_app_state_update_channel;
+#[cfg(test)]
+mod v20260723100604_app_state_update_channel_tests;
+mod v20260724113627_agent_task_delegate_assignments;
+#[cfg(test)]
+mod v20260724113627_agent_task_delegate_assignments_tests;
+mod v20260724222347_agent_task_assignment_planned_run_identity;
+#[cfg(test)]
+mod v20260724222347_agent_task_assignment_planned_run_identity_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -633,12 +657,13 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260723143416;
+pub const SCHEMA_VERSION: i64 = 20260724222347;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
 
 /// Migration definition
+#[derive(Clone, Copy)]
 struct Migration {
     version: i64,
     name: &'static str,
@@ -1714,9 +1739,24 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260720131416_review_pr_disable_pr_automation::migrate,
     },
     Migration {
+        version: 20260720140000,
+        name: "remove_legacy_claude_team",
+        migrate: v20260720140000_remove_legacy_claude_team::migrate,
+    },
+    Migration {
         version: 20260720200633,
         name: "auto_verify_draft_plans",
         migrate: v20260720200633_auto_verify_draft_plans::migrate,
+    },
+    Migration {
+        version: 20260721190000,
+        name: "workspace_review_fixer_attempt",
+        migrate: v20260721190000_workspace_review_fixer_attempt::migrate,
+    },
+    Migration {
+        version: 20260722022339,
+        name: "usage_capture_provenance_and_raw_snapshots",
+        migrate: v20260722022339_usage_capture_provenance_and_raw_snapshots::migrate,
     },
     Migration {
         version: 20260722090527,
@@ -1727,6 +1767,21 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260722132100,
         name: "automation_run_goal_item",
         migrate: v20260722132100_automation_run_goal_item::migrate,
+    },
+    Migration {
+        version: 20260723012559,
+        name: "agent_workspace_pr_metadata_decision",
+        migrate: v20260723012559_agent_workspace_pr_metadata_decision::migrate,
+    },
+    Migration {
+        version: 20260723065349,
+        name: "pr_autofix_completed_supervision_history",
+        migrate: v20260723065349_pr_autofix_completed_supervision_history::migrate,
+    },
+    Migration {
+        version: 20260723100604,
+        name: "app_state_update_channel",
+        migrate: v20260723100604_app_state_update_channel::migrate,
     },
     Migration {
         version: 20260723111500,
@@ -1743,34 +1798,103 @@ const MIGRATIONS: &[Migration] = &[
         name: "typed_ledger_sources_classes_failure_fingerprints",
         migrate: v20260723143416_typed_ledger_sources_classes_failure_fingerprints::migrate,
     },
+    Migration {
+        version: 20260724113627,
+        name: "agent_task_delegate_assignments",
+        migrate: v20260724113627_agent_task_delegate_assignments::migrate,
+    },
+    Migration {
+        version: 20260724222347,
+        name: "agent_task_assignment_planned_run_identity",
+        migrate: v20260724222347_agent_task_assignment_planned_run_identity::migrate,
+    },
 ];
 
-/// Run all pending migrations on the database
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationProgress {
+    pub completed_units: u32,
+    pub total_units: u32,
+    pub elapsed_ms: u128,
+}
+
+/// Run all pending migrations on the database.
 pub fn run_migrations(conn: &Connection) -> AppResult<()> {
+    run_migrations_with_observer(conn, |_| {})
+}
+
+/// Runs pending migrations and reports real completed/pending units.
+///
+/// # Errors
+///
+/// Returns the first migration or schema-version persistence error. The
+/// observer is never advanced for the failed migration.
+pub fn run_migrations_with_observer(
+    conn: &Connection,
+    observer: impl FnMut(MigrationProgress),
+) -> AppResult<()> {
+    run_pending_migrations(conn, MIGRATIONS, observer)
+}
+
+fn run_pending_migrations(
+    conn: &Connection,
+    migrations: &[Migration],
+    mut observer: impl FnMut(MigrationProgress),
+) -> AppResult<()> {
+    let started_at = std::time::Instant::now();
     // Create migrations table if it doesn't exist
     create_migrations_table(conn)?;
 
     let mut applied_versions = get_applied_migration_versions(conn)?;
+    let pending = migrations
+        .iter()
+        .filter(|migration| !applied_versions.contains(&migration.version))
+        .collect::<Vec<_>>();
+    let total_units = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+    let mut completed_units = 0u32;
+    observer(MigrationProgress {
+        completed_units,
+        total_units,
+        elapsed_ms: started_at.elapsed().as_millis(),
+    });
 
     // Run registered migrations sequentially. Membership checks repair dev and
     // branch databases that have a later version recorded while missing an
     // earlier migration added on this branch.
-    for migration in MIGRATIONS {
-        if !applied_versions.contains(&migration.version) {
-            tracing::info!(
-                "Running migration v{}: {}",
-                migration.version,
-                migration.name
+    for migration in pending {
+        tracing::info!(
+            "Running migration v{}: {}",
+            migration.version,
+            migration.name
+        );
+
+        if let Err(error) = (migration.migrate)(conn) {
+            tracing::error!(
+                migration_version = migration.version,
+                completed_units,
+                total_units,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Database migration failed"
             );
-
-            (migration.migrate)(conn)?;
-            set_schema_version(conn, migration.version)?;
-            applied_versions.insert(migration.version);
-
-            tracing::info!("Migration v{} complete", migration.version);
+            return Err(error);
         }
+        set_schema_version(conn, migration.version)?;
+        applied_versions.insert(migration.version);
+        completed_units = completed_units.saturating_add(1);
+        observer(MigrationProgress {
+            completed_units,
+            total_units,
+            elapsed_ms: started_at.elapsed().as_millis(),
+        });
+
+        tracing::info!("Migration v{} complete", migration.version);
     }
 
+    tracing::info!(
+        completed_units,
+        total_units,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "Database migration pass completed"
+    );
     Ok(())
 }
 
@@ -1798,6 +1922,9 @@ pub(super) fn latest_registered_migration_version() -> i64 {
         .map(|migration| migration.version)
         .expect("migration registry should not be empty")
 }
+
+#[cfg(test)]
+mod migration_progress_tests;
 
 /// Create the migrations tracking table
 fn create_migrations_table(conn: &Connection) -> AppResult<()> {

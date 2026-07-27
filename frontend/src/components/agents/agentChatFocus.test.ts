@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  focusWorkspaceReview,
   getAgentChatFocusSwitchOptions,
   getAgentsChatFocusDisplay,
   getFocusedAutomationRunConversationId,
@@ -203,5 +204,25 @@ describe("workspace Review focus helpers", () => {
     expect(getFocusedWorkspaceReviewConversationId(workspaceReviewFocus)).toBe(
       "review-conversation-1",
     );
+  });
+
+  it("clears a transient runtime hint when focus switches to another Review child", () => {
+    expect(
+      focusWorkspaceReview(
+        {
+          type: "workspace_review",
+          conversationId: "review-conversation-1",
+          runtimeHint: {
+            provider: "codex",
+            modelId: "gpt-5.5",
+            effort: "high",
+          },
+        },
+        "review-conversation-2",
+      ),
+    ).toEqual({
+      type: "workspace_review",
+      conversationId: "review-conversation-2",
+    });
   });
 });

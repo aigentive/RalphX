@@ -1,8 +1,6 @@
 ---
 paths:
   - "frontend/src/components/tasks/detail-views/**"
-  - "frontend/src/components/tasks/TaskDetailPanel*"
-  - "frontend/src/components/tasks/TaskDetailOverlay*"
   - "frontend/src/components/tasks/TaskDetailView*"
   - "frontend/src/components/agents/task-details/**"
 ---
@@ -48,10 +46,10 @@ paths:
 
 | Component | Path |
 |-----------|------|
-| Registry definition | `frontend/src/components/tasks/TaskDetailPanel.tsx` — `TASK_DETAIL_VIEWS` map |
-| View selection logic | `frontend/src/components/tasks/TaskDetailPanel.tsx` — `TASK_DETAIL_VIEWS[status] ?? BasicTaskDetail` (inside `useViewRegistry` block) |
-| Entry point (Kanban) | `frontend/src/components/tasks/TaskDetailOverlay.tsx` |
-| View components | `frontend/src/components/tasks/detail-views/*.tsx` |
+| Registry definition | `frontend/src/components/agents/task-details/AgentsTaskDetailPanel.tsx` — `TASK_DETAIL_VIEWS` map |
+| View selection logic | `frontend/src/components/agents/task-details/AgentsTaskDetailPanel.tsx` — `TASK_DETAIL_VIEWS[status] ?? BasicTaskDetail` |
+| Entry point (Agents Tasks artifact) | `frontend/src/components/agents/task-details/AgentsTaskDetailOverlay.tsx` |
+| View components | `frontend/src/components/agents/task-details/detail-views/*.tsx` |
 
 ## Agents Fork
 
@@ -85,8 +83,8 @@ paths:
 ## Wiring
 
 ```
-TaskDetailOverlay (useViewRegistry={true})
-  → TaskDetailPanel (TaskDetailViewMode + TaskDetailContextProvider)
+AgentsTaskDetailOverlay (Agents Tasks artifact)
+  → AgentsTaskDetailPanel (TaskDetailViewMode + TaskDetailContextProvider)
     → TASK_DETAIL_VIEWS[status] ?? BasicTaskDetail
       → TwoColumnLayout → TaskContextRail + state-specific body
 ```
@@ -105,7 +103,7 @@ TaskDetailOverlay (useViewRegistry={true})
 
 ## Adding New Views
 
-1. Create `src/components/tasks/detail-views/NewStatusTaskDetail.tsx`
+1. Create `src/components/agents/task-details/detail-views/NewStatusTaskDetail.tsx`
 2. Implement `TaskDetailProps` interface: `{ task: Task; isHistorical?: boolean; viewStatus?: InternalStatus }`
 3. Render content inside `TwoColumnLayout`; the common rail is injected by `TaskDetailContextProvider`
-4. Add to `TASK_DETAIL_VIEWS` map in `TaskDetailPanel.tsx`
+4. Add to `TASK_DETAIL_VIEWS` map in `AgentsTaskDetailPanel.tsx`

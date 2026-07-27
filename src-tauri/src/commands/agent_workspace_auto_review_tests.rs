@@ -269,7 +269,7 @@ fn interactive_slot_key_uses_project_context() {
 #[test]
 fn completion_event_listener_ignores_invalid_and_non_project_payloads() {
     let app = test_app(AppState::new_test());
-    install_agent_workspace_auto_review_listeners(&app);
+    install_agent_workspace_auto_review_listeners(app.handle().clone());
 
     app.emit(AGENT_RUN_COMPLETED, "not-json")
         .expect("invalid payload event should emit");

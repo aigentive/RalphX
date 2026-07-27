@@ -11,9 +11,10 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
-use crate::application::{AppState, TeamService, TeamStateTracker};
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::error::AppResult;
 use crate::utils::backend_endpoint::{backend_http_base_url, backend_http_bind_addr};
@@ -49,12 +50,25 @@ pub(crate) fn emit_http_event(state: &HttpServerState, event: &str, payload: Val
     emit_app_event(&state.app_state, event, payload);
 }
 
+pub(crate) async fn recover_agent_workflow_runs_for_startup(
+    app_state: Arc<AppState>,
+    execution_state: Arc<ExecutionState>,
+) -> AppResult<usize> {
+    let state = HttpServerState {
+        app_state,
+        execution_state,
+        delegation_service: Arc::new(DelegationService::new()),
+    };
+    handlers::agent_workflows::recover_agent_workflow_runs(&state).await
+}
+
 pub(crate) fn emit_serialized_http_event<T: Serialize + ?Sized>(
     state: &HttpServerState,
     event: &str,
     payload: &T,
 ) {
-    if let Err(error) = ralphx_events::emit_serialized(state.app_state.events.as_ref(), event, payload)
+    if let Err(error) =
+        ralphx_events::emit_serialized(state.app_state.events.as_ref(), event, payload)
     {
         tracing::warn!(%event, %error, "Failed to serialize HTTP event payload");
     }
@@ -63,28 +77,22 @@ pub(crate) fn emit_serialized_http_event<T: Serialize + ?Sized>(
 pub async fn start_http_server(
     app_state: Arc<AppState>,
     execution_state: Arc<ExecutionState>,
-    team_tracker: TeamStateTracker,
     shutdown: crate::application::HttpShutdownHandle,
 ) -> AppResult<()> {
-    // Build TeamService for HTTP handlers (wraps tracker with DB persistence + events)
-    let team_service = {
-        let tracker_arc = Arc::new(team_tracker.clone());
-        match &app_state.app_handle {
-            Some(handle) => Arc::new(TeamService::new_with_repos(
-                tracker_arc,
-                handle.clone(),
-                app_state.team_session_repo.clone(),
-                app_state.team_message_repo.clone(),
-            )),
-            None => Arc::new(TeamService::new_without_events(tracker_arc)),
-        }
-    };
+    start_http_server_with_listener_ready(app_state, execution_state, shutdown, None).await
+}
 
+/// Starts the HTTP server and resolves the supplied sender only after the
+/// local listener has bound. The caller owns readiness policy beyond binding.
+pub async fn start_http_server_with_listener_ready(
+    app_state: Arc<AppState>,
+    execution_state: Arc<ExecutionState>,
+    shutdown: crate::application::HttpShutdownHandle,
+    mut listener_ready: Option<oneshot::Sender<AppResult<()>>>,
+) -> AppResult<()> {
     let state = HttpServerState {
         app_state,
         execution_state,
-        team_tracker,
-        team_service,
         delegation_service: Arc::new(DelegationService::new()),
     };
 
@@ -234,7 +242,7 @@ pub async fn start_http_server(
             "/api/plan-verification/complete",
             post(complete_plan_verification_http),
         )
-        // Child session tools (ralphx-ideation + ralphx-ideation-team-lead agents)
+        // Child session tools for the primary ideation agent.
         .route(
             "/api/ideation/sessions/:id/child-status",
             get(get_child_session_status_handler),
@@ -353,6 +361,18 @@ pub async fn start_http_server(
         .route(
             "/api/project_skills/export/apply",
             post(apply_project_skill_export),
+        )
+        .route(
+            "/api/agent_tasks/delegate_assignment/get",
+            post(get_delegate_assignment),
+        )
+        .route(
+            "/api/agent_tasks/delegate_assignment/complete",
+            post(complete_delegate_assignment),
+        )
+        .route(
+            "/api/agent_tasks/delegate_assignment/release",
+            post(release_delegate_assignment),
         )
         // Automation setup-agent tools; caller identity is header-derived.
         .route("/api/get_automation", post(get_automation))
@@ -541,6 +561,10 @@ pub async fn start_http_server(
         .route(
             "/api/agent-workspaces/:conversation_id/publish",
             post(publish_agent_workspace),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/commit-local",
+            post(commit_agent_workspace_locally_handler),
         )
         .route(
             "/api/agent-workspaces/:conversation_id/pr-fix-context",
@@ -798,20 +822,9 @@ pub async fn start_http_server(
             post(receive_linear_webhook_http),
         )
         .route("/api/external/task-note", post(create_task_note_http))
-        // Team endpoints (agent teams) — two-phase plan flow
-        .route("/api/team/plan/request", post(request_team_plan_register))
-        .route("/api/team/plan/await/:plan_id", get(await_team_plan))
-        .route("/api/team/plan/pending/:context_id", get(get_pending_plan))
-        .route("/api/team/plan/approve", post(approve_team_plan))
-        .route("/api/team/plan/reject", post(reject_team_plan))
-        .route("/api/team/spawn", post(request_teammate_spawn))
+        // RX-native delegated-agent artifact endpoints.
         .route("/api/team/artifact", post(create_team_artifact))
         .route("/api/team/artifacts/:session_id", get(get_team_artifacts))
-        .route(
-            "/api/team/session_state/:session_id",
-            get(get_team_session_state),
-        )
-        .route("/api/team/session_state", post(save_team_session_state))
         // Permissive CORS applied only to public routes — does NOT apply to
         // internal_routes (which need no CORS) or management_routes (which have
         // their own restrictive CorsLayer already).
@@ -822,24 +835,26 @@ pub async fn start_http_server(
                 .allow_headers(Any),
         );
 
-    let recovery_state = state.clone();
-    tokio::spawn(async move {
-        match recover_agent_workflow_runs(&recovery_state).await {
-            Ok(count) if count > 0 => {
-                tracing::info!(count, "Recovered Scripted Agent workflow runs")
-            }
-            Ok(_) => {}
-            Err(error) => tracing::error!(%error, "Workflow startup recovery failed closed"),
-        }
-    });
-
     let app = Router::new()
         .merge(internal_routes)
         .merge(public_routes)
         .with_state(state);
 
     let bind_addr = backend_http_bind_addr();
-    let listener = bind_with_retry(&bind_addr, 5, Duration::from_millis(250)).await?;
+    let listener = match bind_with_retry(&bind_addr, 5, Duration::from_millis(250)).await {
+        Ok(listener) => {
+            if let Some(sender) = listener_ready.take() {
+                let _ = sender.send(Ok(()));
+            }
+            listener
+        }
+        Err(error) => {
+            if let Some(sender) = listener_ready.take() {
+                let _ = sender.send(Err(crate::AppError::Infrastructure(error.to_string())));
+            }
+            return Err(error);
+        }
+    };
 
     tracing::info!(url = %backend_http_base_url(), "MCP HTTP server listening");
 

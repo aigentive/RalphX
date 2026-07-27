@@ -15,6 +15,13 @@ use crate::error::AppResult;
 pub(crate) const REPAIR_REQUESTED_STEP: &str = "repair_requested";
 pub(crate) const REPAIR_DEFERRED_STEP: &str = "repair_deferred";
 pub(crate) const REPAIR_SENT_STEP: &str = "repair_sent";
+pub(crate) const PR_AUTOFIX_COMPLETED_STEP: &str = "pr_autofix_completed";
+pub(crate) const PR_AUTOFIX_BLOCKED_STEP: &str = "pr_autofix_blocked";
+pub(crate) const PR_AUTOFIX_WORKSPACE_REVIEW_STEP: &str = "pr_autofix_workspace_review";
+pub(crate) const PR_AUTOFIX_WORKSPACE_REVIEW_ABORTED_STEP: &str =
+    "pr_autofix_workspace_review_aborted";
+pub(crate) const PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP: &str =
+    "pr_autofix_workspace_review_passed";
 pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
 const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
 
@@ -89,6 +96,39 @@ pub(crate) async fn claim_agent_workspace_repair(
 
     Ok(Some(AgentWorkspaceRepairClaim {
         conversation_id: conversation_id.clone(),
+        guard: transition_guard(&transition),
+    }))
+}
+
+pub(crate) async fn restore_refreshed_agent_workspace_pr_fix_claim(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
+    if workspace.publication_push_status.as_deref() != Some("refreshed")
+        || workspace.pr_supervision_status.as_deref() != Some("fixing")
+    {
+        return Ok(None);
+    }
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some("needs_agent".to_string()),
+        pr_supervision_status: Some("fixing".to_string()),
+        pr_supervision_summary: workspace.pr_supervision_summary.clone(),
+        pr_supervision_updated_at: next_transition_at(workspace.pr_supervision_updated_at),
+        pr_auto_merge_current: None,
+        base_commit: None,
+    };
+    if !workspace_repo
+        .compare_and_set_repair_state(
+            &workspace.conversation_id,
+            &AgentWorkspaceRepairStateGuard::from_workspace(workspace),
+            &transition,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(AgentWorkspaceRepairClaim {
+        conversation_id: workspace.conversation_id.clone(),
         guard: transition_guard(&transition),
     }))
 }
@@ -357,4 +397,155 @@ pub(crate) async fn complete_agent_workspace_repair_claim(
     workspace_repo
         .compare_and_set_repair_state(&claim.conversation_id, &claim.guard, &transition)
         .await
+}
+
+async fn transition_agent_workspace_repair_claim_with_events(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    claim: &AgentWorkspaceRepairClaim,
+    publication_push_status: &str,
+    pr_supervision_status: &str,
+    pr_supervision_summary: &str,
+    events: Vec<AgentConversationWorkspacePublicationEvent>,
+) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some(publication_push_status.to_string()),
+        pr_supervision_status: Some(pr_supervision_status.to_string()),
+        pr_supervision_summary: Some(pr_supervision_summary.to_string()),
+        pr_supervision_updated_at: next_transition_at(claim.guard.pr_supervision_updated_at),
+        pr_auto_merge_current: None,
+        base_commit: None,
+    };
+    if !workspace_repo
+        .compare_and_set_repair_state_with_events(
+            &claim.conversation_id,
+            &claim.guard,
+            &transition,
+            events,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(AgentWorkspaceRepairClaim {
+        conversation_id: claim.conversation_id.clone(),
+        guard: transition_guard(&transition),
+    }))
+}
+
+pub(crate) async fn complete_agent_workspace_pr_fix_claim(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    claim: &AgentWorkspaceRepairClaim,
+    summary: &str,
+    workspace_review_required: bool,
+    auto_publish_enabled: bool,
+) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
+    let (supervision_status, supervision_summary) = if workspace_review_required {
+        (
+            "reviewing",
+            "PR fix verified; Workspace Review must finish before publishing resumes.",
+        )
+    } else if auto_publish_enabled {
+        ("publishing", "PR fix verified; publishing updates.")
+    } else {
+        ("paused", "PR fix verified; Auto Publish is paused.")
+    };
+    let mut events = vec![AgentConversationWorkspacePublicationEvent::new(
+        claim.conversation_id.clone(),
+        PR_AUTOFIX_COMPLETED_STEP,
+        "succeeded",
+        summary,
+        Some(PR_AUTOFIX_COMPLETED_STEP.to_string()),
+    )];
+    if workspace_review_required {
+        events.push(AgentConversationWorkspacePublicationEvent::new(
+            claim.conversation_id.clone(),
+            PR_AUTOFIX_WORKSPACE_REVIEW_STEP,
+            "pending",
+            format!("PR fix verified; Workspace Review handoff is pending. Fix summary: {summary}"),
+            Some("workspace_review_pending".to_string()),
+        ));
+    } else if !auto_publish_enabled {
+        events.push(AgentConversationWorkspacePublicationEvent::new(
+            claim.conversation_id.clone(),
+            "pr_autofix_publish_skipped",
+            "skipped",
+            format!("PR fix completed, but Auto Publish is paused. Fix summary: {summary}"),
+            Some("auto_publish_paused".to_string()),
+        ));
+    }
+    transition_agent_workspace_repair_claim_with_events(
+        workspace_repo,
+        claim,
+        "refreshed",
+        supervision_status,
+        supervision_summary,
+        events,
+    )
+    .await
+}
+
+pub(crate) async fn block_agent_workspace_pr_fix_claim(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    claim: &AgentWorkspaceRepairClaim,
+    blocker: &str,
+) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
+    transition_agent_workspace_repair_claim_with_events(
+        workspace_repo,
+        claim,
+        "failed",
+        "blocked",
+        blocker,
+        vec![AgentConversationWorkspacePublicationEvent::new(
+            claim.conversation_id.clone(),
+            PR_AUTOFIX_BLOCKED_STEP,
+            "blocked",
+            blocker,
+            Some("pr_autofix_blocker".to_string()),
+        )],
+    )
+    .await
+}
+
+pub(crate) async fn abort_agent_workspace_pr_fix_review_handoff(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    claim: &AgentWorkspaceRepairClaim,
+    blocker: &str,
+) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
+    transition_agent_workspace_repair_claim_with_events(
+        workspace_repo,
+        claim,
+        "failed",
+        "blocked",
+        blocker,
+        vec![AgentConversationWorkspacePublicationEvent::new(
+            claim.conversation_id.clone(),
+            PR_AUTOFIX_WORKSPACE_REVIEW_ABORTED_STEP,
+            "failed",
+            blocker,
+            Some("workspace_review_aborted".to_string()),
+        )],
+    )
+    .await
+}
+
+pub(crate) async fn continue_agent_workspace_pr_fix_after_review_handoff(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    claim: &AgentWorkspaceRepairClaim,
+    summary: &str,
+) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
+    transition_agent_workspace_repair_claim_with_events(
+        workspace_repo,
+        claim,
+        "refreshed",
+        "publishing",
+        "Workspace Review handoff settled; publishing PR fix updates.",
+        vec![AgentConversationWorkspacePublicationEvent::new(
+            claim.conversation_id.clone(),
+            PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP,
+            "publishing",
+            summary,
+            Some("workspace_review_not_required".to_string()),
+        )],
+    )
+    .await
 }

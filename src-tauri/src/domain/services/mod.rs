@@ -116,8 +116,8 @@ pub use payload_enrichment::{
 pub use project_validation::validate_project_path;
 pub use running_agent_registry::{
     is_process_alive, kill_process, kill_process_immediate, kill_worktree_processes,
-    kill_worktree_processes_async, MemoryRunningAgentRegistry, RunningAgentInfo, RunningAgentKey,
-    RunningAgentRegistry,
+    kill_worktree_processes_async, AttachProcessResult, MemoryRunningAgentRegistry,
+    RunningAgentInfo, RunningAgentKey, RunningAgentRegistry, TryRegisterError,
 };
 pub use secret_store::{SecretStore, SecretStoreError};
 pub use work_item_title::{

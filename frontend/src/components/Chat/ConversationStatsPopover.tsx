@@ -1,5 +1,11 @@
 import { BarChart2 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useConversationStats } from "@/hooks/useConversationStats";
 import type { ChatMessageResponse } from "@/api/chat";
 import type { ChatConversation } from "@/types/chat-conversation";
@@ -30,6 +36,20 @@ function formatCompactInteger(value: number): string {
     .replace("K", "k")
     .replace("M", "m")
     .replace("B", "b");
+}
+
+function formatOptionalCompactInteger(value: number | null): string {
+  return value == null ? "Unavailable" : formatCompactInteger(value);
+}
+
+function cacheExplanation(harnesses: string[]): string {
+  if (harnesses.length === 1 && harnesses[0] === "codex") {
+    return "Cached input is already included in Codex Input and is counted once in Processed.";
+  }
+  if (harnesses.length === 1 && harnesses[0] === "claude") {
+    return "Claude reports cache tokens separately; they are incorporated once in Processed.";
+  }
+  return "Cache accounting varies by provider. Processed applies each provider's accounting policy before aggregation.";
 }
 
 function formatUsd(value: number | null): string {
@@ -63,7 +83,7 @@ export function ConversationStatsPopover({
   isLoading: providedIsLoading,
   isLiveTurnActive = false,
 }: ConversationStatsPopoverProps) {
-  const statsQuery = useConversationStats(conversationId, {
+  const statsQuery = useConversationStats(providedStats ? null : conversationId, {
     fallbackConversation,
     fallbackMessages,
   });
@@ -71,6 +91,15 @@ export function ConversationStatsPopover({
   const isLoading = providedIsLoading ?? statsQuery.isLoading;
   const usagePending =
     isLiveTurnActive && stats?.usageCoverage.effectiveTotalsSource === "none";
+  const harnesses = stats
+    ? Array.from(new Set(
+      stats.byHarness.length > 0
+        ? stats.byHarness.map((bucket) => bucket.key)
+        : stats.providerHarness
+          ? [stats.providerHarness]
+          : [],
+    ))
+    : [];
 
   if (!conversationId) {
     return null;
@@ -78,16 +107,23 @@ export function ConversationStatsPopover({
 
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center justify-center w-6 h-6 rounded text-text-primary/38 hover:text-text-primary/72 hover:bg-[var(--overlay-faint)] transition-colors"
-          aria-label="Conversation stats"
-          data-testid="chat-session-stats-button"
-        >
-          <BarChart2 className="w-3.5 h-3.5" />
-        </button>
-      </PopoverTrigger>
+      <TooltipProvider delayDuration={0}>
+        <Tooltip>
+          <PopoverTrigger asChild>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center justify-center w-6 h-6 rounded text-text-primary/38 hover:text-text-primary/72 hover:bg-[var(--overlay-faint)] transition-colors"
+                aria-label="Conversation stats"
+                data-testid="chat-session-stats-button"
+              >
+                <BarChart2 className="w-3.5 h-3.5" />
+              </button>
+            </TooltipTrigger>
+          </PopoverTrigger>
+          <TooltipContent side="top">Conversation stats</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <PopoverContent
         align="end"
         className="w-80 p-0 border-[var(--border-subtle)] bg-[color-mix(in_srgb,_var(--bg-base)_96%,_transparent)] shadow-xl"
@@ -108,6 +144,14 @@ export function ConversationStatsPopover({
         ) : (
           <div className="p-3 space-y-3">
             <div className="grid grid-cols-2 gap-2">
+              <div className="col-span-2 rounded-md border border-[var(--border-subtle)] bg-[var(--overlay-faint)] p-2">
+                <div className="text-[0.625rem] uppercase tracking-[0.08em] text-text-primary/38">Processed</div>
+                <div className="text-sm text-text-primary/88 mt-1">
+                  {usagePending
+                    ? "Pending"
+                    : formatOptionalCompactInteger(stats.effectiveUsageTotals.processedTokens)}
+                </div>
+              </div>
               <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--overlay-faint)] p-2">
                 <div className="text-[0.625rem] uppercase tracking-[0.08em] text-text-primary/38">Input</div>
                 <div className="text-sm text-text-primary/88 mt-1">
@@ -121,7 +165,7 @@ export function ConversationStatsPopover({
                 </div>
               </div>
               <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--overlay-faint)] p-2">
-                <div className="text-[0.625rem] uppercase tracking-[0.08em] text-text-primary/38">Cache</div>
+                <div className="text-[0.625rem] uppercase tracking-[0.08em] text-text-primary/38">Cached input</div>
                 <div className="text-sm text-text-primary/88 mt-1">
                   {usagePending
                     ? "Pending"
@@ -138,6 +182,26 @@ export function ConversationStatsPopover({
                 </div>
               </div>
             </div>
+
+            <div className="text-[0.6875rem] text-text-primary/55">
+              {cacheExplanation(harnesses)}
+            </div>
+
+            {(stats.usageCoverage.legacyEstimatedSampleCount > 0 ||
+              stats.usageCoverage.fallbackEstimatedSampleCount > 0 ||
+              stats.usageCoverage.uncountedSampleCount > 0) && (
+              <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--overlay-faint)] p-2 text-[0.6875rem] text-text-primary/65">
+                {stats.usageCoverage.legacyEstimatedSampleCount > 0 && (
+                  <div>{`${stats.usageCoverage.legacyEstimatedSampleCount} legacy-estimated sample(s)`}</div>
+                )}
+                {stats.usageCoverage.fallbackEstimatedSampleCount > 0 && (
+                  <div>{`${stats.usageCoverage.fallbackEstimatedSampleCount} provider-fallback sample(s)`}</div>
+                )}
+                {stats.usageCoverage.uncountedSampleCount > 0 && (
+                  <div>{`${stats.usageCoverage.uncountedSampleCount} uncounted sample(s)`}</div>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3 text-[0.6875rem]">
               <div>

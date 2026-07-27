@@ -114,7 +114,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
       })
     : null;
 
-  // Card title: Agent with name → show name (team mode); otherwise description or fallback
+  // Card title: named delegated call → show name; otherwise description or fallback
   const cardTitle = isDelegateCall
     ? delegation.agentName || delegation.title || "Delegated specialist"
     : isAgentCall && taskArgs.name
@@ -280,6 +280,27 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
             style={{ color: "var(--text-muted)" }}
           >
             {subtitle}
+          </span>
+        </div>
+      )}
+
+      {isDelegateCall && delegation.assignment?.title && (
+        <div
+          className="px-3 pb-1.5"
+          style={{ paddingLeft: "2.25rem" }}
+        >
+          <span
+            className="text-[0.6875rem] truncate block"
+            style={{ color: "var(--accent-primary)" }}
+          >
+            Assigned work
+            {delegation.assignment.taskNumber != null
+              ? ` #${delegation.assignment.taskNumber}`
+              : ""}
+            {` · ${delegation.assignment.title}`}
+            {delegation.assignment.assignmentState
+              ? ` · ${delegation.assignment.assignmentState.replace(/_/g, " ")}`
+              : ""}
           </span>
         </div>
       )}

@@ -103,8 +103,6 @@ export function makeMessageItemProps(
     ...(overrides.toolCalls !== undefined ? { toolCalls: overrides.toolCalls } : {}),
     ...(overrides.contentBlocks !== undefined ? { contentBlocks: overrides.contentBlocks } : {}),
     ...(overrides.attachments !== undefined ? { attachments: overrides.attachments } : {}),
-    ...(overrides.teammateName !== undefined ? { teammateName: overrides.teammateName } : {}),
-    ...(overrides.teammateColor !== undefined ? { teammateColor: overrides.teammateColor } : {}),
     ...(overrides.providerHarness !== undefined ? { providerHarness: overrides.providerHarness } : {}),
     ...(overrides.providerSessionId !== undefined
       ? { providerSessionId: overrides.providerSessionId }

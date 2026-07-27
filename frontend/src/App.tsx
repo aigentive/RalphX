@@ -31,12 +31,9 @@ import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
 import { SkillsView } from "@/components/views/SkillsView";
-import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
-import { TeamSplitView } from "@/components/Team";
+import { AgentIssueReportDialog } from "@/components/agents/AgentIssueReportDialog";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
-import { UpdateChecker } from "@/components/UpdateChecker";
-import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
-import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
+import { StartupMaintenance } from "@/components/StartupMaintenance";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { useUiStore } from "@/stores/uiStore";
 import { useTaskStore, selectTasksByStatus } from "@/stores/taskStore";
@@ -45,11 +42,7 @@ import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
-import {
-  DEFAULT_PROJECT_VIEW,
-  normalizeMainView,
-  type ViewType,
-} from "@/types/chat";
+import { DEFAULT_APP_VIEW, type AppView } from "@/types/app-view";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import type { CreateProject } from "@/types/project";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
@@ -62,15 +55,15 @@ import { useProjects, projectKeys } from "@/hooks/useProjects";
 import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
 import {
-  navigateToAgentTask,
+  openTaskInAgents,
   navigateToIdeationSession,
 } from "@/lib/navigation";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
+import type { StartupStatus } from "@/api/startup";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import type { RunningWorkspaceSession } from "@/api/running-processes";
@@ -91,6 +84,10 @@ import { preloadAutomationsView } from "@/components/automations/preloadAutomati
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
 const LazyAutomationsView = lazy(() => preloadAutomationsView());
+const LazyAgentsView = lazy(async () => {
+  const { AgentsView } = await import("@/components/agents/AgentsView");
+  return { default: AgentsView };
+});
 
 function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
   const {
@@ -210,7 +207,20 @@ function AutomationsRouteShell() {
   );
 }
 
-function AppContent() {
+function AgentsRouteShell() {
+  return (
+    <div
+      className="flex h-full min-h-0 flex-col p-6"
+      data-testid="agents-view-shell"
+      style={{ backgroundColor: "var(--app-content-bg)" }}
+    >
+      <div className="h-4 w-36 rounded" style={{ backgroundColor: "var(--bg-surface)" }} />
+      <div className="mt-4 h-24 rounded-md" style={{ backgroundColor: "var(--bg-surface)" }} />
+    </div>
+  );
+}
+
+function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   // Check for test page first (must happen before any hooks for ESLint compliance)
   const testPage = useMemo(() => getTestPage(), []);
 
@@ -221,7 +231,6 @@ function AppContent() {
   const setExecutionStatus = useUiStore((s) => s.setExecutionStatus);
   const currentView = useUiStore((s) => s.currentView);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
-  const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
@@ -232,16 +241,12 @@ function AppContent() {
   // Ticketing remains directly reachable when a provider enables the dashboard
   // entry; provider availability is handled by the dashboard/sidebar surfaces.
   useEffect(() => {
-    if (normalizeMainView(currentView) !== currentView) {
-      setCurrentView(currentView);
-      return;
-    }
     if (
       currentView !== "ticketing" &&
       !import.meta.env.DEV &&
       !isViewEnabled(currentView, featureFlags)
     ) {
-      setCurrentView(DEFAULT_PROJECT_VIEW);
+      setCurrentView(DEFAULT_APP_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
 
@@ -340,11 +345,6 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings &&
     providerSettings.requiresOnboarding;
-  const postUpdateAppReady =
-    !isLoadingProjects &&
-    !isLoadingProviderSettings &&
-    !isPlaceholderProviderSettings;
-  const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
   const agentIssueReportContext = useMemo(() => {
     if (
       currentView !== "agents" ||
@@ -632,7 +632,7 @@ function AppContent() {
     openModal("settings", { section: "integrations" });
   }, [openModal]);
 
-  const handleWarmView = useCallback((view: ViewType) => {
+  const handleWarmView = useCallback((view: AppView) => {
     if (!currentProjectId) {
       return;
     }
@@ -669,7 +669,7 @@ function AppContent() {
 
   const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
     const targetProjectId = deepLink.projectId ?? currentProjectId;
-    const switchProjectForDeepLink = (view: ViewType) => {
+    const switchProjectForDeepLink = (view: AppView) => {
       setCurrentView(view);
       if (targetProjectId && targetProjectId !== activeProjectId) {
         preserveCurrentViewOnNextProjectSwitch();
@@ -679,43 +679,12 @@ function AppContent() {
 
     if (deepLink.view === "kanban" || deepLink.view === "graph") {
       const taskMode = deepLink.view;
-      if (targetProjectId && deepLink.conversationId) {
-        navigateToAgentTask(
-          targetProjectId,
-          deepLink.conversationId,
-          deepLink.id,
-          taskMode,
-        );
-        return;
-      }
-
-      if (targetProjectId) {
-        setFocusedAgentProject(targetProjectId);
-        if (targetProjectId !== activeProjectId) {
-          setCurrentView("agents");
-          preserveCurrentViewOnNextProjectSwitch();
-          selectProject(targetProjectId);
-        }
-      }
-      setCurrentView("agents");
-
-      void tasksApi
-        .resolveAgentWorkspace(deepLink.id)
-        .then((workspace) => {
-          if (workspace) {
-            navigateToAgentTask(
-              workspace.projectId,
-              workspace.conversationId,
-              deepLink.id,
-              taskMode,
-            );
-            return;
-          }
-          toast.info("Open the linked Agent conversation to view this task");
-        })
-        .catch(() => {
-          toast.info("Open the linked Agent conversation to view this task");
-        });
+      void openTaskInAgents(deepLink.id, taskMode, {
+        projectId: targetProjectId,
+        ...(deepLink.conversationId
+          ? { conversationId: deepLink.conversationId }
+          : {}),
+      });
       return;
     }
     if (deepLink.view === "ideation") {
@@ -785,8 +754,6 @@ function AppContent() {
 
   useEffect(() => {
     if (
-      !postUpdateAppReady ||
-      isPostUpdatePreparing ||
       !shouldShowAtlassianAwarenessAfterUpdateRef.current ||
       hasNoProjects ||
       providerSetupRequired
@@ -810,8 +777,6 @@ function AppContent() {
   }, [
     handleOpenIntegrationSettings,
     hasNoProjects,
-    isPostUpdatePreparing,
-    postUpdateAppReady,
     providerSetupRequired,
   ]);
 
@@ -858,26 +823,12 @@ function AppContent() {
         toast.info("No Agent conversation is linked to this task yet");
         return;
       }
-
-      const agentSessionState = useAgentSessionStore.getState();
-      setFocusedAgentProject(agentWorkspace.projectId);
-      agentSessionState.selectConversation(
-        agentWorkspace.projectId,
-        agentWorkspace.conversationId,
-      );
-      agentSessionState.focusTaskArtifact(
-        agentWorkspace.conversationId,
-        target.taskId,
-      );
-      useChatStore
-        .getState()
-        .setActiveConversation(
-          `project:${agentWorkspace.projectId}`,
-          agentWorkspace.conversationId,
-        );
-      setCurrentView("agents");
+      void openTaskInAgents(target.taskId, "graph", {
+        projectId: agentWorkspace.projectId,
+        conversationId: agentWorkspace.conversationId,
+      });
     },
-    [setCurrentView, setFocusedAgentProject],
+    [],
   );
 
   const handleNavigateToAutomationRun = useCallback(
@@ -995,11 +946,10 @@ function AppContent() {
     closeWelcomeOverlay();
   }, [welcomeOverlayReturnView, setCurrentView, closeWelcomeOverlay]);
 
-  // Handler for view changes - clears task selection to reset state.
-  const handleViewChange = useCallback((view: ViewType) => {
-    setSelectedTaskId(null);
+  // Root view changes do not own task selection; Agents does.
+  const handleViewChange = useCallback((view: AppView) => {
     setCurrentView(view);
-  }, [setSelectedTaskId, setCurrentView]);
+  }, [setCurrentView]);
 
   const handleOpenNewAgent = useCallback(() => {
     const nextProjectId = activeProjectId ?? fetchedProjects?.[0]?.id ?? null;
@@ -1008,7 +958,6 @@ function AppContent() {
     }
     clearAgentSelection();
     if (currentView !== "agents") {
-      setSelectedTaskId(null);
       setCurrentView("agents");
     }
   }, [
@@ -1017,7 +966,6 @@ function AppContent() {
     currentView,
     fetchedProjects,
     setFocusedAgentProject,
-    setSelectedTaskId,
     setCurrentView,
   ]);
 
@@ -1086,14 +1034,8 @@ function AppContent() {
         className="h-screen flex flex-col overflow-hidden"
         style={{ backgroundColor: "var(--app-content-bg)", color: "var(--text-primary)" }}
       >
-      {/* Update checker - runs on mount, shows toast if update available */}
-      <UpdateChecker />
-      <ProviderCliUpdateChecker />
+      <StartupMaintenance backgroundSettled={backgroundSettled} />
 
-      {isPostUpdatePreparing ? (
-        <PostUpdatePreparingScreen />
-      ) : (
-        <>
           <AppTopBar
             currentView={currentView}
             attentionCount={attentionCount}
@@ -1142,12 +1084,14 @@ function AppContent() {
           <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
             <div className="flex-1 overflow-auto h-full" style={{ backgroundColor: "var(--app-content-bg)" }}>
               {currentView === "agents" && (
-                <AgentsView
-                  footer={executionFooter}
-                  projectId={currentProjectId}
-                  onCreateProject={handleOpenProjectWizard}
-                  onOpenAutomation={handleOpenAutomationDetail}
-                />
+                <Suspense fallback={<AgentsRouteShell />}>
+                  <LazyAgentsView
+                    footer={executionFooter}
+                    projectId={currentProjectId}
+                    onCreateProject={handleOpenProjectWizard}
+                    onOpenAutomation={handleOpenAutomationDetail}
+                  />
+                </Suspense>
               )}
               {currentView === "automations" && (
                 isViewEnabled("automations", featureFlags)
@@ -1214,7 +1158,6 @@ function AppContent() {
               )}
               {currentView === "insights" && <InsightsView />}
               {currentView === "skills" && <SkillsView />}
-              {currentView === "team" && <TeamSplitView />}
             </div>
         </div>
 
@@ -1272,9 +1215,7 @@ function AppContent() {
 
         </div>
       )}
-      </div>
-        </>
-      )}
+        </div>
 
       {/* Project Creation Wizard */}
       <ProjectCreationWizard
@@ -1317,11 +1258,13 @@ function AppContent() {
   );
 }
 
-function App() {
+function App({ startupStatus }: { startupStatus?: StartupStatus }) {
+  const backgroundSettled = startupStatus?.backgroundComplete ?? true;
+
   return (
     <QueryClientProvider client={queryClient}>
       <EventProvider>
-        <AppContent />
+        <AppContent backgroundSettled={backgroundSettled} />
       </EventProvider>
     </QueryClientProvider>
   );

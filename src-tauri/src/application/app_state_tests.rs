@@ -561,7 +561,7 @@ async fn test_resolve_workspace_reviewer_runtime_uses_enabled_default_provider()
     codex.model = Some("gpt-provider-default".to_string());
     codex.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
     codex.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
-    codex.service_tier = Some("fast".to_string());
+    codex.service_tier = Some("standard".to_string());
     provider_repo.upsert(&codex).await.unwrap();
     provider_repo
         .upsert(&AgentProviderSettings::disabled_defaults(
@@ -589,7 +589,7 @@ async fn test_resolve_workspace_reviewer_runtime_uses_enabled_default_provider()
         runtime.sandbox_mode.as_deref(),
         Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
-    assert_eq!(runtime.service_tier.as_deref(), Some("fast"));
+    assert_eq!(runtime.service_tier.as_deref(), Some("standard"));
 }
 
 #[tokio::test]

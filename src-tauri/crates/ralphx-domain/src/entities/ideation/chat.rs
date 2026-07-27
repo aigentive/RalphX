@@ -3,12 +3,26 @@
 use chrono::{DateTime, Utc};
 use rusqlite::Row;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::{io, str::FromStr};
 
 use super::types::parse_datetime_helper;
 use crate::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
-use crate::entities::AgentRunUsage;
+use crate::entities::{AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance};
 use crate::entities::{ChatConversationId, ChatMessageId, IdeationSessionId, ProjectId, TaskId};
+
+fn parse_usage_provenance(value: Option<String>) -> rusqlite::Result<Option<UsageProvenance>> {
+    value
+        .map(|value| {
+            value.parse::<UsageProvenance>().map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(io::Error::new(io::ErrorKind::InvalidData, error)),
+                )
+            })
+        })
+        .transpose()
+}
 
 // ============================================================================
 // ChatMessage and Related Types
@@ -103,6 +117,10 @@ pub struct ChatMessageUsage {
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
+    /// Semantics of the normalized usage tuple. `None` denotes legacy data.
+    pub usage_provenance: Option<UsageProvenance>,
+    /// Raw cumulative provider snapshot retained only for later delta derivation.
+    pub raw_usage_snapshot: Option<ProviderUsageSnapshot>,
 }
 
 /// A chat message in an ideation session or project/task context
@@ -149,6 +167,10 @@ pub struct ChatMessage {
     pub cache_creation_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
+    /// Semantics of the normalized usage tuple. `None` denotes legacy data.
+    pub usage_provenance: Option<UsageProvenance>,
+    /// Raw cumulative provider snapshot retained only for later delta derivation.
+    pub raw_usage_snapshot: Option<ProviderUsageSnapshot>,
     /// When the message was created
     pub created_at: DateTime<Utc>,
 }
@@ -182,6 +204,8 @@ impl ChatMessage {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: Utc::now(),
         }
     }
@@ -217,6 +241,8 @@ impl ChatMessage {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: Utc::now(),
         }
     }
@@ -249,6 +275,8 @@ impl ChatMessage {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: Utc::now(),
         }
     }
@@ -281,6 +309,8 @@ impl ChatMessage {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: Utc::now(),
         }
     }
@@ -313,6 +343,8 @@ impl ChatMessage {
             cache_creation_tokens: None,
             cache_read_tokens: None,
             estimated_usd: None,
+            usage_provenance: None,
+            raw_usage_snapshot: None,
             created_at: Utc::now(),
         }
     }
@@ -395,6 +427,16 @@ impl ChatMessage {
         }
     }
 
+    pub fn replace_usage_capture(&mut self, capture: &UsageCapture) {
+        self.input_tokens = capture.normalized.input_tokens;
+        self.output_tokens = capture.normalized.output_tokens;
+        self.cache_creation_tokens = capture.normalized.cache_creation_tokens;
+        self.cache_read_tokens = capture.normalized.cache_read_tokens;
+        self.estimated_usd = capture.normalized.estimated_usd;
+        self.usage_provenance = Some(capture.provenance);
+        self.raw_usage_snapshot = capture.raw_snapshot.clone();
+    }
+
     /// Check if this is a user message
     pub fn is_user(&self) -> bool {
         self.role == MessageRole::User
@@ -445,6 +487,20 @@ impl ChatMessage {
         let cache_creation_tokens: Option<u64> = row.get("cache_creation_tokens").ok().flatten();
         let cache_read_tokens: Option<u64> = row.get("cache_read_tokens").ok().flatten();
         let estimated_usd: Option<f64> = row.get("estimated_usd").ok().flatten();
+        let usage_provenance = parse_usage_provenance(
+            row.get::<_, Option<String>>("usage_provenance")
+                .ok()
+                .flatten(),
+        )?;
+        let raw_usage_snapshot = ProviderUsageSnapshot {
+            input_tokens: row.get("raw_usage_input_tokens").ok().flatten(),
+            output_tokens: row.get("raw_usage_output_tokens").ok().flatten(),
+            cache_creation_tokens: row.get("raw_usage_cache_creation_tokens").ok().flatten(),
+            cache_read_tokens: row.get("raw_usage_cache_read_tokens").ok().flatten(),
+            estimated_usd: row.get("raw_usage_estimated_usd").ok().flatten(),
+        };
+        let raw_usage_snapshot =
+            (!raw_usage_snapshot.as_usage().is_empty()).then_some(raw_usage_snapshot);
         let created_at_str: String = row.get("created_at")?;
 
         Ok(Self {
@@ -473,6 +529,8 @@ impl ChatMessage {
             cache_creation_tokens,
             cache_read_tokens,
             estimated_usd,
+            usage_provenance,
+            raw_usage_snapshot,
             created_at: parse_datetime_helper(created_at_str),
         })
     }

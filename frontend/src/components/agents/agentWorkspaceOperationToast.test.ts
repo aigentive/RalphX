@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentWorkspaceOperationErrorDetail,
+  agentWorkspaceOperationResultDetail,
   agentWorkspaceOperationToastId,
-  markAgentWorkspaceOperationToastSettled,
   publishPipelineToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
@@ -47,6 +47,12 @@ describe("agentWorkspaceOperationToast", () => {
     vi.useRealTimers();
   });
 
+  it("gives local commits their own stable operation toast identity", () => {
+    expect(agentWorkspaceOperationToastId("conversation-1", "local-commit")).toBe(
+      "agent-workspace-operation:conversation-1:local-commit",
+    );
+  });
+
   it.each([
     ["committing", "Commit changes"],
     ["refreshing", "Refresh branch"],
@@ -68,7 +74,7 @@ describe("agentWorkspaceOperationToast", () => {
     expect(
       agentWorkspaceOperationErrorDetail(
         new Error(
-          "PR describer agent completed without submitting a PR description. Raw output: ## Summary\n\n" +
+          "\u001B[31mPR describer agent completed without submitting a PR description.\u001B[0m Raw output: ## Summary\n\n" +
             "A".repeat(2_000),
         ),
         "Failed to publish branch",
@@ -84,6 +90,24 @@ describe("agentWorkspaceOperationToast", () => {
 
     expect(detail).toHaveLength(240);
     expect(detail.endsWith("...")).toBe(true);
+  });
+
+  it("keeps terminal result details short enough for toast descriptions", () => {
+    const detail = agentWorkspaceOperationResultDetail(
+      [
+        "\u001B[1mGuard 1: pre-commit design token guards\u001B[0m",
+        "src/components/ui/notice-banner.tsx:21: backgroundColor: var(--status-warning-muted, rgba(224, 179, 65, 0.1))",
+        "src/components/automations/automationRunView.ts:497: backgroundColor: var(--status-success-muted, rgba(63, 191, 127, 0.08))",
+      ].join("\n"),
+    );
+
+    expect(detail).toBe("Full output is available in the workspace.");
+  });
+
+  it("preserves concise terminal result details", () => {
+    expect(agentWorkspaceOperationResultDetail("Typecheck failed")).toBe(
+      "Typecheck failed",
+    );
   });
 
   it("keeps one persistent loading toast updated with elapsed time", () => {
@@ -163,6 +187,7 @@ describe("agentWorkspaceOperationToast", () => {
 
     progress.success("Published branch");
     progress.update({ detail: "Open draft PR" });
+    progress.success("Duplicate terminal result");
 
     expect(toastSuccessMock).toHaveBeenCalledWith(
       "Published branch",
@@ -173,35 +198,7 @@ describe("agentWorkspaceOperationToast", () => {
       },
     );
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
-  });
-
-  it("lets an external terminal toast settle active progress before later redraws", () => {
-    const toastId = agentWorkspaceOperationToastId("conversation-1", "publish");
-    const progress = startAgentWorkspaceOperationToast({
-      conversationTitle: "Agent conversation",
-      detail: "Open draft PR",
-      id: toastId,
-      startedAtMs: 0,
-      title: "Publishing workspace",
-    });
-    const loadingCallCount = toastLoadingMock.mock.calls.length;
-
-    expect(markAgentWorkspaceOperationToastSettled(toastId)).toBe(true);
-    toastSuccessMock("Published #404", {
-      description: "Agent conversation",
-      duration: 8_000,
-      id: toastId,
-    });
-
-    vi.advanceTimersByTime(1_000);
-    progress.update({ detail: "Open draft PR" });
-
-    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
-    expect(toastSuccessMock).toHaveBeenCalledWith("Published #404", {
-      description: "Agent conversation",
-      duration: 8_000,
-      id: toastId,
-    });
+    expect(toastSuccessMock).toHaveBeenCalledTimes(1);
   });
 
   it("dismisses an obsolete active loading toast without blocking later results", () => {

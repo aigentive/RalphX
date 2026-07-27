@@ -26,6 +26,7 @@ function statsFixture(
       outputTokens: 40,
       cacheCreationTokens: 5,
       cacheReadTokens: 8,
+      processedTokens: 160,
       estimatedUsd: null,
     },
     runUsageTotals: {
@@ -33,6 +34,7 @@ function statsFixture(
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
+      processedTokens: null,
       estimatedUsd: null,
     },
     effectiveUsageTotals: {
@@ -40,6 +42,7 @@ function statsFixture(
       outputTokens: 40,
       cacheCreationTokens: 5,
       cacheReadTokens: 8,
+      processedTokens: 160,
       estimatedUsd: null,
     },
     usageCoverage: {
@@ -47,6 +50,11 @@ function statsFixture(
       providerMessagesWithUsage: 1,
       runCount: 0,
       runsWithUsage: 0,
+      effectiveRunConversationCount: 0,
+      effectiveMessageConversationCount: 1,
+      legacyEstimatedSampleCount: 0,
+      fallbackEstimatedSampleCount: 0,
+      uncountedSampleCount: 0,
       effectiveTotalsSource: "messages",
     },
     attributionCoverage: {
@@ -66,6 +74,7 @@ function statsFixture(
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: null,
         },
       },
@@ -79,6 +88,7 @@ function statsFixture(
           outputTokens: 40,
           cacheCreationTokens: 5,
           cacheReadTokens: 8,
+          processedTokens: 160,
           estimatedUsd: null,
         },
       },

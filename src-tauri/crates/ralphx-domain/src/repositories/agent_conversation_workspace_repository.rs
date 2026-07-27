@@ -7,8 +7,9 @@ use crate::entities::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -307,6 +308,16 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(false)
     }
 
+    async fn compare_and_set_repair_state_with_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: &AgentWorkspaceRepairStateGuard,
+        _transition: &AgentWorkspaceRepairStateTransition,
+        _events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,
@@ -365,6 +376,54 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<Option<AgentWorkspacePrDescription>>;
 
     async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
+
+    async fn save_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+        decision: crate::entities::AgentWorkspacePrMetadataDecision,
+    ) -> AppResult<()> {
+        let crate::entities::AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown,
+        } = decision
+        else {
+            return Err(crate::error::AppError::Validation(
+                "preserve metadata decisions require a repository implementation".to_string(),
+            ));
+        };
+        let Some(body_markdown) = body_markdown else {
+            return Err(crate::error::AppError::Validation(
+                "legacy PR description storage requires a body".to_string(),
+            ));
+        };
+        self.save_pr_description(
+            conversation_id,
+            AgentWorkspacePrDescription::new(title, body_markdown),
+        )
+        .await
+    }
+
+    async fn get_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<crate::entities::AgentWorkspacePrMetadataDecision>> {
+        Ok(self
+            .get_pr_description(conversation_id)
+            .await?
+            .map(
+                |description| crate::entities::AgentWorkspacePrMetadataDecision::Patch {
+                    title: description.title,
+                    body_markdown: Some(description.body_markdown),
+                },
+            ))
+    }
+
+    async fn clear_pr_metadata_decision(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        self.clear_pr_description(conversation_id).await
+    }
 
     async fn append_publication_event(
         &self,
@@ -535,6 +594,37 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Atomically reserves the exact current blocking Review for one repair attempt.
+    async fn claim_workspace_review_fixer(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _snapshot: &AgentWorkspaceReviewFixerSnapshot,
+        _attempt_id: &str,
+        _claimed_at: DateTime<Utc>,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Writes a repair routing result only while the same backend attempt owns the claim.
+    async fn settle_workspace_review_fixer_attempt(
+        &self,
+        _monitor: AgentWorkspaceReviewMonitor,
+        _expected_attempt_id: &str,
+        _expected_snapshot: &AgentWorkspaceReviewFixerSnapshot,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    /// Fails a malformed active repair attempt only while the same attempt still owns the row.
+    async fn fail_invalid_workspace_review_fixer_attempt(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected_attempt_id: Option<&str>,
+        _error: &str,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
     /// Atomically records a reviewer launch failure only while the exact reserved launch still
     /// owns the monitor. Returns `false` when a newer launch or target has superseded it.
     async fn fail_reserved_workspace_review_start(
@@ -561,6 +651,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     }
 
     async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    /// Lists active fixer attempts that require startup reconciliation.
+    async fn list_active_workspace_review_fixers(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         Ok(Vec::new())

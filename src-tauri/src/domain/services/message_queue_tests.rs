@@ -474,6 +474,47 @@ fn test_queue_front_on_empty_queue() {
 }
 
 #[test]
+fn queue_back_existing_replaces_the_stable_id_at_the_back() {
+    let queue = MessageQueue::new();
+    let first = queue.queue_with_client_id(
+        ChatContextType::Ideation,
+        "session-1",
+        "First".to_string(),
+        "first".to_string(),
+    );
+    queue.queue_with_client_id(
+        ChatContextType::Ideation,
+        "session-1",
+        "Outdated".to_string(),
+        "replace-me".to_string(),
+    );
+    let third = queue.queue_with_client_id(
+        ChatContextType::Ideation,
+        "session-1",
+        "Third".to_string(),
+        "third".to_string(),
+    );
+    let replacement = QueuedMessage::with_id("replace-me".to_string(), "Updated".to_string());
+
+    queue.queue_back_existing(ChatContextType::Ideation, "session-1", replacement.clone());
+
+    let queued = queue.get_queued(ChatContextType::Ideation, "session-1");
+    assert_eq!(
+        queued
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            first.id.as_str(),
+            third.id.as_str(),
+            replacement.id.as_str()
+        ],
+        "replacing a stable ID must retain the order of unrelated messages"
+    );
+    assert_eq!(queued[2], replacement);
+}
+
+#[test]
 fn test_with_key_methods() {
     let queue = MessageQueue::new();
     let key = QueueKey::ideation("session-1");
@@ -520,6 +561,7 @@ fn test_remove_stale_drops_old_messages() {
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -541,6 +583,7 @@ fn test_remove_stale_drops_old_messages() {
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -939,6 +982,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),

@@ -23,6 +23,10 @@ import type {
   AutomationRunStatus,
 } from "@/api/automations";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
+import type {
+  ManualRoleRuntimeSelection,
+  ManualServiceTier,
+} from "@/api/manual-role-defaults.types";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
 
@@ -75,6 +79,11 @@ export type AgentSidebarPublicationState =
   | "closed"
   | "uncommitted"
   | "unpushed";
+export type LaunchRuntimeRoleKey =
+  | "workspace_reviewer"
+  | "workspace_repair"
+  | "workspace_edit"
+  | "ideation_primary";
 
 export interface AgentArtifactState {
   isOpen: boolean;
@@ -203,6 +212,11 @@ interface AgentSessionState {
     AgentAutomationRunFocusRequest
   >;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
+  serviceTierByConversationId: Record<string, ManualServiceTier>;
+  roleRuntimeOverridesByConversationId: Record<
+    string,
+    Partial<Record<LaunchRuntimeRoleKey, ManualRoleRuntimeSelection>>
+  >;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
   branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
   lastBranchBaseSelectionByProjectId: Record<string, string>;
@@ -262,6 +276,20 @@ interface AgentSessionActions {
     conversationId: string,
     projectId: string | null,
     runtime: AgentRuntimeSelection
+  ) => void;
+  setServiceTierForConversation: (
+    conversationId: string,
+    serviceTier: ManualServiceTier,
+  ) => void;
+  clearServiceTierForConversation: (conversationId: string) => void;
+  setRoleRuntimeOverride: (
+    conversationId: string,
+    role: LaunchRuntimeRoleKey,
+    value: ManualRoleRuntimeSelection,
+  ) => void;
+  clearRoleRuntimeOverride: (
+    conversationId: string,
+    role: LaunchRuntimeRoleKey,
   ) => void;
   setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
   clearLastRuntimeForProject: (projectId: string) => void;
@@ -370,6 +398,57 @@ function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSele
   );
 }
 
+function normalizeRoleRuntimeOverrides(value: unknown): AgentSessionState["roleRuntimeOverridesByConversationId"] {
+  if (!value || typeof value !== "object") return {};
+  const roles: LaunchRuntimeRoleKey[] = [
+    "workspace_reviewer",
+    "workspace_repair",
+    "workspace_edit",
+    "ideation_primary",
+  ];
+  const result: AgentSessionState["roleRuntimeOverridesByConversationId"] = {};
+  for (const [conversationId, rawRoles] of Object.entries(value)) {
+    if (!rawRoles || typeof rawRoles !== "object") continue;
+    const normalized: Partial<Record<LaunchRuntimeRoleKey, ManualRoleRuntimeSelection>> = {};
+    for (const role of roles) {
+      const raw = (rawRoles as Record<string, unknown>)[role];
+      if (!raw || typeof raw !== "object") continue;
+      const candidate = raw as Record<string, unknown>;
+      if (
+        typeof candidate.provider !== "string" ||
+        candidate.provider.trim() === "" ||
+        !(candidate.model === null || typeof candidate.model === "string") ||
+        !(candidate.effort === null || typeof candidate.effort === "string") ||
+        !(
+          candidate.coordinationMode === null ||
+          typeof candidate.coordinationMode === "string"
+        ) ||
+        !(
+          candidate.personaId === null ||
+          typeof candidate.personaId === "string"
+        ) ||
+        !["provider_default", "standard", "fast"].includes(
+          String(candidate.serviceTier),
+        )
+      ) continue;
+      normalized[role] = candidate as unknown as ManualRoleRuntimeSelection;
+    }
+    if (Object.keys(normalized).length > 0) result[conversationId] = normalized;
+  }
+  return result;
+}
+
+function normalizeServiceTierRecord(
+  value: unknown,
+): Record<string, ManualServiceTier> {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, ManualServiceTier] =>
+      ["provider_default", "standard", "fast"].includes(String(entry[1])),
+    ),
+  );
+}
+
 export function isAgentDefaultStartMode(
   value: unknown,
 ): value is AgentDefaultStartMode {
@@ -457,12 +536,38 @@ export function migrateAgentSessionStore(
       ? nextState.defaultStartMode
       : DEFAULT_AGENT_START_MODE;
   }
+  if (version < 10) {
+    nextState.serviceTierByConversationId = {};
+    nextState.roleRuntimeOverridesByConversationId = normalizeRoleRuntimeOverrides(
+      nextState.roleRuntimeOverridesByConversationId,
+    );
+  }
 
   if (version < 10) {
     nextState.showEmptyProjectGroups = DEFAULT_SHOW_EMPTY_PROJECT_GROUPS;
   }
 
   return nextState;
+}
+
+export function mergeAgentSessionStore(
+  persistedState: unknown,
+  currentState: AgentSessionState & AgentSessionActions,
+): AgentSessionState & AgentSessionActions {
+  if (!persistedState || typeof persistedState !== "object") {
+    return currentState;
+  }
+  const persisted = persistedState as Partial<AgentSessionState>;
+  return {
+    ...currentState,
+    ...persisted,
+    serviceTierByConversationId: normalizeServiceTierRecord(
+      persisted.serviceTierByConversationId,
+    ),
+    roleRuntimeOverridesByConversationId: normalizeRoleRuntimeOverrides(
+      persisted.roleRuntimeOverridesByConversationId,
+    ),
+  };
 }
 
 function ensureArtifactState(state: AgentSessionState, conversationId: string): AgentArtifactState {
@@ -542,6 +647,8 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       taskArtifactFocusRequestByConversationId: {},
       automationRunFocusRequestByConversationId: {},
       runtimeByConversationId: {},
+      serviceTierByConversationId: {},
+      roleRuntimeOverridesByConversationId: {},
       lastRuntimeByProjectId: {},
       branchBaseCacheByProjectId: {},
       lastBranchBaseSelectionByProjectId: {},
@@ -814,6 +921,34 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           };
         }),
 
+      setServiceTierForConversation: (conversationId, serviceTier) =>
+        set((state) => {
+          state.serviceTierByConversationId[conversationId] = serviceTier;
+        }),
+
+      clearServiceTierForConversation: (conversationId) =>
+        set((state) => {
+          delete state.serviceTierByConversationId[conversationId];
+        }),
+
+      setRoleRuntimeOverride: (conversationId, role, value) =>
+        set((state) => {
+          state.roleRuntimeOverridesByConversationId[conversationId] ??= {};
+          state.roleRuntimeOverridesByConversationId[conversationId]![role] = {
+            ...value,
+          };
+        }),
+
+      clearRoleRuntimeOverride: (conversationId, role) =>
+        set((state) => {
+          const overrides = state.roleRuntimeOverridesByConversationId[conversationId];
+          if (!overrides) return;
+          delete overrides[role];
+          if (Object.keys(overrides).length === 0) {
+            delete state.roleRuntimeOverridesByConversationId[conversationId];
+          }
+        }),
+
       setLastRuntimeForProject: (projectId, runtime) =>
         set((state) => {
           const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
@@ -851,6 +986,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       name: "ralphx-agent-session-store",
       version: AGENT_SESSION_STORE_VERSION,
       migrate: migrateAgentSessionStore,
+      merge: mergeAgentSessionStore,
       partialize: (state) => ({
         focusedProjectId: state.focusedProjectId,
         selectedProjectId: state.selectedProjectId,
@@ -867,6 +1003,9 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         pinnedConversationIds: state.pinnedConversationIds,
         artifactByConversationId: state.artifactByConversationId,
         runtimeByConversationId: state.runtimeByConversationId,
+        serviceTierByConversationId: state.serviceTierByConversationId,
+        roleRuntimeOverridesByConversationId:
+          state.roleRuntimeOverridesByConversationId,
         lastRuntimeByProjectId: state.lastRuntimeByProjectId,
         branchBaseCacheByProjectId: state.branchBaseCacheByProjectId,
         lastBranchBaseSelectionByProjectId: state.lastBranchBaseSelectionByProjectId,

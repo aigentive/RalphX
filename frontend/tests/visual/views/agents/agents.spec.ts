@@ -371,8 +371,6 @@ async function seedConversationWithWorkspace(
             planArtifactId: linkedPlanArtifactId,
             seedTaskId: null,
             parentSessionId: null,
-            teamMode: null,
-            teamConfig: null,
             createdAt: now,
             updatedAt: now,
             archivedAt: null,
@@ -1471,15 +1469,24 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-review-changes")).toBeEnabled();
 
     await hydratePublishHistoryCache(page, editConversationId);
-    await expect(page.getByTestId("agents-publish-events")).toBeVisible();
-    await page.getByTestId("agents-publish-history-toggle").click();
-    await expect(page.getByTestId("agents-publish-event-published")).toBeVisible();
+    // The publish event log now lives in the lazy-mounted History tab, so the
+    // tab has to be activated before its content exists in the DOM.
+    await publishPage.selectHistory();
+    await expect(
+      publishPage.historyContent.getByTestId("agents-publish-events"),
+    ).toBeVisible();
+    // The timeline renders directly inside the History tab (no expand toggle).
+    await expect(
+      publishPage.historyContent.getByTestId("agents-publish-event-published"),
+    ).toBeVisible();
     await stabilizePublishHistoryTimestamps(page, editConversationId);
-    await expect(page.getByText("Published / May 13, 5:20 AM")).toBeVisible();
+    await expect(
+      publishPage.historyContent.getByText("Published · May 13, 5:20 AM"),
+    ).toBeVisible();
     await expect(page.getByTestId("agents-workspace-toolbar")).toBeVisible();
     await expect(page.getByTestId("pr-status-strip")).toBeVisible();
-    await expect(page.getByText("1 passed")).toBeVisible();
-    await expect(page.getByText("1 pending")).toBeVisible();
+    await publishPage.expectCompactPrStatus("1 passed");
+    await publishPage.expectCompactPrStatus("1 pending");
     await publishPage.expectPrimaryActionContained("agents-publish-confirm");
 
     await expect(page).toHaveScreenshot("agents-edit-publish-pane.png", {
@@ -1792,7 +1799,14 @@ test.describe("Agents View", () => {
 
     const toolbar = page.getByTestId("agents-workspace-toolbar");
     await expect(toolbar).toBeVisible();
-    await expect(page.getByTestId("pr-status-strip")).toBeVisible();
+    const statusStrip = page.getByTestId("pr-status-strip");
+    await expect(statusStrip).toBeVisible();
+    await expect(statusStrip.getByLabel("Approved")).toBeVisible();
+    await expect(statusStrip).not.toContainText("Approved");
+    await expect(toolbar.getByLabel("Workspace sync: Pushed")).toBeVisible();
+    await expect(toolbar).not.toContainText("Pushed");
+    await expect(toolbar.getByLabel(/merges into/)).toBeVisible();
+    await expect(page.getByTestId("agents-workspace-mode-status")).toBeVisible();
     const hasHorizontalOverflow = await toolbar.evaluate(
       (element) => element.scrollWidth > element.clientWidth,
     );

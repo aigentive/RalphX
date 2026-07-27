@@ -86,7 +86,6 @@ type SendMessageVariables = {
   content: string;
   composerFolderReferences?: MessageFolderReference[];
   attachmentIds?: string[];
-  target?: string;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -166,10 +165,14 @@ function getConversationMessagesFromTimelineData(
   if (!newestPage) {
     return undefined;
   }
-  const rawMessages = data.pages
+  const loadedMessages = data.pages
     .slice()
     .reverse()
     .flatMap((page) => page.messages);
+  // Timeline queries are exclusive in normal operation, but refetches can still
+  // briefly overlap an older cached page. Prefer the newer query-page copy while
+  // retaining a single chronological item for the virtualizer.
+  const rawMessages = dedupeTimelineMessages(loadedMessages);
   const messages = rawMessages.filter(isVisibleChatMessage);
   const totalMessageCount = Math.max(
     0,
@@ -182,6 +185,34 @@ function getConversationMessagesFromTimelineData(
     totalMessageCount,
     loadedStartIndex: Math.max(0, totalMessageCount - messages.length),
   };
+}
+
+function dedupeTimelineMessages(
+  messages: ChatMessageResponse[],
+): ChatMessageResponse[] {
+  const slots: Array<ChatMessageResponse | undefined> = [];
+  const indexById = new Map<string, number>();
+  const indexBySequence = new Map<number, number>();
+  for (const message of messages) {
+    const existingIndex = indexById.get(message.id)
+      ?? (message.timelineSequence != null ? indexBySequence.get(message.timelineSequence) : undefined);
+    if (existingIndex != null) {
+      const previous = slots[existingIndex];
+      if (previous) {
+        indexById.delete(previous.id);
+        if (previous.timelineSequence != null) indexBySequence.delete(previous.timelineSequence);
+      }
+      slots[existingIndex] = message;
+      indexById.set(message.id, existingIndex);
+      if (message.timelineSequence != null) indexBySequence.set(message.timelineSequence, existingIndex);
+      continue;
+    }
+    const index = slots.length;
+    slots.push(message);
+    indexById.set(message.id, index);
+    if (message.timelineSequence != null) indexBySequence.set(message.timelineSequence, index);
+  }
+  return slots.filter((message): message is ChatMessageResponse => message != null);
 }
 
 function createOptimisticTimelineItem(
@@ -1203,7 +1234,6 @@ export function useChat(
     mutationFn: async ({
       content,
       attachmentIds,
-      target,
       composerArtifactReferences,
       composerProjectReferences,
       composerIntegrationReferences,
@@ -1242,7 +1272,6 @@ export function useChat(
           contextId,
           content,
           attachmentIds,
-          target,
           sendOptions
         );
       }
@@ -1252,13 +1281,12 @@ export function useChat(
         contextId,
         content,
         attachmentIds,
-        target,
         sendOptions
       );
     },
     onMutate: (variables) => {
       setSending(effectiveStoreKey, true);
-      if (!activeConversationId || variables.target) {
+      if (!activeConversationId) {
         return {};
       }
       const optimisticMessage = addOptimisticUserMessageToConversationCache(

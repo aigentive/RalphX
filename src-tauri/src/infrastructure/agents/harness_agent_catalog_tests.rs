@@ -21,11 +21,6 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "ralphx-ideation",
     ),
     (
-        "ralphx-ideation-team-lead",
-        "ideation_team_lead",
-        "ralphx-ideation-team-lead",
-    ),
-    (
         "ralphx-utility-session-namer",
         "session_namer",
         "ralphx-utility-session-namer",
@@ -78,14 +73,8 @@ const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-research-deep-researcher",
 ];
 const CLAUDE_DELEGATION_GUIDE_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
-const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] = &[
-    (
-        "ralphx-execution-team-lead",
-        "worker_team_lead",
-        "ralphx-execution-team-lead",
-    ),
-    ("ralphx-pr-reviewer", "pr_reviewer", "ralphx-pr-reviewer"),
-];
+const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] =
+    &[("ralphx-pr-reviewer", "pr_reviewer", "ralphx-pr-reviewer")];
 const CLAUDE_ONLY_SHARED_PROMPT_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
 
 const CROSS_HARNESS_VERIFICATION_AGENTS: &[(&str, &str, &str)] = &[];
@@ -238,7 +227,6 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-execution-merger",
     "ralphx-memory-maintainer",
     "ralphx-memory-capture",
-    "ralphx-ideation-team-lead",
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
@@ -346,10 +334,8 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-execution-orchestrator",
     "ralphx-project-analyzer",
     "ralphx-execution-reviewer",
-    "ralphx-execution-team-lead",
     "ralphx-ideation",
     "ralphx-ideation-readonly",
-    "ralphx-ideation-team-lead",
     "ralphx-qa-executor",
     "ralphx-qa-prep",
     "ralphx-research-deep-researcher",
@@ -368,7 +354,6 @@ const CANONICAL_CLAUDE_PERMISSION_MODE_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-execution-worker", "acceptEdits"),
     ("ralphx-execution-coder", "acceptEdits"),
     ("ralphx-execution-merger", "acceptEdits"),
-    ("ralphx-execution-team-lead", "acceptEdits"),
     ("ralphx-qa-executor", "acceptEdits"),
     ("ralphx-memory-maintainer", "acceptEdits"),
     ("ralphx-memory-capture", "acceptEdits"),
@@ -397,10 +382,8 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-execution-coder", "sonnet"),
     ("ralphx-execution-reviewer", "sonnet"),
     ("ralphx-execution-merger", "opus"),
-    ("ralphx-execution-team-lead", "sonnet"),
     ("ralphx-ideation", "opus"),
     ("ralphx-ideation-readonly", "opus"),
-    ("ralphx-ideation-team-lead", "opus"),
     ("ralphx-qa-prep", "sonnet"),
     ("ralphx-qa-executor", "sonnet"),
     ("ralphx-research-deep-researcher", "opus"),
@@ -453,18 +436,6 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
     ("ralphx-ideation", "base_tools", &["Task"], false),
     ("ralphx-ideation-readonly", "base_tools", &["Task"], false),
     (
-        "ralphx-ideation-team-lead",
-        "base_tools",
-        &[
-            "Task",
-            "TaskStop",
-            "TeamCreate",
-            "TeamDelete",
-            "SendMessage",
-        ],
-        false,
-    ),
-    (
         "ralphx-execution-worker",
         "base_tools",
         &["Write", "Edit", "LSP"],
@@ -485,21 +456,6 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         false,
     ),
     ("ralphx-execution-merger", "base_tools", &["Edit"], false),
-    (
-        "ralphx-execution-team-lead",
-        "base_tools",
-        &[
-            "Write",
-            "Edit",
-            "Task",
-            "LSP",
-            "TaskStop",
-            "TeamCreate",
-            "TeamDelete",
-            "SendMessage",
-        ],
-        false,
-    ),
     (
         "ralphx-research-deep-researcher",
         "base_tools",
@@ -1451,34 +1407,51 @@ fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
 }
 
 #[test]
-fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
+fn pr_describer_surfaces_share_preserve_or_patch_submit_contract() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-utility-pr-describer")
         .expect("expected canonical PR describer definition");
-    let prompt = load_harness_agent_prompt(
-        &root,
-        "ralphx-utility-pr-describer",
-        AgentPromptHarness::Codex,
-    )
-    .expect("expected PR describer Codex prompt");
-    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
 
     assert_eq!(
         definition.capabilities.mcp_tools,
         vec!["submit_agent_workspace_pr_description".to_string()]
     );
-    assert!(
-        prompt.contains("submit_agent_workspace_pr_description"),
-        "Codex PR describer prompt should expose the submit contract"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__"),
-        "Codex PR describer prompt should not use Claude-style MCP names"
-    );
-    assert!(
-        !prompt.contains("truncated"),
-        "Codex PR describer prompt should not tell helpers to expose bounded-context truncation"
-    );
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-utility-pr-describer", harness)
+            .expect("expected PR describer prompt");
+        assert!(
+            prompt.contains("submit_agent_workspace_pr_description"),
+            "PR describer {harness:?} prompt should expose the submit contract"
+        );
+        assert!(
+            prompt.contains("`decision: preserve`") && prompt.contains("`decision: patch`"),
+            "PR describer {harness:?} prompt should expose preserve and patch decisions"
+        );
+        assert!(
+            prompt.contains("untrusted evidence"),
+            "PR describer {harness:?} prompt should identify remote metadata as untrusted"
+        );
+        assert!(
+            prompt.contains("patch_allowed=\"true\"")
+                && prompt.contains("managed_suffix_preserved=\"true\"")
+                && prompt.contains("max_output_chars"),
+            "PR describer {harness:?} prompt should expose the editable-body capability contract"
+        );
+        assert!(
+            prompt.contains("never include or reconstruct"),
+            "PR describer {harness:?} prompt should exclude preserved managed content"
+        );
+        assert!(
+            !prompt.contains("mcp__ralphx__"),
+            "PR describer {harness:?} prompt should use surface-local tool names"
+        );
+        assert!(
+            !prompt.contains("truncated"),
+            "PR describer {harness:?} prompt should not tell helpers to expose bounded-context truncation"
+        );
+    }
+
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
     assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
 }
 
@@ -1501,8 +1474,6 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         "fs_grep",
         "fs_glob",
         "get_workspace_review_context",
-        "list_workspace_review_files",
-        "get_workspace_review_diff_page",
         "write_workspace_review_artifact",
         "write_workspace_review_hunk_annotations",
         "complete_workspace_review_run",
@@ -1558,62 +1529,6 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         metadata.runtime_features.get("shell_tool"),
         Some(&false),
         "workspace reviewer should use review_packet and bounded filesystem tools instead of Codex shell"
-    );
-}
-
-#[test]
-fn review_agent_contracts_distinguish_local_workspace_review_from_remote_pr_review() {
-    let root = project_root();
-    let workspace_definition = load_canonical_agent_definition(&root, "ralphx-workspace-reviewer")
-        .expect("expected canonical workspace reviewer definition");
-    let pr_definition = load_canonical_agent_definition(&root, "ralphx-pr-reviewer")
-        .expect("expected canonical PR reviewer definition");
-    let workspace_prompt = load_harness_agent_prompt(
-        &root,
-        "ralphx-workspace-reviewer",
-        AgentPromptHarness::Codex,
-    )
-    .expect("expected workspace reviewer Codex prompt");
-    let pr_prompt =
-        load_harness_agent_prompt(&root, "ralphx-pr-reviewer", AgentPromptHarness::Claude)
-            .expect("expected PR reviewer Claude prompt");
-
-    assert!(
-        workspace_definition
-            .description
-            .as_deref()
-            .is_some_and(|description| description.contains("local agent workspace changes"))
-            && workspace_prompt.contains("local Workspace Review")
-            && workspace_prompt.contains("publish gate"),
-        "workspace reviewer metadata and prompt should identify the local publish-gate workflow"
-    );
-    assert!(
-        !workspace_definition
-            .capabilities
-            .mcp_tools
-            .iter()
-            .any(|tool| tool == "propose_pr_review_action")
-            && !workspace_prompt.contains("propose_pr_review_action"),
-        "workspace reviewer must not expose the GitHub PR action surface"
-    );
-    assert!(
-        pr_definition
-            .description
-            .as_deref()
-            .is_some_and(|description| description.contains("remote GitHub pull request"))
-            && pr_prompt.contains("remote GitHub pull request")
-            && pr_prompt.contains("local checkout")
-            && pr_prompt.contains("user-approved GitHub review action"),
-        "PR reviewer metadata and prompt should identify the remote GitHub workflow and local inspection substrate"
-    );
-    assert!(
-        pr_definition
-            .capabilities
-            .mcp_tools
-            .iter()
-            .any(|tool| tool == "propose_pr_review_action")
-            && pr_prompt.contains("propose_pr_review_action"),
-        "PR reviewer should retain the pending GitHub action proposal surface"
     );
 }
 
@@ -1897,21 +1812,6 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
         }
     }
 
-    assert!(
-        resolve_harness_agent_prompt_path(
-            &root,
-            "ralphx-ideation-team-lead",
-            AgentPromptHarness::Claude
-        )
-        .is_some(),
-        "expected claude prompt path for ralphx-ideation-team-lead"
-    );
-    assert!(
-        resolve_harness_agent_prompt_path(&root, "ralphx-ideation-team-lead", AgentPromptHarness::Codex)
-            .is_none(),
-        "ralphx-ideation-team-lead should not have a codex prompt while Codex team mode is unsupported"
-    );
-
     for (agent_name, _, _) in CLAUDE_ONLY_CANONICAL_AGENTS {
         let claude_path =
             resolve_harness_agent_prompt_path(&root, agent_name, AgentPromptHarness::Claude);
@@ -2160,10 +2060,6 @@ fn canonical_claude_runtime_agent_list_matches_live_runtime_roster() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert_eq!(actual, expected);
-    assert!(
-        !actual.contains("ralphx-ideation-team-member"),
-        "compatibility teammate target should not be treated as a prompt-backed Claude runtime agent"
-    );
 }
 
 #[test]
@@ -2226,15 +2122,6 @@ fn codex_ideation_pilot_prompts_declare_codex_native_delegation_contract() {
         orchestrator.contains("Codex-native delegation"),
         "orchestrator codex prompt should describe Codex-native delegation semantics"
     );
-    assert!(
-        load_harness_agent_prompt(
-            &root,
-            "ralphx-ideation-team-lead",
-            AgentPromptHarness::Codex
-        )
-        .is_none(),
-        "ralphx-ideation-team-lead should not have a codex prompt while team mode is unsupported"
-    );
 }
 
 #[test]
@@ -2256,25 +2143,11 @@ fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
 #[test]
 fn ideation_prompts_preserve_model_native_verification_without_legacy_topology() {
     let root = project_root();
-    let required_review_lenses = [
-        "industry best practices",
-        "reuses existing components",
-        "UI/UX",
-        "product sense",
-        "remote base branch drift",
-        "instead of assuming no drift",
-    ];
     for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
         let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", harness)
             .unwrap_or_else(|| panic!("missing {harness:?} prompt for ralphx-ideation"));
         assert!(prompt.contains("backend-started Verify Plan"));
         assert!(prompt.contains("complete_plan_verification"));
-        for required_lens in required_review_lenses {
-            assert!(
-                prompt.contains(required_lens),
-                "{harness:?} ideation prompt must require the {required_lens:?} review lens"
-            );
-        }
         for retired in [
             "ralphx-plan-verifier",
             "create_child_session(purpose: \"verification\")",
@@ -2285,35 +2158,6 @@ fn ideation_prompts_preserve_model_native_verification_without_legacy_topology()
             assert!(
                 !prompt.contains(retired),
                 "{harness:?} ideation prompt still contains retired verification contract {retired}"
-            );
-        }
-    }
-
-    let team_prompt = load_harness_agent_prompt(
-        &root,
-        "ralphx-ideation-team-lead",
-        AgentPromptHarness::Claude,
-    )
-    .expect("missing Claude prompt for ralphx-ideation-team-lead");
-    assert!(team_prompt.contains("backend-started Verify Plan"));
-    assert!(team_prompt.contains("complete_plan_verification"));
-    for required_lens in required_review_lenses {
-        assert!(
-            team_prompt.contains(required_lens),
-            "team-lead prompt must require the {required_lens:?} review lens"
-        );
-    }
-    assert!(!team_prompt.contains("ralphx-plan-verifier"));
-    assert!(!team_prompt.contains("stop_verification"));
-
-    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
-        let prompt =
-            load_harness_agent_prompt_for_profile(&root, "ralphx-ideation", harness, Some("plan"))
-                .unwrap_or_else(|| panic!("missing {harness:?} Plan profile prompt"));
-        for required_lens in required_review_lenses {
-            assert!(
-                prompt.contains(required_lens),
-                "{harness:?} Plan profile prompt must require the {required_lens:?} review lens"
             );
         }
     }
@@ -2361,6 +2205,21 @@ fn codex_spawn_capable_prompts_reference_explicit_delegation_tools() {
 #[test]
 fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents() {
     let root = project_root();
+    let required_coordinator_clauses = [
+        "### Delegated Implementation Coordination",
+        "otherwise do not direct mutation or validation",
+        "Retain the full objective, integration decisions, integrated review, and final verification",
+        "bounded, dependency-aware slices",
+        "outcome, exclusive writable files or modules, established seam, required behavior, prohibited scope, acceptance criteria, permitted validation, and dependencies",
+        "Exploration may cover owned files and immediate dependencies needed for safe implementation",
+        "disjoint mutation sets, including generated artifacts, and disjoint command resource sets",
+        "one serialized heavyweight-validation lane",
+        "behavioral tests and only permitted cheap or local checks",
+        "Directly verify suspected defects before a narrow, evidence-backed revision",
+        "review the integrated workspace and run final focused validation once after revisions settle",
+        "Do not publish unless the user requested it",
+        "Repository and profile rules remain authoritative for exact commands, cleanup, resource conflicts, and stricter permissions",
+    ];
 
     for agent_name in CODEX_DELEGATION_GUIDE_AGENTS {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
@@ -2369,6 +2228,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating codex prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_coordinator_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating codex prompt for {agent_name} should include coordinator clause: {clause}"
+            );
+        }
     }
 
     for agent_name in CLAUDE_DELEGATION_GUIDE_AGENTS {
@@ -2378,6 +2243,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating claude prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_coordinator_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating claude prompt for {agent_name} should include coordinator clause: {clause}"
+            );
+        }
     }
 
     let session_namer = load_harness_agent_prompt(
@@ -2389,6 +2260,10 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
     assert!(
         !session_namer.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
         "non-delegating codex prompt should not include the generated delegation appendix"
+    );
+    assert!(
+        !session_namer.contains("### Delegated Implementation Coordination"),
+        "non-delegating codex prompt should not include coordinator guidance"
     );
 }
 
@@ -2402,6 +2277,7 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
         "ralphx-ideation",
         "ralphx-execution-worker",
         "ralphx-execution-coder",
+        "ralphx-general-explorer",
         "ralphx-general-worker",
     ] {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
@@ -2504,6 +2380,11 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             "For two or more requested fixes, checks, audit items, or investigation streams"
         ),
         "Claude prompt should include the concrete multi-fix breakdown rule"
+    );
+    assert!(
+        claude_general_worker.contains("<delegate_assignment_contract>")
+            && claude_general_worker.contains("complete_delegate_assignment"),
+        "delegated-capable prompts should distinguish local ledgers from bound assignments"
     );
 
     let session_namer = load_harness_agent_prompt(
@@ -2839,7 +2720,6 @@ fn execution_prompts_do_not_require_default_baseline_validation() {
         ("ralphx-execution-worker", AgentPromptHarness::Codex),
         ("ralphx-execution-coder", AgentPromptHarness::Claude),
         ("ralphx-execution-coder", AgentPromptHarness::Codex),
-        ("ralphx-execution-team-lead", AgentPromptHarness::Claude),
     ];
     let forbidden_normal_flow_phrases = [
         "baseline/final validation commands",
@@ -2883,7 +2763,6 @@ fn ticket_attachment_surface_is_prompted_only_for_granted_execution_agents() {
         ("ralphx-execution-worker", AgentPromptHarness::Codex),
         ("ralphx-execution-coder", AgentPromptHarness::Claude),
         ("ralphx-execution-coder", AgentPromptHarness::Codex),
-        ("ralphx-execution-team-lead", AgentPromptHarness::Claude),
     ];
     let attachment_tools = ["list_ticket_attachments", "fetch_ticket_attachment"];
     let forbidden_prompt_terms = [
@@ -3038,10 +2917,7 @@ fn canonical_agent_tree_is_schema_valid_and_loadable() {
         list_canonical_prompt_backed_agents(&root, AgentPromptHarness::Claude)
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-    let promptless_metadata_only_agents = std::collections::BTreeSet::from([
-        "ralphx-execution-team-member".to_string(),
-        "ralphx-ideation-team-member".to_string(),
-    ]);
+    let promptless_metadata_only_agents = std::collections::BTreeSet::<String>::new();
 
     for agent_name in canonical_agent_names(&root) {
         let definition = load_canonical_agent_definition(&root, &agent_name)

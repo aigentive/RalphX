@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 mod branch_tests;
+mod bootstrap_tests;
 mod commit_tests;
 mod identity_tests;
 mod merge_tests;

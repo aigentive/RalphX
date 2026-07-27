@@ -30,10 +30,9 @@ import {
 import { TaskCardContextMenu } from "@/components/tasks/TaskCardContextMenu";
 import type { GroupInfo } from "@/lib/task-actions";
 import { useTaskMutation } from "@/hooks/useTaskMutation";
-import { useUiStore } from "@/stores/uiStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useCreateIdeationSession } from "@/hooks/useIdeation";
-import { navigateToIdeationSession } from "@/lib/navigation";
+import { navigateToIdeationSession, openTaskInAgents } from "@/lib/navigation";
 import { toast } from "sonner";
 import { useTaskExecutionState, formatDuration } from "@/hooks/useTaskExecutionState";
 import { usePlanBranchForTask } from "@/hooks/usePlanBranchForTask";
@@ -103,9 +102,6 @@ export function TaskCard({
     id: task.id,
     disabled: readOnly,
   });
-
-  // UI Store - use selectedTaskId for split layout (TaskDetailOverlay handles rendering)
-  const setSelectedTaskId = useUiStore((state) => state.setSelectedTaskId);
 
   // Ideation Store and mutation
   const addSession = useIdeationStore((state) => state.addSession);
@@ -182,14 +178,14 @@ export function TaskCard({
     [task.internalStatus, isArchived, isDragging, isDraggable, isSelected]
   );
 
-  // Context menu handlers - use selectedTaskId for split layout overlay
+  // Embedded Agents boards own task selection; legacy hosts resolve through Agents.
   const handleViewDetails = useCallback(() => {
     if (onSelect) {
       onSelect(task.id);
       return;
     }
-    setSelectedTaskId(task.id);
-  }, [onSelect, setSelectedTaskId, task.id]);
+    void openTaskInAgents(task.id, "kanban", { projectId: task.projectId });
+  }, [onSelect, task.id, task.projectId]);
 
   const handleEdit = handleViewDetails;
 

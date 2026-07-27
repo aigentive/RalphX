@@ -78,21 +78,11 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         json.contains("\"extensibilityPage\":"),
         "Expected camelCase 'extensibilityPage' in JSON: {json}"
     );
-    assert!(
-        json.contains("\"ideationPage\":"),
-        "Expected camelCase 'ideationPage' in JSON: {json}"
-    );
+    assert!(!json.contains("\"ideationPage\":"));
+    assert!(!json.contains("\"battleMode\":"));
     assert!(
         json.contains("\"automationsPage\":"),
         "Expected camelCase 'automationsPage' in JSON: {json}"
-    );
-    assert!(
-        json.contains("\"battleMode\":"),
-        "Expected camelCase 'battleMode' in JSON: {json}"
-    );
-    assert!(
-        json.contains("\"teamMode\":"),
-        "Expected camelCase 'teamMode' in JSON: {json}"
     );
     assert!(
         json.contains("\"atlassianOauth\":"),
@@ -112,20 +102,8 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         "Unexpected snake_case 'extensibility_page' in JSON: {json}"
     );
     assert!(
-        !json.contains("\"ideation_page\":"),
-        "Unexpected snake_case 'ideation_page' in JSON: {json}"
-    );
-    assert!(
         !json.contains("\"automations_page\":"),
         "Unexpected snake_case 'automations_page' in JSON: {json}"
-    );
-    assert!(
-        !json.contains("\"battle_mode\":"),
-        "Unexpected snake_case 'battle_mode' in JSON: {json}"
-    );
-    assert!(
-        !json.contains("\"team_mode\":"),
-        "Unexpected snake_case 'team_mode' in JSON: {json}"
     );
     assert!(
         !json.contains("\"atlassian_oauth\":"),

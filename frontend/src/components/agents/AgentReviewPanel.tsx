@@ -49,6 +49,7 @@ import { useConfirmation } from "@/hooks/useConfirmation";
 import type { Artifact } from "@/types/artifact";
 
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import type { AgentWorkspaceReviewActionBlocker } from "./agentWorkspacePublishState";
 import {
   hasWorkspaceReviewPublishAuthorization,
   isWorkspaceReviewApprovedAnyway,
@@ -100,6 +101,7 @@ interface AgentReviewPanelProps {
   isApproveAnywayActionPending?: boolean;
   isWorkspaceRuntimeGenerating?: boolean;
   isPublishingWorkspace?: boolean;
+  reviewActionBlocker?: AgentWorkspaceReviewActionBlocker | null;
   embedded?: boolean;
   onOpenPublish?: () => void;
   onViewTranscript?: () => void;
@@ -357,6 +359,7 @@ export function AgentReviewPanel({
   isApproveAnywayActionPending = false,
   isWorkspaceRuntimeGenerating = false,
   isPublishingWorkspace = false,
+  reviewActionBlocker = null,
   embedded = false,
   onOpenPublish,
   onViewTranscript,
@@ -399,6 +402,10 @@ export function AgentReviewPanel({
     canApproveBlockingReview(displayContext, isRunning, isFixerActive);
   const errorMessage = reviewErrorMessage(displayContext, reviewStartError);
   const isRunFailed = Boolean(errorMessage) && !isRunning;
+  const retainedArtifactFailureDetail =
+    isRunFailed && reviewArtifact
+      ? "Review failed; output was saved but not finalized."
+      : null;
   const status = reviewStatusForState({
     context: displayContext,
     hasArtifact: Boolean(reviewArtifact),
@@ -448,13 +455,13 @@ export function AgentReviewPanel({
     ? new Date(displayContext.monitor.reviewArtifactUpdatedAt).toLocaleString()
     : null;
   const actionDisabledReason = action
-    ? reviewActionDisabledReason({
+    ? (reviewActionBlocker?.message ?? reviewActionDisabledReason({
         isReviewActionPending,
         isFixIssuesActionPending,
         isApproveAnywayActionPending,
         isWorkspaceRuntimeGenerating,
         isPublishingWorkspace,
-      })
+      }))
     : null;
   const shouldShowConversationActiveSkippedReason =
     skippedReason === "conversation_active" && !actionDisabledReason;
@@ -766,7 +773,11 @@ export function AgentReviewPanel({
                 className="mt-1 text-xs"
                 style={{ color: "var(--text-muted)" }}
               >
-                {errorMessage ?? autoMergeGuardDetail ?? status.detail}
+                {retainedArtifactFailureDetail ??
+                  errorMessage ??
+                  reviewActionBlocker?.message ??
+                  autoMergeGuardDetail ??
+                  status.detail}
               </p>
               {(targetLabel || canViewTranscript || reviewUpdatedAt) && (
                 <div

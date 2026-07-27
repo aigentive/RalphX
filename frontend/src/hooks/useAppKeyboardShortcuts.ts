@@ -5,30 +5,27 @@
 import { useEffect, useRef } from "react";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { ALL_NAV_ITEMS } from "@/components/layout/nav-items";
-import type { ViewType } from "@/types/chat";
+import type { AppView } from "@/types/app-view";
 import type { FeatureFlags } from "@/types/feature-flags";
 
 const ALL_ENABLED_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
-  ideationPage: true,
   automationsPage: true,
-  battleMode: true,
-  teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
 };
 
 interface UseAppKeyboardShortcutsProps {
-  currentView: ViewType;
-  setCurrentView: (view: ViewType) => void;
+  currentView: AppView;
+  setCurrentView: (view: AppView) => void;
   toggleNotificationsPanel?: () => void;
   openProjectWizard?: () => void;
   hasProjects?: boolean;
   showWelcomeOverlay?: boolean;
   openWelcomeOverlay?: () => void;
   closeWelcomeOverlay?: () => void;
-  welcomeOverlayReturnView?: ViewType | null;
+  welcomeOverlayReturnView?: AppView | null;
   openSettings?: () => void;
   openNewAgent?: () => void;
   featureFlags?: FeatureFlags;

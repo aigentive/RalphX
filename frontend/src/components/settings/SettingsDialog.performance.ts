@@ -28,6 +28,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   mcp: () => import("./McpSettingsSection"),
   "app-preferences": () => import("./AppPreferencesSection"),
+  updates: () => import("./UpdatesSettingsSection"),
   accessibility: () => import("./AccessibilitySection"),
   notifications: () => import("./NotificationSettingsPanel"),
 };

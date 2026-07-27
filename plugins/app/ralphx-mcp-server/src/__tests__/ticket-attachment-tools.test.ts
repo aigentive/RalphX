@@ -18,7 +18,6 @@ import {
   ORCHESTRATOR_IDEATION,
   REVIEWER,
   WORKER,
-  WORKER_TEAM_LEAD,
 } from "../agentNames.js";
 
 const TOOL_NAMES = ["list_ticket_attachments", "fetch_ticket_attachment"];
@@ -86,7 +85,7 @@ describe("ticket attachment MCP tools", () => {
     ]);
   });
 
-  it.each([WORKER, CODER, WORKER_TEAM_LEAD])(
+  it.each([WORKER, CODER])(
     "exposes attachment tools to %s through canonical grants",
     (agent) => {
       setAgentType(agent);

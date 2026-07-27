@@ -18,10 +18,7 @@ use crate::infrastructure::agents::{
 pub struct UiFeatureFlagsResponse {
     pub activity_page: bool,
     pub extensibility_page: bool,
-    pub ideation_page: bool,
     pub automations_page: bool,
-    pub battle_mode: bool,
-    pub team_mode: bool,
     pub atlassian_oauth: bool,
     pub ticketing_dashboard: bool,
     pub agent_personas: bool,
@@ -53,10 +50,7 @@ fn ui_feature_flags_response_with_standalone(
     UiFeatureFlagsResponse {
         activity_page: flags.activity_page,
         extensibility_page: flags.extensibility_page,
-        ideation_page: flags.ideation_page,
         automations_page: flags.automations_page,
-        battle_mode: flags.battle_mode,
-        team_mode: flags.team_mode,
         atlassian_oauth: flags.atlassian_oauth,
         ticketing_dashboard: flags.ticketing_dashboard,
         agent_personas: agent_personas_enabled(),

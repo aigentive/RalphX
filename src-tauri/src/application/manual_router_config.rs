@@ -43,9 +43,6 @@ impl TryFrom<RawManualRoleDefault> for ManualRoleDefault {
     type Error = String;
 
     fn try_from(raw: RawManualRoleDefault) -> Result<Self, Self::Error> {
-        if raw.coordination_mode == Some(CoordinationMode::LegacyClaudeTeam) {
-            return Err("legacy_claude_team is compatibility-only and cannot be selected".into());
-        }
         Ok(Self {
             harness: raw.provider,
             model: raw.model,

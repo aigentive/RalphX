@@ -12,18 +12,19 @@ use tracing::info;
 
 use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
+    InteractiveProcessKey, InteractiveProcessRegistry,
+    InteractiveProcessRetireAfterTurnDisposition, InteractiveProcessToken,
+    InteractiveProcessTurnCompleteDisposition,
 };
 use crate::application::question_state::QuestionState;
-use crate::application::team_events;
-use crate::application::team_state_tracker::TeammateStatus;
 use crate::domain::agents::{
     standard_harness_behavior, AgentHarnessKind, HarnessStreamMode, ProviderSessionRef,
 };
 use crate::domain::entities::{
     ActivityEvent, ActivityEventType, AgentRun, AgentRunId, AgentRunUsage, ChatContextType,
     ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemKind,
-    ChatTimelineItemStatus, MessageRole, TaskId,
+    ChatTimelineItemStatus, MessageRole, ProviderUsageSnapshot, TaskId, UsageCapture,
+    UsageProvenance,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ChatConversationRepository, ChatMessageRepository,
@@ -253,6 +254,7 @@ const COMPLETION_TOOL_NAMES: &[&str] = &[
     "mcp__ralphx__complete_review",
     "mcp__ralphx__complete_merge",
     "mcp__ralphx__complete_agent_workspace_repair",
+    "mcp__ralphx__complete_workspace_review_run",
     "mcp__ralphx__finalize_proposals",
 ];
 
@@ -271,6 +273,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -282,6 +285,7 @@ pub fn is_completion_tool_name(name: &str) -> bool {
                 | "complete_review"
                 | "complete_merge"
                 | "complete_agent_workspace_repair"
+                | "complete_workspace_review_run"
                 | "finalize_proposals"
         );
     }
@@ -314,38 +318,45 @@ async fn flush_content_before_error(
     }
 }
 
-async fn persist_agent_run_usage(
+async fn persist_usage_capture_run_first(
     agent_run_repo: &Option<Arc<dyn AgentRunRepository>>,
     agent_run_id: &Option<String>,
-    usage: &AgentRunUsage,
-) {
-    if usage.is_empty() {
-        return;
-    }
-
-    if let (Some(repo), Some(run_id)) = (agent_run_repo.as_ref(), agent_run_id.as_ref()) {
-        let _ = repo
-            .update_usage(&AgentRunId::from_string(run_id.clone()), usage)
-            .await;
-    }
-}
-
-async fn persist_assistant_message_usage(
     chat_message_repo: &Option<Arc<dyn ChatMessageRepository>>,
     assistant_message_id: &Option<String>,
-    usage: &AgentRunUsage,
-) {
-    if usage.is_empty() {
-        return;
+    capture: &UsageCapture,
+) -> bool {
+    let (Some(run_repo), Some(run_id)) = (agent_run_repo.as_ref(), agent_run_id.as_ref()) else {
+        return false;
+    };
+    if let Err(error) = run_repo
+        .replace_usage_capture(&AgentRunId::from_string(run_id.clone()), capture)
+        .await
+    {
+        tracing::warn!(
+            run_id,
+            error = %error,
+            "Failed to persist canonical run usage capture"
+        );
+        return false;
     }
 
-    if let (Some(repo), Some(message_id)) =
+    if let (Some(message_repo), Some(message_id)) =
         (chat_message_repo.as_ref(), assistant_message_id.as_ref())
     {
-        let _ = repo
-            .update_usage(&ChatMessageId::from_string(message_id.clone()), usage)
-            .await;
+        if let Err(error) = message_repo
+            .replace_usage_capture(&ChatMessageId::from_string(message_id.clone()), capture)
+            .await
+        {
+            tracing::warn!(
+                run_id,
+                message_id,
+                error = %error,
+                "Failed to mirror canonical usage capture to assistant message"
+            );
+        }
     }
+
+    true
 }
 
 fn emit_usage_updated_event<R: Runtime>(
@@ -833,40 +844,36 @@ fn agent_run_usage_from_codex_usage(usage: CodexUsage) -> AgentRunUsage {
     }
 }
 
-fn token_baseline_from_prior_runs(
-    current: Option<u64>,
-    prior_values: impl Iterator<Item = Option<u64>>,
-) -> Option<u64> {
-    let current = current?;
-    let values: Vec<u64> = prior_values.flatten().collect();
-    if values.is_empty() {
-        return Some(0);
-    }
-
-    let sum = values.iter().copied().sum::<u64>();
-    if sum <= current {
-        return Some(sum);
-    }
-
-    Some(values.iter().copied().max().unwrap_or(0).min(current))
+fn cumulative_counter_decreased(previous: Option<u64>, current: Option<u64>) -> bool {
+    matches!((previous, current), (Some(_), None))
+        || matches!((previous, current), (Some(previous), Some(current)) if current < previous)
 }
 
-fn cost_baseline_from_prior_runs(
-    current: Option<f64>,
-    prior_values: impl Iterator<Item = Option<f64>>,
-) -> Option<f64> {
-    let current = current?;
-    let values: Vec<f64> = prior_values.flatten().collect();
-    if values.is_empty() {
-        return Some(0.0);
-    }
+fn cumulative_cost_decreased(previous: Option<f64>, current: Option<f64>) -> bool {
+    matches!((previous, current), (Some(_), None))
+        || matches!((previous, current), (Some(previous), Some(current)) if current < previous)
+}
 
-    let sum = values.iter().copied().sum::<f64>();
-    if sum <= current {
-        return Some(sum);
-    }
+fn cumulative_snapshot_decreased(
+    previous: &ProviderUsageSnapshot,
+    current: &ProviderUsageSnapshot,
+) -> bool {
+    cumulative_counter_decreased(previous.input_tokens, current.input_tokens)
+        || cumulative_counter_decreased(previous.output_tokens, current.output_tokens)
+        || cumulative_counter_decreased(
+            previous.cache_creation_tokens,
+            current.cache_creation_tokens,
+        )
+        || cumulative_counter_decreased(previous.cache_read_tokens, current.cache_read_tokens)
+        || cumulative_cost_decreased(previous.estimated_usd, current.estimated_usd)
+}
 
-    Some(values.iter().copied().fold(0.0, f64::max).min(current))
+fn subtract_cumulative_counter(current: Option<u64>, previous: Option<u64>) -> Option<u64> {
+    current.and_then(|value| value.checked_sub(previous.unwrap_or(0)))
+}
+
+fn subtract_cumulative_cost(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
+    current.map(|value| value - previous.unwrap_or(0.0))
 }
 
 #[doc(hidden)]
@@ -875,8 +882,10 @@ pub(crate) fn normalize_codex_cumulative_usage_for_persistence(
     prior_runs: &[AgentRun],
     current_run_id: Option<&str>,
     provider_session_id: Option<&str>,
-) -> AgentRunUsage {
-    let matching_prior_runs: Vec<&AgentRun> = prior_runs
+) -> Option<UsageCapture> {
+    let provider_session_id = provider_session_id?;
+    let raw_snapshot = ProviderUsageSnapshot::from_usage(current);
+    let previous = prior_runs
         .iter()
         .filter(|run| run.harness == Some(AgentHarnessKind::Codex))
         .filter(|run| {
@@ -884,53 +893,49 @@ pub(crate) fn normalize_codex_cumulative_usage_for_persistence(
                 .map(|id| run.id.as_str() != id)
                 .unwrap_or(true)
         })
-        .filter(|run| {
-            provider_session_id
-                .map(|session_id| run.provider_session_id.as_deref() == Some(session_id))
-                .unwrap_or(true)
+        .filter(|run| run.provider_session_id.as_deref() == Some(provider_session_id))
+        .filter_map(|run| {
+            run.raw_usage_snapshot
+                .as_ref()
+                .map(|snapshot| (run, snapshot))
         })
-        .collect();
+        .max_by_key(|(run, _)| run.started_at);
 
-    let input_baseline = token_baseline_from_prior_runs(
-        current.input_tokens,
-        matching_prior_runs.iter().map(|run| run.input_tokens),
-    );
-    let output_baseline = token_baseline_from_prior_runs(
-        current.output_tokens,
-        matching_prior_runs.iter().map(|run| run.output_tokens),
-    );
-    let cache_creation_baseline = token_baseline_from_prior_runs(
-        current.cache_creation_tokens,
-        matching_prior_runs
-            .iter()
-            .map(|run| run.cache_creation_tokens),
-    );
-    let cache_read_baseline = token_baseline_from_prior_runs(
-        current.cache_read_tokens,
-        matching_prior_runs.iter().map(|run| run.cache_read_tokens),
-    );
-    let estimated_usd_baseline = cost_baseline_from_prior_runs(
-        current.estimated_usd,
-        matching_prior_runs.iter().map(|run| run.estimated_usd),
-    );
-
-    AgentRunUsage {
-        input_tokens: current
-            .input_tokens
-            .map(|value| value.saturating_sub(input_baseline.unwrap_or(0))),
-        output_tokens: current
-            .output_tokens
-            .map(|value| value.saturating_sub(output_baseline.unwrap_or(0))),
-        cache_creation_tokens: current
-            .cache_creation_tokens
-            .map(|value| value.saturating_sub(cache_creation_baseline.unwrap_or(0))),
-        cache_read_tokens: current
-            .cache_read_tokens
-            .map(|value| value.saturating_sub(cache_read_baseline.unwrap_or(0))),
-        estimated_usd: current
-            .estimated_usd
-            .map(|value| (value - estimated_usd_baseline.unwrap_or(0.0)).max(0.0)),
+    let Some((_, previous)) = previous else {
+        return Some(UsageCapture::cumulative_baseline(raw_snapshot));
+    };
+    if cumulative_snapshot_decreased(previous, &raw_snapshot) {
+        return Some(UsageCapture::cumulative_baseline(raw_snapshot));
     }
+
+    Some(
+        UsageCapture::normalized(
+            AgentRunUsage {
+                input_tokens: subtract_cumulative_counter(
+                    raw_snapshot.input_tokens,
+                    previous.input_tokens,
+                ),
+                output_tokens: subtract_cumulative_counter(
+                    raw_snapshot.output_tokens,
+                    previous.output_tokens,
+                ),
+                cache_creation_tokens: subtract_cumulative_counter(
+                    raw_snapshot.cache_creation_tokens,
+                    previous.cache_creation_tokens,
+                ),
+                cache_read_tokens: subtract_cumulative_counter(
+                    raw_snapshot.cache_read_tokens,
+                    previous.cache_read_tokens,
+                ),
+                estimated_usd: subtract_cumulative_cost(
+                    raw_snapshot.estimated_usd,
+                    previous.estimated_usd,
+                ),
+            },
+            UsageProvenance::DerivedCumulativeDelta,
+        )
+        .with_raw_snapshot(raw_snapshot),
+    )
 }
 
 async fn normalize_codex_stream_usage_for_persistence(
@@ -940,29 +945,31 @@ async fn normalize_codex_stream_usage_for_persistence(
     conversation_id: &ChatConversationId,
     agent_run_id: Option<&str>,
     provider_session_id: Option<&str>,
-) -> AgentRunUsage {
+) -> Option<UsageCapture> {
     if source != CodexUsageSource::CumulativeTotal {
-        return event_usage;
+        return Some(UsageCapture::normalized(
+            event_usage,
+            UsageProvenance::ProviderTurnDelta,
+        ));
     }
 
-    let Some(repo) = agent_run_repo else {
-        return event_usage;
-    };
+    let repo = agent_run_repo.as_ref()?;
+    let provider_session_id = provider_session_id?;
 
     match repo.get_by_conversation(conversation_id).await {
         Ok(prior_runs) => normalize_codex_cumulative_usage_for_persistence(
             event_usage,
             &prior_runs,
             agent_run_id,
-            provider_session_id,
+            Some(provider_session_id),
         ),
         Err(error) => {
             tracing::warn!(
                 conversation_id = %conversation_id.as_str(),
                 error = %error,
-                "Failed to load prior Codex run usage; persisting raw stream usage"
+                "Failed to load prior Codex raw usage baseline; leaving usage uncounted"
             );
-            event_usage
+            None
         }
     }
 }
@@ -978,12 +985,6 @@ pub struct StreamTimeoutConfig {
     pub line_read_timeout: Duration,
     /// Max time to tolerate stdout traffic with no parseable stream events.
     pub parse_stall_timeout: Duration,
-    /// Teammate name (set when streaming a team member's output).
-    #[allow(dead_code)]
-    pub teammate_name: Option<String>,
-    /// Teammate display color (set when streaming a team member's output).
-    #[allow(dead_code)]
-    pub teammate_color: Option<String>,
 }
 
 impl StreamTimeoutConfig {
@@ -994,31 +995,17 @@ impl StreamTimeoutConfig {
             ChatContextType::Merge => Self {
                 line_read_timeout: Duration::from_secs(cfg.merge_line_read_secs),
                 parse_stall_timeout: Duration::from_secs(cfg.merge_parse_stall_secs),
-                teammate_name: None,
-                teammate_color: None,
             },
             ChatContextType::Review => Self {
                 line_read_timeout: Duration::from_secs(cfg.review_line_read_secs),
                 parse_stall_timeout: Duration::from_secs(cfg.review_parse_stall_secs),
-                teammate_name: None,
-                teammate_color: None,
             },
             // TaskExecution, Ideation, Task, Project — generous defaults
             _ => Self {
                 line_read_timeout: Duration::from_secs(cfg.default_line_read_secs),
                 parse_stall_timeout: Duration::from_secs(cfg.default_parse_stall_secs),
-                teammate_name: None,
-                teammate_color: None,
             },
         }
-    }
-
-    /// Attach team member identity to this config (builder pattern).
-    #[allow(dead_code)]
-    pub fn with_teammate(mut self, name: String, color: String) -> Self {
-        self.teammate_name = Some(name);
-        self.teammate_color = Some(color);
-        self
     }
 }
 
@@ -1029,6 +1016,7 @@ pub struct StreamOutcome {
     pub content_blocks: Vec<ContentBlockItem>,
     pub session_id: Option<String>,
     pub usage: AgentRunUsage,
+    pub usage_provenance: Option<UsageProvenance>,
     pub stderr_text: String,
     /// Number of turns fully finalized during interactive streaming
     /// (via `TurnComplete` events). When > 0 and `response_text` is empty,
@@ -1048,6 +1036,10 @@ pub struct StreamOutcome {
     /// True when the process exited while idle between interactive turns.
     /// Suppresses queue processing and run_completed emission is forced.
     pub silent_interactive_exit: bool,
+    /// The stream exited because its exact runtime was retired for a backend-owned
+    /// mode handoff. This is deliberately distinct from a user cancellation: the
+    /// background owner must still drain the durable replacement queue.
+    pub mode_handoff_exit: bool,
 }
 
 impl StreamOutcome {
@@ -1133,7 +1125,7 @@ impl CompletionSignalTracker {
     }
 }
 
-fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
+pub(super) fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
     let Some(result) = result else {
         return true;
     };
@@ -1194,8 +1186,6 @@ pub async fn process_stream_background<R: Runtime>(
     mut assistant_message_id: Option<String>,
     question_state: Option<Arc<QuestionState>>,
     cancellation_token: CancellationToken,
-    team_service: Option<std::sync::Arc<crate::application::TeamService>>,
-    team_mode: bool,
     streaming_state_cache: StreamingStateCache,
     running_agent_registry: Option<Arc<dyn RunningAgentRegistry>>,
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
@@ -1237,13 +1227,8 @@ pub async fn process_stream_background<R: Runtime>(
         .await;
     }
 
-    let mut timeout_config = StreamTimeoutConfig::for_context(&context_type);
-    // Team leads wait long periods while teammates work — use team-specific timeout
+    let timeout_config = StreamTimeoutConfig::for_context(&context_type);
     let stream_cfg = stream_timeouts();
-    if team_mode {
-        timeout_config.line_read_timeout = Duration::from_secs(stream_cfg.team_line_read_secs);
-        timeout_config.parse_stall_timeout = Duration::from_secs(stream_cfg.team_parse_stall_secs);
-    }
     tracing::debug!(
         conversation_id = conversation_id.as_str(),
         %context_type,
@@ -1332,9 +1317,6 @@ pub async fn process_stream_background<R: Runtime>(
     let mut last_heartbeat = std::time::Instant::now();
     const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-    // Track Task tool_use_id → (team_name, teammate_name) for teammate lifecycle
-    let mut teammate_task_map: HashMap<String, (String, String)> = HashMap::new();
-
     // Track active subagent tasks (Task tool calls) to prevent timeout during sidechain work.
     // When the lead spawns in-process subagents, stdout goes silent — this tracker
     // lets the timeout handler know work is still happening.
@@ -1354,6 +1336,7 @@ pub async fn process_stream_background<R: Runtime>(
     // Set to true when an interactive process is killed while idle between
     // turns. Suppresses post-loop error returns so the exit is silent.
     let mut silent_interactive_exit: bool = false;
+    let mut mode_handoff_exit: bool = false;
     // Track whether we've already persisted session_id to the DB (only need once)
     let mut session_id_persisted: bool = false;
 
@@ -1362,6 +1345,29 @@ pub async fn process_stream_background<R: Runtime>(
         let line = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
+                let mode_handoff_armed = if let (Some(registry), Some(key), Some(token), Some(run_id)) = (
+                    interactive_process_registry.as_ref(),
+                    interactive_process_key.as_ref(),
+                    interactive_process_token,
+                    agent_run_id.as_deref(),
+                ) {
+                    is_armed_mode_handoff_disposition(
+                        registry.retire_after_turn_disposition_if_owner(key, token, run_id).await,
+                    )
+                } else {
+                    false
+                };
+                if mode_handoff_armed {
+                    tracing::info!(
+                        conversation_id = %conversation_id_str,
+                        lines_seen,
+                        "Stream cancellation is an exact mode-handoff retirement"
+                    );
+                    let _ = child.kill().await;
+                    silent_interactive_exit = true;
+                    mode_handoff_exit = true;
+                    break;
+                }
                 if between_interactive_turns {
                     tracing::info!(
                         conversation_id = %conversation_id_str,
@@ -1631,40 +1637,6 @@ pub async fn process_stream_background<R: Runtime>(
                             "[STREAM_EVT] ToolCallCompleted"
                         );
                     }
-                    StreamEvent::TeamMessageSent {
-                        sender,
-                        recipient,
-                        content,
-                        message_type,
-                    } => {
-                        tracing::info!(
-                            conversation_id = %conversation_id_str,
-                            sender = %sender,
-                            recipient = ?recipient,
-                            content_len = content.len(),
-                            message_type = %message_type,
-                            "[STREAM_EVT] TeamMessageSent — lead captured team message"
-                        );
-                    }
-                    StreamEvent::TeamCreated { team_name, .. } => {
-                        tracing::info!(
-                            conversation_id = %conversation_id_str,
-                            team_name = %team_name,
-                            "[STREAM_EVT] TeamCreated"
-                        );
-                    }
-                    StreamEvent::TeammateSpawned {
-                        teammate_name,
-                        team_name,
-                        ..
-                    } => {
-                        tracing::info!(
-                            conversation_id = %conversation_id_str,
-                            teammate_name = %teammate_name,
-                            team_name = %team_name,
-                            "[STREAM_EVT] TeammateSpawned"
-                        );
-                    }
                     StreamEvent::TurnComplete { session_id } => {
                         tracing::info!(
                             conversation_id = %conversation_id_str,
@@ -1678,16 +1650,12 @@ pub async fn process_stream_background<R: Runtime>(
                     StreamEvent::TaskStarted {
                         tool_use_id,
                         description,
-                        teammate_name,
-                        team_name,
                         ..
                     } => {
                         tracing::debug!(
                             conversation_id = %conversation_id_str,
                             tool_use_id = %tool_use_id,
                             description = ?description,
-                            teammate_name = ?teammate_name,
-                            team_name = ?team_name,
                             "[STREAM_EVT] TaskStarted"
                         );
                     }
@@ -2091,15 +2059,24 @@ pub async fn process_stream_background<R: Runtime>(
                                 ChatTimelineItemStatus::Error,
                             )
                             .await;
-                            let turn_usage = processor.current_turn_usage();
-                            persist_assistant_message_usage(
-                                &chat_message_repo,
-                                &assistant_message_id,
-                                &turn_usage,
-                            )
-                            .await;
-                            persist_agent_run_usage(&agent_run_repo, &agent_run_id, &turn_usage)
+                            if let Some(capture) = processor.current_turn_capture() {
+                                let persisted = persist_usage_capture_run_first(
+                                    &agent_run_repo,
+                                    &agent_run_id,
+                                    &chat_message_repo,
+                                    &assistant_message_id,
+                                    &capture,
+                                )
                                 .await;
+                                if persisted {
+                                    emit_usage_updated_event(
+                                        &app_handle,
+                                        &conversation_id_str,
+                                        &context_type_str,
+                                        &context_id_str,
+                                    );
+                                }
+                            }
 
                             if !session_id_persisted && persist_conversation_provider_session_ref {
                                 if let (Some(ref sess_id), Some(ref repo)) =
@@ -2166,21 +2143,26 @@ pub async fn process_stream_background<R: Runtime>(
                                 split_verification_transcript,
                             )
                             .await;
-                            let turn_usage = processor.current_turn_usage();
-                            persist_assistant_message_usage(
-                                &chat_message_repo,
-                                &assistant_message_id,
-                                &turn_usage,
-                            )
-                            .await;
-                            if turn_usage != last_emitted_usage {
-                                emit_usage_updated_event(
-                                    &app_handle,
-                                    &conversation_id_str,
-                                    &context_type_str,
-                                    &context_id_str,
-                                );
-                                last_emitted_usage = turn_usage;
+                            let turn_capture = processor.current_turn_capture();
+                            if let Some(capture) = turn_capture {
+                                let turn_usage = capture.normalized.clone();
+                                let usage_persisted = persist_usage_capture_run_first(
+                                    &agent_run_repo,
+                                    &agent_run_id,
+                                    &chat_message_repo,
+                                    &assistant_message_id,
+                                    &capture,
+                                )
+                                .await;
+                                if usage_persisted && turn_usage != last_emitted_usage {
+                                    emit_usage_updated_event(
+                                        &app_handle,
+                                        &conversation_id_str,
+                                        &context_type_str,
+                                        &context_id_str,
+                                    );
+                                    last_emitted_usage = turn_usage;
+                                }
                             }
                             persisted
                         } else {
@@ -2376,6 +2358,35 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
 
+                        let retire_after_turn =
+                            if let (Some(registry), Some(key), Some(token), Some(run_id)) = (
+                                interactive_process_registry.as_ref(),
+                                interactive_process_key.as_ref(),
+                                interactive_process_token,
+                                agent_run_id.as_deref(),
+                            ) {
+                                matches!(
+                                    registry.complete_turn_if_owner(key, token, run_id).await,
+                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+                                )
+                            } else {
+                                false
+                            };
+
+                        if retire_after_turn {
+                            tracing::info!(
+                                conversation_id = %conversation_id_str,
+                                "TurnComplete retired exact runtime for mode handoff"
+                            );
+                            // The normal guarded completion and turn_completed event above
+                            // intentionally remain observable before the handoff exits.
+                            between_interactive_turns = true;
+                            silent_interactive_exit = true;
+                            mode_handoff_exit = true;
+                            let _ = child.start_kill();
+                            break;
+                        }
+
                         // Mark that we're now between interactive turns —
                         // the timeout handler should not kill the process.
                         between_interactive_turns = true;
@@ -2386,36 +2397,9 @@ pub async fn process_stream_background<R: Runtime>(
                         description,
                         subagent_type,
                         model,
-                        teammate_name: tm_name,
-                        team_name: tm_team,
                     } => {
                         // Track active subagent tasks for timeout bypass
                         active_task_tracker.task_started();
-
-                        // Track teammate Task calls for lifecycle management
-                        if let (Some(ref tn), Some(ref tt)) = (&tm_name, &tm_team) {
-                            teammate_task_map.insert(tool_use_id.clone(), (tt.clone(), tn.clone()));
-
-                            // Update status to Running via TeamService (persistence + events)
-                            if let Some(ref service) = team_service {
-                                let _ = service
-                                    .update_teammate_status(tt, tn, TeammateStatus::Running)
-                                    .await;
-                            }
-
-                            // Emit agent:run_started with teammate_name for frontend
-                            if let Some(ref handle) = app_handle {
-                                let _ = handle.emit(
-                                    events::AGENT_RUN_STARTED,
-                                    serde_json::json!({
-                                        "teammate_name": tn,
-                                        "team_name": tt,
-                                        "context_type": context_type_str,
-                                        "context_id": context_id_str,
-                                    }),
-                                );
-                            }
-                        }
 
                         // Update streaming state cache with new task
                         let cached_task = CachedStreamingTask {
@@ -2425,7 +2409,6 @@ pub async fn process_stream_background<R: Runtime>(
                             model: model.clone(),
                             status: "running".to_string(),
                             agent_id: None,
-                            teammate_name: tm_name.clone(),
                             delegated_job_id: None,
                             delegated_session_id: None,
                             delegated_conversation_id: None,
@@ -2449,6 +2432,10 @@ pub async fn process_stream_background<R: Runtime>(
                             cache_read_tokens: None,
                             estimated_usd: None,
                             text_output: None,
+                            started_at: None,
+                            completed_at: None,
+                            timestamp_provenance: None,
+                            seq: Some(stream_seq),
                         };
                         streaming_state_cache
                             .add_task(&conversation_id_str, cached_task)
@@ -2464,7 +2451,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     description,
                                     subagent_type,
                                     model,
-                                    teammate_name: tm_name,
+                                    teammate_name: None,
                                     delegated_job_id: None,
                                     delegated_session_id: None,
                                     delegated_conversation_id: None,
@@ -2479,6 +2466,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2512,38 +2502,11 @@ pub async fn process_stream_background<R: Runtime>(
                             )
                             .await;
 
-                        // Check if this completes a teammate Task
-                        let tm_name_for_payload =
-                            if let Some((tt, tn)) = teammate_task_map.remove(&tool_use_id) {
-                                // Update status to Idle via TeamService (persistence + events)
-                                if let Some(ref service) = team_service {
-                                    let _ = service
-                                        .update_teammate_status(&tt, &tn, TeammateStatus::Idle)
-                                        .await;
-                                }
-
-                                // Emit agent:run_completed with teammate_name for frontend
-                                if let Some(ref handle) = app_handle {
-                                    let _ = handle.emit(
-                                        events::AGENT_RUN_COMPLETED,
-                                        serde_json::json!({
-                                            "teammate_name": tn,
-                                            "team_name": tt,
-                                            "context_type": context_type_str,
-                                            "context_id": context_id_str,
-                                        }),
-                                    );
-                                }
-
-                                Some(tn)
-                            } else {
-                                None
-                            };
-
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 events::AGENT_TASK_COMPLETED,
                                 AgentTaskCompletedPayload {
+                                    teammate_name: None,
                                     tool_use_id,
                                     run_id: agent_run_id.clone(),
                                     agent_id,
@@ -2551,7 +2514,6 @@ pub async fn process_stream_background<R: Runtime>(
                                     total_duration_ms,
                                     total_tokens,
                                     total_tool_use_count,
-                                    teammate_name: tm_name_for_payload,
                                     delegated_job_id: None,
                                     delegated_session_id: None,
                                     delegated_conversation_id: None,
@@ -2566,6 +2528,9 @@ pub async fn process_stream_background<R: Runtime>(
                                     effective_effort: None,
                                     approval_policy: None,
                                     sandbox_mode: None,
+                                    started_at: None,
+                                    completed_at: None,
+                                    timestamp_provenance: None,
                                     input_tokens: None,
                                     output_tokens: None,
                                     cache_creation_tokens: None,
@@ -2653,163 +2618,6 @@ pub async fn process_stream_background<R: Runtime>(
                                     context_id: context_id_str.clone(),
                                     timestamp: chrono::Utc::now().timestamp_millis(),
                                 },
-                            );
-                        }
-                    }
-
-                    StreamEvent::TeamCreated {
-                        team_name,
-                        config_path: _,
-                    } => {
-                        // Create team via TeamService (persistence + events)
-                        if let Some(ref service) = team_service {
-                            if !service.team_exists(&team_name).await {
-                                let _ = service
-                                    .create_team(&team_name, &context_id_str, &context_type_str)
-                                    .await;
-                            }
-                        } else if let Some(ref handle) = app_handle {
-                            // Fallback: emit event directly if no service available
-                            team_events::emit_team_created(
-                                handle,
-                                &team_name,
-                                &context_id_str,
-                                &context_type_str,
-                            );
-                        }
-
-                        // Dynamic team_mode upgrade: when the lead creates a team mid-session,
-                        // upgrade the line-read timeout from default (600s) to team (3600s).
-                        // The lead was spawned before the team existed, so team_mode was false
-                        // at spawn time. Without this, the lead gets killed after 10 min idle.
-                        if !team_mode {
-                            let cfg = stream_timeouts();
-                            let old_secs = timeout_config.line_read_timeout.as_secs();
-                            timeout_config.line_read_timeout =
-                                Duration::from_secs(cfg.team_line_read_secs);
-                            timeout_config.parse_stall_timeout =
-                                Duration::from_secs(cfg.team_parse_stall_secs);
-                            tracing::info!(
-                                conversation_id = %conversation_id_str,
-                                team_name = %team_name,
-                                old_timeout_secs = old_secs,
-                                new_timeout_secs = cfg.team_line_read_secs,
-                                "[TEAM_TIMEOUT] Upgraded line-read timeout on TeamCreated"
-                            );
-                        }
-                    }
-                    StreamEvent::TeammateSpawned {
-                        teammate_name,
-                        team_name,
-                        agent_id: _,
-                        model,
-                        color,
-                        prompt: _,
-                        agent_type: _,
-                    } => {
-                        // Register teammate via TeamService (persistence + events).
-                        // May already exist from approve_team_plan — add_teammate is idempotent.
-                        // NOTE: CLI worker processes are spawned in approve_team_plan (teams.rs),
-                        // NOT here, to avoid double-spawn when both paths fire.
-                        if let Some(ref service) = team_service {
-                            let _ = service
-                                .add_teammate(
-                                    &team_name,
-                                    &teammate_name,
-                                    &color,
-                                    &model,
-                                    "team-member",
-                                )
-                                .await;
-                        }
-                        // Always re-emit team:teammate_spawned so the frontend creates the
-                        // filter tab immediately. The teammate may already be registered from
-                        // approve_team_plan (add_teammate returns TeammateAlreadyExists), but
-                        // we re-emit here so the frontend recovers if it missed the initial event.
-                        // Try to include conversation_id if the stream processor already created one.
-                        let conv_id = if let Some(ref service) = team_service {
-                            service
-                                .tracker()
-                                .get_team_status(&team_name)
-                                .await
-                                .ok()
-                                .and_then(|s| {
-                                    s.teammates
-                                        .iter()
-                                        .find(|t| t.name == teammate_name)
-                                        .and_then(|t| t.conversation_id.clone())
-                                })
-                        } else {
-                            None
-                        };
-                        if let Some(ref handle) = app_handle {
-                            team_events::emit_teammate_spawned(
-                                handle,
-                                &team_name,
-                                &teammate_name,
-                                &color,
-                                &model,
-                                "team-member",
-                                &context_type_str,
-                                &context_id_str,
-                                conv_id.as_deref(),
-                            );
-                        }
-                    }
-                    StreamEvent::TeamMessageSent {
-                        sender,
-                        recipient,
-                        content,
-                        message_type,
-                    } => {
-                        // Persist message and emit full-payload event via TeamService
-                        use crate::application::team_state_tracker::TeamMessageType;
-
-                        let msg_type = match message_type.as_str() {
-                            "broadcast" => TeamMessageType::Broadcast,
-                            _ => TeamMessageType::TeammateMessage,
-                        };
-
-                        if let Some(ref service) = team_service {
-                            let _ = service
-                                .add_teammate_message(
-                                    // Derive team_name from active teams
-                                    &{
-                                        let teams = service.list_teams().await;
-                                        teams.into_iter().next().unwrap_or_default()
-                                    },
-                                    &sender,
-                                    recipient.as_deref(),
-                                    &content,
-                                    msg_type,
-                                )
-                                .await;
-                        } else if let Some(ref handle) = app_handle {
-                            // Fallback: emit event directly without persistence
-                            let _ = handle.emit(
-                                events::TEAM_MESSAGE,
-                                serde_json::json!({
-                                    "sender": sender,
-                                    "recipient": recipient,
-                                    "content": content,
-                                    "message_type": message_type,
-                                    "context_type": context_type_str,
-                                    "context_id": context_id_str,
-                                }),
-                            );
-                        }
-                    }
-                    StreamEvent::TeamDeleted { team_name } => {
-                        // Disband team via TeamService (persistence + events)
-                        if let Some(ref service) = team_service {
-                            let _ = service.disband_team(&team_name).await;
-                        } else if let Some(ref handle) = app_handle {
-                            // Fallback: emit event directly if no service available
-                            team_events::emit_team_disbanded(
-                                handle,
-                                &team_name,
-                                &context_type_str,
-                                &context_id_str,
                             );
                         }
                     }
@@ -3092,30 +2900,37 @@ pub async fn process_stream_background<R: Runtime>(
                 ChatTimelineItemStatus::Streaming,
             )
             .await;
-            let current_turn_usage = processor.current_turn_usage();
-            persist_assistant_message_usage(
-                &chat_message_repo,
-                &assistant_message_id,
-                &current_turn_usage,
-            )
-            .await;
-            persist_agent_run_usage(&agent_run_repo, &agent_run_id, &current_turn_usage).await;
-            if current_turn_usage != last_emitted_usage {
-                emit_usage_updated_event(
-                    &app_handle,
-                    &conversation_id_str,
-                    &context_type_str,
-                    &context_id_str,
-                );
-                last_emitted_usage = current_turn_usage;
+            if let Some(capture) = processor.current_turn_capture() {
+                let current_turn_usage = capture.normalized.clone();
+                let usage_persisted = persist_usage_capture_run_first(
+                    &agent_run_repo,
+                    &agent_run_id,
+                    &chat_message_repo,
+                    &assistant_message_id,
+                    &capture,
+                )
+                .await;
+                if usage_persisted && current_turn_usage != last_emitted_usage {
+                    emit_usage_updated_event(
+                        &app_handle,
+                        &conversation_id_str,
+                        &context_type_str,
+                        &context_id_str,
+                    );
+                    last_emitted_usage = current_turn_usage;
+                }
             }
             last_flush = std::time::Instant::now();
         }
 
         // Throttled heartbeat: write last_active_at every 5s on any parsed event
         if lines_parsed > 0 && last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-            if let (Some(ref registry), Some(ref key)) = (&running_agent_registry, &heartbeat_key) {
-                registry.update_heartbeat(key, chrono::Utc::now()).await;
+            if let (Some(ref registry), Some(ref key), Some(ref run_id)) =
+                (&running_agent_registry, &heartbeat_key, &agent_run_id)
+            {
+                let _ = registry
+                    .update_heartbeat(key, run_id, chrono::Utc::now())
+                    .await;
             }
             last_heartbeat = std::time::Instant::now();
         }
@@ -3252,12 +3067,14 @@ pub async fn process_stream_background<R: Runtime>(
         content_blocks: result.content_blocks,
         session_id: result.session_id,
         usage: result.usage,
+        usage_provenance: result.usage_provenance,
         stderr_text: stderr_content,
         turns_finalized,
         completion_applied: completion_applied_for_stream,
         execution_slot_held,
         completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit,
+        mode_handoff_exit,
     };
 
     // Final flush of accumulated content so post-loop error returns don't lose data
@@ -3277,9 +3094,37 @@ pub async fn process_stream_background<R: Runtime>(
         ChatTimelineItemStatus::Finalized,
     )
     .await;
-    persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &outcome.usage)
-        .await;
-    persist_agent_run_usage(&agent_run_repo, &agent_run_id, &outcome.usage).await;
+    if !outcome.usage.is_empty() {
+        let capture = UsageCapture::normalized(
+            outcome.usage.clone(),
+            outcome
+                .usage_provenance
+                .unwrap_or(UsageProvenance::ProviderSnapshotFallback),
+        );
+        let no_message_mirror = None;
+        let capture_message_id = if turns_finalized == 0 {
+            &assistant_message_id
+        } else {
+            &no_message_mirror
+        };
+        if persist_usage_capture_run_first(
+            &agent_run_repo,
+            &agent_run_id,
+            &chat_message_repo,
+            capture_message_id,
+            &capture,
+        )
+        .await
+            && (turns_finalized == 0 || outcome.usage != last_emitted_usage)
+        {
+            emit_usage_updated_event(
+                &app_handle,
+                &conversation_id_str,
+                &context_type_str,
+                &context_id_str,
+            );
+        }
+    }
 
     // Check if cancellation was requested during/after stream processing.
     // Fixes race where EOF from killed process wins the tokio::select! over
@@ -3420,6 +3265,16 @@ pub async fn process_stream_background<R: Runtime>(
     Ok(outcome)
 }
 
+pub(super) fn is_armed_mode_handoff_disposition(
+    disposition: InteractiveProcessRetireAfterTurnDisposition,
+) -> bool {
+    matches!(
+        disposition,
+        InteractiveProcessRetireAfterTurnDisposition::Active { is_armed: true }
+            | InteractiveProcessRetireAfterTurnDisposition::Idle { is_armed: true }
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn process_codex_stream_background<R: Runtime>(
     mut child: tokio::process::Child,
@@ -3493,6 +3348,7 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut runtime_errors = Vec::<String>::new();
     let mut local_tool_errors = Vec::<String>::new();
     let mut session_id: Option<String> = None;
+    let mut run_session_attribution_ready = agent_run_repo.is_none() || agent_run_id.is_none();
     let mut usage = AgentRunUsage::default();
     let mut lines_seen = 0usize;
     let mut lines_parsed = 0usize;
@@ -3503,7 +3359,7 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut last_flush = std::time::Instant::now();
     const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
     let mut completion_signal_tracker = CompletionSignalTracker::default();
-    let mut last_emitted_usage = AgentRunUsage::default();
+    let mut last_emitted_capture: Option<UsageCapture> = None;
     let mut pending_codex_file_changes: HashMap<String, PendingCodexFileChange> = HashMap::new();
     let mut codex_turn_completed = false;
     let heartbeat_key = running_agent_registry
@@ -3590,16 +3446,46 @@ async fn process_codex_stream_background<R: Runtime>(
 
             if let Some(thread_id) = extract_codex_thread_id(&event) {
                 session_id = Some(thread_id.clone());
+                let session_ref =
+                    provider_session_ref_for_harness(AgentHarnessKind::Codex, thread_id.clone());
+                if let (Some(repo), Some(run_id)) = (agent_run_repo.as_ref(), agent_run_id.as_ref())
+                {
+                    run_session_attribution_ready = match repo
+                        .update_attribution(
+                            &AgentRunId::from_string(run_id.clone()),
+                            &crate::domain::entities::AgentRunAttribution {
+                                harness: Some(AgentHarnessKind::Codex),
+                                provider_session_id: Some(thread_id.clone()),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                    {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::warn!(
+                                run_id,
+                                error = %error,
+                                "Failed to persist Codex session attribution; cumulative usage capture will be suppressed"
+                            );
+                            false
+                        }
+                    };
+                }
+                if let (Some(repo), Some(message_id)) =
+                    (chat_message_repo.as_ref(), assistant_message_id.as_ref())
+                {
+                    let _ = repo
+                        .update_provider_session_ref(
+                            &ChatMessageId::from_string(message_id.clone()),
+                            &session_ref,
+                        )
+                        .await;
+                }
                 if persist_conversation_provider_session_ref {
                     if let Some(ref repo) = conversation_repo {
                         let _ = repo
-                            .update_provider_session_ref(
-                                conversation_id,
-                                &provider_session_ref_for_harness(
-                                    AgentHarnessKind::Codex,
-                                    thread_id,
-                                ),
-                            )
+                            .update_provider_session_ref(conversation_id, &session_ref)
                             .await;
                     }
                 }
@@ -3833,26 +3719,40 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(event_usage) = extract_codex_usage(&event) {
-                usage = normalize_codex_stream_usage_for_persistence(
-                    agent_run_usage_from_codex_usage(event_usage.usage),
-                    event_usage.source,
-                    &agent_run_repo,
-                    conversation_id,
-                    agent_run_id.as_deref(),
-                    session_id.as_deref(),
-                )
-                .await;
-                persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &usage)
+                let capture = if event_usage.source == CodexUsageSource::CumulativeTotal
+                    && !run_session_attribution_ready
+                {
+                    None
+                } else {
+                    normalize_codex_stream_usage_for_persistence(
+                        agent_run_usage_from_codex_usage(event_usage.usage),
+                        event_usage.source,
+                        &agent_run_repo,
+                        conversation_id,
+                        agent_run_id.as_deref(),
+                        session_id.as_deref(),
+                    )
+                    .await
+                };
+                if let Some(capture) = capture {
+                    usage = capture.normalized.clone();
+                    let persisted = persist_usage_capture_run_first(
+                        &agent_run_repo,
+                        &agent_run_id,
+                        &chat_message_repo,
+                        &assistant_message_id,
+                        &capture,
+                    )
                     .await;
-                persist_agent_run_usage(&agent_run_repo, &agent_run_id, &usage).await;
-                if usage != last_emitted_usage {
-                    emit_usage_updated_event(
-                        &app_handle,
-                        &conversation_id_str,
-                        &context_type_str,
-                        &context_id_str,
-                    );
-                    last_emitted_usage = usage.clone();
+                    if persisted && last_emitted_capture.as_ref() != Some(&capture) {
+                        emit_usage_updated_event(
+                            &app_handle,
+                            &conversation_id_str,
+                            &context_type_str,
+                            &context_id_str,
+                        );
+                        last_emitted_capture = Some(capture);
+                    }
                 }
             }
 
@@ -3900,8 +3800,12 @@ async fn process_codex_stream_background<R: Runtime>(
         }
 
         if lines_parsed > 0 && last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-            if let (Some(ref registry), Some(ref key)) = (&running_agent_registry, &heartbeat_key) {
-                registry.update_heartbeat(key, chrono::Utc::now()).await;
+            if let (Some(ref registry), Some(ref key), Some(ref run_id)) =
+                (&running_agent_registry, &heartbeat_key, &agent_run_id)
+            {
+                let _ = registry
+                    .update_heartbeat(key, run_id, chrono::Utc::now())
+                    .await;
             }
             last_heartbeat = std::time::Instant::now();
         }
@@ -3951,12 +3855,16 @@ async fn process_codex_stream_background<R: Runtime>(
         content_blocks,
         session_id: session_id.clone(),
         usage,
+        usage_provenance: last_emitted_capture
+            .as_ref()
+            .map(|capture| capture.provenance),
         stderr_text: stderr_content.clone(),
         turns_finalized: 0,
         completion_applied: false,
         execution_slot_held: true,
         completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit: false,
+        mode_handoff_exit: false,
     };
 
     flush_content_before_error(
@@ -3979,10 +3887,12 @@ async fn process_codex_stream_background<R: Runtime>(
         },
     )
     .await;
-    persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &outcome.usage)
-        .await;
-    persist_agent_run_usage(&agent_run_repo, &agent_run_id, &outcome.usage).await;
-
+    if cancellation_token.is_cancelled() {
+        return Err(StreamError::Cancelled {
+            turns_finalized: 0,
+            completion_tool_called: false,
+        });
+    }
     if let Some(stream_error) = super::chat_service_errors::classify_codex_stream_failure(
         &runtime_errors,
         &local_tool_errors,
@@ -4054,13 +3964,6 @@ async fn process_codex_stream_background<R: Runtime>(
         {
             return Err(provider_error);
         }
-    }
-
-    if cancellation_token.is_cancelled() {
-        return Err(StreamError::Cancelled {
-            turns_finalized: 0,
-            completion_tool_called: false,
-        });
     }
 
     Ok(outcome)
