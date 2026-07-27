@@ -21,6 +21,10 @@ macro_rules! register_tauri_commands {
             commands::notification_commands::get_unread_notification_count,
             #[cfg(debug_assertions)]
             commands::notification_commands::debug_send_test_notification,
+            commands::remote_host_commands::start_remote_listener,
+            commands::remote_host_commands::stop_remote_listener,
+            commands::remote_host_commands::set_remote_exposure_mode,
+            commands::remote_host_commands::get_remote_listener_status,
             #[cfg(debug_assertions)]
             commands::remote_transport_spike_commands::debug_start_remote_transport_cors_probe,
             #[cfg(debug_assertions)]

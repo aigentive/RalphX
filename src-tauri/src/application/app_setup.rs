@@ -421,6 +421,10 @@ fn launch_startup_attempt(
             }
             return;
         }
+        // Remote host mode starts in the same setup phase as the local runtime, but only when
+        // the persisted `remote_host_settings` row enables it (§5.2). With the flag off or the
+        // row absent, nothing listens on the remote port.
+        crate::remote_server::auto_start_remote_listener_from_handle(&app_handle).await;
         let state = app_handle.state::<AppState>();
         launch_startup_pipeline_from_handle(
             app_handle.clone(),
