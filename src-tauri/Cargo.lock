@@ -3639,6 +3639,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "statig",
+ "syn 2.0.114",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
