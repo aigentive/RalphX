@@ -13,9 +13,10 @@ import { listen, emit, type UnlistenFn, type Event } from "@tauri-apps/api/event
 import { isTauriMode } from "./tauri-detection";
 
 /**
- * Unsubscribe function returned by subscribe()
+ * Unsubscribe function returned by subscribe(). The function must never throw.
+ * `ready` resolves once native listener registration has settled, including failure.
  */
-export type Unsubscribe = () => void;
+export type Unsubscribe = (() => void) & { ready: Promise<void> };
 
 /**
  * Event handler function
@@ -112,7 +113,7 @@ export class TauriEventBus implements EventBus {
     this.unlisteners.get(event)!.add(unlistenPromise);
 
     // Return unsubscribe function
-    return () => {
+    const unsubscribe = () => {
       if (isUnsubscribed) {
         return;
       }
@@ -135,6 +136,8 @@ export class TauriEventBus implements EventBus {
         this.readyListeners.delete(subscriptionId);
       });
     };
+    unsubscribe.ready = unlistenPromise.then(() => undefined);
+    return unsubscribe;
   }
 
   emit<T = unknown>(event: string, payload: T): void {
@@ -163,9 +166,11 @@ export class MockEventBus implements EventBus {
     this.listeners.get(event)!.add(typedHandler);
 
     // Return unsubscribe function
-    return () => {
+    const unsubscribe = () => {
       this.listeners.get(event)?.delete(typedHandler);
     };
+    unsubscribe.ready = Promise.resolve();
+    return unsubscribe;
   }
 
   emit<T = unknown>(event: string, payload: T): void {

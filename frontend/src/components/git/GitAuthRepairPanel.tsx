@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -19,6 +18,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
+import type { Unsubscribe } from "@/lib/event-bus";
+import { useEventBus } from "@/providers/EventProvider";
 import {
   useGitAuthDiagnostics,
   useLoginGhWithBrowser,
@@ -94,6 +95,7 @@ export function GitAuthRepairPanel({
   showWhenHealthy?: boolean;
   requiresGhAuth?: boolean;
 }) {
+  const eventBus = useEventBus();
   const diagnosticsQuery = useGitAuthDiagnostics(projectId);
   const ghStatusQuery = useGitHubConnectionStatus();
   const switchToSshMutation = useSwitchGitOriginToSsh();
@@ -241,13 +243,14 @@ export function GitAuthRepairPanel({
 
   const handleLoginGhWithBrowser = async () => {
     setLoginPrompt(null);
-    let unlisten: (() => void) | undefined;
+    let unlisten: Unsubscribe | undefined;
 
     try {
-      unlisten = await listen<GhAuthLoginPromptPayload>(
+      unlisten = eventBus.subscribe<GhAuthLoginPromptPayload>(
         GH_AUTH_LOGIN_PROMPT_EVENT,
-        (event) => mergeLoginPrompt(event.payload),
+        mergeLoginPrompt,
       );
+      await unlisten.ready;
       await loginGhWithBrowserMutation.mutateAsync();
       toast.success("GitHub CLI signed in");
       await resumeDeferredStartupIfHealthy();
