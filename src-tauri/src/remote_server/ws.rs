@@ -165,6 +165,9 @@ impl SessionSendQueue {
         }
     }
 
+    /// Depth probe. Only the tests need it — production never branches on the depth, it branches
+    /// on the [`SendQueueOutcome`], which is the whole point of returning one.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.frames.len()
     }
@@ -383,6 +386,13 @@ pub(crate) async fn run_session(
 ) -> SessionOutcome {
     let window = context.stream.epoch_window();
     let max_seq = context.stream.max_seq();
+    tracing::debug!(
+        session_id = %context.session_id,
+        device_id = %context.device_id,
+        epoch = %window.epoch,
+        max_seq,
+        "Remote WS session opened"
+    );
     if socket
         .send(hello_frame(&context.environment_id, &window, max_seq))
         .await
@@ -393,6 +403,9 @@ pub(crate) async fn run_session(
 
     let mut lease: Option<crate::remote_server::retention::RetentionLease> = None;
     let mut frames: Option<tokio::sync::broadcast::Receiver<StreamFrame>> = None;
+    // The epoch this session's replay was proven against; live durable frames from any other
+    // epoch are not this client's stream.
+    let mut subscribed_epoch: Option<StreamEpoch> = None;
     let mut queue = SessionSendQueue::with_capacity(SESSION_SEND_QUEUE_CAPACITY);
     let mut last_sent: u64 = 0;
     let mut unacked_heartbeats: u32 = 0;
@@ -433,6 +446,7 @@ pub(crate) async fn run_session(
                 match begin_subscription(socket, &context.stream, after_seq, &stream_epoch).await {
                     Ok(subscription) => {
                         last_sent = subscription.through_seq;
+                        subscribed_epoch = Some(subscription.epoch);
                         lease = Some(subscription.lease);
                         frames = Some(subscription.frames);
                     }
@@ -454,6 +468,13 @@ pub(crate) async fn run_session(
                 unacked_heartbeats = 0;
             }
             SessionEvent::Live(LiveFrame::Durable(event)) => {
+                // A frame published under a different epoch than the one this session subscribed
+                // to is not this client's stream. The `EpochRolled` frame that follows it will
+                // tear the session down; forwarding it in the meantime would splice a seq from a
+                // numbering the client never agreed to.
+                if subscribed_epoch.as_ref() != Some(&event.epoch) {
+                    continue;
+                }
                 // The client already has everything through `through_seq` from the replay; the
                 // fork deliberately overlaps it (§3.4).
                 if event.seq > last_sent {
@@ -553,6 +574,9 @@ async fn close_with_teardown(
 
 pub(crate) struct Subscription {
     pub through_seq: u64,
+    /// The epoch the replay was proven against. Pinned here rather than re-read later, so a roll
+    /// during the session cannot retroactively change what this client agreed to.
+    pub epoch: StreamEpoch,
     pub lease: crate::remote_server::retention::RetentionLease,
     pub frames: tokio::sync::broadcast::Receiver<StreamFrame>,
 }
@@ -606,6 +630,7 @@ pub(crate) async fn begin_subscription(
 
     Ok(Subscription {
         through_seq: replayed,
+        epoch: window.epoch,
         lease,
         frames,
     })

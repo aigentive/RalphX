@@ -176,6 +176,12 @@ impl RemoteStreamHandle {
     }
 
     /// Signals a live epoch roll. Safe from sync context — it is a plain unbounded send.
+    ///
+    /// The capture bank owns its own sender and signals directly, so nothing in this PR calls
+    /// this. It exists because the control channel is the *only* sanctioned way to roll the
+    /// epoch: any future host-side trigger must come through here rather than reaching into the
+    /// actor's state, which is what keeps "one owner mints the epoch" true.
+    #[allow(dead_code)]
     pub(crate) fn request_epoch_roll(&self, cause: EpochRollCause) {
         if self
             .state

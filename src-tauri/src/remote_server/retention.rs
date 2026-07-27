@@ -123,7 +123,9 @@ impl RetentionLeaseRegistry {
         table.leases.values().map(|entry| entry.cursor).min()
     }
 
-    /// Live (unexpired) lease count. Test/diagnostic surface.
+    /// Live (unexpired) lease count, after evicting expired ones. Test surface: production reads
+    /// the floor, never the count.
+    #[cfg(test)]
     pub(crate) fn live_count_at(&self, now: Instant) -> usize {
         self.min_live_cursor_at(now);
         self.lock().leases.len()
@@ -141,6 +143,7 @@ impl RetentionLeaseRegistry {
         }
     }
 
+    #[cfg(test)]
     fn cursor(&self, id: LeaseId) -> Option<u64> {
         self.lock().leases.get(&id).map(|entry| entry.cursor)
     }
@@ -164,6 +167,8 @@ pub(crate) struct RetentionLease {
 }
 
 impl RetentionLease {
+    /// Test surface: production reads the registry-wide floor, never one lease's cursor.
+    #[cfg(test)]
     pub(crate) fn cursor(&self) -> Option<u64> {
         self.registry.cursor(self.id)
     }
@@ -173,6 +178,8 @@ impl RetentionLease {
         self.registry.advance(self.id, seq, Instant::now());
     }
 
+    /// Clock-injecting form, so TTL behaviour is provable without sleeping.
+    #[cfg(test)]
     pub(crate) fn advance_at(&self, seq: u64, now: Instant) {
         self.registry.advance(self.id, seq, now);
     }
