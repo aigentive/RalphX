@@ -560,6 +560,9 @@ mod v20260727180000_remote_auth_tests;
 mod v20260727191500_remote_environments;
 #[cfg(test)]
 mod v20260727191500_remote_environments_tests;
+mod v20260727213000_remote_event_log;
+#[cfg(test)]
+mod v20260727213000_remote_event_log_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -654,7 +657,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260727191500;
+pub const SCHEMA_VERSION: i64 = 20260727213000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1799,6 +1802,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260727191500,
         name: "remote_environments",
         migrate: v20260727191500_remote_environments::migrate,
+    },
+    Migration {
+        version: 20260727213000,
+        name: "remote_event_log",
+        migrate: v20260727213000_remote_event_log::migrate,
     },
 ];
 
