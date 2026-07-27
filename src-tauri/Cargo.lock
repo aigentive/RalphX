@@ -3684,6 +3684,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ralphx-remote-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ralphx-workflow-runner"
 version = "0.1.0"
 dependencies = [

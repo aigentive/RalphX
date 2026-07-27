@@ -1,0 +1,12 @@
+[
+  {"type":"hello","protocolVersion":1,"environmentId":"env-1","streamEpoch":"epoch-1","serverVersion":"0.81.0","maxSeq":18234,"heartbeatSecs":20},
+  {"type":"event","seq":18235,"name":"task:status_changed","payload":{"taskId":"task-1"}},
+  {"type":"event","seq":null,"name":"agent:chunk","payload":{"text":"hello"}},
+  {"type":"replayDone","throughSeq":18235},
+  {"type":"reset","reason":"cursor_pruned"},
+  {"type":"heartbeat","t":1626354000},
+  {"type":"error","code":"REMOTE_FORBIDDEN","message":"scope required"},
+  {"type":"subscribe","afterSeq":18100,"streamEpoch":"epoch-1"},
+  {"type":"cursorAck","seq":18230},
+  {"type":"heartbeatAck","t":1626354000}
+]

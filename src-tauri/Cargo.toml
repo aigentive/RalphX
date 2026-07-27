@@ -6,7 +6,7 @@ authors = ["RalphX Team"]
 edition = "2021"
 
 [workspace]
-members = ["crates/ralphx-domain", "crates/ralphx-events", "crates/ralphx-workflow-runner"]
+members = ["crates/ralphx-domain", "crates/ralphx-events", "crates/ralphx-remote-protocol", "crates/ralphx-workflow-runner"]
 resolver = "2"
 
 [workspace.dependencies]

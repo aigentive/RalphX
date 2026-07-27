@@ -1,0 +1,11 @@
+[package]
+name = "ralphx-remote-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
