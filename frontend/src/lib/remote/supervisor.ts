@@ -254,6 +254,21 @@ export class ConnectionSupervisor {
    * the user never sees the actionable re-pair state (P-10). It parks in `blocked` with
    * a populated reason, exactly like a 401 from the attempt itself.
    */
+  /**
+   * The host answered an established stream with `error{REMOTE_UNAUTHORIZED}` (§6.5, P-2).
+   *
+   * Deliberately NOT `authorityWithdrawn`: the host reuses that rejection both for a
+   * revoked device and for one whose agent control was merely NARROWED while it stays
+   * paired, so parking on the frame alone would show a re-pair state to a device that is
+   * still perfectly valid. Instead it runs ONE immediate verification redial — no backoff
+   * ladder, the ladder is what the finding objected to — whose introspection/ticket 401
+   * lands `blocked` for a revoked device, and whose success resumes with the narrowed
+   * scopes the attempt refetches.
+   */
+  verifyAuthorityNow(): void {
+    this.dispatch("credentials_changed");
+  }
+
   authorityWithdrawn(message: string): void {
     this.blockedReason = { failure: "unauthorized", message };
     this.deps.onBlocked?.("unauthorized", message);

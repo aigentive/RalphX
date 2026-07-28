@@ -312,6 +312,15 @@ export function initializeEnvironmentRuntime(): () => void {
           );
           return;
         }
+        // `error{REMOTE_UNAUTHORIZED}` on an established stream is how the host actually
+        // reports a revocation — it never sends `reset(revoked)` on the wire for it. The
+        // ladder would cost a full backoff cycle before the ws-ticket 401 parked the
+        // device, so verify once, immediately. Blanket-parking here would be wrong: the
+        // same rejection covers an agent-control NARROWING on a device that stays paired.
+        if (cause.kind === "stream_error" && cause.code === "REMOTE_UNAUTHORIZED") {
+          runtime.supervisor.verifyAuthorityNow();
+          return;
+        }
         runtime.supervisor.streamLost();
       },
     });

@@ -89,7 +89,15 @@ export type StreamRestartCause =
   | { readonly kind: "buffer_overflow" }
   | { readonly kind: "sequence_hole"; readonly expected: number; readonly received: number }
   | { readonly kind: "epoch_mismatch" }
-  | { readonly kind: "protocol_error"; readonly detail: string };
+  | { readonly kind: "protocol_error"; readonly detail: string }
+  /**
+   * The host sent an `error` frame on an established stream. The TYPED code is carried
+   * through: collapsing it into `protocol_error` cost the client the one signal that
+   * distinguishes a withdrawn authority (`REMOTE_UNAUTHORIZED`) from ordinary transport
+   * noise, so a revoked device spent a full backoff cycle before the ws-ticket 401
+   * finally parked it blocked.
+   */
+  | { readonly kind: "stream_error"; readonly code: string };
 
 export interface NetworkEventBusDeps {
   /** The registry row id of the environment this bus projects. */
@@ -332,7 +340,7 @@ export class NetworkEventBus implements EventBus {
         this.ackOnHeartbeat();
         return;
       case "error":
-        this.requestRestart({ kind: "protocol_error", detail: frame.code });
+        this.requestRestart({ kind: "stream_error", code: frame.code });
         return;
     }
   }

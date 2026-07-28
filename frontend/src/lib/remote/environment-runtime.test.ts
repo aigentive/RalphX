@@ -34,6 +34,7 @@ const { supervisors } = vi.hoisted(() => ({
     visibility: boolean[];
     networks: boolean[];
     streamLosses: number;
+    authorityVerifications: number;
     authorityWithdrawals: string[];
     setState: (state: string) => void;
     setBlocked: (
@@ -55,6 +56,7 @@ vi.mock("./supervisor", async (importOriginal) => {
         visibility: [],
         networks: [],
         streamLosses: 0,
+        authorityVerifications: 0,
         authorityWithdrawals: [],
         setState: (state: string) => {
           this.state = state;
@@ -84,6 +86,9 @@ vi.mock("./supervisor", async (importOriginal) => {
     }
     streamLost(): void {
       this.record.streamLosses += 1;
+    }
+    verifyAuthorityNow(): void {
+      this.record.authorityVerifications += 1;
     }
     authorityWithdrawn(message: string): void {
       this.record.authorityWithdrawals.push(message);
@@ -286,6 +291,57 @@ describe("environment runtime composition", () => {
 
     expect(runtime?.streamLosses).toBe(1);
     expect(runtime?.authorityWithdrawals).toEqual([]);
+  });
+
+  /**
+   * P-2 / §6.5: the host reports a revocation on an established stream as
+   * `error{REMOTE_UNAUTHORIZED}`, never as `reset(revoked)`. Discarding the typed code
+   * into a transient protocol error cost a full backoff cycle before the ws-ticket 401
+   * finally parked the device.
+   */
+  it("verifies once on error{REMOTE_UNAUTHORIZED} instead of entering the backoff ladder", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const runtime = supervisors[supervisors.length - 1];
+    const bus = createEventBus("env-b") as EventBus & {
+      handleFrame: (frame: { type: "error"; code: string; message: string }) => void;
+    };
+
+    bus.handleFrame({
+      type: "error",
+      code: "REMOTE_UNAUTHORIZED",
+      message: "device revoked",
+    });
+
+    expect(runtime?.authorityVerifications).toBe(1);
+    expect(runtime?.streamLosses).toBe(0);
+    // Not a blanket park: agent-control NARROWING reuses this rejection on a device that
+    // stays paired, so the re-pair state must not be asserted from the frame alone.
+    expect(runtime?.authorityWithdrawals).toEqual([]);
+  });
+
+  it("keeps a non-authority error frame on the ordinary retry ladder", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const runtime = supervisors[supervisors.length - 1];
+    const bus = createEventBus("env-b") as EventBus & {
+      handleFrame: (frame: { type: "error"; code: string; message: string }) => void;
+    };
+
+    bus.handleFrame({
+      type: "error",
+      code: "REMOTE_INTERNAL_ERROR",
+      message: "host fault",
+    });
+
+    expect(runtime?.streamLosses).toBe(1);
+    expect(runtime?.authorityVerifications).toBe(0);
   });
 
   it("lifts a proxy refusal on the connect path into the transport taxonomy", async () => {
