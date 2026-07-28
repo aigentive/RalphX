@@ -19,6 +19,7 @@ import {
 } from "@/lib/remote/pending-gate-reconcile";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
+import { reconcileUnknownOutcome } from "@/lib/remote/unknown-outcome";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Shield, Terminal } from "lucide-react";
 import { useTaskStore } from "@/stores/taskStore";
@@ -58,6 +59,34 @@ const CONTEXT_LABEL_MAP: Record<string, string> = {
   task: "Task Chat",
   project: "Project Chat",
 };
+
+/**
+ * Applies an authoritative host snapshot to the local queue.
+ *
+ * A request is dropped only when ALL of these hold: the host no longer lists it, it is
+ * not the one currently mid-resolution, and it already existed when the list call
+ * departed (`preCallIds`). That last clause is the in-flight guard — the same one
+ * `useAskUserQuestion` carries as `preCallRequestId`.
+ */
+export function applyAuthoritativePermissionSnapshot(
+  previous: readonly PermissionRequest[],
+  pending: readonly PermissionRequest[],
+  preCallIds: ReadonlySet<string>,
+  exemptId: string | null
+): PermissionRequest[] {
+  const authoritative = new Set(pending.map((request) => request.request_id));
+  const retained = previous.filter(
+    (request) =>
+      authoritative.has(request.request_id) ||
+      request.request_id === exemptId ||
+      !preCallIds.has(request.request_id)
+  );
+  const known = new Set(retained.map((request) => request.request_id));
+  return [
+    ...retained,
+    ...pending.filter((request) => !known.has(request.request_id)),
+  ];
+}
 
 type BufferedEvent =
   | { type: "permission:request"; payload: PermissionRequest }
@@ -106,6 +135,17 @@ export function PermissionDialog() {
   useEffect(() => {
     resolvingRef.current = resolvingId;
   }, [resolvingId]);
+
+  /**
+   * Mirror of the queue, read to snapshot the request ids that existed BEFORE an
+   * authoritative list call departs. Only those ids are droppable by its response — a
+   * gate raised while the call was in flight cannot appear in a snapshot minted before
+   * it existed, and no further event re-raises it.
+   */
+  const requestsRef = useRef<PermissionRequest[]>([]);
+  useEffect(() => {
+    requestsRef.current = requests;
+  }, [requests]);
 
   // D7: hydration race guard refs
   const hydratingRef = useRef(false);
@@ -240,24 +280,20 @@ export function PermissionDialog() {
         // A background environment's connect must not rewrite the active gate UI.
         return;
       }
+      const preCallIds = new Set(
+        requestsRef.current.map((request) => request.request_id)
+      );
       void api.permission
         .listPendingPermissionGates()
         .then((pending) => {
-          const authoritative = new Map(
-            pending.map((request) => [request.request_id, request] as const)
+          setRequests((previous) =>
+            applyAuthoritativePermissionSnapshot(
+              previous,
+              pending,
+              preCallIds,
+              resolvingRef.current
+            )
           );
-          setRequests((previous) => {
-            const retained = previous.filter(
-              (request) =>
-                authoritative.has(request.request_id) ||
-                request.request_id === resolvingRef.current
-            );
-            const known = new Set(retained.map((request) => request.request_id));
-            return [
-              ...retained,
-              ...pending.filter((request) => !known.has(request.request_id)),
-            ];
-          });
         })
         .catch((error: unknown) => {
           console.error("Failed to reconcile pending permissions:", error);
@@ -267,6 +303,30 @@ export function PermissionDialog() {
         });
     });
   }, []);
+
+  /**
+   * P-20 refetch for the permission queue, which is component state fed by a Tauri
+   * command rather than a react-query entity. Exactly one read, no re-send, no timer:
+   * the host's own pending list decides whether the resolve landed. The exempt id is
+   * `null` on purpose — the request we just tried to resolve is precisely the one this
+   * read is allowed to drop.
+   */
+  const refetchPendingAfterUnknownOutcome = () => {
+    const preCallIds = new Set(
+      requestsRef.current.map((request) => request.request_id)
+    );
+    void api.permission
+      .getPendingPermissions()
+      .then((pending) => {
+        setRequests((previous) =>
+          applyAuthoritativePermissionSnapshot(previous, pending, preCallIds, null)
+        );
+      })
+      .catch((error: unknown) => {
+        // An unreadable list is not evidence the gate is gone; leave the queue alone.
+        console.error("Failed to refetch pending permissions:", error);
+      });
+  };
 
   const handleDecision = async (decision: "allow" | "deny") => {
     if (!currentRequest) return;
@@ -288,6 +348,16 @@ export function PermissionDialog() {
       setRequests((prev) => prev.slice(1));
     } catch (error) {
       console.error("Failed to resolve permission:", error);
+      // P-20: the request reached the host and the answer did not reach us. Re-sending
+      // would be a second decision racing the host's dedup reservation, so the only
+      // legal move is to re-read the host's pending list and let it be the answer.
+      const unknownOutcome = reconcileUnknownOutcome(error, {
+        refetch: refetchPendingAfterUnknownOutcome,
+      });
+      if (unknownOutcome.kind === "reconciled") {
+        toast.info(unknownOutcome.message);
+        return;
+      }
       // D4: normalize error and split on "not found"
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("not found")) {

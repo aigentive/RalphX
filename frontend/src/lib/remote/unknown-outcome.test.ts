@@ -127,4 +127,24 @@ describe("reconcileUnknownOutcome", () => {
     // knows of no affected entity, which is not the same as "refresh everything".
     expect(invalidate).not.toHaveBeenCalled();
   });
+
+  it("runs a non-react-query refetch exactly once", () => {
+    const refetch = vi.fn();
+
+    expect(
+      reconcileUnknownOutcome(transportError("REMOTE_REQUEST_IN_PROGRESS"), {
+        refetch,
+      })
+    ).toEqual({ kind: "reconciled", message: UNKNOWN_OUTCOME_MESSAGE });
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refetch for an error it does not own", () => {
+    const refetch = vi.fn();
+
+    expect(
+      reconcileUnknownOutcome(transportError("REMOTE_FORBIDDEN"), { refetch })
+    ).toEqual({ kind: "not_unknown" });
+    expect(refetch).not.toHaveBeenCalled();
+  });
 });

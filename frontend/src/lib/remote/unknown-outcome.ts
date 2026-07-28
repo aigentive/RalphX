@@ -23,10 +23,19 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { isRemoteTransportError } from "./transport-errors";
 
 export interface UnknownOutcomeReconcileOptions {
-  /** The environment-scoped client. A-8: scoping is the client, not the key. */
-  readonly queryClient: QueryClient;
+  /**
+   * The environment-scoped client. A-8: scoping is the client, not the key.
+   * Omitted by callers whose entity does not live in react-query at all.
+   */
+  readonly queryClient?: QueryClient;
   /** The entity keys whose truth the failed mutation would have changed. */
-  readonly queryKeys: readonly QueryKey[];
+  readonly queryKeys?: readonly QueryKey[];
+  /**
+   * Refetch for entities held OUTSIDE react-query (e.g. the permission queue, which is
+   * component state fed by a Tauri command). Runs exactly once, must not re-send the
+   * mutation, and must not schedule a retry timer.
+   */
+  readonly refetch?: () => void;
 }
 
 export type UnknownOutcomeResult =
@@ -50,8 +59,12 @@ export function reconcileUnknownOutcome(
   if (!isRemoteTransportError(error) || !error.isUnknownOutcome) {
     return { kind: "not_unknown" };
   }
-  for (const queryKey of options.queryKeys) {
-    void options.queryClient.invalidateQueries({ queryKey });
+  const queryClient = options.queryClient;
+  if (queryClient) {
+    for (const queryKey of options.queryKeys ?? []) {
+      void queryClient.invalidateQueries({ queryKey });
+    }
   }
+  options.refetch?.();
   return { kind: "reconciled", message: UNKNOWN_OUTCOME_MESSAGE };
 }
