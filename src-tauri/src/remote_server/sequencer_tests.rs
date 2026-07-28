@@ -21,7 +21,7 @@ use crate::remote_server::capture::{CaptureFeed, CaptureSink, EventRegistrar, Re
 // ------------------------------------------------------------------------------------------
 
 #[derive(Default)]
-pub(super) struct FakeEventLog {
+pub(crate) struct FakeEventLog {
     rows: Mutex<Vec<RemoteEventRow>>,
     high_water: Mutex<u64>,
     fail_commit: AtomicBool,
@@ -33,7 +33,7 @@ impl FakeEventLog {
         Arc::new(Self::default())
     }
 
-    pub(super) fn seeded(high_water: u64) -> Arc<Self> {
+    pub(crate) fn seeded(high_water: u64) -> Arc<Self> {
         let log = Self::default();
         *log.high_water.lock().unwrap() = high_water;
         Arc::new(log)
@@ -255,18 +255,25 @@ fn a_fresh_boot_puts_the_epoch_floor_at_the_persisted_high_water() {
     );
 }
 
-/// P-22(c): disable→enable inside ONE process does not roll the epoch. Only the actor rolls it,
-/// and neither listener stop nor start touches the actor.
+/// P-22(c) unit half: the actor is the ONLY writer of the epoch, so any code path that never
+/// calls `roll_epoch` cannot change it.
+///
+/// The lifecycle half — a REAL listener stop + start observed against a live epoch — lives in
+/// `listener_tests::enable_disable_enable_releases_and_reacquires_the_port`. It has to: this
+/// harness has no listener, so a "disable→enable" assertion written here would read the same
+/// epoch twice with nothing in between and pass for any implementation.
 #[test]
-fn listener_disable_and_re_enable_do_not_roll_the_epoch() {
+fn only_the_actor_can_roll_the_epoch() {
     let harness = harness();
     let before = harness.handle.epoch();
 
-    // The listener lifecycle has no path into the epoch: nothing here can change it.
-    let after = harness.handle.epoch();
+    // Every non-actor read of the window: none of them is a writer.
+    let window = harness.handle.epoch_window();
+    let _ = harness.handle.subscribe_frames();
 
-    assert_eq!(before, after);
-    assert_eq!(harness.handle.epoch_window().floor_seq, 0);
+    assert_eq!(harness.handle.epoch(), before);
+    assert_eq!(window.epoch, before);
+    assert_eq!(window.floor_seq, 0);
 }
 
 /// P-23: installing the stream is independent of starting the listener. A durable event emitted

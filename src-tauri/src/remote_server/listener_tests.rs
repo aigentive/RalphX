@@ -404,6 +404,24 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
     set_configured_port(&db, port);
     let handle = RemoteListenerHandle::new();
     let runner = RecordingTailscaleCommandRunner::default();
+    // P-15/P-22(c): the durable stream is installed ONCE per process and deliberately
+    // survives listener stop/start. Observing the epoch across the real lifecycle is the
+    // only way to prove "re-enable resumes without a spurious epoch roll" — reading the
+    // same epoch twice with no lifecycle action in between passes for any implementation.
+    let (control_sender, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+    let stream = crate::remote_server::sequencer::build_stream_for_test(
+        crate::remote_server::sequencer::tests::FakeEventLog::seeded(500),
+        500,
+        0,
+        crate::remote_server::retention::RetentionLeaseRegistry::new(),
+        control_sender,
+    );
+    assert!(
+        handle.install_stream(stream.clone()),
+        "stream installs once"
+    );
+    let epoch_before = stream.epoch();
+    let floor_before = stream.epoch_window().floor_seq;
 
     let first = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
@@ -444,6 +462,20 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
     assert_eq!(second, first);
     assert_eq!(second_status, 200);
     assert!(!handle.is_running().await);
+    assert_eq!(
+        stream.epoch(),
+        epoch_before,
+        "a disable/enable cycle inside one process must not roll the epoch (P-22c)"
+    );
+    assert_eq!(
+        stream.epoch_window().floor_seq,
+        floor_before,
+        "the replay floor must survive a listener restart (P-15)"
+    );
+    assert!(
+        handle.stream().is_some(),
+        "listener stop must not clear the installed stream"
+    );
     assert_eq!(
         runner.calls(),
         vec![

@@ -39,6 +39,11 @@ use crate::infrastructure::remote_ws_client::RemoteWsError;
 
 /// The always-present local environment identity (§6.4). It has no supervisor, no
 /// registry row, and never accepts remote proxy calls.
+/// The oldest host protocol this client will speak, mirroring the frontend supervisor's
+/// `CLIENT_MIN_PROTOCOL` (`environment-runtime.ts`). Both halves of §3.2's contradiction
+/// gate need it; only the host-too-new half existed before.
+pub const CLIENT_MIN_PROTOCOL: u32 = 1;
+
 pub const LOCAL_ENVIRONMENT_ID: &str = "local";
 
 /// Health-op fetch path for the host health probe.
@@ -66,10 +71,14 @@ pub enum RemoteEnvironmentError {
     LocalEnvironment,
     #[error("invalid pairing URL: {0}")]
     InvalidUrl(String),
-    #[error(
-        "host requires client protocol >= {host_min_client}, this client speaks {client}"
-    )]
+    #[error("host requires client protocol >= {host_min_client}, this client speaks {client}")]
     VersionSkew { host_min_client: u32, client: u32 },
+    /// The reciprocal half of §3.2's contradiction gate: the host speaks a protocol
+    /// OLDER than this client's floor. Without it the wizard reported "compatible" for a
+    /// host the supervisor would immediately park `blocked` on — the exact preview/pair
+    /// divergence this prelude exists to prevent.
+    #[error("host speaks protocol {host_protocol}, this client requires >= {client_min}")]
+    HostTooOld { host_protocol: u32, client_min: u32 },
     #[error("host identity mismatch: descriptor reported {descriptor}, pair response {response}")]
     IdentityMismatch {
         descriptor: String,
@@ -83,10 +92,7 @@ pub enum RemoteEnvironmentError {
     /// Used for everything the HOST decided (scope refusal, unknown command, dedup
     /// reservation) plus the two unknown-outcome conditions.
     #[error("{message}")]
-    Transport {
-        code: ErrorCode,
-        message: String,
-    },
+    Transport { code: ErrorCode, message: String },
     /// The webview asked for a fetch the proxy will not perform (bad path shape,
     /// non-allowlisted method or header). Fail closed: a bearer is attached to this
     /// request, so an unvalidated target is a credential-forwarding hazard.
@@ -114,7 +120,9 @@ impl RemoteEnvironmentError {
                 remote_error_code_str(ErrorCode::RemoteCommandUnavailable)
             }
             Self::InvalidUrl(_) => "INVALID_PAIRING_URL",
-            Self::VersionSkew { .. } => remote_error_code_str(ErrorCode::RemoteVersionMismatch),
+            Self::VersionSkew { .. } | Self::HostTooOld { .. } => {
+                remote_error_code_str(ErrorCode::RemoteVersionMismatch)
+            }
             Self::IdentityMismatch { .. } => "HOST_IDENTITY_MISMATCH",
             Self::PairRejected(_) => "PAIRING_REJECTED",
             Self::Unreachable(_) => remote_error_code_str(ErrorCode::RemoteUnreachable),
@@ -334,10 +342,19 @@ impl RemoteEnvironmentService {
             .fetch_descriptor(&url)
             .await
             .map_err(descriptor_error)?;
+        // §3.2 refuses on EITHER contradiction. `supervisor.ts` implements both halves, so
+        // omitting one here means the wizard and the supervisor disagree on the first
+        // version bump.
         if descriptor.min_client_protocol > PROTOCOL_VERSION {
             return Err(RemoteEnvironmentError::VersionSkew {
                 host_min_client: descriptor.min_client_protocol,
                 client: PROTOCOL_VERSION,
+            });
+        }
+        if descriptor.protocol_version < CLIENT_MIN_PROTOCOL {
+            return Err(RemoteEnvironmentError::HostTooOld {
+                host_protocol: descriptor.protocol_version,
+                client_min: CLIENT_MIN_PROTOCOL,
             });
         }
         Ok((url, descriptor))
@@ -524,7 +541,9 @@ impl RemoteEnvironmentService {
             Err(error) => return Err(error.into()),
         }
 
-        self.secret_store.delete_secret(&env.token_secret_ref).await?;
+        self.secret_store
+            .delete_secret(&env.token_secret_ref)
+            .await?;
         self.repo.delete(&env.id).await?;
         Ok(())
     }
@@ -630,8 +649,7 @@ impl RemoteEnvironmentService {
                 if let Err(error) = self.host_client.revoke_token(&env.base_url, &token).await {
                     tracing::debug!(environment = %row_id, %error, "Reconciler revoke retry failed (best-effort)");
                 }
-                if let Err(error) = self.secret_store.delete_secret(&env.token_secret_ref).await
-                {
+                if let Err(error) = self.secret_store.delete_secret(&env.token_secret_ref).await {
                     // Keychain delete failed: the row must survive to keep the
                     // secret referenced for the next retry.
                     tracing::warn!(environment = %row_id, %error, "Keychain delete failed; deferring removal");
@@ -789,10 +807,7 @@ impl RemoteEnvironmentService {
     /// equality/ordering gate would false-block a legitimately upgraded host. The
     /// TS supervisor owns the `blocked` decision (§6.5) with the descriptor in
     /// hand; the P-10 lying-descriptor check lives there.
-    pub async fn connect(
-        &self,
-        id: &str,
-    ) -> Result<RemoteConnectOutcome, RemoteEnvironmentError> {
+    pub async fn connect(&self, id: &str) -> Result<RemoteConnectOutcome, RemoteEnvironmentError> {
         let env = self.usable_stream_target(id).await?;
         let token = self.bearer_for(&env).await?;
         let ticket = self.mint_ws_ticket(&env, &token).await?;
@@ -885,8 +900,7 @@ impl RemoteEnvironmentService {
         match response.status {
             401 => Err(RemoteEnvironmentError::Transport {
                 code: ErrorCode::RemoteUnauthorized,
-                message: "host refused this device's credential for the event stream"
-                    .to_string(),
+                message: "host refused this device's credential for the event stream".to_string(),
             }),
             403 => Err(RemoteEnvironmentError::Transport {
                 code: ErrorCode::RemoteForbidden,
@@ -896,12 +910,11 @@ impl RemoteEnvironmentService {
                 format!("ws ticket mint answered {status}"),
             )),
             _ => {
-                let wire: WsTicketWire =
-                    serde_json::from_str(&response.body).map_err(|error| {
-                        RemoteEnvironmentError::Unreachable(format!(
-                            "ws ticket response unparsable: {error}"
-                        ))
-                    })?;
+                let wire: WsTicketWire = serde_json::from_str(&response.body).map_err(|error| {
+                    RemoteEnvironmentError::Unreachable(format!(
+                        "ws ticket response unparsable: {error}"
+                    ))
+                })?;
                 if wire.ticket.is_empty() {
                     return Err(RemoteEnvironmentError::Unreachable(
                         "host answered with an empty ws ticket".to_string(),
@@ -1032,10 +1045,7 @@ impl RemoteEnvironmentService {
     /// -store error and a MISSING secret is `REMOTE_UNAUTHORIZED`, never an
     /// unauthenticated request. The token is returned to this module only — it is
     /// handed to the host client and never enters any serialized response (P-18).
-    async fn bearer_for(
-        &self,
-        env: &RemoteEnvironment,
-    ) -> Result<String, RemoteEnvironmentError> {
+    async fn bearer_for(&self, env: &RemoteEnvironment) -> Result<String, RemoteEnvironmentError> {
         self.secret_store
             .get_secret(&env.token_secret_ref)
             .await?
@@ -1175,12 +1185,10 @@ fn transport_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
             code: ErrorCode::RemoteUnreachable,
             message,
         },
-        RemoteHostClientError::Rejected { status, message } => {
-            RemoteEnvironmentError::Transport {
-                code: status_error_code(status),
-                message,
-            }
-        }
+        RemoteHostClientError::Rejected { status, message } => RemoteEnvironmentError::Transport {
+            code: status_error_code(status),
+            message,
+        },
         RemoteHostClientError::InvalidResponse(message) => RemoteEnvironmentError::Transport {
             code: ErrorCode::RemoteVersionMismatch,
             message,
@@ -1311,15 +1319,12 @@ fn client_device_name() -> String {
 
 fn descriptor_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
     match error {
-        RemoteHostClientError::Unreachable(message)
-        | RemoteHostClientError::Timeout(message) => {
+        RemoteHostClientError::Unreachable(message) | RemoteHostClientError::Timeout(message) => {
             RemoteEnvironmentError::Unreachable(message)
         }
-        RemoteHostClientError::Rejected { status, message } => {
-            RemoteEnvironmentError::Unreachable(format!(
-                "descriptor request refused ({status}): {message}"
-            ))
-        }
+        RemoteHostClientError::Rejected { status, message } => RemoteEnvironmentError::Unreachable(
+            format!("descriptor request refused ({status}): {message}"),
+        ),
         RemoteHostClientError::InvalidResponse(message) => {
             RemoteEnvironmentError::Unreachable(format!("invalid descriptor: {message}"))
         }
@@ -1328,8 +1333,7 @@ fn descriptor_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
 
 fn pair_error(error: RemoteHostClientError) -> RemoteEnvironmentError {
     match error {
-        RemoteHostClientError::Unreachable(message)
-        | RemoteHostClientError::Timeout(message) => {
+        RemoteHostClientError::Unreachable(message) | RemoteHostClientError::Timeout(message) => {
             RemoteEnvironmentError::Unreachable(message)
         }
         RemoteHostClientError::Rejected { status, message } => {
