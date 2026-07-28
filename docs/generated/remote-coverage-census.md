@@ -25,23 +25,23 @@ The gap is not 447 registrations. Routing each name mechanically through the led
 
 | Disposition | Count | Rule |
 |---|---|---|
-| register-candidate | 272 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
-| host-denied (class: denied) | 84 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
+| register-candidate | 269 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
+| host-denied (class: denied) | 87 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 49 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 26 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**159 of the 431 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
+**162 of the 431 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
 
-**272 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
+**269 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
 
 ## 3. Recommended batch order
 
 | # | Batch | Title | Cmds | Register-candidates | Not registering | Modules |
 |---|---|---|---|---|---|---|
 | 1 | `B0` | P-11 third-disposition mechanism (prerequisite, no registrations) | 0 | 0 | 0 | 0 |
-| 2 | `B1` | Task core — lifecycle, steps, execution, gates | 32 | 31 | 1 | 5 |
-| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 56 | 53 | 3 | 6 |
+| 2 | `B1` | Task core — lifecycle, steps, execution, gates | 32 | 30 | 2 | 5 |
+| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 56 | 51 | 5 | 6 |
 | 4 | `B3` | Review, QA, merge pipeline, validation | 31 | 31 | 0 | 4 |
 | 5 | `B4` | Ideation, plans, methodology, workflow | 64 | 63 | 1 | 5 |
 | 6 | `B5` | Automation, research, metrics, activity | 36 | 34 | 2 | 4 |
@@ -75,7 +75,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 2. `B1` — Task core — lifecycle, steps, execution, gates
 
-**Commands:** 32 · **Register-candidates:** 31 · **Risk classes:** register-candidate 31 · host-denied (class: denied) 1
+**Commands:** 32 · **Register-candidates:** 30 · **Risk classes:** register-candidate 30 · host-denied (class: denied) 2
 
 **Why here:** The 1.5-A surface already registered the neighbouring commands (`move_task`, `unblock_task`, `answer_user_question`, the brakes), so the injection table, the `authz:` predicate shape and the P-4 parity rows for these argument shapes are proven on this exact module family. Lowest parity risk, highest reuse — the right batch to shake out the per-batch harness before it meets 41-command modules.
 
@@ -99,7 +99,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 3. `B2` — Chat + agent conversation surface (unblocks PR 3.2)
 
-**Commands:** 56 · **Register-candidates:** 53 · **Risk classes:** register-candidate 53 · host-denied (class: denied) 3
+**Commands:** 56 · **Register-candidates:** 51 · **Risk classes:** register-candidate 51 · host-denied (class: denied) 5
 
 **Why here:** PR 3.2's whole premise is that chat send paths answer `REMOTE_FORBIDDEN` without `ui:agent` rather than `REMOTE_COMMAND_UNAVAILABLE` — which requires them registered. 2.6 shipped the honest interim (composer renders UNAVAILABLE remotely) and its product note says it 'flips with no client change when 3.1 registers them'. This is the batch that flips it, so it must land before 3.2 starts. It is also the highest-risk batch: `send_message` is a detector-(a) steer sink and the module contains the workspace-publish `git push` surface that stays denied.
 
@@ -395,7 +395,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 |---|---|---|---|---|
 | `send_agent_message` | agentControl | agentControl | `B2` | register (`ui:agent`), pending detector-(c) confirmation |
 | `start_agent_conversation` | agentControl | agentControl | `B2` | register (`ui:agent`), pending detector-(c) confirmation |
-| `skip_step` | agentControl | agentControl | `B1` | register (`ui:agent`), pending detector-(c) confirmation |
+| `skip_step` | agentControl | agentControl, mutatesAgentConsumedContent | `B1` | register (`ui:agent`), pending detector-(c) confirmation |
 | `trigger_automation_run_now` | agentControl | agentControl | `B5` | register (`ui:agent`), pending detector-(c) confirmation |
 | `restart_automation` | agentControl | agentControl | `B5` | register (`ui:agent`), pending detector-(c) confirmation |
 

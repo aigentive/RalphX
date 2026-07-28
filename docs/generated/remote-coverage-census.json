@@ -41,10 +41,10 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 272,
+    "registerCandidate": 269,
     "v1DeferredElevated": 26,
     "hostDeniedSpawn": 49,
-    "hostDeniedClass": 84
+    "hostDeniedClass": 87
   },
   "batches": [
     {
@@ -87,11 +87,11 @@
         "task_step_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 31,
-        "hostDeniedClass": 1
+        "registerCandidate": 30,
+        "hostDeniedClass": 2
       },
-      "registerCandidates": 31,
-      "nonRegistering": 1,
+      "registerCandidates": 30,
+      "nonRegistering": 2,
       "commandsByModule": {
         "execution_commands": [
           "get_execution_status",
@@ -192,11 +192,11 @@
         "unified_chat_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 53,
-        "hostDeniedClass": 3
+        "registerCandidate": 51,
+        "hostDeniedClass": 5
       },
-      "registerCandidates": 53,
-      "nonRegistering": 3,
+      "registerCandidates": 51,
+      "nonRegistering": 5,
       "commandsByModule": {
         "agent_composer_commands": [
           "list_agent_composer_skills",
@@ -1767,12 +1767,12 @@
       "command": "cleanup_tasks_in_group",
       "batch": "B1",
       "module": "task_commands",
-      "ledgerClass": "agentControl",
+      "ledgerClass": "denied",
       "capabilities": [
         "agentControl"
       ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "disposition": "hostDeniedClass",
+      "ledgerReason": "destructive task cleanup across a whole group"
     },
     {
       "command": "clear_active_plan",
@@ -1899,12 +1899,12 @@
       "command": "close_agent_workspace_pr",
       "batch": "B2",
       "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
+      "ledgerClass": "denied",
       "capabilities": [
         "agentControl"
       ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "disposition": "hostDeniedClass",
+      "ledgerReason": "closes the remote pull request an agent workspace published"
     },
     {
       "command": "commit_agent_conversation_workspace_locally",
@@ -1934,10 +1934,11 @@
       "module": "task_step_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed task step status"
     },
     {
       "command": "copy_agent_conversation_plan",
@@ -2253,10 +2254,11 @@
       "module": "task_step_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed task step status"
     },
     {
       "command": "fork_agent_conversation",
@@ -4475,10 +4477,11 @@
       "module": "review_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed review issue state"
     },
     {
       "command": "mark_issue_in_progress",
@@ -4486,10 +4489,11 @@
       "module": "review_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed review issue state"
     },
     {
       "command": "mark_notification_read",
@@ -4761,10 +4765,11 @@
       "module": "review_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed review issue state"
     },
     {
       "command": "reorder_proposals",
@@ -5388,10 +5393,11 @@
       "module": "unified_chat_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "seedsSpawnTriggeringState"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-b: arms auto_publish_enabled consumed by the auto-publish freshness scan"
     },
     {
       "command": "set_agent_conversation_workspace_pr_supervision",
@@ -5498,10 +5504,11 @@
       "module": "task_step_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed task step status"
     },
     {
       "command": "spawn_session_namer",
@@ -5575,10 +5582,11 @@
       "module": "task_step_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed task step status"
     },
     {
       "command": "stop_agent",
@@ -5738,12 +5746,12 @@
       "command": "update_agent_conversation_workspace_from_base",
       "batch": "B2",
       "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
+      "ledgerClass": "denied",
       "capabilities": [
         "agentControl"
       ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "disposition": "hostDeniedClass",
+      "ledgerReason": "rewrites an agent workspace checkout from its base branch"
     },
     {
       "command": "update_agent_lane_settings",
@@ -6004,10 +6012,11 @@
       "module": "review_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "seedsSpawnTriggeringState"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-b: arms require_workspace_review consumed by the auto-review spawner"
     },
     {
       "command": "update_ticketing_status_presentation",
@@ -6125,10 +6134,11 @@
       "module": "review_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
+      "ledgerReason": "detector-d: writes worker-consumed review issue state"
     },
     {
       "command": "write_agent_terminal",
