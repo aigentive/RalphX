@@ -897,6 +897,11 @@ export function AgentsSidebar({
     },
     []
   );
+  const handleSetConversationMuted = useCallback(
+    (conversation: AgentConversation, muted: boolean) =>
+      onSetConversationMuted(conversation, muted),
+    [onSetConversationMuted]
+  );
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const bulkArchive = useBulkConversationArchiveController(
     onBulkArchiveConversations
@@ -1119,9 +1124,7 @@ export function AgentsSidebar({
   }, [cancelBulkArchive, showArchived]);
 
   return (
-    <AgentConversationMuteContext.Provider value={(conversation, muted) =>
-      onSetConversationMuted(conversation, muted)
-    }>
+    <AgentConversationMuteContext.Provider value={handleSetConversationMuted}>
     <BulkArchiveSelectionContext.Provider value={bulkArchive.contextValue}>
     <aside
       className="w-full h-full flex flex-col border-r overflow-hidden"

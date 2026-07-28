@@ -106,6 +106,10 @@ export interface MockChatController {
   listAgentSidebarConversations(
     input: AgentSidebarConversationsInput
   ): Promise<AgentSidebarConversationGroupsResponse>;
+  setAgentConversationMuted?(
+    conversationId: string,
+    muted: boolean,
+  ): Promise<void>;
   getConversation(
     conversationId: string
   ): Promise<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>;
@@ -226,6 +230,7 @@ function exposeMockChatController(): void {
     listConversations: mockListConversations,
     listConversationsPage: mockListConversationsPage,
     listAgentSidebarConversations: mockListAgentSidebarConversations,
+    setAgentConversationMuted: mockSetAgentConversationMuted,
     getConversation: mockGetConversation,
     getConversationSummary: mockGetConversationSummary,
     getConversationTimelinePage: mockGetConversationTimelinePage,
