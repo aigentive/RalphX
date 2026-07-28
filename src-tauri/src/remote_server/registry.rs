@@ -776,6 +776,52 @@ crate::remote_commands! {
     },
 
     // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 2 — census `B1`, the step + execution read clusters, at `ui:read`.
+    //
+    // The execution cluster is three getters, not the module's eight: detector (c) fires on
+    // `get_execution_status` and `get_running_processes` (both resolve a process-inspection
+    // CLI), and `set_active_project` syncs the runtime scheduler quota. All three stay
+    // unregistered, pinned by `the_b1_step_and_execution_reads_are_refused_below_ui_read`.
+    // -----------------------------------------------------------------------------------
+    "get_task_steps" => crate::commands::task_step_commands::get_task_steps {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_step_progress" => crate::commands::task_step_commands::get_step_progress {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_execution_settings"
+        => crate::commands::execution_commands::get_execution_settings {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_global_execution_settings"
+        => crate::commands::execution_commands::get_global_execution_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_active_project" => crate::commands::execution_commands::get_active_project {
+        class: Read,
+        caps: [],
+        params: [(active_project_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
     // PR 1.5-A — `ui:operate`: watch + brakes + inert edits, and NOTHING that can start,
     // resume, restart, or steer an agent. This is the default pairing's entire mutating
     // surface (the "viewer with brakes" boundary, §3.3/§4.3).

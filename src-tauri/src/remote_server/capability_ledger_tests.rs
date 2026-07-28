@@ -1596,6 +1596,11 @@ fn b1_read_reclassifications_are_reviewed_rather_than_module_defaults() {
         ("get_task_dependency_graph", "task_commands"),
         ("get_task_timeline_events", "task_commands"),
         ("get_task_agent_workspace", "task_commands"),
+        ("get_task_steps", "task_step_commands"),
+        ("get_step_progress", "task_step_commands"),
+        ("get_execution_settings", "execution_commands"),
+        ("get_global_execution_settings", "execution_commands"),
+        ("get_active_project", "execution_commands"),
     ];
 
     for (command, module) in RECLASSIFIED_READS {
@@ -1654,6 +1659,50 @@ fn b1_read_reclassifications_are_reviewed_rather_than_module_defaults() {
             "`{command}` must not be registered"
         );
     }
+}
+
+/// The `B1` commands that audited DIRTY, and the distinct reason each stays above `Read`.
+///
+/// A reclassification sweep is only as trustworthy as the rows it declines to move. These
+/// three sit in modules whose other getters were just reclassified, so "it is a getter in a
+/// reclassified module" must not be sufficient grounds — each is pinned to its own finding.
+#[test]
+fn b1_sibling_getters_that_audit_dirty_stay_above_read() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    // Detector (c) is the mechanism, not a note: both resolve a process-inspection CLI.
+    for command in ["get_execution_status", "get_running_processes"] {
+        let tokens = graph.closure([command.to_string()]).tokens;
+        assert!(
+            tokens_reach_any(&tokens, PROCESS_LAUNCH_SINKS),
+            "`{command}` is excluded from the Read cluster because detector (c) fires; if it \
+             no longer does, the exclusion needs a new reason or the row can be reclassified"
+        );
+        let row = policy_for(command, "execution_commands").expect("ledgered");
+        assert!(
+            !matches!(row.class, RiskClass::Read | RiskClass::Operate),
+            "`{command}` resolves a CLI and cannot be Read/Operate"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not be registered"
+        );
+    }
+
+    // No detector models this one: `set_active_project` writes the runtime scheduler quota
+    // through `sync_quota_from_project`. It is a hand-audited exclusion, recorded here so the
+    // reason survives the next sweep.
+    let row = policy_for("set_active_project", "execution_commands").expect("ledgered");
+    assert_eq!(
+        row.class,
+        RiskClass::AgentControl,
+        "set_active_project syncs the execution concurrency quota, which is how waiting \
+         Ready tasks get picked up; it is not a getter"
+    );
+    assert!(
+        find_spec("set_active_project").is_none(),
+        "set_active_project must not be registered"
+    );
 }
 
 #[test]

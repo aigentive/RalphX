@@ -859,3 +859,202 @@ async fn the_b1_task_reads_are_refused_below_ui_read() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 2 — census `B1` step + execution reads (`ui:read`)
+//
+// Same treatment as the task-core cluster: detectors (a)/(b)/(c) all silent, bodies
+// hand-traced to repository / in-memory state reads.
+//
+// The two execution-module getters that are ABSENT here are the finding, not an omission:
+// detector (c) fires on `get_execution_status` and `get_running_processes` (both resolve a
+// process-inspection CLI), so they stay above `Read` and unregistered. `set_active_project`
+// is likewise excluded — it syncs the runtime scheduler quota.
+// ---------------------------------------------------------------------------------------
+
+/// A mock app managing the execution-side state these reads are injected with.
+fn app_with_execution_state() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .manage(std::sync::Arc::new(
+            crate::commands::execution_commands::ActiveProjectState::new(),
+        ))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
+}
+
+const B1_STEP_READS: [&str; 2] = ["get_task_steps", "get_step_progress"];
+const B1_EXECUTION_READS: [&str; 3] = [
+    "get_execution_settings",
+    "get_global_execution_settings",
+    "get_active_project",
+];
+
+/// P-4 parity for the step reads, over a task whose steps were seeded through `create_task`.
+#[tokio::test]
+async fn p4_parity_for_the_b1_step_reads_over_a_task_with_steps() {
+    use tauri::Manager;
+
+    let app = app_with_task_state();
+    let (task_id, _other) = seed_b1_tasks(&app).await;
+
+    let direct_steps = crate::commands::task_step_commands::get_task_steps(
+        task_id.clone(),
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct step read succeeds");
+    let direct_progress = crate::commands::task_step_commands::get_step_progress(
+        task_id.clone(),
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct step-progress read succeeds");
+
+    // Non-vacuity: the seeded task carries two steps, so neither row can pass by returning
+    // an empty list.
+    assert_eq!(direct_steps.len(), 2, "the fixture task must carry steps");
+
+    for (command, direct) in [
+        (
+            "get_task_steps",
+            registry::serialize_ok(&direct_steps).unwrap(),
+        ),
+        (
+            "get_step_progress",
+            registry::serialize_ok(&direct_progress).unwrap(),
+        ),
+    ] {
+        let outcome = registry::dispatch(
+            &app.handle().clone(),
+            &[Scope::UiRead],
+            command,
+            &json!({"taskId": task_id}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(direct),
+            "P-4 parity mismatch for `{command}`"
+        );
+    }
+}
+
+/// P-4 parity for the execution-settings reads, over a NON-default active project so the
+/// `get_active_project` row cannot pass by returning `null` on both sides.
+#[tokio::test]
+async fn p4_parity_for_the_b1_execution_reads_over_a_set_active_project() {
+    use tauri::Manager;
+
+    let app = app_with_execution_state();
+    let active =
+        app.state::<std::sync::Arc<crate::commands::execution_commands::ActiveProjectState>>();
+    active
+        .set(Some(crate::domain::entities::ProjectId::from_string(
+            B1_FIXTURE_PROJECT.to_string(),
+        )))
+        .await;
+
+    let direct_settings = crate::commands::execution_commands::get_execution_settings(
+        None,
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct execution-settings read succeeds");
+    let direct_global = crate::commands::execution_commands::get_global_execution_settings(
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct global-settings read succeeds");
+    let direct_active = crate::commands::execution_commands::get_active_project(
+        app.state::<std::sync::Arc<crate::commands::execution_commands::ActiveProjectState>>(),
+    )
+    .await
+    .expect("direct active-project read succeeds");
+
+    assert_eq!(
+        direct_active.as_deref(),
+        Some(B1_FIXTURE_PROJECT),
+        "the active project must be set, or parity over a null result proves nothing"
+    );
+
+    for (command, args, direct) in [
+        (
+            "get_execution_settings",
+            json!({"projectId": null}),
+            registry::serialize_ok(&direct_settings).unwrap(),
+        ),
+        (
+            "get_global_execution_settings",
+            json!({}),
+            registry::serialize_ok(&direct_global).unwrap(),
+        ),
+        (
+            "get_active_project",
+            json!({}),
+            registry::serialize_ok(&direct_active).unwrap(),
+        ),
+    ] {
+        let outcome = registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
+            .await
+            .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(direct),
+            "P-4 parity mismatch for `{command}`"
+        );
+    }
+}
+
+/// Scope negative for both clusters, plus the standing absence of the process-resolving
+/// execution getters.
+#[tokio::test]
+async fn the_b1_step_and_execution_reads_are_refused_below_ui_read() {
+    let app = app_with_execution_state();
+
+    for command in B1_STEP_READS.iter().chain(B1_EXECUTION_READS.iter()) {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(
+            spec.class,
+            RiskClass::Read,
+            "`{command}` must be a Read row"
+        );
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` must carry no capability"
+        );
+
+        for scopes in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let error = registry::dispatch(&app.handle().clone(), &scopes, command, &json!({}))
+                .await
+                .expect_err("insufficient scope must be refused");
+            assert_eq!(
+                error.code,
+                ErrorCode::RemoteForbidden,
+                "`{command}` admitted {scopes:?}"
+            );
+        }
+    }
+
+    // The detector-(c) finding, pinned: these look like sibling getters and are NOT
+    // registered, because both resolve a process-inspection CLI. `set_active_project` is
+    // excluded for a different reason — it syncs the runtime scheduler quota.
+    for command in [
+        "get_execution_status",
+        "get_running_processes",
+        "set_active_project",
+    ] {
+        assert!(
+            registry::find_spec(command).is_none(),
+            "`{command}` must not be registered by sibling analogy"
+        );
+    }
+}
