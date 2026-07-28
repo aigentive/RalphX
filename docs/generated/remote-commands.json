@@ -339,6 +339,13 @@
       "kind": "tokio::spawn"
     },
     {
+      "authorityBearing": false,
+      "enclosingFunction": "application/remote_event_relay.rs::RemoteEventRelay::connect",
+      "file": "application/remote_event_relay.rs",
+      "id": "application/remote_event_relay.rs::application/remote_event_relay.rs::RemoteEventRelay::connect@ea05994e664c8c1f",
+      "kind": "tokio::spawn"
+    },
+    {
       "authorityBearing": true,
       "enclosingFunction": "application/server_boot.rs:::::start_server_boot",
       "file": "application/server_boot.rs",
@@ -1314,6 +1321,16 @@
       ],
       "class": "elevated",
       "command": "remote_disconnect",
+      "module": "remote_environment_commands",
+      "reason": "remote environment authority",
+      "registered": false
+    },
+    {
+      "capabilities": [
+        "hostManagement"
+      ],
+      "class": "elevated",
+      "command": "remote_stream_send",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
       "registered": false
