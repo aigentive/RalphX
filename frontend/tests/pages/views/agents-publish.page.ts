@@ -33,9 +33,7 @@ export class AgentsPublishPage extends BasePage {
   readonly historyContent: Locator;
   readonly automationTab: Locator;
   readonly automationContent: Locator;
-<<<<<<< HEAD
   readonly prSupervisionStatus: Locator;
-=======
   readonly reviewWalkthroughEnter: Locator;
   readonly reviewWalkthrough: Locator;
   readonly reviewWalkthroughExit: Locator;
@@ -51,7 +49,6 @@ export class AgentsPublishPage extends BasePage {
   readonly publishConfirm: Locator;
   readonly reviewWalkthroughUnreviewedFile: Locator;
   readonly reviewWalkthroughUnreviewedCode: Locator;
->>>>>>> origin/main
 
   constructor(page: Page) {
     super(page);
@@ -72,11 +69,9 @@ export class AgentsPublishPage extends BasePage {
     this.automationContent = page.getByTestId(
       "agents-publish-content-automation",
     );
-<<<<<<< HEAD
     this.prSupervisionStatus = page.getByTestId(
       "agents-pr-supervision-status",
     );
-=======
     this.reviewWalkthroughEnter = page.getByTestId("publish-review-walkthrough-enter");
     this.reviewWalkthrough = page.getByTestId("publish-review-walkthrough");
     this.reviewWalkthroughExit = page.getByTestId("publish-review-walkthrough-exit");
@@ -97,7 +92,6 @@ export class AgentsPublishPage extends BasePage {
     this.reviewWalkthroughUnreviewedCode = this.reviewWalkthroughUnreviewedFile
       .locator("xpath=../..")
       .getByText("export function publishedView() {", { exact: true });
->>>>>>> origin/main
   }
 
   async openFromHeader() {
