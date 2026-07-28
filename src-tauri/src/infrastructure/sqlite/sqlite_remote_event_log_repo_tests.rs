@@ -101,6 +101,27 @@ async fn a_failed_batch_advances_neither_rows_nor_the_high_water() {
     assert_eq!(repo.read_range(EPOCH, 0, 100, 100).await.unwrap().len(), 1);
 }
 
+/// C-14 at the sink, not by precondition: with no settings row there is nowhere to persist the
+/// high-water, so committing the log rows anyway would seed the NEXT boot's `next_seq` below seqs
+/// that still exist — every insert colliding on the seq primary key, rolling the epoch forever.
+/// The batch must fail here instead of wedging a later process.
+#[tokio::test]
+async fn appending_without_a_settings_row_fails_instead_of_committing_orphaned_seqs() {
+    let db = SqliteTestDb::new("remote-event-log");
+    // Deliberately NOT seeded: this is the state a host reaches if capture is ever installed
+    // before the settings row exists.
+    let repo = repo(&db);
+
+    let outcome = repo.append_batch(&[row(1, EPOCH, "task:created")]).await;
+
+    assert!(
+        outcome.is_err(),
+        "a batch whose high-water cannot be persisted must not commit"
+    );
+    assert_eq!(repo.read_range(EPOCH, 0, 100, 100).await.unwrap().len(), 0);
+    assert_eq!(repo.high_water().await.unwrap(), 0);
+}
+
 #[tokio::test]
 async fn read_range_is_epoch_scoped_and_bounded_at_both_ends() {
     let db = SqliteTestDb::new("remote-event-log");

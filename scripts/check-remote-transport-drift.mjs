@@ -4,22 +4,30 @@
  * P-11 (client half) + P-18 (wrapper half) — remote transport drift scan.
  *
  * The transport seams only hold if EVERY production call goes through them. This
- * scan parses `frontend/src` with the TypeScript AST and fails on the four ways a
+ * scan parses `frontend/src` with the TypeScript AST and fails on the five ways a
  * call site can slip past:
  *
  *   1. A dynamic `invoke` command expression. A command name that is not a literal
  *      cannot be classified as remote-registered or local-only, so it defeats the
  *      whole inventory. Forwarders (`typedInvoke(cmd, ...)` helpers that pass their
  *      OWN parameter through) are resolved rather than flagged — the literal lives
- *      at their call sites, which the scan follows.
- *   2. A `fetch()` built from `backendApiUrl`/`backendBaseUrl` outside
- *      `api/backend.ts` — i.e. a site that bypasses `backendFetch` and would keep
- *      hitting this Mac's backend while a remote environment is active.
+ *      at their call sites, which the scan follows. Invoke roots are matched through
+ *      import ALIASES (`invoke as primitiveInvoke`) and module-scope string constants
+ *      are folded, so neither spelling hides a call site from the inventory.
+ *   2. Any reference to `backendApiUrl`/`backendBaseUrl`/`backendApiPath` outside
+ *      `api/backend.ts` — a site building a local backend URL instead of going
+ *      through `backendFetch`, which would keep hitting this Mac's backend while a
+ *      remote environment is active. References, not `fetch()` argument text: the URL
+ *      and the `fetch` are often one line apart.
  *   3. A cross-origin escape inside the transport wrapper itself (`fetch`,
- *      `WebSocket`, `EventSource`, `XMLHttpRequest`). Remote traffic is Rust-proxied
- *      precisely so the webview never holds the bearer or opens a socket (C-15).
+ *      `window.fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`, including
+ *      `globalThis.`-qualified forms). Remote traffic is Rust-proxied precisely so the
+ *      webview never holds the bearer or opens a socket (C-15).
  *   4. `#tauri-core-primitive` — the un-aliased Tauri core — imported outside
  *      `src/lib/remote`, which would route a caller past the wrapper entirely.
+ *   5. A deep `@tauri-apps/api/core.js` / `@tauri-apps/api/core/…` import anywhere:
+ *      the Vite alias matches the bare specifier only, so a deep path silently strands
+ *      that caller on local IPC while a remote environment is active.
  *
  * Plus a RATCHET on the command inventory: every literal command name is either
  * remote-registered (host facade) or listed in `local-only-commands.ts`. Anything
@@ -88,6 +96,20 @@ const NETWORK_ESCAPE_GLOBALS = new Set([
   "EventSource",
   "XMLHttpRequest",
 ]);
+
+/** Local URL construction. A reference to ANY of these outside the owner is a bypass in progress. */
+const BACKEND_URL_HELPERS = new Set([
+  "backendApiUrl",
+  "backendBaseUrl",
+  "backendApiPath",
+]);
+
+/**
+ * The Vite alias redirects the specifier `@tauri-apps/api/core` EXACTLY. A deep path resolves to
+ * the real module at runtime, stranding that caller on local IPC while a remote environment is
+ * active — the same escape `#tauri-core-primitive` is fenced for, spelled differently.
+ */
+const UNALIASED_CORE_SPECIFIER = /^@tauri-apps\/api\/core[./]/;
 
 function toRepoPath(filePath) {
   return path.relative(repoRoot, filePath).split(path.sep).join("/");
@@ -161,6 +183,49 @@ function rootMemberCalleeName(node) {
     return INVOKE_ROOTS.has(expression.name.text) ? expression.name.text : null;
   }
   return null;
+}
+
+/**
+ * Local names an invoke root was imported UNDER, with its command-argument index.
+ *
+ * `import { invoke as primitiveInvoke } from "…"` is the style the transport wrapper itself uses,
+ * so matching roots by bare name alone would leave every aliased call site both un-inventoried and
+ * un-flagged — invisible to the scan rather than caught by it.
+ */
+function invokeRootAliases(sourceFile) {
+  const aliases = new Map();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      const exported = (element.propertyName ?? element.name).text;
+      if (INVOKE_ROOTS.has(exported)) {
+        aliases.set(element.name.text, INVOKE_ROOTS.get(exported));
+      }
+    }
+  }
+  return aliases;
+}
+
+/**
+ * Module-scope `const NAME = "literal"` bindings.
+ *
+ * A command named by a module constant (`invoke(REMOTE_INVOKE_COMMAND, …)`) is a literal the
+ * inventory can classify, not a dynamic expression — folding it is what keeps the P-11 rule
+ * ("every production command name must be a literal") from punishing a named constant.
+ */
+function stringConstants(sourceFile) {
+  const constants = new Map();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      const literal = literalCommand(declaration.initializer);
+      if (literal !== null) constants.set(declaration.name.text, literal);
+    }
+  }
+  return constants;
 }
 
 /** Named import bindings, so an exported forwarder resolves in its consumers. */
@@ -258,7 +323,10 @@ export function collectForwarders(parsedFiles) {
   const exported = new Map();
 
   for (const sourceFile of parsedFiles) {
-    const forwarders = new Map(INVOKE_ROOTS);
+    const forwarders = new Map([
+      ...INVOKE_ROOTS,
+      ...invokeRootAliases(sourceFile),
+    ]);
     let changed = true;
     while (changed) {
       changed = false;
@@ -290,8 +358,11 @@ export function collectForwarders(parsedFiles) {
 export function collectInvokeCallSites(parsedFiles, forwarders) {
   const sites = [];
   for (const sourceFile of parsedFiles) {
-    const local = forwarders.perFile.get(sourceFile.fileName) ?? new Map(INVOKE_ROOTS);
+    const local =
+      forwarders.perFile.get(sourceFile.fileName) ??
+      new Map([...INVOKE_ROOTS, ...invokeRootAliases(sourceFile)]);
     const imported = importedNames(sourceFile);
+    const constants = stringConstants(sourceFile);
     const resolve = (name) => {
       if (local.has(name)) return local.get(name);
       if (imported.has(name) && forwarders.exported.has(name)) {
@@ -307,7 +378,11 @@ export function collectInvokeCallSites(parsedFiles, forwarders) {
       if (commandIndex === undefined) return;
 
       const commandArg = node.arguments[commandIndex];
-      const command = literalCommand(commandArg);
+      const command =
+        literalCommand(commandArg) ??
+        (commandArg !== undefined && ts.isIdentifier(commandArg)
+          ? (constants.get(commandArg.text) ?? null)
+          : null);
       if (command !== null) {
         sites.push({ file: sourceFile.fileName, line: lineOf(sourceFile, node), command });
         return;
@@ -328,21 +403,81 @@ export function collectInvokeCallSites(parsedFiles, forwarders) {
   return sites;
 }
 
-/** `fetch(...)` built from the backend URL helpers outside their owning module. */
+/**
+ * Any reference to the local URL helpers outside their owning module.
+ *
+ * Deliberately NOT "a `fetch()` whose argument text mentions them": `const url =
+ * backendApiUrl(x); fetch(url)` is the same bypass one line apart, and an aliased import
+ * (`backendApiUrl as u`) hides the name from every use site — so the import binding is flagged
+ * too. Nothing outside `api/backend.ts` has a legitimate reason to build a local backend URL;
+ * `backendFetch` is the seam.
+ */
 export function collectFetchBypasses(parsedFiles) {
   const violations = [];
   for (const sourceFile of parsedFiles) {
     if (sourceFile.fileName === BACKEND_URL_OWNER) continue;
     walk(sourceFile, (node) => {
-      if (calleeName(node) !== "fetch") return;
-      const uses = node.arguments.some((argument) =>
-        /\bbackend(ApiUrl|BaseUrl|ApiPath)\b/.test(argument.getText(sourceFile))
-      );
-      if (uses) {
+      if (!ts.isIdentifier(node) || !BACKEND_URL_HELPERS.has(node.text)) return;
+      const parent = node.parent;
+      // `x.backendApiUrl` names a member of something else, not this helper.
+      if (parent && ts.isPropertyAccessExpression(parent) && parent.name === node) return;
+      violations.push({
+        file: sourceFile.fileName,
+        line: lineOf(sourceFile, node),
+        detail: `${node.text} outside api/backend.ts — build the request with backendFetch()`,
+      });
+    });
+  }
+  return violations;
+}
+
+/** `fetch(...)`, `window.fetch(...)`, `globalThis.fetch(...)`, `self.fetch(...)`. */
+function isFetchCall(node) {
+  if (!ts.isCallExpression(node)) return false;
+  const expression = node.expression;
+  if (ts.isIdentifier(expression)) return expression.text === "fetch";
+  return (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.name) &&
+    expression.name.text === "fetch"
+  );
+}
+
+/** The constructed global's name, through `new X()` or `new window.X()`. */
+function constructedGlobalName(node) {
+  if (!ts.isNewExpression(node)) return null;
+  const expression = node.expression;
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
+    return expression.name.text;
+  }
+  return null;
+}
+
+/**
+ * P-18: the transport wrapper must not open a connection from the webview.
+ *
+ * Property-access callees count: `window.fetch(…)` / `globalThis.WebSocket` reach the same
+ * runtime as the bare names and would otherwise walk straight past a bare-identifier check.
+ */
+export function collectWrapperNetworkEscapes(parsedFiles) {
+  const violations = [];
+  for (const sourceFile of parsedFiles) {
+    if (!sourceFile.fileName.startsWith(TRANSPORT_DIR)) continue;
+    walk(sourceFile, (node) => {
+      if (isFetchCall(node)) {
         violations.push({
           file: sourceFile.fileName,
           line: lineOf(sourceFile, node),
-          detail: "fetch() built from backendApiUrl/backendBaseUrl — use backendFetch()",
+          detail: "fetch() inside the transport wrapper — remote traffic is Rust-proxied",
+        });
+      }
+      const constructed = constructedGlobalName(node);
+      if (constructed !== null && NETWORK_ESCAPE_GLOBALS.has(constructed)) {
+        violations.push({
+          file: sourceFile.fileName,
+          line: lineOf(sourceFile, node),
+          detail: `new ${constructed}() inside the transport wrapper — remote traffic is Rust-proxied`,
         });
       }
     });
@@ -350,30 +485,22 @@ export function collectFetchBypasses(parsedFiles) {
   return violations;
 }
 
-/** P-18: the transport wrapper must not open a connection from the webview. */
-export function collectWrapperNetworkEscapes(parsedFiles) {
+/**
+ * A deep import of the Tauri core bypasses the Vite alias, which matches the bare specifier only.
+ * Repo-wide: the wrapper has `#tauri-core-primitive` for its own un-aliased access and nothing
+ * else may reach the real module under any spelling.
+ */
+export function collectUnaliasedCoreImports(parsedFiles) {
   const violations = [];
   for (const sourceFile of parsedFiles) {
-    if (!sourceFile.fileName.startsWith(TRANSPORT_DIR)) continue;
     walk(sourceFile, (node) => {
-      if (ts.isCallExpression(node) && calleeName(node) === "fetch") {
-        violations.push({
-          file: sourceFile.fileName,
-          line: lineOf(sourceFile, node),
-          detail: "fetch() inside the transport wrapper — remote traffic is Rust-proxied",
-        });
-      }
-      if (
-        ts.isNewExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        NETWORK_ESCAPE_GLOBALS.has(node.expression.text)
-      ) {
-        violations.push({
-          file: sourceFile.fileName,
-          line: lineOf(sourceFile, node),
-          detail: `new ${node.expression.text}() inside the transport wrapper — remote traffic is Rust-proxied`,
-        });
-      }
+      if (!ts.isStringLiteral(node) && !ts.isNoSubstitutionTemplateLiteral(node)) return;
+      if (!UNALIASED_CORE_SPECIFIER.test(node.text)) return;
+      violations.push({
+        file: sourceFile.fileName,
+        line: lineOf(sourceFile, node),
+        detail: `${node.text} bypasses the @tauri-apps/api/core alias — import the bare specifier`,
+      });
     });
   }
   return violations;
@@ -479,6 +606,31 @@ function runSelfTest() {
     sites.filter((site) => site.command === null).length === 1
   );
 
+  const aliasFixture = parse(
+    "frontend/src/api/aliased.ts",
+    `
+    import { invoke as inv } from "@tauri-apps/api/core";
+    const NAMED_COMMAND = "list_widgets";
+    export const api = {
+      one: () => inv("get_widget", {}),
+      two: () => inv(NAMED_COMMAND, {}),
+      three: () => inv(pickCommand(), {}),
+    };
+    `
+  );
+  const aliasForwarders = collectForwarders([aliasFixture]);
+  const aliasSites = collectInvokeCallSites([aliasFixture], aliasForwarders);
+  const aliasCommands = aliasSites.map((site) => site.command);
+  check("inventories an aliased invoke import", aliasCommands.includes("get_widget"));
+  check(
+    "folds a module-scope command constant into a literal",
+    aliasCommands.includes("list_widgets")
+  );
+  check(
+    "still flags a dynamic command behind an aliased import",
+    aliasCommands.filter((command) => command === null).length === 1
+  );
+
   const bypass = collectFetchBypasses([
     parse(
       "frontend/src/api/thing.ts",
@@ -486,6 +638,30 @@ function runSelfTest() {
     ),
   ]);
   check("flags a fetch(backendApiUrl(...)) bypass", bypass.length === 1);
+  check(
+    "flags a backend URL built one line before the fetch",
+    collectFetchBypasses([
+      parse(
+        "frontend/src/api/indirect.ts",
+        `const url = backendApiUrl("x");\nconst r = await fetch(url);`
+      ),
+    ]).length === 1
+  );
+  check(
+    "flags an aliased backend URL helper import",
+    collectFetchBypasses([
+      parse(
+        "frontend/src/api/aliasedUrl.ts",
+        `import { backendApiUrl as u } from "@/api/backend";\nawait fetch(u("x"));`
+      ),
+    ]).length === 1
+  );
+  check(
+    "ignores an unrelated member named backendApiUrl",
+    collectFetchBypasses([
+      parse("frontend/src/api/member.ts", `const v = config.backendApiUrl;`),
+    ]).length === 0
+  );
   check(
     "exempts the backend.ts seam itself",
     collectFetchBypasses([
@@ -512,6 +688,15 @@ function runSelfTest() {
       parse("frontend/src/api/other.ts", `await fetch("https://x");`),
     ]).length === 0
   );
+  check(
+    "flags window/globalThis network escapes inside the wrapper",
+    collectWrapperNetworkEscapes([
+      parse(
+        `${TRANSPORT_DIR}sneaky.ts`,
+        `await window.fetch("https://host/x");\nconst s = new globalThis.WebSocket("wss://host");`
+      ),
+    ]).length === 2
+  );
 
   const primitive = collectPrimitiveSpecifierEscapes([
     parse("frontend/src/api/sneaky.ts", `import { invoke } from "#tauri-core-primitive";`),
@@ -521,6 +706,22 @@ function runSelfTest() {
     "allows the primitive specifier inside src/lib/remote",
     collectPrimitiveSpecifierEscapes([
       parse(`${TRANSPORT_DIR}invoke.ts`, `import { invoke } from "#tauri-core-primitive";`),
+    ]).length === 0
+  );
+
+  check(
+    "flags a deep import that bypasses the core alias",
+    collectUnaliasedCoreImports([
+      parse(
+        "frontend/src/api/deep.ts",
+        `import { invoke } from "@tauri-apps/api/core.js";`
+      ),
+    ]).length === 1
+  );
+  check(
+    "allows the aliased bare core specifier",
+    collectUnaliasedCoreImports([
+      parse("frontend/src/api/fine.ts", `import { invoke } from "@tauri-apps/api/core";`),
     ]).length === 0
   );
 
@@ -546,7 +747,7 @@ function runSelfTest() {
     failures.forEach((failure) => console.error(`  ${failure}`));
     process.exit(1);
   }
-  console.log("PASS: drift-scan self-test (16 detector cases)");
+  console.log("PASS: drift-scan self-test (26 detector cases)");
   process.exit(0);
 }
 
@@ -582,6 +783,7 @@ const hardFailures = [
   ...collectFetchBypasses(parsedFiles),
   ...collectWrapperNetworkEscapes(parsedFiles),
   ...collectPrimitiveSpecifierEscapes(parsedFiles),
+  ...collectUnaliasedCoreImports(parsedFiles),
 ];
 
 if (hardFailures.length > 0) {

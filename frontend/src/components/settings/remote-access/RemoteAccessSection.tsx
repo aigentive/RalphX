@@ -124,13 +124,33 @@ const ENDPOINT_KIND_LABELS: Record<AdvertisedEndpoint["kind"], string> = {
   tailnetDirect: "Tailnet direct",
 };
 
+/**
+ * What to do about a degraded Serve, keyed on the backend's machine-readable cause. The
+ * `serveDegradedReason` prose is a log line and must never be branched on (rule 5).
+ */
+const SERVE_DEGRADED_HINTS: Record<
+  NonNullable<RemoteListenerStatus["serveDegradedKind"]>,
+  string
+> = {
+  cliUnavailable: " Install Tailscale, then enable remote access again.",
+  launchFailed: " Tailscale is installed but would not run — check the app is open.",
+  timeout: " Tailscale did not answer in time — check it is running and signed in.",
+  commandFailed:
+    " Tailscale refused the request — sign in and enable HTTPS/Serve for this tailnet.",
+};
+
+function serveDegradedHint(
+  kind: RemoteListenerStatus["serveDegradedKind"]
+): string {
+  return kind === null ? "" : SERVE_DEGRADED_HINTS[kind];
+}
+
 interface ListenerCardProps {
   status: RemoteListenerStatus | null;
   displayEnabled: boolean;
   displayMode: RemoteExposureMode;
   busy: boolean;
   endpoints: AdvertisedEndpoint[] | null;
-  endpointsUnavailable: boolean;
   onEnabledChange: (enabled: boolean) => void;
   onModeChange: (mode: RemoteExposureMode) => void;
 }
@@ -141,7 +161,6 @@ function ListenerCard({
   displayMode,
   busy,
   endpoints,
-  endpointsUnavailable,
   onEnabledChange,
   onModeChange,
 }: ListenerCardProps) {
@@ -231,6 +250,7 @@ function ListenerCard({
           <NoticeBanner tone="warning" testId="remote-serve-degraded">
             Tailscale Serve is not active
             {status.serveDegradedReason ? `: ${status.serveDegradedReason}` : "."}
+            {serveDegradedHint(status.serveDegradedKind)}
           </NoticeBanner>
         )}
 
@@ -238,13 +258,7 @@ function ListenerCard({
           <p className="text-xs font-medium text-[var(--text-secondary)] mb-2">
             Advertised endpoints
           </p>
-          {endpointsUnavailable ? (
-            <NoticeBanner tone="neutral" testId="remote-endpoints-unavailable">
-              Endpoint discovery is not available yet — the advertised-endpoint
-              backend surface (PR 1.6) has not landed. Pair using the listener
-              address below or enter the host manually on the client.
-            </NoticeBanner>
-          ) : endpoints === null ? (
+          {endpoints === null ? (
             <RemoteAccessSkeletonRows rows={1} />
           ) : endpoints.length === 0 ? (
             <p className="text-xs text-[var(--text-muted)]">
@@ -296,14 +310,12 @@ function RemoteAccessPanel() {
   const [pendingMode, setPendingMode] = useState<RemoteExposureMode | null>(null);
   const [listenerBusy, setListenerBusy] = useState(false);
   const [endpoints, setEndpoints] = useState<AdvertisedEndpoint[] | null>(null);
-  const [endpointsUnavailable, setEndpointsUnavailable] = useState(false);
   const [devices, setDevices] = useState<RemoteDeviceView[] | null>(null);
   const [sessions, setSessions] = useState<RemoteSessionView[] | null>(null);
   const [outstandingCodes, setOutstandingCodes] = useState<
     RemotePairingCodeView[] | null
   >(null);
   const [auditEntries, setAuditEntries] = useState<RemoteAuditEntry[] | null>(null);
-  const [auditUnavailable, setAuditUnavailable] = useState(false);
   const [pairing, setPairing] = useState<MintedRemotePairingCode | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -319,11 +331,11 @@ function RemoteAccessPanel() {
   const loadEndpoints = useCallback(async () => {
     try {
       setEndpoints(await remoteHostApi.listAdvertisedEndpoints());
-      setEndpointsUnavailable(false);
-    } catch {
-      // Known gap: the PR 1.6 advertised-endpoint command is not registered yet.
-      // Fail visible (explicit degraded note), never silent-empty.
-      setEndpointsUnavailable(true);
+    } catch (error) {
+      // `list_remote_advertised_endpoints` is registered, so every rejection here is a real
+      // failure (settings-store error, transport failure). Reporting it as a missing feature
+      // would be an error rendered as a benign state.
+      setActionError(errorMessage(error, "Failed to load advertised endpoints"));
     }
   }, []);
 
@@ -354,10 +366,10 @@ function RemoteAccessPanel() {
   const loadAudit = useCallback(async () => {
     try {
       setAuditEntries(await remoteHostApi.listAuditEntries());
-      setAuditUnavailable(false);
-    } catch {
-      // Known gap: no audit-list command is registered yet (PR 1.2 follow-up).
-      setAuditUnavailable(true);
+    } catch (error) {
+      // `list_remote_audit_entries` is registered; a rejection is a repository/transport failure,
+      // not a missing surface.
+      setActionError(errorMessage(error, "Failed to load recent activity"));
     }
   }, []);
 
@@ -594,7 +606,6 @@ function RemoteAccessPanel() {
         displayMode={displayMode}
         busy={listenerBusy}
         endpoints={endpoints}
-        endpointsUnavailable={endpointsUnavailable}
         onEnabledChange={handleEnabledChange}
         onModeChange={handleModeChange}
       />
@@ -620,7 +631,6 @@ function RemoteAccessPanel() {
         devices={devices}
         sessions={sessions}
         auditEntries={auditEntries}
-        auditUnavailable={auditUnavailable}
         onDisconnect={handleDisconnectSession}
       />
     </div>

@@ -108,6 +108,30 @@ fn coverage_sample_device(
     }
 }
 
+/// Session-scoped teardown must not speak the host-scoped word. `host_disabled` tells a client
+/// remote access is OFF — a §3.2 vocabulary a supervisor is entitled to park on — so using it to
+/// close ONE socket turns an owner's single disconnect into a device-wide outage while the host
+/// stays enabled and the device stays paired. `Revoked` is the advisory member the sibling
+/// session-scoped paths (`set_remote_device_agent_control`, `DELETE /remote/v1/session`) use.
+#[test]
+fn disconnecting_one_session_does_not_claim_the_host_was_disabled() {
+    let source = include_str!("remote_device_commands.rs");
+    let body = source
+        .split("pub async fn disconnect_remote_session")
+        .nth(1)
+        .expect("the disconnect command should exist");
+    let end = body.find("\n}\n").expect("the command body should end");
+    let body = &body[..end];
+    assert!(
+        body.contains("ResetReason::Revoked"),
+        "a single-session disconnect must use the advisory session-scoped reason"
+    );
+    assert!(
+        !body.contains("ResetReason::HostDisabled"),
+        "the host is still enabled; host_disabled would park the whole device"
+    );
+}
+
 #[test]
 fn device_view_maps_active_agent_control_device_fields() {
     let device = coverage_sample_device(crate::domain::entities::RemoteScopeSet::from_scopes([

@@ -29,6 +29,7 @@ pub(crate) const MIN_CLIENT_PROTOCOL: u32 = PROTOCOL_VERSION;
 pub(crate) struct RemoteRouterState {
     environment_id: Arc<str>,
     auth: Arc<RemoteAuthContext>,
+    app_handle: tauri::AppHandle,
     /// The durable stream, installed at app setup when host mode is configured (P-23).
     ///
     /// `Option` because the listener and the stream have independent lifetimes by design: the
@@ -39,10 +40,15 @@ pub(crate) struct RemoteRouterState {
 }
 
 impl RemoteRouterState {
-    pub(crate) fn new(environment_id: impl Into<Arc<str>>, auth: RemoteAuthContext) -> Self {
+    pub(crate) fn new(
+        environment_id: impl Into<Arc<str>>,
+        auth: RemoteAuthContext,
+        app_handle: tauri::AppHandle,
+    ) -> Self {
         Self {
             environment_id: environment_id.into(),
             auth: Arc::new(auth),
+            app_handle,
             stream: None,
             lifecycle: Arc::new(NoopLifecycleSink),
         }
@@ -64,6 +70,10 @@ impl RemoteRouterState {
 
     pub(crate) fn auth(&self) -> &RemoteAuthContext {
         &self.auth
+    }
+
+    pub(crate) fn app_handle(&self) -> &tauri::AppHandle {
+        &self.app_handle
     }
 
     pub(crate) fn stream(&self) -> Option<&RemoteStreamHandle> {

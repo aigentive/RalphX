@@ -22,6 +22,7 @@ function status(overrides: Partial<RemoteListenerStatus> = {}): RemoteListenerSt
     bindAddress: "127.0.0.1:3849",
     serveActive: true,
     serveDegradedReason: null,
+    serveDegradedKind: null,
     ...overrides,
   };
 }

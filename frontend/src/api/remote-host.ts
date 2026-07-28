@@ -48,6 +48,13 @@ export const remoteListenerStatusSchema = z.object({
   bindAddress: z.string().nullable(),
   serveActive: z.boolean(),
   serveDegradedReason: z.string().nullable(),
+  /**
+   * The machine-readable degradation cause. Branch on THIS, never on `serveDegradedReason`
+   * — the prose is a log line, not an API (rule 5). Mirrors `RemoteServeDegradedKind`.
+   */
+  serveDegradedKind: z
+    .enum(["cliUnavailable", "launchFailed", "timeout", "commandFailed"])
+    .nullable(),
 });
 export type RemoteListenerStatus = z.infer<typeof remoteListenerStatusSchema>;
 
@@ -210,11 +217,8 @@ export const remoteHostApi = {
   },
 
   /**
-   * TODO(PR 1.6 blocker): no Tauri command exposes `remote_server/endpoints.rs::
-   * advertised_endpoints` yet (it is `pub(crate)` + `#[allow(dead_code)]`, annotated
-   * "Consumed by PR 1.7"). This wrapper binds the expected command name/shape so the
-   * pane lights up when that surface lands; until then it rejects and the pane shows
-   * an explicit degraded state (never silent-empty).
+   * The URLs this Mac currently advertises for its own listener. Empty while nothing is
+   * bound; a rejection is a real backend failure, not a missing surface.
    */
   listAdvertisedEndpoints(): Promise<AdvertisedEndpoint[]> {
     return typedInvoke(
@@ -225,15 +229,13 @@ export const remoteHostApi = {
   },
 
   /**
-   * TODO(PR 1.2 follow-up blocker): `remote_audit_log` rows exist (RemoteAuditEntry +
-   * repo listing in sqlite_remote_access_repo.rs:649) but no Tauri command exposes
-   * them. Same typed-TODO strategy as listAdvertisedEndpoints: the pane shows an
-   * explicit "unavailable" note while this rejects.
+   * Most-recent-first remote-access audit entries for THIS Mac. The command defaults to 100
+   * rows; the pane renders the newest 10.
    */
-  listAuditEntries(): Promise<RemoteAuditEntry[]> {
+  listAuditEntries(limit?: number): Promise<RemoteAuditEntry[]> {
     return typedInvoke(
       "list_remote_audit_entries",
-      {},
+      limit === undefined ? {} : { limit },
       z.array(remoteAuditEntrySchema),
     );
   },

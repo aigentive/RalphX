@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 
 use super::{
-    Artifact, ArtifactContent, ArtifactId, ArtifactType, InternalStatus, Task, TaskId,
-    TaskProposalId, TaskStep,
+    Artifact, ArtifactContent, ArtifactId, ArtifactType, IdeationSessionId, InternalStatus,
+    ProjectId, Task, TaskId, TaskProposalId, TaskStep,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +23,35 @@ pub enum ScopeDriftStatus {
 /// Rich context returned by get_task_context MCP tool
 /// Contains the task being executed along with linked artifacts and proposals
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerTaskView {
+    pub id: TaskId,
+    pub project_id: ProjectId,
+    pub title: String,
+    pub description: Option<String>,
+    pub internal_status: InternalStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ideation_session_id: Option<IdeationSessionId>,
+}
+
+impl From<Task> for WorkerTaskView {
+    fn from(task: Task) -> Self {
+        Self {
+            id: task.id,
+            project_id: task.project_id,
+            title: task.title,
+            description: task.description,
+            internal_status: task.internal_status,
+            ideation_session_id: task.ideation_session_id,
+        }
+    }
+}
+
+/// Rich context returned by get_task_context MCP tool
+/// Contains the worker-safe task projection and linked execution context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskContext {
     /// The task being executed
-    pub task: Task,
+    pub task: WorkerTaskView,
 
     /// Source proposal if task was created from ideation
     pub source_proposal: Option<TaskProposalSummary>,

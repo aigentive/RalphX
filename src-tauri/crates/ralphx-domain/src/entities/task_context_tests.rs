@@ -8,7 +8,7 @@ fn test_task_context_creation() {
     let task = Task::new(ProjectId::new(), "Test Task".to_string());
 
     let context = TaskContext {
-        task: task.clone(),
+        task: task.clone().into(),
         source_proposal: None,
         plan_artifact: None,
         blueprint_artifact: None,
@@ -140,7 +140,7 @@ fn test_task_context_with_full_context() {
     };
 
     let context = TaskContext {
-        task: task.clone(),
+        task: task.clone().into(),
         source_proposal: Some(proposal_summary.clone()),
         plan_artifact: Some(plan_summary.clone()),
         blueprint_artifact: None,
