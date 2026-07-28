@@ -64,7 +64,7 @@ lazy_static = "1.5"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-global-shortcut = "2.3.1"
 tauri-plugin-window-state = "2.4.1"
-axum = { version = "0.7", features = ["macros", "ws"] }
+axum = { version = "0.7", features = ["macros", "ws", "multipart"] }
 tower-http = { version = "0.5", features = ["cors"] }
 tauri-plugin-fs = "2.5.0"
 tauri-plugin-notification = "2.3.3"

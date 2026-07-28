@@ -8,7 +8,9 @@ use ralphx_remote_protocol::{ErrorCode, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::domain::entities::{RemoteDedupOutcomeKind, RemoteRequestDedupRecord};
 use crate::remote_server::auth::RemoteIdentity;
+use crate::remote_server::dedup::{class_requires_dedup, DedupDecision, RecordedOutcome};
 use crate::remote_server::endpoints::RemoteRouterState;
 use crate::remote_server::registry::{self, DispatchOutcome, RemoteInvokeError};
 use crate::remote_server::remote_error_response;
@@ -61,20 +63,138 @@ enum InvokeWireResponse {
     Err { ok: bool, error: Value },
 }
 
+/// Bearer-authenticated command invocation, deduplicated per `(device, requestId)` (§4.3).
+///
+/// Order of operations — every step before any dispatch:
+///
+/// 1. `find_spec`: an unknown command bypasses dedup entirely, so a typo never burns a request
+///    id that the client will legitimately reuse once corrected.
+/// 2. `Read` class dispatches without dedup (exempt by spec — no side effect to make
+///    at-most-once, and caching would serve stale reads).
+/// 3. Mutating: consult the DURABLE store, then claim the in-flight slot ([`RemoteDedupState::begin`]).
+/// 4. Dispatch.
+/// 5. Completed outcome (`Ok` **or** `Err`) → durable record + release. Facade error → release
+///    WITHOUT a record, because nothing executed.
 pub(crate) async fn invoke_handler(
     State(state): State<RemoteRouterState>,
     Extension(identity): Extension<RemoteIdentity>,
     Json(request): Json<InvokeWireRequest>,
 ) -> axum::response::Response {
-    // Reserved for PR 1.5 deduplication. Deserializing it here keeps the v1 wire contract exact.
-    let _request_id = request.request_id;
-    match state
-        .invoke_dispatcher()
-        .dispatch(identity.scopes.as_slice(), &request.cmd, &request.args)
+    let InvokeWireRequest {
+        request_id,
+        cmd,
+        args,
+    } = request;
+
+    // An unknown command is resolved before any reservation: dispatch will 404 on its own, and
+    // burning the id here would make the client's corrected retry fail with a reuse error.
+    let requires_dedup = match registry::find_spec(&cmd) {
+        Some(spec) => class_requires_dedup(spec.class),
+        None => false,
+    };
+
+    if !requires_dedup {
+        return match state
+            .invoke_dispatcher()
+            .dispatch(identity.scopes.as_slice(), &cmd, &args)
+            .await
+        {
+            Ok(outcome) => dispatch_outcome_response(outcome),
+            Err(error) => invoke_error_response(error),
+        };
+    }
+
+    // Fail closed: a router built without a dedup store must refuse mutating commands rather
+    // than quietly dispatch them at-least-once.
+    let Some(dedup) = state.dedup().cloned() else {
+        tracing::error!(
+            command = %cmd,
+            "remote invoke reached a mutating command with no dedup store; refusing"
+        );
+        return invoke_error_response(RemoteInvokeError::internal(
+            "The idempotency store is not configured; the request was not executed.",
+        ));
+    };
+
+    match dedup
+        .begin(&identity.device_id, &request_id, &cmd, &args)
         .await
     {
-        Ok(outcome) => dispatch_outcome_response(outcome),
-        Err(error) => invoke_error_response(error),
+        Err(error) => return invoke_error_response(error),
+        Ok(DedupDecision::Replay(record)) => return replay_response(record),
+        Ok(DedupDecision::Proceed) => {}
+    }
+
+    match state
+        .invoke_dispatcher()
+        .dispatch(identity.scopes.as_slice(), &cmd, &args)
+        .await
+    {
+        Ok(outcome) => {
+            let response = dispatch_outcome_response(outcome.clone());
+            dedup
+                .complete(
+                    &identity.device_id,
+                    &request_id,
+                    &cmd,
+                    &args,
+                    recorded_outcome(&outcome),
+                )
+                .await;
+            response
+        }
+        Err(error) => {
+            // Facade rejection: the target command never ran, so no durable record is written
+            // and a corrected retry with the same id is allowed.
+            dedup.release(&identity.device_id, &request_id);
+            invoke_error_response(error)
+        }
+    }
+}
+
+fn recorded_outcome(outcome: &DispatchOutcome) -> RecordedOutcome {
+    let (kind, envelope) = match outcome {
+        DispatchOutcome::Ok(result) => (
+            RemoteDedupOutcomeKind::Ok,
+            InvokeWireResponse::Ok {
+                ok: true,
+                result: result.clone(),
+            },
+        ),
+        DispatchOutcome::Err(error) => (
+            RemoteDedupOutcomeKind::Err,
+            InvokeWireResponse::Err {
+                ok: false,
+                error: error.clone(),
+            },
+        ),
+    };
+    RecordedOutcome {
+        kind,
+        // The stored body is the exact envelope the client received, so a replay is
+        // byte-identical rather than a re-derivation that could drift from this mapping.
+        body: serde_json::to_string(&envelope).unwrap_or_else(|_| "null".to_string()),
+    }
+}
+
+/// Replays a cached outcome verbatim, at the same 200 status the original response carried.
+///
+/// Both `ok` and `err` outcomes replay as HTTP 200: the transport succeeded in both cases, and
+/// the client distinguishes them by the envelope's `ok` field exactly as it did the first time.
+fn replay_response(record: RemoteRequestDedupRecord) -> axum::response::Response {
+    match serde_json::from_str::<Value>(&record.response) {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(error) => {
+            tracing::error!(
+                request_id = %record.request_id,
+                %error,
+                "cached remote response is unreadable; refusing to re-execute"
+            );
+            // Deliberately NOT a re-dispatch: the record proves the command already ran.
+            invoke_error_response(RemoteInvokeError::internal(
+                "A cached outcome exists for this requestId but could not be replayed.",
+            ))
+        }
     }
 }
 

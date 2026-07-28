@@ -21,6 +21,7 @@ pub mod agent_task_repository;
 pub mod agent_workflow_repository;
 pub mod api_key_repository;
 pub mod remote_access_repository;
+pub mod remote_request_dedup_repository;
 pub mod app_state_repository;
 pub mod artifact_bucket_repository;
 pub mod artifact_flow_repository;
@@ -102,6 +103,9 @@ pub use remote_access_repository::{
     RemoteAuditLogRepository, RemoteDeviceLookup, RemoteDeviceRepository, RemotePairingCodeRepository,
     RemotePairingOutcome, RemotePairingRedemption, RemoteSessionRepository,
     RemoteWsTicketOutcome, RemoteWsTicketRepository,
+};
+pub use remote_request_dedup_repository::{
+    RemoteAttachmentRepository, RemoteRequestDedupLookup, RemoteRequestDedupRepository,
 };
 pub use app_state_repository::AppStateRepository;
 pub use artifact_bucket_repository::ArtifactBucketRepository;
