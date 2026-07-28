@@ -1,4 +1,6 @@
 import { create } from "zustand";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { AgentArtifactState, AgentTaskArtifactMode } from "@/stores/agentSessionStore";
 
 import type {
@@ -71,6 +73,8 @@ export const useAgentArtifactUiStore = create<
       },
     })),
 }));
+
+registerEnvIsolatedStore({ name: "useAgentArtifactUiStore", reset: () => useAgentArtifactUiStore.setState(useAgentArtifactUiStore.getInitialState(), true) });
 
 export function selectOptimisticArtifactState(conversationId: string | null) {
   return (state: AgentArtifactUiState): AgentArtifactState | null =>

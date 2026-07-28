@@ -53,6 +53,12 @@ export const LOCAL_ONLY_COMMANDS: readonly LocalOnlyCommand[] = [
     disposition: "run-locally",
     reason: "Closes this client's outbound connection to a host (§6.5).",
   },
+  {
+    command: "remote_stream_send",
+    disposition: "run-locally",
+    reason:
+      "Writes a client control frame to THIS client's proxy socket; routing it remotely recurses.",
+  },
 
   // --- This client's environment registry (§6.1/§6.4). ---
   {

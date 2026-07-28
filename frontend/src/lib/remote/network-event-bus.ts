@@ -45,6 +45,7 @@
  */
 
 import type { EventBus, EventHandler, Unsubscribe } from "../event-bus";
+import { LOCAL_ONLY_BACKEND_EVENT_NAMES } from "./local-only-backend-events.generated";
 import {
   type RemoteClientFrame,
   type RemoteConnectOutcome,
@@ -67,15 +68,7 @@ import {
  * protocol crate's table, so a new Local-only backend name cannot be added host-side
  * without the client learning about it.
  */
-export const LOCAL_ONLY_BACKEND_EVENT_NAMES: ReadonlySet<string> = new Set([
-  "ralphx://check-for-updates",
-  "ralphx://show-release-notes",
-  "gh-auth:login_prompt",
-  "remote:session_connected",
-  "remote:session_closed",
-  "remote:stream_frame",
-  "remote:stream_closed",
-]);
+export { LOCAL_ONLY_BACKEND_EVENT_NAMES };
 
 export function isLocalOnlyBackendEvent(name: string): boolean {
   return LOCAL_ONLY_BACKEND_EVENT_NAMES.has(name);

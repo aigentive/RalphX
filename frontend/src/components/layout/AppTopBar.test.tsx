@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
@@ -15,8 +16,38 @@ vi.mock("@/api/notifications", () => ({
 // ProjectSelector and ThemeSelector are heavy children; stub them so the test
 // focuses on AppTopBar's breadcrumb + project-selector gating logic.
 vi.mock("@/components/projects/ProjectSelector", () => ({
-  ProjectSelector: () => (
-    <div data-testid="project-selector-stub">Project Selector</div>
+  ProjectSelector: ({
+    open,
+    onOpenChange,
+  }: {
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
+  }) => (
+    <button
+      data-testid="project-selector-stub"
+      aria-expanded={open}
+      onClick={() => onOpenChange?.(!open)}
+    >
+      Project Selector
+    </button>
+  ),
+}));
+
+vi.mock("./EnvironmentSwitcher", () => ({
+  EnvironmentSwitcher: ({
+    open,
+    onOpenChange,
+  }: {
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
+  }) => (
+    <button
+      data-testid="environment-switcher-stub"
+      aria-expanded={open}
+      onClick={() => onOpenChange?.(!open)}
+    >
+      Environment Switcher
+    </button>
   ),
 }));
 
@@ -162,6 +193,25 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     });
 
     expect(screen.getByTestId("project-selector-stub")).toBeInTheDocument();
+  });
+
+  it("places environment immediately before project and keeps one chrome menu open", async () => {
+    renderTopBar({
+      currentView: "ticketing",
+      showProjectSelector: true,
+      onNewProject: vi.fn(),
+    });
+    const environment = screen.getByTestId("environment-switcher-stub");
+    const projectSelector = screen.getByTestId("project-selector-stub");
+
+    expect(
+      environment.compareDocumentPosition(projectSelector) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await userEvent.click(environment);
+    expect(environment).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(projectSelector);
+    expect(environment).toHaveAttribute("aria-expanded", "false");
+    expect(projectSelector).toHaveAttribute("aria-expanded", "true");
   });
 
   it("shows the project selector on the GitHub view when enabled", () => {

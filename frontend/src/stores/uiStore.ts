@@ -8,6 +8,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
@@ -856,6 +858,38 @@ export const useUiStore = create<UiState & UiActions>()(
 
   }))
 );
+
+registerEnvIsolatedStore({
+  name: "useUiStore",
+  reset: () => {
+    const initial = useUiStore.getInitialState();
+    useUiStore.setState({
+      activeModal: initial.activeModal,
+      modalContext: initial.modalContext,
+      notifications: initial.notifications,
+      loading: initial.loading,
+      confirmation: initial.confirmation,
+      activeQuestions: initial.activeQuestions,
+      answeredQuestions: initial.answeredQuestions,
+      recoveryPrompt: initial.recoveryPrompt,
+      recoveryPromptSurface: initial.recoveryPromptSurface,
+      executionStatus: initial.executionStatus,
+      boardSearchQuery: initial.boardSearchQuery,
+      isSearching: initial.isSearching,
+      graphSelection: initial.graphSelection,
+      taskHistoryState: initial.taskHistoryState,
+      taskCreationContext: initial.taskCreationContext,
+      preserveCurrentViewOnProjectSwitch:
+        initial.preserveCurrentViewOnProjectSwitch,
+      activityFilter: initial.activityFilter,
+      collapsedColumns: initial.collapsedColumns,
+      viewByProject: initial.viewByProject,
+      pendingConfirmationQueue: initial.pendingConfirmationQueue,
+      autoAcceptPlans: initial.autoAcceptPlans,
+      autoAcceptSessions: initial.autoAcceptSessions,
+    });
+  },
+});
 
 // Expose uiStore to window in web mode for Playwright testing
 if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {

@@ -8,6 +8,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { ChatMessage } from "@/types/ideation";
 import type { ChatContext } from "@/types/chat";
 import type { ModelDisplay } from "@/types/chat-conversation";
@@ -675,6 +677,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
     },
   }))
 );
+
+registerEnvIsolatedStore({ name: "useChatStore", reset: () => useChatStore.setState(useChatStore.getInitialState(), true) });
 
 // ============================================================================
 // Context Key Helper

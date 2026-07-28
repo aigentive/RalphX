@@ -6,6 +6,8 @@
 
 import { QueryClient } from "@tanstack/react-query";
 
+import { getTransportEnvironmentId } from "@/lib/remote/active-environment";
+
 /**
  * Default stale time for queries (5 minutes)
  * Data is considered fresh for this duration.
@@ -49,26 +51,45 @@ export function createQueryClient(): QueryClient {
 }
 
 /**
- * Singleton QueryClient instance for the app
- * Created lazily to support testing with fresh instances.
+ * Environment-keyed QueryClient instances for the app.
+ * Created lazily and retained so switching back can reuse a warm cache.
  */
-let queryClient: QueryClient | null = null;
+const queryClients = new Map<string, QueryClient>();
 
-export function getQueryClient(): QueryClient {
+export function getQueryClient(
+  environmentId: string = getTransportEnvironmentId(),
+): QueryClient {
+  let queryClient = queryClients.get(environmentId);
   if (!queryClient) {
     queryClient = createQueryClient();
+    queryClients.set(environmentId, queryClient);
 
-    // Expose queryClient to window in web mode for Playwright testing
-    if (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__) {
+    // Preserve the original first-creation Playwright exposure. The mounted
+    // EnvironmentScopedProviders is the single writer for subsequent switches.
+    if (
+      queryClients.size === 1 &&
+      typeof window !== "undefined" &&
+      !window.__TAURI_INTERNALS__
+    ) {
       window.__queryClient = queryClient;
     }
   }
   return queryClient;
 }
 
+/** Clears and forgets an environment cache after its registry row is removed. */
+export function removeQueryClient(environmentId: string): void {
+  const queryClient = queryClients.get(environmentId);
+  if (queryClient === undefined) {
+    return;
+  }
+  queryClient.clear();
+  queryClients.delete(environmentId);
+}
+
 /**
  * Reset the query client (for testing)
  */
 export function resetQueryClient(): void {
-  queryClient = null;
+  queryClients.clear();
 }

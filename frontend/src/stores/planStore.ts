@@ -8,6 +8,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import {
   planApi,
   type PlanCandidateResponse,
@@ -200,6 +202,8 @@ export const usePlanStore = create<PlanState & PlanActions>()(
     },
   }))
 );
+
+registerEnvIsolatedStore({ name: "usePlanStore", reset: () => usePlanStore.setState(usePlanStore.getInitialState(), true) });
 
 if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
   window.__planStore = usePlanStore;

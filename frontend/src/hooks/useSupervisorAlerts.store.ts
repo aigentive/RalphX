@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { SupervisorAlert, SupervisorConfig } from "@/types/supervisor";
 
 // ============================================================================
@@ -133,3 +135,5 @@ export const useSupervisorStore = create<SupervisorState & SupervisorActions>()(
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useSupervisorStore", reset: () => useSupervisorStore.setState(useSupervisorStore.getInitialState(), true) });

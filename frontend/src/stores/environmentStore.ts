@@ -17,6 +17,8 @@
  */
 
 import { create } from "zustand";
+
+import { onEnvironmentSwitched } from "@/lib/remote/env-state-isolation";
 import {
   remoteEnvironmentsApi,
   type RemoteEnvironmentSummary,
@@ -164,7 +166,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
 }));
 
 /**
- * Single writer of the transport's active-environment mirror (PR 2.2).
+ * Single writer of the transport mirror and environment-state isolation funnel.
  *
  * Subscribing here rather than calling `setTransportEnvironmentId` beside each
  * `set({ activeEnvironmentId })` means a future assignment cannot forget to mirror —
@@ -179,5 +181,6 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
 useEnvironmentStore.subscribe((state, previous) => {
   if (state.activeEnvironmentId !== previous.activeEnvironmentId) {
     setTransportEnvironmentId(state.activeEnvironmentId);
+    onEnvironmentSwitched();
   }
 });
