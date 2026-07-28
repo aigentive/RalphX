@@ -22,6 +22,11 @@ import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendFetch } from "@/api/backend";
 import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
+import {
   ArtifactResponseSchema,
   transformArtifactResponse,
 } from "@/api/artifact";
@@ -4644,6 +4649,73 @@ export async function startAgentTaskPipeline(input: {
   };
 }
 
+const SendRemoteChatMessageResponseSchema = z
+  .object({
+    conversationId: z.string(),
+    queuedMessageId: z.string(),
+    agentRunId: z.string(),
+    createdAt: z.string(),
+  })
+  .passthrough();
+
+/**
+ * The remote half of {@link sendAgentMessage}.
+ *
+ * `send_agent_message` is not, and will not be, registered on the remote facade — it
+ * reaches a process-launch sink, and the facade's detector-(c) floor admits no
+ * exceptions. A paired device therefore steers a conversation the host already started,
+ * via the spawn-free `send_remote_chat_message`.
+ *
+ * Two consequences are deliberate and surfaced rather than papered over:
+ *
+ * - Starting a conversation stays host-only, so a send with no conversation id is
+ *   refused here rather than silently creating one.
+ * - The host queues the turn for a live run instead of dispatching it inline, so the
+ *   result reports `wasQueued`. Nothing about the composer's optimistic path depends on
+ *   the difference, but reporting it as a plain send would overstate what happened.
+ *
+ * Options that only a host-side send can honour — model/effort overrides, attachments,
+ * team intent, composer references — are not forwarded, because the facade command does
+ * not accept them. They are dropped rather than sent and ignored.
+ */
+async function sendRemoteChatMessage(
+  content: string,
+  conversationId: string | null | undefined,
+): Promise<SendAgentMessageResult> {
+  if (!conversationId) {
+    throw new RemoteTransportError({
+      code: "REMOTE_COMMAND_UNAVAILABLE",
+      message:
+        "Starting a conversation runs only on the host — open an existing conversation to send from here.",
+      environmentId: getTransportEnvironmentId(),
+      cmd: "send_remote_chat_message",
+    });
+  }
+
+  const raw = await typedInvoke(
+    "send_remote_chat_message",
+    {
+      input: {
+        conversationId,
+        content,
+        // Server-pinned to "user" at dispatch. Sent explicitly so the wire shape is
+        // self-describing; the host overwrites whatever arrives here.
+        role: "user",
+      },
+    },
+    SendRemoteChatMessageResponseSchema,
+  );
+
+  return {
+    conversationId: raw.conversationId,
+    agentRunId: raw.agentRunId,
+    isNewConversation: false,
+    wasQueued: true,
+    queuedAsPending: false,
+    queuedMessageId: raw.queuedMessageId,
+  };
+}
+
 /**
  * Send a message using the unified agent API
  * Returns immediately with conversation_id and agent_run_id.
@@ -4661,6 +4733,10 @@ export async function sendAgentMessage(
   attachmentIds?: string[],
   options?: SendAgentMessageOptions,
 ): Promise<SendAgentMessageResult> {
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    return sendRemoteChatMessage(content, options?.conversationId);
+  }
+
   const raw = await typedInvoke(
     "send_agent_message",
     {
