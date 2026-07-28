@@ -11,6 +11,7 @@ use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
 use serde::Serialize;
 
 use crate::remote_server::auth::RemoteAuthContext;
+use crate::remote_server::invoke::{RemoteInvokeDispatcher, TauriRemoteInvokeDispatcher};
 use crate::remote_server::sequencer::RemoteStreamHandle;
 use crate::remote_server::settings::RemoteExposureMode;
 use crate::remote_server::ws::{NoopLifecycleSink, SessionLifecycleSink};
@@ -29,7 +30,7 @@ pub(crate) const MIN_CLIENT_PROTOCOL: u32 = PROTOCOL_VERSION;
 pub(crate) struct RemoteRouterState {
     environment_id: Arc<str>,
     auth: Arc<RemoteAuthContext>,
-    app_handle: tauri::AppHandle,
+    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
     /// The durable stream, installed at app setup when host mode is configured (P-23).
     ///
     /// `Option` because the listener and the stream have independent lifetimes by design: the
@@ -45,10 +46,22 @@ impl RemoteRouterState {
         auth: RemoteAuthContext,
         app_handle: tauri::AppHandle,
     ) -> Self {
+        Self::new_with_invoke_dispatcher(
+            environment_id,
+            auth,
+            TauriRemoteInvokeDispatcher::shared(app_handle),
+        )
+    }
+
+    pub(crate) fn new_with_invoke_dispatcher(
+        environment_id: impl Into<Arc<str>>,
+        auth: RemoteAuthContext,
+        invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+    ) -> Self {
         Self {
             environment_id: environment_id.into(),
             auth: Arc::new(auth),
-            app_handle,
+            invoke_dispatcher,
             stream: None,
             lifecycle: Arc::new(NoopLifecycleSink),
         }
@@ -72,8 +85,8 @@ impl RemoteRouterState {
         &self.auth
     }
 
-    pub(crate) fn app_handle(&self) -> &tauri::AppHandle {
-        &self.app_handle
+    pub(crate) fn invoke_dispatcher(&self) -> Arc<dyn RemoteInvokeDispatcher> {
+        Arc::clone(&self.invoke_dispatcher)
     }
 
     pub(crate) fn stream(&self) -> Option<&RemoteStreamHandle> {

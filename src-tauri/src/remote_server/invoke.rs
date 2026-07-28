@@ -1,7 +1,10 @@
 //! Bearer-authenticated command invocation over the remote facade.
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Extension, Json};
-use ralphx_remote_protocol::ErrorCode;
+use ralphx_remote_protocol::{ErrorCode, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -9,6 +12,38 @@ use crate::remote_server::auth::RemoteIdentity;
 use crate::remote_server::endpoints::RemoteRouterState;
 use crate::remote_server::registry::{self, DispatchOutcome, RemoteInvokeError};
 use crate::remote_server::remote_error_response;
+
+#[async_trait]
+pub(crate) trait RemoteInvokeDispatcher: Send + Sync {
+    async fn dispatch(
+        &self,
+        scopes: &[Scope],
+        command: &str,
+        args: &Value,
+    ) -> Result<DispatchOutcome, RemoteInvokeError>;
+}
+
+pub(crate) struct TauriRemoteInvokeDispatcher {
+    app_handle: tauri::AppHandle,
+}
+
+impl TauriRemoteInvokeDispatcher {
+    pub(crate) fn shared(app_handle: tauri::AppHandle) -> Arc<dyn RemoteInvokeDispatcher> {
+        Arc::new(Self { app_handle })
+    }
+}
+
+#[async_trait]
+impl RemoteInvokeDispatcher for TauriRemoteInvokeDispatcher {
+    async fn dispatch(
+        &self,
+        scopes: &[Scope],
+        command: &str,
+        args: &Value,
+    ) -> Result<DispatchOutcome, RemoteInvokeError> {
+        registry::dispatch(&self.app_handle, scopes, command, args).await
+    }
+}
 
 /// Host-side mirror of the client wire type (C-11).
 #[derive(Debug, Deserialize)]
@@ -33,13 +68,10 @@ pub(crate) async fn invoke_handler(
 ) -> axum::response::Response {
     // Reserved for PR 1.5 deduplication. Deserializing it here keeps the v1 wire contract exact.
     let _request_id = request.request_id;
-    match registry::dispatch(
-        state.app_handle(),
-        identity.scopes.as_slice(),
-        &request.cmd,
-        &request.args,
-    )
-    .await
+    match state
+        .invoke_dispatcher()
+        .dispatch(identity.scopes.as_slice(), &request.cmd, &request.args)
+        .await
     {
         Ok(outcome) => dispatch_outcome_response(outcome),
         Err(error) => invoke_error_response(error),

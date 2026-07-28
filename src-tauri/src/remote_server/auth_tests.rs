@@ -39,6 +39,8 @@ use crate::domain::repositories::{
 use crate::domain::services::key_crypto::hash_key;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::{run_migrations, DbConnection};
+use crate::remote_server::invoke::RemoteInvokeDispatcher;
+use crate::remote_server::registry::{DispatchOutcome, RemoteInvokeError};
 
 const TEST_ENVIRONMENT_ID: &str = "11111111-2222-3333-4444-555555555555";
 
@@ -55,16 +57,28 @@ pub(super) fn in_memory_auth_context() -> RemoteAuthContext {
 }
 
 fn router_for(context: &RemoteAuthContext) -> Router {
-    let app_handle = tauri::Builder::default()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("test Wry app should build")
-        .handle()
-        .clone();
-    authenticated_remote_routes(RemoteRouterState::new(
+    authenticated_remote_routes(RemoteRouterState::new_with_invoke_dispatcher(
         TEST_ENVIRONMENT_ID,
         context.clone(),
-        app_handle,
+        Arc::new(UnavailableInvokeDispatcher),
     ))
+}
+
+struct UnavailableInvokeDispatcher;
+
+#[async_trait]
+impl RemoteInvokeDispatcher for UnavailableInvokeDispatcher {
+    async fn dispatch(
+        &self,
+        _scopes: &[Scope],
+        _command: &str,
+        _args: &Value,
+    ) -> Result<DispatchOutcome, RemoteInvokeError> {
+        Err(RemoteInvokeError {
+            code: ralphx_remote_protocol::ErrorCode::RemoteCommandUnavailable,
+            message: "invoke is unavailable in auth router tests".to_string(),
+        })
+    }
 }
 
 async fn body_json(response: Response) -> Value {
