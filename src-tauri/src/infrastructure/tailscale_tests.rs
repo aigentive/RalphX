@@ -1,13 +1,18 @@
+use std::ffi::OsStr;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use super::tailscale::{
-    parse_status, serve_acquire_args, serve_release_args, TailscaleCommandRunner,
+    parse_status, probe_magicdns_reachability, serve_acquire_args, serve_release_args,
+    RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
 };
-use crate::remote_server::settings::{is_tailnet_cgnat_ipv4, TailnetProviderError};
+use crate::infrastructure::tool_paths::TEST_ENV_MUTEX;
+use crate::remote_server::settings::{
+    is_tailnet_cgnat_ipv4, TailnetProviderError, TailnetSelfAddressProvider,
+};
 
 const RUNNING_STATUS: &str = r#"{
   "Version": "1.66.1",
@@ -57,6 +62,70 @@ const LOGGED_OUT_STATUS_WITH_NULL_IPS: &str = r#"{
   "MagicDNSSuffix": "",
   "CurrentTailnet": null
 }"#;
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn install_fake_tailscale(script: &str) -> (tempfile::TempDir, EnvGuard) {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let binary = temp_dir.path().join("tailscale");
+    std::fs::write(&binary, script).expect("write fake tailscale");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&binary)
+            .expect("fake tailscale metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&binary, permissions).expect("mark fake tailscale executable");
+    }
+    let path = EnvGuard::set_os("PATH", temp_dir.path());
+    (temp_dir, path)
+}
+
+const STATUS_RUNNING_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tailscale/status-running.sh"
+));
+const STATUS_DAEMON_DOWN_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tailscale/status-daemon-down.sh"
+));
+const SERVE_OK_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tailscale/serve-ok.sh"
+));
+const SERVE_FAIL_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tailscale/serve-fail.sh"
+));
+const SERVE_FAIL_LONG_STDERR_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tailscale/serve-fail-long-stderr.sh"
+));
+const LAUNCH_FAIL_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/tailscale/launch-fail.sh"
+));
 
 #[derive(Clone, Default)]
 struct RecordingTailscaleCommandRunner {
@@ -173,4 +242,141 @@ fn cgnat_validation_covers_both_boundaries_and_nearby_non_tailnet_ranges() {
             "{address} should not be CGNAT"
         );
     }
+}
+
+#[tokio::test]
+async fn real_runner_reads_status_stdout_from_the_cli() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(STATUS_RUNNING_SCRIPT);
+
+    let stdout = RealTailscaleCommandRunner
+        .run_status()
+        .await
+        .expect("status succeeds");
+
+    assert!(stdout.contains(r#""BackendState":"Running""#));
+    assert_eq!(
+        parse_status(&stdout)
+            .expect("valid fixture")
+            .magicdns_name(),
+        Some("mac.tail.ts.net")
+    );
+}
+
+#[tokio::test]
+async fn real_runner_reports_status_exit_and_stderr() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(STATUS_DAEMON_DOWN_SCRIPT);
+
+    let error = RealTailscaleCommandRunner
+        .run_status()
+        .await
+        .expect_err("non-zero status fails");
+
+    assert!(matches!(
+        error,
+        TailnetProviderError::Unavailable(message)
+            if message.contains("exit status: 1") && message.contains("failed to connect")
+    ));
+}
+
+#[tokio::test]
+async fn concrete_self_address_provider_reads_and_parses_the_cli() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(STATUS_RUNNING_SCRIPT);
+
+    let addresses = TailscaleSelfAddressProvider
+        .self_addresses()
+        .await
+        .expect("provider should parse the real runner output");
+
+    assert_eq!(
+        addresses,
+        vec![IpAddr::V4(Ipv4Addr::new(100, 101, 102, 103))]
+    );
+}
+
+#[tokio::test]
+async fn concrete_self_address_provider_propagates_daemon_failure() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(STATUS_DAEMON_DOWN_SCRIPT);
+
+    assert!(matches!(
+        TailscaleSelfAddressProvider.self_addresses().await,
+        Err(TailnetProviderError::Unavailable(message))
+            if message.contains("failed to connect")
+    ));
+}
+
+#[tokio::test]
+async fn real_runner_executes_both_serve_success_paths() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(SERVE_OK_SCRIPT);
+    let runner = RealTailscaleCommandRunner;
+
+    runner.run_serve_acquire(3849).await.expect("acquire");
+    runner.run_serve_release().await.expect("release");
+}
+
+#[tokio::test]
+async fn real_runner_preserves_serve_failure_stderr() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(SERVE_FAIL_SCRIPT);
+    let runner = RealTailscaleCommandRunner;
+
+    for error in [
+        runner
+            .run_serve_acquire(3849)
+            .await
+            .expect_err("acquire fails"),
+        runner.run_serve_release().await.expect_err("release fails"),
+    ] {
+        assert!(matches!(
+            error,
+            TailscaleServeError::Exit(message)
+                if message.contains("exit status: 1")
+                    && message.contains("Serve is not enabled")
+        ));
+    }
+}
+
+#[tokio::test]
+async fn serve_failure_stderr_is_bounded_to_four_hundred_characters() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(SERVE_FAIL_LONG_STDERR_SCRIPT);
+
+    let error = RealTailscaleCommandRunner
+        .run_serve_release()
+        .await
+        .expect_err("fixture exits unsuccessfully");
+
+    let TailscaleServeError::Exit(message) = error else {
+        panic!("expected an exit failure");
+    };
+    let (_, snippet) = message
+        .rsplit_once(": ")
+        .expect("non-empty stderr should be appended");
+    assert_eq!(snippet.chars().count(), 400);
+    assert!(!message.contains("EXCLUDED_SUFFIX"));
+}
+
+#[tokio::test]
+async fn bad_interpreter_maps_launch_failures_for_status_and_serve() {
+    let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+    let (_temp, _path) = install_fake_tailscale(LAUNCH_FAIL_SCRIPT);
+
+    assert!(matches!(
+        RealTailscaleCommandRunner.run_status().await,
+        Err(TailnetProviderError::Unavailable(message))
+            if message.contains("tailscale status could not be launched")
+    ));
+    assert!(matches!(
+        RealTailscaleCommandRunner.run_serve_release().await,
+        Err(TailscaleServeError::Launch(message)) if !message.is_empty()
+    ));
+}
+
+#[tokio::test]
+async fn whitespace_magicdns_name_is_rejected_without_network_io() {
+    assert!(!probe_magicdns_reachability("   ").await);
 }
