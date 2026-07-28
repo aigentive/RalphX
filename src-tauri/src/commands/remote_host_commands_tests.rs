@@ -98,3 +98,25 @@ async fn populated_endpoint_serializes_with_the_frontend_field_names_and_kind_ca
         })
     );
 }
+
+#[tokio::test]
+async fn listener_status_reports_not_running_for_a_fresh_handle() {
+    let handle = crate::remote_server::RemoteListenerHandle::new();
+    let settings = crate::remote_server::settings::RemoteHostSettings {
+        enabled: false,
+        exposure_mode: RemoteExposureMode::Serve,
+        port: crate::remote_server::settings::DEFAULT_REMOTE_PORT,
+        environment_id: "env-1".to_string(),
+    };
+
+    let status = super::listener_status(settings, &handle).await;
+
+    assert!(!status.enabled);
+    assert_eq!(status.exposure_mode, RemoteExposureMode::Serve);
+    assert_eq!(status.port, crate::remote_server::settings::DEFAULT_REMOTE_PORT);
+    assert_eq!(status.environment_id, "env-1");
+    assert!(!status.running);
+    assert!(status.bind_address.is_none());
+    assert!(!status.serve_active);
+    assert!(status.serve_degraded_reason.is_none());
+}
