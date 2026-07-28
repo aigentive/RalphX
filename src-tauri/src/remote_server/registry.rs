@@ -80,9 +80,13 @@ impl RemoteInvokeError {
         }
     }
 
+    /// A registered command whose arguments would not deserialize. NOT
+    /// `RemoteCommandUnavailable`: that code is reserved for a `find_spec` miss and the client
+    /// treats it as "this host does not support the command at all", which is terminal and
+    /// about to gate remote affordances.
     fn bad_args(message: impl Into<String>) -> Self {
         Self {
-            code: ErrorCode::RemoteCommandUnavailable,
+            code: ErrorCode::RemoteInvalidArguments,
             message: message.into(),
         }
     }
@@ -142,8 +146,9 @@ pub fn extract_arg<T: serde::de::DeserializeOwned>(
 
 /// Serialises a command's success value exactly as the Tauri IPC layer does.
 pub fn serialize_ok<T: serde::Serialize>(value: T) -> Result<Value, RemoteInvokeError> {
+    // A host-side serialization fault, not a statement about the command's availability.
     serde_json::to_value(value).map_err(|error| RemoteInvokeError {
-        code: ErrorCode::RemoteCommandUnavailable,
+        code: ErrorCode::RemoteInternalError,
         message: format!("Response could not be serialized: {error}"),
     })
 }
@@ -440,9 +445,18 @@ pub fn find_spec(name: &str) -> Option<&'static RemoteCommandSpec> {
 ///
 /// `title` feeds the imperative `SCOPE: Execute ONLY work for: "{title}"` directive and the
 /// sibling dependency hints; `description` is the plan body. Writing either is deferred spawn
-/// authority, so those requests demand `ui:agent`. `category`/`priority` are structurally inert
-/// — the `WorkerTaskView` projection excludes them from every worker payload — and stay
-/// `ui:operate`. `internal_status` never reaches here: `validate_update_task_input` rejects it.
+/// authority, so those requests demand `ui:agent`.
+///
+/// `category`/`priority` stay `ui:operate`, but NOT because no worker payload carries them —
+/// that claim was false. The `WorkerTaskView` projection behind `get_task_context` and
+/// `get_step_context` does exclude them, yet `/api/get_task_details` serialises both through
+/// `task_to_response`. They are inert for a different and stronger reason: `category` is a
+/// closed `TaskCategory` enum and `priority` is an `i32`, so neither can carry attacker-chosen
+/// text into a prompt regardless of which projection renders it. `remote_server::registry_tests`
+/// pins both halves — the `WorkerTaskView` exclusion and the `task_to_response` inclusion —
+/// against poison sentinels.
+///
+/// `internal_status` never reaches here: `validate_update_task_input` rejects it.
 pub const UPDATE_TASK_CONTENT_FIELDS: &[&str] = &["title", "description"];
 
 /// The `update_task` field-level predicate (§3.3).

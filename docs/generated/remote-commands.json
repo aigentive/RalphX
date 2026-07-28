@@ -6,6 +6,14 @@
           "ralphx-execution-worker",
           "ralphx-execution-coder"
         ],
+        "reads": "ticket attachments",
+        "tool": "fetch_ticket_attachment"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
         "reads": "agent_tasks",
         "tool": "get_agent_task"
       },
@@ -29,6 +37,13 @@
       },
       {
         "grantedTo": [
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "review_notes/task_issues",
+        "tool": "get_issue_progress"
+      },
+      {
+        "grantedTo": [
           "ralphx-execution-worker",
           "ralphx-execution-coder",
           "ralphx-execution-reviewer",
@@ -46,6 +61,13 @@
         ],
         "reads": "memory_entries",
         "tool": "get_memory"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-merger"
+        ],
+        "reads": "merge target/branch state",
+        "tool": "get_merge_target"
       },
       {
         "grantedTo": [
@@ -82,6 +104,15 @@
         ],
         "reads": "task_steps",
         "tool": "get_step_context"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "task_steps",
+        "tool": "get_step_progress"
       },
       {
         "grantedTo": [
@@ -146,6 +177,14 @@
         ],
         "reads": "agent_tasks",
         "tool": "list_agent_tasks"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
+        "reads": "ticket attachments",
+        "tool": "list_ticket_attachments"
       },
       {
         "grantedTo": [
@@ -253,6 +292,7 @@
     ]
   },
   "agent_control_floor": [
+    "update_notification_settings",
     "remote_fetch",
     "complete_atlassian_oauth_local_callback",
     "exchange_atlassian_oauth_code",
@@ -341,6 +381,7 @@
     "set_agent_conversation_workspace_auto_publish",
     "set_agent_conversation_workspace_pr_supervision",
     "list_agent_conversation_workspaces_by_project",
+    "get_agent_conversation_workspace_freshness",
     "reconcile_agent_conversation_workspace_publication",
     "update_agent_conversation_workspace_from_base",
     "publish_agent_conversation_workspace",
@@ -1567,6 +1608,16 @@
         "hostManagement"
       ],
       "class": "elevated",
+      "command": "preview_remote_environment",
+      "module": "remote_environment_commands",
+      "reason": "remote environment authority",
+      "registered": false
+    },
+    {
+      "capabilities": [
+        "hostManagement"
+      ],
+      "class": "elevated",
       "command": "pair_remote_environment",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
@@ -1703,11 +1754,13 @@
       "registered": false
     },
     {
-      "capabilities": [],
-      "class": "read",
+      "capabilities": [
+        "spawnsProcess"
+      ],
+      "class": "elevated",
       "command": "list_remote_advertised_endpoints",
       "module": "remote_host_commands",
-      "reason": "remote endpoint read; AppHandle-ineligible until PR 3.1",
+      "reason": "resolves the Tailscale CLI to enumerate advertised endpoints",
       "registered": false
     },
     {
@@ -6798,7 +6851,12 @@
       "surface": "tasks.internal_status + task_status_history.entered_at + agent_runs.status",
       "writers": [
         "re_review_task_from_escalated",
-        "request_task_changes_from_reviewing"
+        "recover_task_execution",
+        "request_task_changes_for_review",
+        "request_task_changes_from_reviewing",
+        "resolve_recovery_prompt",
+        "resume_deferred_git_startup",
+        "retry_merge"
       ]
     },
     {
@@ -6810,7 +6868,8 @@
       "surface": "automations.status",
       "writers": [
         "finalize_automation",
-        "resume_automation"
+        "resume_automation",
+        "resume_automation_run"
       ]
     },
     {
@@ -6823,15 +6882,24 @@
       "writers": [
         "activate_agent_plan_direct_implementation",
         "activate_agent_task_pipeline",
+        "apply_proposals_to_kanban",
         "close_agent_workspace_pr",
         "commit_agent_conversation_workspace_locally",
         "copy_agent_conversation_plan",
+        "get_agent_conversation_workspace",
+        "get_agent_conversation_workspace_freshness",
         "import_agent_conversation_plan",
+        "list_agent_conversation_workspaces_by_project",
+        "list_agent_sidebar_conversations",
         "publish_agent_conversation_workspace",
         "reconcile_agent_conversation_workspace_publication",
+        "resolve_user_question",
         "resume_deferred_git_startup",
+        "send_agent_message",
+        "set_agent_conversation_workspace_auto_publish",
         "set_agent_conversation_workspace_pr_supervision",
         "start_agent_conversation",
+        "start_agent_task_pipeline",
         "start_ralphx_work_from_ticket",
         "start_research",
         "switch_agent_conversation_mode",
@@ -6874,16 +6942,17 @@
       ],
       "surface": "review_settings.require_workspace_review",
       "writers": [
+        "update_notification_settings",
         "update_review_settings"
       ]
     }
   ],
   "worker_task_view_allowlist": [
-    "id",
-    "project_id",
-    "title",
     "description",
+    "id",
+    "ideation_session_id",
     "internal_status",
-    "ideation_session_id"
+    "project_id",
+    "title"
   ]
 }

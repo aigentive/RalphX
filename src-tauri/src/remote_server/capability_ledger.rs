@@ -515,12 +515,15 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         command: "get_valid_transitions",
         policy: policy(RiskClass::Read, NONE, "state-machine metadata read"),
     },
+    // Detector (c) finding: the advertised-endpoint listing resolves the Tailscale CLI, so it
+    // spawns a process. `SpawnsProcess` is expressible only under `Elevated`; the previous
+    // `Read` row was the same under-labelling shape as the `list_projects` mislabel.
     CommandOverride {
         command: "list_remote_advertised_endpoints",
         policy: policy(
-            RiskClass::Read,
-            NONE,
-            "remote endpoint read; AppHandle-ineligible until PR 3.1",
+            RiskClass::Elevated,
+            PROCESS,
+            "resolves the Tailscale CLI to enumerate advertised endpoints",
         ),
     },
     CommandOverride {

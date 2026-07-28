@@ -145,6 +145,8 @@ fn remote_error_code_str(code: ErrorCode) -> &'static str {
         ErrorCode::RemoteTimeoutUnknown => "REMOTE_TIMEOUT_UNKNOWN",
         ErrorCode::RemoteRequestInProgress => "REMOTE_REQUEST_IN_PROGRESS",
         ErrorCode::RemoteRequestIdReused => "REMOTE_REQUEST_ID_REUSED",
+        ErrorCode::RemoteInvalidArguments => "REMOTE_INVALID_ARGUMENTS",
+        ErrorCode::RemoteInternalError => "REMOTE_INTERNAL_ERROR",
     }
 }
 
@@ -1157,6 +1159,8 @@ fn status_error_code(status: u16) -> ErrorCode {
         409 => ErrorCode::RemoteRequestInProgress,
         422 => ErrorCode::RemoteRequestIdReused,
         426 | 505 => ErrorCode::RemoteVersionMismatch,
+        400 => ErrorCode::RemoteInvalidArguments,
+        500 => ErrorCode::RemoteInternalError,
         _ => ErrorCode::RemoteUnreachable,
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 
 use crate::application::AppState;
-use crate::domain::entities::{ProjectId, Task, TaskStep};
+use crate::domain::entities::{ProjectId, Task, TaskCategory, TaskStep};
 use crate::http_server::project_scope::ProjectScope;
 use crate::http_server::types::HttpServerState;
 
@@ -86,4 +86,62 @@ async fn step_context_http_serializes_only_the_task_summary_allowlist() {
     }
     assert!(!serialized.contains(BLOCKED_SENTINEL));
     assert!(!serialized.contains(METADATA_SENTINEL));
+}
+
+/// P-17h, the half the `update_task_authz` comment used to get wrong.
+///
+/// `/api/get_task_details` does NOT go through `WorkerTaskView`; it serialises the task with
+/// `task_to_response`, which includes `category` and `priority`. The invariant that keeps them
+/// at `ui:operate` is therefore not "no worker payload carries them" but "neither can carry
+/// attacker-chosen text": `category` is a closed enum and `priority` an `i32`. This pins both
+/// the inclusion and the containment, so widening `TaskResponse` with a free-text field — or
+/// leaking one of the fields the projection deliberately drops — fails here.
+#[tokio::test]
+async fn task_to_response_carries_no_free_text_outside_the_declared_contract() {
+    const BLOCKED_SENTINEL: &str = "P17H_RESPONSE_BLOCKED_REASON_POISON";
+    const METADATA_SENTINEL: &str = "P17H_RESPONSE_RAW_METADATA_POISON";
+
+    let mut task = Task::new(ProjectId::new(), "Response projection".to_string());
+    task.description = Some("Allowed description".to_string());
+    task.priority = 1_337_019;
+    task.blocked_reason = Some(BLOCKED_SENTINEL.to_string());
+    task.metadata = Some(format!(r#"{{"poison":"{METADATA_SENTINEL}"}}"#));
+
+    let payload =
+        serde_json::to_value(crate::http_server::handlers::task_to_response(&task)).unwrap();
+    let serialized = serde_json::to_string(&payload).unwrap();
+    let object = payload.as_object().expect("response is an object");
+
+    // The exact contract — a new field cannot appear without updating this gate.
+    assert_eq!(
+        object.keys().cloned().collect::<Vec<_>>(),
+        vec![
+            "category".to_string(),
+            "created_at".to_string(),
+            "description".to_string(),
+            "id".to_string(),
+            "priority".to_string(),
+            "status".to_string(),
+            "title".to_string(),
+            "updated_at".to_string(),
+        ]
+    );
+
+    // Fields the projection drops must not reappear anywhere in the payload.
+    assert!(!serialized.contains(BLOCKED_SENTINEL));
+    assert!(!serialized.contains(METADATA_SENTINEL));
+    for banned in ["blocked_reason", "metadata"] {
+        assert!(!object.contains_key(banned), "leaked banned field {banned}");
+    }
+
+    // `category`/`priority` ARE present — and are structurally incapable of free text.
+    assert!(object.contains_key("category") && object.contains_key("priority"));
+    assert_eq!(payload["priority"], serde_json::json!("1337019"));
+    let category = payload["category"].as_str().expect("category is a string");
+    assert!(
+        [TaskCategory::Regular, TaskCategory::PlanMerge]
+            .iter()
+            .any(|known| known.to_string() == category),
+        "category `{category}` is outside the closed TaskCategory enum"
+    );
 }

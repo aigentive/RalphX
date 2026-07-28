@@ -1761,6 +1761,10 @@ fn every_untyped_status_maps_to_the_expected_code() {
         (422, "REMOTE_REQUEST_ID_REUSED"),
         (426, "REMOTE_VERSION_MISMATCH"),
         (505, "REMOTE_VERSION_MISMATCH"),
+        // A malformed-argument refusal must NOT arrive as "command unavailable": the client
+        // reads that code as "this host does not support the command at all".
+        (400, "REMOTE_INVALID_ARGUMENTS"),
+        (500, "REMOTE_INTERNAL_ERROR"),
         (599, "REMOTE_UNREACHABLE"),
     ] {
         let error = transport_error(RemoteHostClientError::Rejected {

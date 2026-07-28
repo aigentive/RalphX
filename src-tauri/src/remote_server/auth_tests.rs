@@ -42,7 +42,7 @@ use crate::infrastructure::sqlite::{run_migrations, DbConnection};
 use crate::remote_server::invoke::RemoteInvokeDispatcher;
 use crate::remote_server::registry::{DispatchOutcome, RemoteInvokeError};
 
-const TEST_ENVIRONMENT_ID: &str = "11111111-2222-3333-4444-555555555555";
+pub(super) const TEST_ENVIRONMENT_ID: &str = "11111111-2222-3333-4444-555555555555";
 
 /// A migrated in-memory store plus a fresh registry — enough to serve the whole remote
 /// router without touching the filesystem.
@@ -119,7 +119,10 @@ fn delete_with_bearer(path: &str, token: &str) -> Request<Body> {
 }
 
 /// Mints a pairing code the way `generate_remote_pairing_code` does.
-async fn mint_pairing_code(context: &RemoteAuthContext, scopes: RemoteScopeSet) -> String {
+pub(super) async fn mint_pairing_code(
+    context: &RemoteAuthContext,
+    scopes: RemoteScopeSet,
+) -> String {
     let raw = generate_pairing_code();
     context
         .pairing_codes
@@ -137,8 +140,21 @@ async fn mint_pairing_code(context: &RemoteAuthContext, scopes: RemoteScopeSet) 
 }
 
 /// Pairs a device through the real HTTP surface and returns its raw token.
-async fn pair_device(context: &RemoteAuthContext, name: &str) -> (String, RemoteDeviceId) {
-    let code = mint_pairing_code(context, RemoteScopeSet::default_pairing_grant()).await;
+pub(super) async fn pair_device(
+    context: &RemoteAuthContext,
+    name: &str,
+) -> (String, RemoteDeviceId) {
+    pair_device_with_scopes(context, name, RemoteScopeSet::default_pairing_grant()).await
+}
+
+/// Pairs a device holding exactly `scopes`, so the production authorization gate can be
+/// driven from the router with a grant that is deliberately insufficient.
+pub(super) async fn pair_device_with_scopes(
+    context: &RemoteAuthContext,
+    name: &str,
+    scopes: RemoteScopeSet,
+) -> (String, RemoteDeviceId) {
+    let code = mint_pairing_code(context, scopes).await;
     let response = router_for(context)
         .oneshot(post_json(
             PAIR_PATH,

@@ -28,6 +28,15 @@ fn registered_command_parser_handles_layout_variants() {
     );
 }
 
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("panic has a string message")
+        .to_string()
+}
+
 #[test]
 fn registered_command_parser_panics_with_the_malformed_segment() {
     let source = r#"
@@ -39,15 +48,95 @@ fn registered_command_parser_panics_with_the_malformed_segment() {
 
     let panic = std::panic::catch_unwind(|| parse_registered_commands(source))
         .expect_err("malformed census segment must fail closed");
-    let message = panic
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| panic.downcast_ref::<&str>().copied())
-        .expect("panic has a string message");
+    let message = panic_message(panic.as_ref());
     assert!(
         message.contains("commands::broken::bad()"),
         "panic must name the malformed segment: {message}"
     );
+}
+
+/// The graph is a floor only if it is the whole program. An unreadable directory used to be
+/// skipped silently, which is the same silent-graph-shrinkage the parse-failure panic exists to
+/// prevent — and it could be baked into the checked-in manifest by a regeneration run.
+#[cfg(unix)]
+#[test]
+fn unreadable_source_directory_is_a_hard_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = tempfile::tempdir().expect("fixture root is creatable");
+    let root = fixture.path().to_path_buf();
+    std::fs::write(root.join("readable.rs"), "fn readable() {}\n").expect("seed readable source");
+    let locked = root.join("locked");
+    std::fs::create_dir(&locked).expect("fixture subdirectory is creatable");
+    std::fs::write(locked.join("hidden.rs"), "fn hidden() {}\n").expect("seed hidden source");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+        .expect("directory permissions are settable");
+
+    let walk_root = root.clone();
+    let outcome = std::panic::catch_unwind(|| {
+        let mut out = Vec::new();
+        collect_rs_files(&walk_root, &walk_root, &mut out);
+        out
+    });
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+        .expect("directory permissions are restorable");
+
+    let panic = outcome.expect_err("an unreadable directory must fail closed, not shrink silently");
+    let message = panic_message(panic.as_ref());
+    assert!(
+        message.contains("could not read directory"),
+        "panic must name the unreadable directory: {message}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_source_file_is_a_hard_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = tempfile::tempdir().expect("fixture root is creatable");
+    let root = fixture.path().to_path_buf();
+    let locked = root.join("locked.rs");
+    std::fs::write(&locked, "fn locked() {}\n").expect("seed locked source");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+        .expect("file permissions are settable");
+
+    let walk_root = root.clone();
+    let outcome = std::panic::catch_unwind(|| {
+        let mut out = Vec::new();
+        collect_rs_files(&walk_root, &walk_root, &mut out);
+        out
+    });
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644))
+        .expect("file permissions are restorable");
+
+    let panic = outcome.expect_err("an unreadable source file must fail closed");
+    let message = panic_message(panic.as_ref());
+    assert!(
+        message.contains("could not read") && message.contains("locked.rs"),
+        "panic must name the unreadable file: {message}"
+    );
+}
+
+#[test]
+fn production_source_load_reaches_the_whole_tree() {
+    let files = load_production_sources();
+    assert!(
+        files.len() >= MIN_PRODUCTION_SOURCE_FILES,
+        "production source load fell below the collapse floor: {}",
+        files.len()
+    );
+    // Recursion actually reached deep leaves, not just the crate-root files.
+    for expected in [
+        "commands/registry.rs",
+        "remote_server/registry.rs",
+        "application/ready_task_scheduler.rs",
+    ] {
+        assert!(
+            files.iter().any(|(path, _)| path == expected),
+            "production source walk missed {expected}"
+        );
+    }
 }
 
 #[test]

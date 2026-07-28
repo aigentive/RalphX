@@ -108,5 +108,7 @@ pub(crate) const fn status_for_error_code(code: ErrorCode) -> StatusCode {
         ErrorCode::RemoteRequestIdReused => StatusCode::UNPROCESSABLE_ENTITY,
         ErrorCode::RemoteVersionMismatch => StatusCode::UPGRADE_REQUIRED,
         ErrorCode::RemoteUnreachable => StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::RemoteInvalidArguments => StatusCode::BAD_REQUEST,
+        ErrorCode::RemoteInternalError => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
