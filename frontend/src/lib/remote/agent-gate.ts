@@ -142,7 +142,17 @@ export const INERT_AFFORDANCE_OPS = {
 // Resolution
 // ---------------------------------------------------------------------------
 
-export type AgentGateStatus = "enabled" | "gated" | "unavailable";
+/**
+ * `read_only` (2.7-a) is a fourth, TRANSIENT status: the op exists and this device is
+ * authorized, but the active remote environment has no confirmed connection to write
+ * through. It differs from `gated` (fix it on the host) and `unavailable` (nothing
+ * fixes it) in that it clears by itself when the supervisor reconnects.
+ */
+export type AgentGateStatus =
+  | "enabled"
+  | "gated"
+  | "unavailable"
+  | "read_only";
 
 export interface AgentGateState {
   readonly status: AgentGateStatus;
@@ -163,6 +173,30 @@ const UNAVAILABLE: AgentGateState = {
   gated: true,
   reason: REMOTE_UNAVAILABLE_HINT,
 };
+
+/**
+ * Folds degraded-connection read-only mode into an already-resolved gate.
+ *
+ * Precedence is deliberate: `unavailable` WINS. An op the host does not expose
+ * remotely stays "not available remotely" even mid-reconnect, because reconnecting
+ * will not make it appear and saying otherwise sends the user to wait for nothing.
+ * Everything else yields to read-only, including `gated` — while there is no
+ * connection, the scope question is moot.
+ */
+export function withReadOnly(
+  gate: AgentGateState,
+  writable: boolean,
+  reason: string | null
+): AgentGateState {
+  if (writable || gate.status === "unavailable") {
+    return gate;
+  }
+  return {
+    status: "read_only",
+    gated: true,
+    reason: reason ?? "This environment is reconnecting — changes can't be made right now.",
+  };
+}
 
 function hasAgentScope(scopes: readonly string[] | null | undefined): boolean {
   return scopes !== null && scopes !== undefined && scopes.includes(UI_AGENT_SCOPE);

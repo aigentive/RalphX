@@ -42,6 +42,7 @@ function resetStore() {
       { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
     ],
     connectionStates: { [LOCAL_ENVIRONMENT_ID]: "connected" },
+    connectionPresentations: {},
   });
 }
 
@@ -203,5 +204,74 @@ describe("hydrateActiveEnvironment", () => {
     expect(mockedApi.setActiveEnvironment).toHaveBeenCalledWith(
       LOCAL_ENVIRONMENT_ID
     );
+  });
+
+  // ==========================================================================
+  // Connection presentation slice (PR 2.7-a)
+  // ==========================================================================
+
+  it("stores presentation and blocked cause together, and refuses local", () => {
+    const store = useEnvironmentStore.getState();
+    store.setEnvironments([summary()]);
+
+    store.setConnectionPresentation("row-1", {
+      presentation: "error",
+      blockedFailure: "version",
+      blockedMessage: "host requires >= v2",
+    });
+    // Local has no supervisor, so nothing may claim a presentation for it.
+    store.setConnectionPresentation(LOCAL_ENVIRONMENT_ID, {
+      presentation: "offline",
+      blockedFailure: null,
+      blockedMessage: null,
+    });
+
+    const presentations = useEnvironmentStore.getState().connectionPresentations;
+    expect(presentations["row-1"]).toEqual({
+      presentation: "error",
+      blockedFailure: "version",
+      blockedMessage: "host requires >= v2",
+    });
+    expect(presentations[LOCAL_ENVIRONMENT_ID]).toBeUndefined();
+  });
+
+  it("forgets a removed environment's presentation so a reused id cannot inherit it", () => {
+    const store = useEnvironmentStore.getState();
+    store.setEnvironments([summary()]);
+    store.setConnectionPresentation("row-1", {
+      presentation: "connected",
+      blockedFailure: null,
+      blockedMessage: null,
+    });
+
+    useEnvironmentStore.getState().setEnvironments([]);
+    expect(
+      useEnvironmentStore.getState().connectionPresentations["row-1"]
+    ).toBeUndefined();
+
+    // Re-adding the same id starts from "nothing reported", which every reader treats
+    // as NOT connected.
+    useEnvironmentStore.getState().setEnvironments([summary()]);
+    expect(
+      useEnvironmentStore.getState().connectionPresentations["row-1"]
+    ).toBeUndefined();
+  });
+
+  it("clears a presentation on quiesce without disturbing the others", () => {
+    const store = useEnvironmentStore.getState();
+    store.setEnvironments([summary(), summary({ id: "row-2", environmentId: "env-2" })]);
+    for (const id of ["row-1", "row-2"]) {
+      useEnvironmentStore.getState().setConnectionPresentation(id, {
+        presentation: "connected",
+        blockedFailure: null,
+        blockedMessage: null,
+      });
+    }
+
+    useEnvironmentStore.getState().clearConnectionPresentation("row-1");
+
+    const presentations = useEnvironmentStore.getState().connectionPresentations;
+    expect(presentations["row-1"]).toBeUndefined();
+    expect(presentations["row-2"]?.presentation).toBe("connected");
   });
 });
