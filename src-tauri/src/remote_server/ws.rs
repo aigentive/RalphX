@@ -36,6 +36,7 @@ use crate::domain::services::key_crypto::hash_key;
 use crate::infrastructure::sqlite::RemoteEventLogStore;
 use crate::remote_server::auth::{now_timestamp, RemoteAuthContext, RemoteAuthRejection};
 use crate::remote_server::endpoints::RemoteRouterState;
+use crate::remote_server::rate_limit::auth_endpoint_key;
 use crate::remote_server::remote_error_response;
 use crate::remote_server::sequencer::{
     parse_payload, EpochWindow, RemoteStreamHandle, SequencedEvent, StreamEpoch, StreamFrame,
@@ -747,6 +748,21 @@ impl DeviceLivenessCheck for RepositoryDeviceCheck {
     }
 }
 
+/// Whether an unauthenticated WS rejection may spend a durable audit row.
+///
+/// Mirrors the HTTP path's `reject`: the row carries no device identity, and every row is a
+/// durable write, so a ticket flood would otherwise let refused traffic out-write accepted
+/// traffic. Past the coarse pre-auth ceiling the request is still refused; it just stops
+/// appending (§4.4, §4.6).
+pub(crate) fn may_audit_unauthenticated_ws_rejection(
+    auth: &RemoteAuthContext,
+    peer_ip: Option<std::net::IpAddr>,
+) -> bool {
+    auth.limiter
+        .check(&auth_endpoint_key(auth.exposure_mode, peer_ip))
+        .is_allowed()
+}
+
 /// Pre-upgrade authentication and admission, then the upgrade.
 ///
 /// Nothing here is deferred into the upgrade callback that could still refuse the connection:
@@ -759,6 +775,9 @@ pub(crate) async fn ws_events_handler(
     upgrade: WebSocketUpgrade,
 ) -> Response {
     let auth = state.auth().clone();
+    let peer_ip = connect_info
+        .as_ref()
+        .map(|ConnectInfo(address)| address.ip());
 
     // 1. Consume the single-use ticket. A replay always loses: `consume` is transactional.
     let device_id = match auth
@@ -768,12 +787,14 @@ pub(crate) async fn ws_events_handler(
     {
         Ok(RemoteWsTicketOutcome::Consumed(device_id)) => device_id,
         Ok(outcome) => {
-            auth.record_audit(
-                None,
-                RemoteAuditAction::AuthRejected,
-                Some(&format!("ws ticket rejected: {outcome:?}")),
-            )
-            .await;
+            if may_audit_unauthenticated_ws_rejection(&auth, peer_ip) {
+                auth.record_audit(
+                    None,
+                    RemoteAuditAction::AuthRejected,
+                    Some(&format!("ws ticket rejected: {outcome:?}")),
+                )
+                .await;
+            }
             return RemoteAuthRejection::UnknownToken.into_response();
         }
         Err(error) => {
@@ -830,6 +851,7 @@ pub(crate) async fn ws_events_handler(
     };
 
     let remote_addr = connect_info
+        .as_ref()
         .map(|ConnectInfo(address)| address.to_string())
         .unwrap_or_else(|| "unknown".to_string());
     let environment_id = state.environment_id().to_string();

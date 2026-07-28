@@ -1010,6 +1010,47 @@ async fn sweep_stale_serve_mapping(tailscale: &dyn TailscaleCommandRunner) {
     }
 }
 
+/// Best-effort Serve release on app exit.
+///
+/// `stop_listener` and `apply_exposure_mode` are the only other release paths, so a clean
+/// quit used to leave the tailnet `:443 → 127.0.0.1:<port>` forward pointing at a loopback
+/// port this process no longer owns — the same residue a crash leaves, mitigated only by the
+/// next serve start's sweep (§5.3 item 2).
+///
+/// Bounded and non-propagating by construction: exit must not be blocked by a CLI that hangs.
+pub(crate) fn release_serve_mapping_on_exit(handle: &RemoteListenerHandle) {
+    let handle = handle.clone();
+    let released = tauri::async_runtime::block_on(async move {
+        release_serve_mapping_for_exit(&handle, &RealTailscaleCommandRunner).await
+    });
+    if released {
+        tracing::info!("Released the Tailscale Serve mapping on exit");
+    }
+}
+
+/// The injectable core of [`release_serve_mapping_on_exit`]. Returns whether a release was
+/// both warranted and completed inside the budget.
+pub(crate) async fn release_serve_mapping_for_exit(
+    handle: &RemoteListenerHandle,
+    tailscale: &dyn TailscaleCommandRunner,
+) -> bool {
+    let Some(bind_address) = handle.bound_address().await else {
+        return false;
+    };
+    if !handle.serve_status().await.active {
+        return false;
+    }
+    tokio::time::timeout(
+        SERVE_EXIT_RELEASE_TIMEOUT,
+        release_serve_best_effort(tailscale, bind_address),
+    )
+    .await
+    .is_ok()
+}
+
+/// Exit is not the place to wait on a hung CLI; the next serve start still sweeps.
+const SERVE_EXIT_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 async fn release_serve_best_effort(
     tailscale: &dyn TailscaleCommandRunner,
     bind_address: SocketAddr,

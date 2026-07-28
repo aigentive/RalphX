@@ -6,14 +6,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  isSilentGateReconcileFailure,
   onPendingGateReconcile,
   requestPendingGateReconcile,
 } from "./pending-gate-reconcile";
-import {
-  RemoteTransportError,
-  type RemoteTransportErrorCode,
-} from "./transport-errors";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -52,40 +47,5 @@ describe("requestPendingGateReconcile", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     detach();
-  });
-});
-
-describe("isSilentGateReconcileFailure", () => {
-  it("stays quiet for a host that does not expose the gate lists yet", () => {
-    expect(
-      isSilentGateReconcileFailure(
-        new RemoteTransportError({
-          code: "REMOTE_COMMAND_UNAVAILABLE",
-          message: "list_pending_permission_gates is not registered",
-          environmentId: "env-a",
-        })
-      )
-    ).toBe(true);
-  });
-
-  it.each<RemoteTransportErrorCode>([
-    "REMOTE_UNAUTHORIZED",
-    "REMOTE_FORBIDDEN",
-    "REMOTE_UNREACHABLE",
-    "REMOTE_INTERNAL_ERROR",
-  ])("surfaces %s — a real read failure must be visible", (code) => {
-    expect(
-      isSilentGateReconcileFailure(
-        new RemoteTransportError({
-          code,
-          message: code,
-          environmentId: "env-a",
-        })
-      )
-    ).toBe(false);
-  });
-
-  it("surfaces a plain error rather than swallowing an unknown failure", () => {
-    expect(isSilentGateReconcileFailure(new Error("boom"))).toBe(false);
   });
 });

@@ -435,10 +435,16 @@ pub(crate) async fn strip_trust_headers(mut request: Request, next: Next) -> Res
     next.run(request).await
 }
 
-/// Token bucket + lockout ahead of `/remote/v1/auth/*`, before any body is read.
+/// Token bucket + lockout ahead of `/remote/v1/auth/*` AND the WS upgrade, before any body
+/// is read.
 ///
 /// The identity is the Serve-aware pre-auth key; the per-pairing-code lockout that keeps two
 /// devices independent is applied inside the pair handler, where the code is known.
+///
+/// The WS upgrade is an auth endpoint in everything but its path: it redeems a single-use
+/// credential and answers a DB-backed accept/reject. Leaving it out let an unauthenticated
+/// tailnet peer drive unbounded ticket guesses, each one a store round-trip and a durable
+/// `remote_audit_log` row (§4.4, §4.6).
 pub(crate) async fn enforce_auth_endpoint_rate_limit(
     State(state): State<RemoteRouterState>,
     request: Request,
@@ -446,9 +452,9 @@ pub(crate) async fn enforce_auth_endpoint_rate_limit(
 ) -> Response {
     // Preflight is pre-auth by contract (C-15) and carries no credential to brute-force, so
     // it must not spend the auth budget.
-    if request.method() == axum::http::Method::OPTIONS
-        || !request.uri().path().starts_with("/remote/v1/auth/")
-    {
+    let path = request.uri().path();
+    let rate_limited = path.starts_with("/remote/v1/auth/") || path == super::ws::WS_EVENTS_PATH;
+    if request.method() == axum::http::Method::OPTIONS || !rate_limited {
         return next.run(request).await;
     }
     let key = auth_endpoint_key(state.auth().exposure_mode, peer_address(&request));

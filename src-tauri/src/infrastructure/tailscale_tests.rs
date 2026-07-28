@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::tailscale::{
-    parse_status, probe_magicdns_reachability, serve_acquire_args, serve_release_args,
+    parse_status, probe_descriptor_reachability, serve_acquire_args, serve_release_args,
     RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
 };
@@ -378,5 +378,5 @@ async fn bad_interpreter_maps_launch_failures_for_status_and_serve() {
 
 #[tokio::test]
 async fn whitespace_magicdns_name_is_rejected_without_network_io() {
-    assert!(!probe_magicdns_reachability("   ").await);
+    assert!(!probe_descriptor_reachability("   ").await);
 }

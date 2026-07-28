@@ -23,8 +23,6 @@
  * A-5: this schedules nothing. It is an announcement on an already-completed connect.
  */
 
-import { isRemoteTransportError } from "./transport-errors";
-
 export const PENDING_GATE_RECONCILE_EVENT = "ralphx:pending-gate-reconcile";
 
 export interface PendingGateReconcileDetail {
@@ -74,21 +72,4 @@ export function onPendingGateReconcile(
   };
   window.addEventListener(PENDING_GATE_RECONCILE_EVENT, handler);
   return () => window.removeEventListener(PENDING_GATE_RECONCILE_EVENT, handler);
-}
-
-/**
- * Whether a failed gate-list read should stay SILENT.
- *
- * `list_pending_permission_gates` / `list_pending_question_gates` exist as Tauri
- * commands but are not yet on the remote facade's registered surface, so a remote
- * environment answers `REMOTE_COMMAND_UNAVAILABLE`. That is a host capability gap, not
- * something the user can act on, and toasting it on every single reconnect would train
- * people to ignore the one message that matters when the read genuinely breaks.
- *
- * Fail-closed either way: nothing is cleared. This only decides whether to shout.
- */
-export function isSilentGateReconcileFailure(error: unknown): boolean {
-  return (
-    isRemoteTransportError(error) && error.code === "REMOTE_COMMAND_UNAVAILABLE"
-  );
 }

@@ -506,6 +506,18 @@ impl CallGraph {
             .collect()
     }
 
+    /// Tokens of the named function's OWN bodies, without expanding callees.
+    ///
+    /// Detector (d) needs the write site itself, not everything the command can transitively
+    /// touch; see [`ContentWriteSurface`] for why.
+    pub fn own_body_tokens(&self, name: &str) -> BTreeSet<String> {
+        self.roots_named(name)
+            .iter()
+            .filter_map(|node| self.nodes.get(node))
+            .flat_map(|node| node.tokens.iter().cloned())
+            .collect()
+    }
+
     /// Expands `roots` transitively, stopping at (but recording) sinks.
     pub fn closure(&self, roots: impl IntoIterator<Item = String>) -> Closure {
         let sinks = all_cut_sinks();
@@ -579,6 +591,116 @@ pub fn verdict_for(hit: &SinkHit) -> HitVerdict {
         return HitVerdict::Halting;
     }
     HitVerdict::Arming
+}
+
+// ---------------------------------------------------------------------------------------
+// Detector (d) — agent-consumed content writes (§3.3 backstop #2)
+// ---------------------------------------------------------------------------------------
+
+/// A persisted surface the enumerated agent-consumed content READ tools return, paired with
+/// the tokens that identify a WRITE to it.
+///
+/// # Why the command's own body and not its transitive closure
+///
+/// Content repositories expose generic CRUD verbs (`create`, `update`, `delete`). The graph
+/// resolves a method call to every same-name, same-arity definition — a deliberate
+/// conservative over-approximation — so `foo.create(x)` anywhere in a closure resolves into
+/// `SqliteTaskStepRepository::create` as well. Measured: a transitive form of this detector
+/// flags 318 of 540 census commands, including pure readers. A gate that fires on reads is
+/// not a floor, so detector (d) matches the command's OWN body, where the repository handle
+/// and the write verb appear together at the real write site.
+///
+/// Stated soundness limit, recorded rather than papered over: a command that writes content
+/// exclusively through a private helper in another module is invisible here, exactly as
+/// detector (b) is blind to writes with no distinguishing token. Those are carried as
+/// reason-coded rows in the hand-audited content-writer surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentWriteSurface {
+    pub id: &'static str,
+    pub surface: &'static str,
+    /// Repository handles/types naming the content store. Never a command name.
+    pub repo_markers: &'static [&'static str],
+    /// Mutating verbs. A read-only verb must never appear here.
+    pub write_markers: &'static [&'static str],
+}
+
+/// The content stores behind `CONTENT_READ_TOOLS`: task steps, artifacts and their relations,
+/// and review feedback/issues.
+pub const AGENT_CONSUMED_CONTENT_WRITE_SURFACE: &[ContentWriteSurface] = &[
+    ContentWriteSurface {
+        id: "task-steps",
+        surface: "task_steps",
+        repo_markers: &["task_step_repo"],
+        write_markers: &[
+            "create",
+            "bulk_create",
+            "update",
+            "delete",
+            "delete_by_task",
+        ],
+    },
+    ContentWriteSurface {
+        id: "artifacts",
+        surface: "artifacts/artifact_versions/artifact_relations",
+        repo_markers: &["artifact_repo"],
+        write_markers: &["create", "update", "delete", "add_relation"],
+    },
+    ContentWriteSurface {
+        id: "review-feedback",
+        surface: "review_notes/task_issues",
+        repo_markers: &["review_repo", "review_issue_repo"],
+        write_markers: &["create", "update", "delete"],
+    },
+];
+
+/// A detected content writer whose ledger row deliberately carries no
+/// `MutatesAgentConsumedContent`, with the reason that makes the omission sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentWriteExemption {
+    pub command: &'static str,
+    pub reason: &'static str,
+}
+
+pub const CONTENT_WRITE_EXEMPTIONS: &[ContentWriteExemption] = &[ContentWriteExemption {
+    command: "create_task",
+    reason: "born-backlog-only: `CreateTaskInput` carries no status field and every \
+             construction path runs `Task::new_with_category`, so the task and the steps \
+             created with it land in `InternalStatus::Backlog`. No loop or worker reads them \
+             until a separate AgentControl-class action arms the task, which is the same \
+             rationale the registry records for registering `create_task` at Operate",
+}];
+
+impl ContentWriteSurface {
+    /// True when `tokens` — the command's own body — names both this store and a write verb.
+    pub fn flags(&self, tokens: &BTreeSet<String>) -> bool {
+        self.repo_markers
+            .iter()
+            .any(|marker| tokens.contains(*marker))
+            && self
+                .write_markers
+                .iter()
+                .any(|marker| tokens.contains(*marker))
+    }
+}
+
+/// Detector-(d)'s mechanically derived content writers, mapped to the surfaces they write.
+pub fn agent_consumed_content_writers(
+    graph: &CallGraph,
+    commands: impl IntoIterator<Item = String>,
+    surface: &[ContentWriteSurface],
+) -> BTreeMap<String, BTreeSet<&'static str>> {
+    commands
+        .into_iter()
+        .filter_map(|command| {
+            let tokens = graph.own_body_tokens(&command);
+            let hits = surface
+                .iter()
+                .filter(|entry| entry.flags(&tokens))
+                .map(|entry| entry.id)
+                .collect::<BTreeSet<_>>();
+            (!hits.is_empty()).then_some((command, hits))
+        })
+        .collect()
 }
 
 pub fn closure_is_arming(closure: &Closure) -> bool {

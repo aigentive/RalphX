@@ -269,6 +269,15 @@ pub async fn set_remote_device_agent_control(
     app: tauri::AppHandle,
 ) -> Result<RemoteDeviceView, String> {
     let context = remote_context(&state, &app);
+    set_agent_control_with_context(&context, input).await
+}
+
+/// Context-taking core of [`set_remote_device_agent_control`], so the audit-failure paths are
+/// reachable without a Tauri `AppHandle`.
+pub(crate) async fn set_agent_control_with_context(
+    context: &RemoteAuthContext,
+    input: SetRemoteDeviceAgentControlInput,
+) -> Result<RemoteDeviceView, String> {
     let device_id = RemoteDeviceId::from_string(input.device_id);
     let device = context
         .devices
@@ -297,7 +306,11 @@ pub async fn set_remote_device_agent_control(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "This remote device no longer exists.".to_string())?;
 
-    context
+    // `record_audit`'s contract: an authority change whose decision left no trail is refused
+    // (§5.5). The two directions compensate differently — a grant is rolled back so no
+    // unaudited agent control survives, while a withdrawal keeps the narrower durable grant
+    // and still tears live sessions down, because that is the fail-safe direction.
+    if !context
         .record_audit(
             Some(&device_id),
             if input.enabled {
@@ -307,7 +320,23 @@ pub async fn set_remote_device_agent_control(
             },
             None,
         )
-        .await;
+        .await
+    {
+        if input.enabled {
+            if let Err(error) = context.devices.set_scopes(&device_id, &device.scopes).await {
+                tracing::error!(
+                    %error,
+                    %device_id,
+                    "Reverting an unaudited agent-control grant failed"
+                );
+            }
+        } else {
+            context
+                .tear_down_device_sessions(&device_id, ResetReason::Revoked)
+                .await;
+        }
+        return Err("The agent-control change could not be recorded in the audit log.".to_string());
+    }
 
     // Narrowing is the only direction that needs teardown: a session admitted while agent
     // control was on must not keep running under the old grant.
@@ -339,6 +368,14 @@ pub async fn revoke_remote_device(
     app: tauri::AppHandle,
 ) -> Result<RemoteDeviceView, String> {
     let context = remote_context(&state, &app);
+    revoke_device_with_context(&context, input).await
+}
+
+/// Context-taking core of [`revoke_remote_device`].
+pub(crate) async fn revoke_device_with_context(
+    context: &RemoteAuthContext,
+    input: RemoteDeviceIdInput,
+) -> Result<RemoteDeviceView, String> {
     let device_id = RemoteDeviceId::from_string(input.device_id);
     let revoked = context
         .devices
@@ -347,13 +384,22 @@ pub async fn revoke_remote_device(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "This remote device no longer exists.".to_string())?;
 
-    context
+    let audited = context
         .record_audit(Some(&device_id), RemoteAuditAction::DeviceRevoked, None)
         .await;
     let torn_down = context
         .tear_down_device_sessions(&device_id, ResetReason::Revoked)
         .await;
     tracing::info!(device_id = %device_id, sessions = torn_down, "Remote device revoked");
+
+    // `revoked_at` and the teardown are the fail-safe direction, so they stand; the command
+    // still refuses, because a revocation with no audit trail must not report success (§5.5).
+    if !audited {
+        return Err(
+            "This device was revoked, but the revocation could not be recorded in the audit log."
+                .to_string(),
+        );
+    }
 
     Ok(device_view(
         &revoked,

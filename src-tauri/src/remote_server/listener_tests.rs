@@ -19,9 +19,9 @@ use super::settings::{
 };
 use super::{
     allowed_app_origins, apply_exposure_mode_with_runtime, authenticated_remote_routes,
-    auto_start_if_enabled_with_runtime, remote_router, start_listener_with_runtime, stop_listener,
-    RemoteListenerError, RemoteListenerHandle, RemoteListenerRuntime, DESCRIPTOR_PATH, HEALTH_PATH,
-    PAIR_PATH, PRE_AUTH_ALLOWLIST,
+    auto_start_if_enabled_with_runtime, release_serve_mapping_for_exit, remote_router,
+    start_listener_with_runtime, stop_listener, RemoteListenerError, RemoteListenerHandle,
+    RemoteListenerRuntime, DESCRIPTOR_PATH, HEALTH_PATH, PAIR_PATH, PRE_AUTH_ALLOWLIST,
 };
 use crate::infrastructure::sqlite::DbConnection;
 use crate::infrastructure::tailscale::{TailscaleCommandRunner, TailscaleServeError};
@@ -404,6 +404,24 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
     set_configured_port(&db, port);
     let handle = RemoteListenerHandle::new();
     let runner = RecordingTailscaleCommandRunner::default();
+    // P-15/P-22(c): the durable stream is installed ONCE per process and deliberately
+    // survives listener stop/start. Observing the epoch across the real lifecycle is the
+    // only way to prove "re-enable resumes without a spurious epoch roll" — reading the
+    // same epoch twice with no lifecycle action in between passes for any implementation.
+    let (control_sender, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+    let stream = crate::remote_server::sequencer::build_stream_for_test(
+        crate::remote_server::sequencer::tests::FakeEventLog::seeded(500),
+        500,
+        0,
+        crate::remote_server::retention::RetentionLeaseRegistry::new(),
+        control_sender,
+    );
+    assert!(
+        handle.install_stream(stream.clone()),
+        "stream installs once"
+    );
+    let epoch_before = stream.epoch();
+    let floor_before = stream.epoch_window().floor_seq;
 
     let first = start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
         .await
@@ -444,6 +462,20 @@ async fn enable_disable_enable_releases_and_reacquires_the_port() {
     assert_eq!(second, first);
     assert_eq!(second_status, 200);
     assert!(!handle.is_running().await);
+    assert_eq!(
+        stream.epoch(),
+        epoch_before,
+        "a disable/enable cycle inside one process must not roll the epoch (P-22c)"
+    );
+    assert_eq!(
+        stream.epoch_window().floor_seq,
+        floor_before,
+        "the replay floor must survive a listener restart (P-15)"
+    );
+    assert!(
+        handle.stream().is_some(),
+        "listener stop must not clear the installed stream"
+    );
     assert_eq!(
         runner.calls(),
         vec![
@@ -791,5 +823,52 @@ fn the_backend_listener_stays_pinned_to_loopback() {
         backend_http_port(),
         super::settings::DEFAULT_REMOTE_PORT,
         "the remote listener must never share the backend port"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// §5.3 item 2: the Serve mapping is released on app exit, not only on an explicit disable.
+// ---------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn app_exit_releases_a_live_serve_mapping() {
+    let db = SqliteTestDb::new("remote-listener-exit-release");
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+    store.get_or_create().await.expect("settings should mint");
+    let port = reserve_loopback_port().await;
+    set_configured_port(&db, port);
+    let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
+
+    start_listener(&handle, &store, &UnconfiguredTailnetProvider, &runner)
+        .await
+        .expect("serve listener should start");
+
+    // A clean quit: no stop_listener, no exposure-mode change.
+    let released = release_serve_mapping_for_exit(&handle, &runner).await;
+
+    assert!(released, "a live serve mapping must be released on exit");
+    assert_eq!(
+        runner.calls(),
+        vec![TailscaleCall::Acquire(port), TailscaleCall::Release],
+        "exit must release exactly the mapping this process acquired"
+    );
+
+    stop_listener(&handle, &store, &runner)
+        .await
+        .expect("teardown stop should succeed");
+}
+
+#[tokio::test]
+async fn app_exit_without_a_running_listener_touches_nothing() {
+    let handle = RemoteListenerHandle::new();
+    let runner = RecordingTailscaleCommandRunner::default();
+
+    let released = release_serve_mapping_for_exit(&handle, &runner).await;
+
+    assert!(!released);
+    assert!(
+        runner.calls().is_empty(),
+        "exit must not shell out when this process owns no mapping"
     );
 }

@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::infrastructure::tailscale::{
-    parse_status, RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
+    parse_status, HttpEndpointProbe, RealTailscaleCommandRunner, RemoteEndpointProbe,
+    TailscaleCommandRunner, TailscaleSelfAddressProvider,
 };
 use crate::remote_server::endpoints::{advertised_endpoints, AdvertisedEndpoint};
 use crate::remote_server::settings::{
@@ -72,11 +73,18 @@ async fn listener_status(
     }
 }
 
+/// Builds the advertised endpoints and PROBES each candidate.
+///
+/// `serve_active` is the serve-mapping snapshot: it decides whether a Serve endpoint is a
+/// candidate at all. Whether the candidate is actually reachable is decided by a live probe,
+/// because the pane renders `available` as a "Reachable" dot and a start-time snapshot (or a
+/// hardcoded `true`, which is what tailnet-direct published) is not evidence of that.
 async fn advertised_endpoints_for_status(
     exposure_mode: RemoteExposureMode,
     bound_address: Option<SocketAddr>,
-    serve_reachable: bool,
+    serve_active: bool,
     tailscale: &dyn TailscaleCommandRunner,
+    probe: &dyn RemoteEndpointProbe,
 ) -> Vec<AdvertisedEndpoint> {
     let Some(bound_address) = bound_address else {
         return Vec::new();
@@ -100,13 +108,20 @@ async fn advertised_endpoints_for_status(
             })
     });
 
-    advertised_endpoints(
+    let mut endpoints = advertised_endpoints(
         exposure_mode,
         bound_address.port(),
         magicdns_name.as_deref(),
-        serve_reachable,
+        serve_active,
         tailnet_self_ip,
-    )
+    );
+    for endpoint in &mut endpoints {
+        // A non-candidate stays unavailable without spending a probe.
+        if endpoint.available {
+            endpoint.available = probe.reachable(&endpoint.url).await;
+        }
+    }
+    endpoints
 }
 
 /// The status a host that has never configured remote access reports.
@@ -224,12 +239,13 @@ pub async fn list_remote_advertised_endpoints(
     if bound_address.is_none() {
         return Ok(Vec::new());
     }
-    let serve_reachable = handle.serve_status().await.active;
+    let serve_active = handle.serve_status().await.active;
     Ok(advertised_endpoints_for_status(
         settings.exposure_mode,
         bound_address,
-        serve_reachable,
+        serve_active,
         &RealTailscaleCommandRunner,
+        &HttpEndpointProbe,
     )
     .await)
 }

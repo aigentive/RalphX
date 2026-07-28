@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ralphx_remote_protocol::{class_permits, Capability, RiskClass};
 
 use super::authority_audit::{
-    closure_is_arming, load_production_sources, parse_registered_commands, repo_root,
-    spawn_triggering_writers, tokens_reach_any, CallGraph, StateSurfaceEntry, PROCESS_LAUNCH_SINKS,
-    SPAWN_TRIGGERING_STATE_SURFACE,
+    agent_consumed_content_writers, closure_is_arming, load_production_sources,
+    parse_registered_commands, repo_root, spawn_triggering_writers, tokens_reach_any, CallGraph,
+    StateSurfaceEntry, AGENT_CONSUMED_CONTENT_WRITE_SURFACE, CONTENT_WRITE_EXEMPTIONS,
+    PROCESS_LAUNCH_SINKS, SPAWN_TRIGGERING_STATE_SURFACE, TRANSITION_SINKS,
 };
 use super::capability_ledger::{
     policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES,
@@ -278,6 +279,34 @@ fn agent_content_writers() -> Vec<serde_json::Value> {
             Some("title,description — discharged by update_task_authz"),
         ),
         ("add_task_note", "http-handler", "task.description", None),
+        ("start_step", "tauri-command", "task_steps", None),
+        ("complete_step", "tauri-command", "task_steps", None),
+        ("skip_step", "tauri-command", "task_steps", None),
+        ("fail_step", "tauri-command", "task_steps", None),
+        (
+            "verify_issue",
+            "tauri-command",
+            "review_notes/task_issues",
+            None,
+        ),
+        (
+            "reopen_issue",
+            "tauri-command",
+            "review_notes/task_issues",
+            None,
+        ),
+        (
+            "mark_issue_in_progress",
+            "tauri-command",
+            "review_notes/task_issues",
+            None,
+        ),
+        (
+            "mark_issue_addressed",
+            "tauri-command",
+            "review_notes/task_issues",
+            None,
+        ),
     ]
     .into_iter()
     .map(|(writer, surface, writes, conditional)| {
@@ -340,17 +369,32 @@ fn generated_manifest() -> serde_json::Value {
                 .then_some(command)
         })
         .collect::<Vec<_>>();
+    // R5-H1's row shape: entry point, sinks reached, read-surface classification. The closure
+    // is computed here anyway, so discarding everything but a boolean is what left a reviewer
+    // unable to see WHICH sink or persisted state a newly flagged loop touches.
     let background_loop_inventory = graph
         .loop_roots
         .iter()
         .map(|root| {
             let closure = graph.loop_closure(root);
+            let sinks_reached = closure
+                .sink_hits
+                .iter()
+                .map(|hit| hit.sink.clone())
+                .collect::<BTreeSet<_>>();
+            let read_surface = SPAWN_TRIGGERING_STATE_SURFACE
+                .iter()
+                .filter(|entry| entry.read_by_loops.contains(&root.id.as_str()))
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>();
             serde_json::json!({
                 "id": root.id,
                 "file": root.file,
                 "enclosingFunction": root.enclosing_fn,
                 "kind": root.kind,
                 "authorityBearing": closure_is_arming(&closure),
+                "sinksReached": sinks_reached,
+                "readSurface": read_surface,
             })
         })
         .collect::<Vec<_>>();
@@ -431,18 +475,162 @@ fn generated_manifest() -> serde_json::Value {
         "facade_ops": facade_ops,
         "conditional_capabilities": conditional_capabilities,
         "spawn_triggering_state_surface": spawn_triggering_state_surface,
-        "agent_consumed_content_surface": {"reads": agent_content_reads(), "writers": agent_content_writers()},
+        "agent_consumed_content_surface": {
+            "reads": agent_content_reads(),
+            "writers": agent_content_writers(),
+            "detected_writers": detected_content_writers(&graph, &rows),
+            "exemptions": CONTENT_WRITE_EXEMPTIONS.iter().map(|exemption| serde_json::json!({
+                "command": exemption.command,
+                "reason": exemption.reason,
+            })).collect::<Vec<_>>(),
+        },
         "worker_task_view_allowlist": worker_task_view_allowlist(),
         "authority_reducing_exemptions": authority_reducing_exemptions,
         "declared_memberships": declared_memberships,
         "ledger": ledger,
         "agent_control_floor": agent_control_floor,
         "coverage": {
-            "detectorA": "complete",
-            "detectorB": "complete",
-            "agentConsumedContent": "complete"
+            "detectorA": detector_a_coverage(&graph, &rows),
+            "detectorB": detector_b_coverage(&graph),
+            "agentConsumedContent": agent_consumed_content_coverage(&graph, &rows)
         }
     })
+}
+
+/// Detector-(d)'s mechanically derived writers, as manifest rows.
+fn detected_content_writers(
+    graph: &CallGraph,
+    rows: &[(String, String)],
+) -> Vec<serde_json::Value> {
+    agent_consumed_content_writers(
+        graph,
+        rows.iter().map(|(command, _)| command.clone()),
+        AGENT_CONSUMED_CONTENT_WRITE_SURFACE,
+    )
+    .into_iter()
+    .map(|(command, surfaces)| {
+        serde_json::json!({"writer": command, "surfaces": surfaces.into_iter().collect::<Vec<_>>()})
+    })
+    .collect()
+}
+
+/// Registered commands whose definition deliberately lives outside `commands/`, so
+/// `roots_named` cannot anchor a detector-(a) root for them. Reason-coded so the derivation
+/// below stays honest instead of silently tolerating an unresolved root.
+const DETECTOR_A_ROOT_EXCEPTIONS: &[(&str, &str)] = &[(
+    "greet",
+    "Tauri scaffold demo command defined in lib.rs rather than commands/; it takes a &str, \
+     returns a String, and reaches no sink",
+)];
+
+/// `complete` only when detector (a) actually resolved: every census command reached a graph
+/// node and every declared cut sink exists as a callable name somewhere in production source.
+///
+/// Hardcoding `"complete"` made the downstream fail-closed mirror gate validate a constant —
+/// it could never fire. These derivations can.
+fn detector_a_coverage(graph: &CallGraph, rows: &[(String, String)]) -> String {
+    let unresolved = rows
+        .iter()
+        .filter(|(command, _)| {
+            graph.roots_named(command).is_empty()
+                && !DETECTOR_A_ROOT_EXCEPTIONS
+                    .iter()
+                    .any(|(name, _)| name == command)
+        })
+        .count();
+    if unresolved > 0 {
+        return format!("incomplete:{unresolved}-unresolved-command-roots");
+    }
+    let missing_sinks = TRANSITION_SINKS
+        .iter()
+        .filter(|sink| graph.roots_named(sink).is_empty())
+        .count();
+    if missing_sinks > 0 {
+        return format!("incomplete:{missing_sinks}-unresolved-transition-sinks");
+    }
+    "complete".to_string()
+}
+
+/// `complete` only when every declared surface row still anchors to a real authority-bearing
+/// loop and names at least one write site.
+fn detector_b_coverage(graph: &CallGraph) -> String {
+    let authority_bearing = graph
+        .loop_roots
+        .iter()
+        .filter(|root| closure_is_arming(&graph.loop_closure(root)))
+        .map(|root| root.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let dangling = SPAWN_TRIGGERING_STATE_SURFACE
+        .iter()
+        .filter(|entry| {
+            entry.read_by_loops.is_empty()
+                || !entry
+                    .read_by_loops
+                    .iter()
+                    .all(|id| authority_bearing.contains(id))
+        })
+        .count();
+    if dangling > 0 {
+        return format!("incomplete:{dangling}-surface-rows-without-a-live-loop");
+    }
+    let unmarked = SPAWN_TRIGGERING_STATE_SURFACE
+        .iter()
+        .filter(|entry| entry.write_markers.is_empty() && entry.declared_writers.is_empty())
+        .count();
+    if unmarked > 0 {
+        return format!("incomplete:{unmarked}-surface-rows-without-a-write-site");
+    }
+    "complete".to_string()
+}
+
+/// `complete` only when the read half classified every worker grant (`classify_granted_tool`
+/// panics otherwise, so reaching here IS the proof) and the write half's detector produced a
+/// non-empty derivation in which every candidate is discharged.
+fn agent_consumed_content_coverage(graph: &CallGraph, rows: &[(String, String)]) -> String {
+    let reads = agent_content_reads();
+    if reads.is_empty() {
+        return "incomplete:no-classified-content-reads".to_string();
+    }
+    let detected = agent_consumed_content_writers(
+        graph,
+        rows.iter().map(|(command, _)| command.clone()),
+        AGENT_CONSUMED_CONTENT_WRITE_SURFACE,
+    );
+    if detected.is_empty() {
+        return "incomplete:content-write-detector-derived-nothing".to_string();
+    }
+    let modules = rows.iter().cloned().collect::<BTreeMap<_, _>>();
+    let undischarged = detected
+        .keys()
+        .filter(|command| !content_writer_is_discharged(command, &modules))
+        .count();
+    if undischarged > 0 {
+        return format!("incomplete:{undischarged}-undischarged-content-writers");
+    }
+    "complete".to_string()
+}
+
+/// A detected writer is discharged by carrying the capability, by a conditional annotation
+/// backed by an `authz:` predicate, or by a reason-coded exemption.
+fn content_writer_is_discharged(command: &str, modules: &BTreeMap<String, String>) -> bool {
+    if CONTENT_WRITE_EXEMPTIONS
+        .iter()
+        .any(|exemption| exemption.command == command)
+    {
+        return true;
+    }
+    if CONDITIONAL_CAPABILITIES.iter().any(|entry| {
+        entry.command == command && entry.capability == Capability::MutatesAgentConsumedContent
+    }) {
+        return true;
+    }
+    modules
+        .get(command)
+        .and_then(|module| policy_for(command, module))
+        .is_some_and(|row| {
+            row.capabilities
+                .contains(&Capability::MutatesAgentConsumedContent)
+        })
 }
 
 fn manifest_text() -> String {
@@ -1085,7 +1273,10 @@ fn extended_deny_surface_is_denied_and_not_remotely_registrable() {
         "resolve_merge_conflict",
         "cleanup_task_branch",
         "cleanup_task",
+        "cleanup_tasks_in_group",
         "publish_agent_conversation_workspace",
+        "close_agent_workspace_pr",
+        "update_agent_conversation_workspace_from_base",
         "get_task_file_changes",
         "get_file_diff",
         "get_codex_cli_diagnostics",
@@ -1842,6 +2033,242 @@ fn probe_b1_module_batch_audit() {
             row.class,
             row.capabilities,
             find_spec(command).is_some(),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// §3.3 backstop #2 — detector (d): a command reaching a content-write sink must declare
+// `MutatesAgentConsumedContent`, be conditionally annotated, or carry a reason-coded
+// exemption. Before this gate the writer surface was a hand list with nothing behind it: a
+// new command writing task_steps/artifacts/review feedback classified by module default and
+// its omission from the list was silent.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn detected_content_writers_are_discharged_and_published() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let modules = rows.iter().cloned().collect::<BTreeMap<_, _>>();
+    let detected = agent_consumed_content_writers(
+        &graph,
+        rows.iter().map(|(command, _)| command.clone()),
+        AGENT_CONSUMED_CONTENT_WRITE_SURFACE,
+    );
+
+    // Calibration: the detector must find the known writers and must NOT flag pure readers or
+    // the authority-reducing brakes. Without this the gate could pass by deriving nothing.
+    for command in [
+        "create_task_step",
+        "update_task_step",
+        "create_artifact",
+        "update_artifact",
+        "add_artifact_relation",
+        "approve_review",
+        "reject_review",
+        "request_changes",
+    ] {
+        assert!(
+            detected.contains_key(command),
+            "detector (d) missed known content writer {command}"
+        );
+    }
+    for command in [
+        "pause_task",
+        "block_task",
+        "stop_task",
+        "list_tasks",
+        "health_check",
+        "get_task_steps",
+        "get_step_progress",
+    ] {
+        assert!(
+            !detected.contains_key(command),
+            "detector (d) false-positive on a non-writer: {command}"
+        );
+    }
+
+    let published = agent_content_writers()
+        .into_iter()
+        .filter_map(|row| row["writer"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    for (command, surfaces) in &detected {
+        assert!(
+            content_writer_is_discharged(command, &modules),
+            "`{command}` writes the agent-consumed content surface {surfaces:?} but declares \
+             neither MutatesAgentConsumedContent, nor a conditional annotation, nor a \
+             reason-coded CONTENT_WRITE_EXEMPTIONS entry"
+        );
+        let exempt = CONTENT_WRITE_EXEMPTIONS
+            .iter()
+            .any(|exemption| exemption.command == command);
+        assert!(
+            exempt || published.contains(command),
+            "`{command}` is a detected content writer but the published writer surface omits \
+             it — the manifest and the detector disagree about the same write"
+        );
+    }
+
+    // An exemption for a command the detector does not flag is dead weight that would outlive
+    // the write it was written for.
+    for exemption in CONTENT_WRITE_EXEMPTIONS {
+        assert!(
+            detected.contains_key(exemption.command),
+            "content-write exemption `{}` names a command detector (d) does not flag",
+            exemption.command
+        );
+        assert!(
+            exemption.reason.len() > 40,
+            "content-write exemption `{}` carries no substantive reason",
+            exemption.command
+        );
+    }
+}
+
+/// R5-H1 names `set_agent_conversation_workspace_auto_publish` and the
+/// `require_workspace_review` setter as detector-(b) writers carrying
+/// `SeedsSpawnTriggeringState`. Asserting only their class let the evidence tag be dropped
+/// from either row without CI noticing, and let the tag be attached to a command with no
+/// detector-(b) evidence at all. Both directions are pinned here.
+#[test]
+fn seeds_spawn_triggering_state_tags_track_detector_b_evidence() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let modules = rows.iter().cloned().collect::<BTreeMap<_, _>>();
+    let detector_b = spawn_triggering_writers(
+        &graph,
+        rows.iter().map(|(command, _)| command.clone()),
+        SPAWN_TRIGGERING_STATE_SURFACE,
+    );
+
+    for command in [
+        "inject_task",
+        "resume_automation",
+        "finalize_automation",
+        "set_agent_conversation_workspace_auto_publish",
+        "update_review_settings",
+    ] {
+        let row = policy_for(command, &modules[command]).expect("pinned writer is ledgered");
+        assert!(
+            row.capabilities
+                .contains(&Capability::SeedsSpawnTriggeringState),
+            "`{command}` is an R5-H1-named detector-(b) writer but its ledger row records no \
+             SeedsSpawnTriggeringState evidence"
+        );
+    }
+
+    // Annotation → evidence: nothing may claim the tag without the detector flagging it.
+    for (command, module) in &rows {
+        let Some(row) = policy_for(command, module) else {
+            continue;
+        };
+        if row
+            .capabilities
+            .contains(&Capability::SeedsSpawnTriggeringState)
+        {
+            assert!(
+                detector_b.contains(command),
+                "`{command}` carries SeedsSpawnTriggeringState but detector (b) finds no \
+                 spawn-triggering write behind it"
+            );
+        }
+    }
+}
+
+/// P-3's discharging proof: no registered facade target may reach a corrective transition or a
+/// raw `internal_status` mutator. Reaching a transition sink makes a command AgentControl; it
+/// does not make it registrable, and until now only a doc comment said so.
+#[test]
+fn no_registered_facade_target_reaches_a_corrective_transition() {
+    const CORRECTIVE_SINKS: &[&str] = &[
+        "transition_task_corrective",
+        "transition_task_corrective_with_exit",
+        "apply_corrective_transition",
+    ];
+    // The one shipped deviation, named rather than hidden: `move_task`'s terminal-restart
+    // branch reaches a corrective jump through `restart_terminal_task_to_ready`, a sanctioned
+    // mediator that fixes its own target (Ready) instead of taking one from the caller. The
+    // exemption is per-command so a NEW registration that reaches a corrective sink still
+    // fails, which is what P-3 exists to prevent.
+    const MEDIATED_CORRECTIVE_REACH: &[(&str, &str)] = &[(
+        "move_task",
+        "restart_terminal_task_to_ready pins its own Ready target; the caller cannot choose a \
+         corrective destination",
+    )];
+    let graph = CallGraph::build(&load_production_sources());
+
+    for spec in REMOTE_COMMANDS {
+        let target = spec
+            .target
+            .rsplit("::")
+            .next()
+            .expect("a facade target names a function");
+        let closure = graph.closure([target.to_string()]);
+        let reached = closure
+            .sink_hits
+            .iter()
+            .filter(|hit| CORRECTIVE_SINKS.contains(&hit.sink.as_str()))
+            .map(|hit| hit.sink.clone())
+            .collect::<BTreeSet<_>>();
+        let mediated = MEDIATED_CORRECTIVE_REACH
+            .iter()
+            .any(|(command, _)| *command == spec.name);
+        assert!(
+            reached.is_empty() || mediated,
+            "registered command `{}` resolves into corrective-transition sinks {reached:?}; \
+             corrective jumps are repair-path-only and must never be remotely reachable",
+            spec.name
+        );
+    }
+
+    // A stale exemption is as dangerous as a missing gate: it would silently cover a future
+    // unmediated reach from the same command.
+    for (command, reason) in MEDIATED_CORRECTIVE_REACH {
+        let spec = find_spec(command).expect("a mediated-reach exemption names a registered op");
+        let target = spec.target.rsplit("::").next().expect("target names a fn");
+        let reaches = graph
+            .closure([target.to_string()])
+            .sink_hits
+            .iter()
+            .any(|hit| CORRECTIVE_SINKS.contains(&hit.sink.as_str()));
+        assert!(
+            reaches,
+            "mediated-corrective exemption for `{command}` is stale; it no longer reaches a \
+             corrective sink"
+        );
+        assert!(
+            reason.len() > 40,
+            "`{command}` carries no substantive reason"
+        );
+    }
+
+    // The denylist must name sinks the audit actually models, or this test guards nothing.
+    for sink in CORRECTIVE_SINKS {
+        assert!(
+            TRANSITION_SINKS.contains(sink),
+            "corrective denylist entry `{sink}` is not a modelled transition sink"
+        );
+    }
+}
+
+/// A detector-(a) root exception that no longer names an unresolved command would silently
+/// tolerate the next one.
+#[test]
+fn detector_a_root_exceptions_are_not_stale() {
+    let graph = CallGraph::build(&load_production_sources());
+    let census = census();
+    for (command, reason) in DETECTOR_A_ROOT_EXCEPTIONS {
+        assert!(
+            census.iter().any(|(name, _)| name == command),
+            "detector-(a) root exception `{command}` is not a registered command"
+        );
+        assert!(
+            graph.roots_named(command).is_empty(),
+            "detector-(a) root exception `{command}` now resolves; drop the exception"
+        );
+        assert!(
+            reason.len() > 40,
+            "`{command}` carries no substantive reason"
         );
     }
 }

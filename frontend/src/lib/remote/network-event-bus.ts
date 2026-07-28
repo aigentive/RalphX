@@ -66,9 +66,10 @@ import {
  * here: they are produced by `emit()` inside the webview, so both sides of that
  * in-app re-broadcast must meet on THIS bus's registry, not on the Tauri bus.
  *
- * PR 2.4 obligation: replace this hand-mirrored list with one generated from the
- * protocol crate's table, so a new Local-only backend name cannot be added host-side
- * without the client learning about it.
+ * The list is GENERATED from the protocol crate's table
+ * (`local-only-backend-events.generated.ts`) and guarded by
+ * `scripts/check-local-only-event-mirror.mjs` in the `pretypecheck` chain, so a new
+ * Local-only backend name cannot be added host-side without the client learning about it.
  */
 export { LOCAL_ONLY_BACKEND_EVENT_NAMES };
 
@@ -88,7 +89,15 @@ export type StreamRestartCause =
   | { readonly kind: "buffer_overflow" }
   | { readonly kind: "sequence_hole"; readonly expected: number; readonly received: number }
   | { readonly kind: "epoch_mismatch" }
-  | { readonly kind: "protocol_error"; readonly detail: string };
+  | { readonly kind: "protocol_error"; readonly detail: string }
+  /**
+   * The host sent an `error` frame on an established stream. The TYPED code is carried
+   * through: collapsing it into `protocol_error` cost the client the one signal that
+   * distinguishes a withdrawn authority (`REMOTE_UNAUTHORIZED`) from ordinary transport
+   * noise, so a revoked device spent a full backoff cycle before the ws-ticket 401
+   * finally parked it blocked.
+   */
+  | { readonly kind: "stream_error"; readonly code: string };
 
 export interface NetworkEventBusDeps {
   /** The registry row id of the environment this bus projects. */
@@ -331,7 +340,7 @@ export class NetworkEventBus implements EventBus {
         this.ackOnHeartbeat();
         return;
       case "error":
-        this.requestRestart({ kind: "protocol_error", detail: frame.code });
+        this.requestRestart({ kind: "stream_error", code: frame.code });
         return;
     }
   }

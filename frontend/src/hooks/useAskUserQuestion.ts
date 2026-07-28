@@ -14,7 +14,6 @@ import { api } from "@/lib/tauri";
 import { useUiStore } from "@/stores/uiStore";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 import {
-  isSilentGateReconcileFailure,
   onPendingGateReconcile,
 } from "@/lib/remote/pending-gate-reconcile";
 import {
@@ -163,9 +162,7 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
         })
         .catch((error: unknown) => {
           console.error("Failed to reconcile pending questions:", error);
-          if (!isSilentGateReconcileFailure(error)) {
-            toast.error("Couldn't refresh the pending question");
-          }
+          toast.error("Couldn't refresh the pending question");
         });
     });
   }, [

@@ -6,7 +6,7 @@
  * rejects with `E` itself so existing `catch` paths behave exactly as they do over
  * local Tauri IPC (§6.3).
  *
- * Two of the eight are the SAME unknown outcome and must be handled identically:
+ * Two of the ten are the SAME unknown outcome and must be handled identically:
  * `REMOTE_TIMEOUT_UNKNOWN` (30 s elapsed, the host may or may not have applied the
  * mutation) and `REMOTE_REQUEST_IN_PROGRESS` (the host is already executing this
  * exact `requestId`). Both mean "reconcile by refetching the affected entity" and
@@ -14,24 +14,23 @@
  * agent turn / double approval the host-side reservation exists to prevent (§3.3).
  */
 
-export const REMOTE_TRANSPORT_ERROR_CODES = [
-  "REMOTE_COMMAND_UNAVAILABLE",
-  "REMOTE_FORBIDDEN",
-  "REMOTE_UNAUTHORIZED",
-  "REMOTE_UNREACHABLE",
-  "REMOTE_VERSION_MISMATCH",
-  "REMOTE_TIMEOUT_UNKNOWN",
-  "REMOTE_REQUEST_IN_PROGRESS",
-  "REMOTE_REQUEST_ID_REUSED",
-  // A registered command whose ARGUMENTS were rejected (400). Kept distinct from
-  // REMOTE_COMMAND_UNAVAILABLE (404) because that code means "this host does not
-  // support the command at all" and is about to gate remote affordances: an argument
-  // bug must never be read as a missing capability.
-  "REMOTE_INVALID_ARGUMENTS",
-  // The host failed while producing the answer (500) — a host-side fault, not a
-  // statement about the request.
-  "REMOTE_INTERNAL_ERROR",
-] as const;
+import { PROTOCOL_TRANSPORT_ERROR_CODES } from "./remote-vocabulary.generated";
+
+// Per-code notes that the generated list cannot carry:
+//
+// * `REMOTE_INVALID_ARGUMENTS` — a registered command whose ARGUMENTS were rejected (400).
+//   Kept distinct from `REMOTE_COMMAND_UNAVAILABLE` (404), which means "this host does not
+//   support the command at all" and gates remote affordances: an argument bug must never be
+//   read as a missing capability.
+// * `REMOTE_INTERNAL_ERROR` — the host failed while producing the answer (500), a host-side
+//   fault rather than a statement about the request.
+//
+// The list itself is GENERATED from the protocol crate's vocabulary snapshot and guarded by
+// `scripts/check-remote-vocabulary-mirror.mjs` in the `pretypecheck` chain. Hand-mirroring it
+// let an 11th Rust code degrade silently: `parseRemoteTransportErrorCode` returns null, the
+// transport failure surfaces as the command's own `Err`, and the supervisor classifies it
+// transient.
+export const REMOTE_TRANSPORT_ERROR_CODES = PROTOCOL_TRANSPORT_ERROR_CODES;
 
 export type RemoteTransportErrorCode =
   (typeof REMOTE_TRANSPORT_ERROR_CODES)[number];

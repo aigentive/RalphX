@@ -22,6 +22,7 @@ import {
 } from "@/stores/environmentStore";
 import { useUiStore } from "@/stores/uiStore";
 
+import { clearEnvScopedStorage } from "./env-scoped-storage";
 import { getClientOwnedFeatureFlag } from "./feature-flag-authority";
 
 import { NetworkEventBus } from "./network-event-bus";
@@ -311,6 +312,15 @@ export function initializeEnvironmentRuntime(): () => void {
           );
           return;
         }
+        // `error{REMOTE_UNAUTHORIZED}` on an established stream is how the host actually
+        // reports a revocation — it never sends `reset(revoked)` on the wire for it. The
+        // ladder would cost a full backoff cycle before the ws-ticket 401 parked the
+        // device, so verify once, immediately. Blanket-parking here would be wrong: the
+        // same rejection covers an agent-control NARROWING on a device that stays paired.
+        if (cause.kind === "stream_error" && cause.code === "REMOTE_UNAUTHORIZED") {
+          runtime.supervisor.verifyAuthorityNow();
+          return;
+        }
         runtime.supervisor.streamLost();
       },
     });
@@ -490,6 +500,11 @@ export function initializeEnvironmentRuntime(): () => void {
         useEnvironmentStore.getState().clearEffectiveScopes(environmentId);
         useEnvironmentStore.getState().clearConnectionPresentation(environmentId);
         removeQueryClient(environmentId);
+        // Persisted slices are env-scoped by row id, so leaving them behind means a host
+        // that later re-pairs onto the same id inherits the removed environment's UI state
+        // (`env-scoped-storage.ts`). The staged-remove command clears them on the path it
+        // owns; a removal completed by the Rust startup reconciler arrives only here.
+        clearEnvScopedStorage(environmentId);
       }
     }
     for (const entry of remoteEntries) {

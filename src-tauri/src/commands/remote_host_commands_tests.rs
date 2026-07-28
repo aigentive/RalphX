@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 
 use super::advertised_endpoints_for_status;
-use crate::infrastructure::tailscale::{TailscaleCommandRunner, TailscaleServeError};
+use crate::infrastructure::tailscale::{
+    RemoteEndpointProbe, TailscaleCommandRunner, TailscaleServeError,
+};
 use crate::remote_server::settings::{RemoteExposureMode, TailnetProviderError};
 
 struct StatusRunner {
@@ -46,12 +48,48 @@ impl TailscaleCommandRunner for StatusRunner {
     }
 }
 
+/// Records every probed URL so the "Reachable" dot can be shown to rest on live evidence.
+struct RecordingProbe {
+    reachable: bool,
+    probed: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingProbe {
+    fn answering(reachable: bool) -> Self {
+        Self {
+            reachable,
+            probed: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn probed(&self) -> Vec<String> {
+        self.probed.lock().expect("probed urls").clone()
+    }
+}
+
+#[async_trait]
+impl RemoteEndpointProbe for RecordingProbe {
+    async fn reachable(&self, base_url: &str) -> bool {
+        self.probed
+            .lock()
+            .expect("probed urls")
+            .push(base_url.to_string());
+        self.reachable
+    }
+}
+
 #[tokio::test]
 async fn listener_not_running_returns_empty_without_querying_tailscale() {
     let runner = StatusRunner::failing();
 
-    let endpoints =
-        advertised_endpoints_for_status(RemoteExposureMode::Serve, None, false, &runner).await;
+    let endpoints = advertised_endpoints_for_status(
+        RemoteExposureMode::Serve,
+        None,
+        false,
+        &runner,
+        &RecordingProbe::answering(true),
+    )
+    .await;
 
     assert!(endpoints.is_empty());
     assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
@@ -62,9 +100,14 @@ async fn tailscale_status_failure_is_a_degraded_empty_result_not_an_error() {
     let runner = StatusRunner::failing();
     let bound = SocketAddr::from((Ipv4Addr::LOCALHOST, 48_912));
 
-    let endpoints =
-        advertised_endpoints_for_status(RemoteExposureMode::Serve, Some(bound), true, &runner)
-            .await;
+    let endpoints = advertised_endpoints_for_status(
+        RemoteExposureMode::Serve,
+        Some(bound),
+        true,
+        &runner,
+        &RecordingProbe::answering(true),
+    )
+    .await;
 
     assert!(endpoints.is_empty());
     assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
@@ -84,9 +127,14 @@ async fn populated_endpoint_serializes_with_the_frontend_field_names_and_kind_ca
     );
     let bound = SocketAddr::from((Ipv4Addr::LOCALHOST, 48_912));
 
-    let endpoints =
-        advertised_endpoints_for_status(RemoteExposureMode::Serve, Some(bound), true, &runner)
-            .await;
+    let endpoints = advertised_endpoints_for_status(
+        RemoteExposureMode::Serve,
+        Some(bound),
+        true,
+        &runner,
+        &RecordingProbe::answering(true),
+    )
+    .await;
     let json = serde_json::to_value(&endpoints[0]).expect("endpoint should serialize");
 
     assert_eq!(
@@ -176,10 +224,99 @@ async fn listener_status_reports_not_running_for_a_fresh_handle() {
 
     assert!(!status.enabled);
     assert_eq!(status.exposure_mode, RemoteExposureMode::Serve);
-    assert_eq!(status.port, crate::remote_server::settings::DEFAULT_REMOTE_PORT);
+    assert_eq!(
+        status.port,
+        crate::remote_server::settings::DEFAULT_REMOTE_PORT
+    );
     assert_eq!(status.environment_id, "env-1");
     assert!(!status.running);
     assert!(status.bind_address.is_none());
     assert!(!status.serve_active);
     assert!(status.serve_degraded_reason.is_none());
+}
+
+// ---------------------------------------------------------------------------------------
+// §5.3 item 3 / §5.4: `available` is a LIVE reachability claim, not a start-time snapshot.
+// ---------------------------------------------------------------------------------------
+
+fn tailnet_status() -> StatusRunner {
+    StatusRunner::returning(
+        r#"{
+            "Version": "1.82.0",
+            "BackendState": "Running",
+            "Self": {
+                "DNSName": "studio.example.ts.net.",
+                "TailscaleIPs": ["100.101.102.103"]
+            }
+        }"#,
+    )
+}
+
+#[tokio::test]
+async fn a_serve_endpoint_that_does_not_answer_is_reported_unreachable() {
+    let runner = tailnet_status();
+    let probe = RecordingProbe::answering(false);
+    let bound = SocketAddr::from((Ipv4Addr::LOCALHOST, 48_912));
+
+    let endpoints = advertised_endpoints_for_status(
+        RemoteExposureMode::Serve,
+        Some(bound),
+        true,
+        &runner,
+        &probe,
+    )
+    .await;
+
+    assert_eq!(endpoints.len(), 1);
+    assert!(
+        !endpoints[0].available,
+        "an active serve mapping is not evidence the endpoint answers"
+    );
+    assert_eq!(probe.probed(), vec!["https://studio.example.ts.net"]);
+}
+
+#[tokio::test]
+async fn a_tailnet_direct_endpoint_is_probed_instead_of_asserted_available() {
+    let runner = tailnet_status();
+    let probe = RecordingProbe::answering(false);
+    let bound = SocketAddr::from((Ipv4Addr::LOCALHOST, 3_849));
+
+    let endpoints = advertised_endpoints_for_status(
+        RemoteExposureMode::TailnetDirect,
+        Some(bound),
+        false,
+        &runner,
+        &probe,
+    )
+    .await;
+
+    assert_eq!(endpoints.len(), 1);
+    assert!(
+        !endpoints[0].available,
+        "tailnet-direct used to hardcode available: true"
+    );
+    assert_eq!(probe.probed(), vec!["http://100.101.102.103:3849"]);
+}
+
+#[tokio::test]
+async fn an_inactive_serve_mapping_is_unavailable_without_spending_a_probe() {
+    let runner = tailnet_status();
+    let probe = RecordingProbe::answering(true);
+    let bound = SocketAddr::from((Ipv4Addr::LOCALHOST, 48_912));
+
+    let endpoints = advertised_endpoints_for_status(
+        RemoteExposureMode::Serve,
+        Some(bound),
+        false,
+        &runner,
+        &probe,
+    )
+    .await;
+
+    assert_eq!(endpoints.len(), 1);
+    assert!(!endpoints[0].available);
+    assert!(
+        probe.probed().is_empty(),
+        "a non-candidate must not cost a network round-trip"
+    );
 }

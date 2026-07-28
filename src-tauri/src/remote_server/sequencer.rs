@@ -34,7 +34,7 @@ use crate::remote_server::retention::RetentionLeaseRegistry;
 
 #[cfg(test)]
 #[path = "sequencer_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 /// Rows committed per `run_transaction`. Micro-batching amortizes `BEGIN IMMEDIATE` under burst
 /// without letting one commit hold the write lock for an unbounded span.

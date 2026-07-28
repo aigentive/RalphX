@@ -142,21 +142,42 @@ pub(crate) fn parse_status(stdout: &str) -> Result<TailscaleStatus, TailnetProvi
     })
 }
 
-/// Probes the descriptor route through Tailscale's MagicDNS hostname.
-// Consumed by PR 1.7's advertised-endpoints surface.
-#[allow(dead_code)]
-pub(crate) async fn probe_magicdns_reachability(magicdns_name: &str) -> bool {
-    let hostname = magicdns_name.trim_end_matches('.');
-    if hostname.is_empty() {
+/// A bounded liveness probe for one advertised endpoint.
+///
+/// Injected so the endpoints command can be tested without a tailnet, and so the `available`
+/// dot the pane renders is backed by evidence gathered NOW rather than by a start-time
+/// snapshot (§5.3 item 3, §5.4).
+#[async_trait]
+pub(crate) trait RemoteEndpointProbe: Send + Sync {
+    async fn reachable(&self, base_url: &str) -> bool;
+}
+
+/// The real probe: one GET of the well-known descriptor, bounded, no retry.
+pub(crate) struct HttpEndpointProbe;
+
+#[async_trait]
+impl RemoteEndpointProbe for HttpEndpointProbe {
+    async fn reachable(&self, base_url: &str) -> bool {
+        probe_descriptor_reachability(base_url).await
+    }
+}
+
+/// Probes the descriptor route at `base_url` (scheme included).
+///
+/// Both advertised shapes go through here: Serve publishes `https://<magicdns>` and
+/// tailnet-direct publishes `http://<100.x>:<port>`, so the connector admits either scheme.
+pub(crate) async fn probe_descriptor_reachability(base_url: &str) -> bool {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
         return false;
     }
-    let Ok(uri) = format!("https://{hostname}{DESCRIPTOR_PATH}").parse::<hyper::Uri>() else {
+    let Ok(uri) = format!("{base}{DESCRIPTOR_PATH}").parse::<hyper::Uri>() else {
         return false;
     };
     install_rustls_crypto_provider();
     let Ok(https) = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
-        .map(|builder| builder.https_only().enable_http1().build())
+        .map(|builder| builder.https_or_http().enable_http1().build())
     else {
         return false;
     };
@@ -176,8 +197,6 @@ pub(crate) async fn probe_magicdns_reachability(magicdns_name: &str) -> bool {
     )
 }
 
-// Live once probe_magicdns_reachability gains its PR 1.7 caller.
-#[allow(dead_code)]
 fn install_rustls_crypto_provider() {
     static INSTALL_PROVIDER: std::sync::Once = std::sync::Once::new();
     INSTALL_PROVIDER.call_once(|| {

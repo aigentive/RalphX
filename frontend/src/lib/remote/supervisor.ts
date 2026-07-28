@@ -81,7 +81,8 @@ export type AttemptFailure =
   | "transient"
   | "unauthorized"
   | "version"
-  | "malformed_descriptor";
+  | "malformed_descriptor"
+  | "invalid_request";
 
 /** A typed attempt failure so classification never depends on message matching (rule 5). */
 export class ConnectAttemptError extends Error {
@@ -253,6 +254,21 @@ export class ConnectionSupervisor {
    * the user never sees the actionable re-pair state (P-10). It parks in `blocked` with
    * a populated reason, exactly like a 401 from the attempt itself.
    */
+  /**
+   * The host answered an established stream with `error{REMOTE_UNAUTHORIZED}` (§6.5, P-2).
+   *
+   * Deliberately NOT `authorityWithdrawn`: the host reuses that rejection both for a
+   * revoked device and for one whose agent control was merely NARROWED while it stays
+   * paired, so parking on the frame alone would show a re-pair state to a device that is
+   * still perfectly valid. Instead it runs ONE immediate verification redial — no backoff
+   * ladder, the ladder is what the finding objected to — whose introspection/ticket 401
+   * lands `blocked` for a revoked device, and whose success resumes with the narrowed
+   * scopes the attempt refetches.
+   */
+  verifyAuthorityNow(): void {
+    this.dispatch("credentials_changed");
+  }
+
   authorityWithdrawn(message: string): void {
     this.blockedReason = { failure: "unauthorized", message };
     this.deps.onBlocked?.("unauthorized", message);
@@ -522,6 +538,9 @@ export class ConnectionSupervisor {
       case "malformed_descriptor":
         this.dispatch("connect_failed_malformed_descriptor");
         return;
+      case "invalid_request":
+        this.dispatch("connect_failed_invalid_request");
+        return;
       case "transient":
         this.dispatch("connect_failed_transient");
     }
@@ -587,8 +606,9 @@ function classifyFailure(error: unknown): AttemptFailure {
         return "version";
       case "REMOTE_INVALID_ARGUMENTS":
         // A client-side request bug. Retrying an identical malformed request cannot
-        // succeed, so it must not enter the backoff ladder as transient.
-        return "malformed_descriptor";
+        // succeed, so it must not enter the backoff ladder as transient. It is NOT a
+        // malformed descriptor: the host's identity was fine, the request was not.
+        return "invalid_request";
       default:
         return "transient";
     }

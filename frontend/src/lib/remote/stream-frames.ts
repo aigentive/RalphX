@@ -20,15 +20,15 @@
  * to prevent.
  */
 
-/** `ralphx_remote_protocol::ResetReason`. Any reason means the same thing to a client: cold hydrate. */
-export const REMOTE_RESET_REASONS = [
-  "cursor_pruned",
-  "epoch_changed",
-  "after_seq_gt_max",
-  "read_error",
-  "revoked",
-  "host_disabled",
-] as const;
+import { PROTOCOL_RESET_REASONS } from "./remote-vocabulary.generated";
+
+/**
+ * `ralphx_remote_protocol::ResetReason`. Any reason means the same thing to a client: cold
+ * hydrate. GENERATED from the protocol vocabulary snapshot and guarded by
+ * `scripts/check-remote-vocabulary-mirror.mjs`: a hand mirror let a new Rust reason make the
+ * client reject the whole frame as malformed.
+ */
+export const REMOTE_RESET_REASONS = PROTOCOL_RESET_REASONS;
 
 export type RemoteResetReason = (typeof REMOTE_RESET_REASONS)[number];
 

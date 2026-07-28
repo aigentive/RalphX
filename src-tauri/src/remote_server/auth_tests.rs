@@ -1383,3 +1383,86 @@ async fn an_authenticated_request_updates_last_seen_at() {
     assert!(before.last_seen_at.is_none());
     assert!(after.last_seen_at.is_some());
 }
+
+/// §4.4/§4.6: the WS upgrade redeems a single-use credential, so it is an auth endpoint in
+/// everything but its path. It used to sit outside every rate-limit tier while writing a
+/// durable `remote_audit_log` row per rejected ticket, which let an unauthenticated tailnet
+/// peer drive unbounded guesses AND unbounded durable writes.
+#[tokio::test]
+async fn ws_ticket_guessing_is_rate_limited_and_stops_writing_audit_rows() {
+    let context = in_memory_auth_context();
+
+    let mut statuses = Vec::new();
+    let mut audit_counts = Vec::new();
+    // The pre-auth ceiling is a 10 rps token bucket, so the flood has to outrun it.
+    for attempt in 0..16 {
+        let response = router_for(&context)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!(
+                        "{}?ticket=rxt_thisticketwasnevermintedbyanyhost{attempt}",
+                        crate::remote_server::ws::WS_EVENTS_PATH
+                    ))
+                    .header(header::CONNECTION, "Upgrade")
+                    .header(header::UPGRADE, "websocket")
+                    .header("sec-websocket-version", "13")
+                    .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                    .body(Body::empty())
+                    .expect("ws upgrade request builds"),
+            )
+            .await
+            .expect("ws upgrade attempt should complete");
+        statuses.push(response.status());
+        audit_counts.push(audit_actions(&context).await.len());
+    }
+
+    let limited = statuses
+        .iter()
+        .position(|status| *status == StatusCode::TOO_MANY_REQUESTS)
+        .expect(&format!(
+            "the ws upgrade must spend the pre-auth bucket: {statuses:?}"
+        ));
+    assert!(
+        limited > 0,
+        "the first guesses are ordinary refusals: {statuses:?}"
+    );
+    assert!(
+        statuses[..limited]
+            .iter()
+            .all(|status| *status != StatusCode::SWITCHING_PROTOCOLS),
+        "a guessed ticket must never reach an upgrade: {statuses:?}"
+    );
+    assert_eq!(
+        audit_counts[statuses.len() - 1],
+        audit_counts[limited],
+        "rate-limited ticket guesses must stop appending durable audit rows: {audit_counts:?}"
+    );
+}
+
+/// The audit half of the same control, asserted directly: `oneshot` cannot drive a real
+/// upgrade (axum needs the connection's `on_upgrade` extension), so the handler body is not
+/// reachable from the router test above.
+#[tokio::test]
+async fn ws_rejection_audits_stop_once_the_pre_auth_ceiling_is_spent() {
+    use crate::remote_server::ws::may_audit_unauthenticated_ws_rejection;
+
+    let context = in_memory_auth_context();
+
+    assert!(
+        may_audit_unauthenticated_ws_rejection(&context, None),
+        "the first rejection must leave a trail"
+    );
+    let mut spent = 1;
+    while may_audit_unauthenticated_ws_rejection(&context, None) {
+        spent += 1;
+        assert!(
+            spent < 200,
+            "the pre-auth ceiling must bound ws rejection auditing"
+        );
+    }
+    assert!(
+        !may_audit_unauthenticated_ws_rejection(&context, None),
+        "once spent, the ceiling keeps refusing durable writes"
+    );
+}

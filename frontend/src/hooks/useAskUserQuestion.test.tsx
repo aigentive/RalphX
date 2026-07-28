@@ -1199,7 +1199,9 @@ describe("useAskUserQuestion", () => {
       );
     });
 
-    it("stays silent when the host does not expose the gate list yet", async () => {
+    // Both gate lists ARE on the registered facade surface (3.1 batch 1), so
+    // REMOTE_COMMAND_UNAVAILABLE from them is a regression, not a capability gap.
+    it("surfaces REMOTE_COMMAND_UNAVAILABLE instead of swallowing it", async () => {
       const { toast } = await import("sonner");
       renderHook(() => useAskUserQuestion(TEST_SESSION));
       act(() => {
@@ -1215,10 +1217,11 @@ describe("useAskUserQuestion", () => {
       );
       await reconcile();
 
+      // Fail closed either way: the pending question is never cleared by a failed read.
       expect(useUiStore.getState().activeQuestions[TEST_SESSION]).toEqual(
         validPayload
       );
-      expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+      expect(vi.mocked(toast.error)).toHaveBeenCalled();
     });
 
     it("ignores a BACKGROUND environment's connect (SCOPE negative)", async () => {

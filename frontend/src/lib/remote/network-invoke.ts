@@ -114,7 +114,7 @@ function toTransportError(
 /**
  * Dispatches one command to `environmentId` through the local Rust proxy.
  *
- * @throws {RemoteTransportError} for any of the 8 transport codes.
+ * @throws {RemoteTransportError} for any of the 10 transport codes.
  * @throws the command's own `Err` value for a host-side command failure.
  */
 export async function networkInvoke<T>(

@@ -930,7 +930,10 @@ async fn fetch_forwards_only_allowlisted_response_headers() {
     assert_eq!(
         outcome.headers,
         vec![
-            ("content-type".to_string(), "text/plain; charset=utf-8".to_string()),
+            (
+                "content-type".to_string(),
+                "text/plain; charset=utf-8".to_string()
+            ),
             ("etag".to_string(), "\"v1\"".to_string()),
             ("cache-control".to_string(), "no-store".to_string()),
             ("cache-control".to_string(), "private".to_string()),
@@ -1645,12 +1648,7 @@ async fn connect_mints_a_ticket_and_returns_the_hello_outcome() {
         vec!["wss://mac-studio.tailnet.ts.net/remote/v1/events?ticket=tick-1".to_string()]
     );
     // Best-effort bookkeeping recorded the connect.
-    let row = f
-        .repo
-        .get(&env.id)
-        .await
-        .expect("get")
-        .expect("row exists");
+    let row = f.repo.get(&env.id).await.expect("get").expect("row exists");
     assert!(row.last_connected_at.is_some());
 }
 
@@ -1711,11 +1709,12 @@ async fn a_rejected_ws_handshake_maps_to_the_auth_taxonomy() {
         .expect("pairing should succeed");
     f.host
         .script_fetch(200, r#"{"ticket":"tick-1","expiresInSecs":60}"#);
-    f.ws
-        .script_error(crate::infrastructure::remote_ws_client::RemoteWsError::Rejected {
+    f.ws.script_error(
+        crate::infrastructure::remote_ws_client::RemoteWsError::Rejected {
             status: 403,
             message: "scope refused".to_string(),
-        });
+        },
+    );
 
     let error = f
         .service
@@ -2490,4 +2489,85 @@ async fn pairing_urls_carrying_a_query_or_fragment_are_rejected_at_the_sink() {
         validate_pairing_url("https://host.ts.net:3849/").expect("canonical url"),
         "https://host.ts.net:3849"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// §3.2 / P-10: the pairing prelude refuses on BOTH version contradictions. `supervisor.ts`
+// implements both halves; a prelude with only one made preview report "compatible" for a
+// host the supervisor would park `blocked` on.
+// ---------------------------------------------------------------------------------------
+
+fn fixture_with_descriptor(descriptor: EnvironmentDescriptor) -> Fixture {
+    fixture_with_host(MockRemoteHostClient::new(
+        descriptor,
+        pair_response("env-1"),
+    ))
+}
+
+#[tokio::test]
+async fn preview_refuses_a_host_that_requires_a_newer_client() {
+    let mut skewed = descriptor("env-1");
+    skewed.min_client_protocol = PROTOCOL_VERSION + 1;
+    let f = fixture_with_descriptor(skewed);
+
+    let error = f
+        .service
+        .preview(HOST_URL)
+        .await
+        .expect_err("a host demanding a newer client must be refused");
+
+    assert!(
+        matches!(
+            error,
+            RemoteEnvironmentError::VersionSkew { host_min_client, .. }
+                if host_min_client == PROTOCOL_VERSION + 1
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn preview_refuses_a_host_older_than_the_client_floor() {
+    let mut ancient = descriptor("env-1");
+    ancient.protocol_version = CLIENT_MIN_PROTOCOL - 1;
+    let f = fixture_with_descriptor(ancient);
+
+    let error = f
+        .service
+        .preview(HOST_URL)
+        .await
+        .expect_err("a host below the client floor must be refused");
+
+    assert!(
+        matches!(
+            error,
+            RemoteEnvironmentError::HostTooOld { host_protocol, client_min }
+                if host_protocol == CLIENT_MIN_PROTOCOL - 1 && client_min == CLIENT_MIN_PROTOCOL
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn pair_refuses_a_host_older_than_the_client_floor() {
+    let mut ancient = descriptor("env-1");
+    ancient.protocol_version = CLIENT_MIN_PROTOCOL - 1;
+    let f = fixture_with_descriptor(ancient);
+
+    let error = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect_err("the pair path must refuse exactly what preview refuses");
+
+    assert!(
+        matches!(error, RemoteEnvironmentError::HostTooOld { .. }),
+        "unexpected error: {error:?}"
+    );
+    // The abort happened at the descriptor step: the single-use code was never consumed.
+    let calls = f.host.recorded_calls();
+    assert!(calls
+        .iter()
+        .all(|call| !matches!(call, RecordedHostCall::Pair { .. })));
+    assert!(f.repo.list().await.expect("list").is_empty());
 }
