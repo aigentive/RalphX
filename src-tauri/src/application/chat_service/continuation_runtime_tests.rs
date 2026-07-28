@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::continuation_runtime::{
-    resolve_for_conversation, ContinuationRuntime, RuntimeOverridePresence,
+    resolve_for_conversation, ContinuationRuntime, ModelIdentityComparison, RuntimeOverridePresence,
 };
 use crate::application::agent_lane_resolution::ResolvedAgentSpawnSettings;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
@@ -97,4 +97,55 @@ fn continuation_defaults_apply_without_overwriting_explicit_fields() {
     assert_eq!(resolved.service_tier.as_deref(), Some("fast"));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
+}
+
+#[test]
+fn model_identity_matches_logical_alias_or_exact_effective_id() {
+    let runtime = ContinuationRuntime {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "session-1".to_string(),
+        logical_model: Some("sonnet".to_string()),
+        effective_model_id: Some("claude-sonnet-4-6".to_string()),
+        logical_effort: None,
+        service_tier: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    };
+
+    assert_eq!(
+        runtime.compare_model_identity(" SONNET "),
+        ModelIdentityComparison::Same
+    );
+    assert_eq!(
+        runtime.compare_model_identity("claude-sonnet-4-6"),
+        ModelIdentityComparison::Same
+    );
+    assert_eq!(
+        runtime.compare_model_identity("claude-sonnet-4-5"),
+        ModelIdentityComparison::Changed,
+        "different effective versions must not collapse to one Claude family"
+    );
+    assert_eq!(
+        runtime.compare_model_identity("opus"),
+        ModelIdentityComparison::Changed
+    );
+}
+
+#[test]
+fn model_identity_is_unknown_without_persisted_model_attribution() {
+    let runtime = ContinuationRuntime {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "session-1".to_string(),
+        logical_model: None,
+        effective_model_id: None,
+        logical_effort: None,
+        service_tier: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    };
+
+    assert_eq!(
+        runtime.compare_model_identity("sonnet"),
+        ModelIdentityComparison::Unknown
+    );
 }

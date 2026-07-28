@@ -8,8 +8,12 @@ import type { ContextType } from "@/types/chat-conversation";
 // ============================================================================
 
 const mockToastError = vi.fn();
+const mockToastWarning = vi.fn();
 vi.mock("sonner", () => ({
-  toast: { error: (...args: unknown[]) => mockToastError(...args) },
+  toast: {
+    error: (...args: unknown[]) => mockToastError(...args),
+    warning: (...args: unknown[]) => mockToastWarning(...args),
+  },
 }));
 
 const mockInvalidateQueries = vi.fn();
@@ -578,6 +582,56 @@ describe("useChatActions", () => {
         duration: 10000,
       });
     });
+
+    it("keeps the turn visible when the agent received it but it was not saved", async () => {
+      const { result, mutateAsync } = setup({
+        contextType: "project",
+        contextId: "project-1",
+        storeContextKey: "project:conv-1",
+      });
+      mutateAsync.mockRejectedValue(
+        new Error(
+          "[Message delivered but not saved: Repository error: chat message create failed]",
+        ),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("keep me visible");
+      });
+
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledWith("Message sent, but not saved", {
+        description: expect.stringContaining("is replying"),
+        duration: 10000,
+      });
+      // The agent is answering this turn — the spinner must not be cleared.
+      expect(mockActions.setAgentRunning).not.toHaveBeenCalledWith(
+        "project:conv-1",
+        false,
+      );
+    });
+
+    it("keeps the optimistic bubble for a delivered-but-unsaved direct send", async () => {
+      mockSendAgentMessage.mockRejectedValue(
+        new Error(
+          "[Message delivered but not saved: Repository error: chat message create failed]",
+        ),
+      );
+      const { result } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+        activeConversationId: "conv-review",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review this");
+      });
+
+      expect(mockRemoveOptimisticMessageFromConversationCache).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalled();
+    });
   });
 
   // ── handleStopAgent ─────────────────────────────────────────────
@@ -679,6 +733,26 @@ describe("useChatActions", () => {
         "queued-replacement",
         ["att-1"]
       );
+    });
+
+    it("does not re-queue a send-now turn the agent already received", async () => {
+      mockSendQueuedAgentMessageNow.mockRejectedValue(
+        new Error(
+          "[Message delivered but not saved: Repository error: chat message create failed]",
+        ),
+      );
+      const { result } = setup();
+
+      await act(async () => {
+        await result.current.handleSendQueuedMessageNow(
+          "queued-1",
+          "already delivered",
+        );
+      });
+
+      expect(mockActions.queueMessage).not.toHaveBeenCalled();
+      expect(mockActions.setAgentRunning).toHaveBeenCalledWith("task:task-1", true);
+      expect(mockToastWarning).toHaveBeenCalled();
     });
 
     it("keeps the frozen selection on a queued send-now replacement", async () => {
