@@ -15,6 +15,20 @@ fn create_test_project() -> Project {
     Project::new("Test Project".to_string(), "/tmp/test".to_string())
 }
 
+fn run_git(repo: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should start");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn test_validation_result_new_is_valid() {
     let result = ResumeValidationResult::new();
@@ -63,6 +77,53 @@ async fn test_validate_task_without_branch() {
 
     // Task without branch should validate (no git isolation)
     assert!(result.is_valid);
+}
+
+#[tokio::test]
+async fn validate_checks_both_existing_branches_and_rejects_a_missing_task_branch() {
+    let temp = tempfile::tempdir().expect("resume validation repository");
+    run_git(temp.path(), &["init", "-b", "main"]);
+    run_git(temp.path(), &["config", "user.email", "test@example.com"]);
+    run_git(temp.path(), &["config", "user.name", "RalphX Test"]);
+    run_git(temp.path(), &["commit", "--allow-empty", "-m", "base"]);
+    run_git(temp.path(), &["branch", "ralphx/resume-validation"]);
+    run_git(
+        temp.path(),
+        &["commit", "--allow-empty", "-m", "base ahead"],
+    );
+
+    let validator = create_test_validator();
+    let mut task = create_test_task();
+    task.task_branch = Some("ralphx/resume-validation".to_string());
+    let mut project = Project::new(
+        "Resume validation".to_string(),
+        temp.path().to_string_lossy().into_owned(),
+    );
+    project.base_branch = Some("main".to_string());
+
+    let moved_base = validator
+        .validate(&task, &project, None)
+        .await
+        .expect("existing branch validation");
+    assert!(moved_base.is_valid);
+    assert!(
+        moved_base
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("has new commits")),
+        "the exact base/task branches should drive the ahead warning"
+    );
+
+    task.task_branch = Some("ralphx/missing-resume-validation".to_string());
+    let missing = validator
+        .validate(&task, &project, None)
+        .await
+        .expect("missing branch is a validation result");
+    assert!(!missing.is_valid);
+    assert!(missing
+        .errors
+        .iter()
+        .any(|error| error.contains("does not exist")));
 }
 
 #[tokio::test]

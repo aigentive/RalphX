@@ -23,6 +23,7 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_repair_dispatch, AgentWorkspaceRepairDispatchOutcome,
+    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
 };
 use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -36,13 +37,15 @@ use crate::domain::entities::{
     AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
-    ChatConversationId, GitTargetIdentity, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    Project, ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository,
-    AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
-    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
-    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
+    AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
+    AgentWorkspaceRepairAttemptTransitionOutcome, CreateAgentWorkspaceRepairEffect,
+    CreateAgentWorkspaceRepairEffectOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentProviderSettingsRepository,
@@ -203,6 +206,167 @@ async fn terminal_run_hints_without_an_exact_repair_reservation_are_ignored() {
     )
     .await
     .expect("an unreserved terminal hint is a harmless no-op"));
+}
+
+#[tokio::test]
+async fn recovery_ignores_nonterminal_run_hints_and_blocks_exhausted_ownerless_dispatches() {
+    let state = AppState::new_test();
+    let live_conversation = conversation_id(87);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(live_conversation.clone()))
+        .await
+        .expect("seed live-hint workspace");
+    let live_run = state
+        .agent_run_repo
+        .create(AgentRun::new(live_conversation.clone()))
+        .await
+        .expect("seed nonterminal run");
+    let live_attempt = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                live_conversation.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "nonterminal hint".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start live-hint repair");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(live_attempt) = live_attempt else {
+        panic!("first live-hint attempt must start");
+    };
+    let bound = state
+        .agent_workspace_repair_repo
+        .bind_repair_attempt_run(
+            crate::domain::repositories::BindAgentWorkspaceRepairAttemptRun {
+                attempt_id: live_attempt.id,
+                generation: live_attempt.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at: live_attempt.updated_at,
+                run_id: live_run.id.clone(),
+                updated_at: live_attempt.updated_at + chrono::Duration::microseconds(1),
+            },
+        )
+        .await
+        .expect("bind nonterminal run");
+    assert!(matches!(
+        bound,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+    assert!(!recover_agent_workspace_repair_after_terminal_run(
+        &state,
+        &live_conversation,
+        &live_run.id,
+    )
+    .await
+    .expect("nonterminal notification is ignored"));
+
+    let exhausted_conversation = conversation_id(88);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(exhausted_conversation.clone()))
+        .await
+        .expect("seed exhausted-dispatch workspace");
+    let exhausted = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                exhausted_conversation.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "exhausted dispatch".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start exhausted dispatch");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut exhausted) = exhausted else {
+        panic!("first exhausted dispatch must start");
+    };
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/exhausted-ownerless-dispatch"),
+        "refs/heads/ralphx/exhausted-ownerless-dispatch",
+    )
+    .expect("canonical exhausted dispatch target");
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(exhausted.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner,
+        })
+        .await
+        .expect("acquire exhausted dispatch target")
+    else {
+        panic!("exhausted dispatch should acquire a new target lease");
+    };
+    let expected_updated_at = exhausted.updated_at;
+    exhausted.phase = AgentWorkspaceRepairPhase::Dispatching;
+    exhausted.dispatch_count = MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES;
+    exhausted.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    exhausted.target_ref = Some(target_identity.full_ref().to_string());
+    exhausted.target_identity_version = Some(
+        crate::application::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+    );
+    exhausted.target_lease_epoch = Some(fencing_epoch);
+    exhausted.updated_at += chrono::Duration::microseconds(1);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: exhausted,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Dispatching,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("persist exhausted ownerless dispatch"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recover ownerless exhausted dispatch"),
+        1
+    );
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&exhausted_conversation)
+        .await
+        .expect("load exhausted repair")
+        .expect("exhausted repair remains actionable");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(blocked
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("retries are exhausted")));
 }
 
 #[tokio::test]
@@ -1893,6 +2057,183 @@ mod extracted_inline_tests {
             .expect("attempt remains visible for retry");
         assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
         assert!(blocked.blocker.is_some());
+    }
+
+    #[tokio::test]
+    async fn legacy_import_requires_exact_continuation_base_and_run_provenance() {
+        async fn append_provenance(
+            state: &AppState,
+            conversation_id: &ChatConversationId,
+            continuation: &str,
+            run_id: &AgentRunId,
+        ) {
+            state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id.clone(),
+                    "repair_requested",
+                    "started",
+                    "legacy repair requested",
+                    Some(continuation.to_string()),
+                ))
+                .await
+                .expect("seed legacy continuation");
+            state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id.clone(),
+                    "repair_sent",
+                    "succeeded",
+                    "legacy repair dispatched",
+                    Some(format!("agent_fixable:run:{run_id}")),
+                ))
+                .await
+                .expect("seed legacy run");
+        }
+
+        let update_state = AppState::new_test();
+        let update_conversation = conversation_id(81);
+        update_state
+            .agent_conversation_workspace_repo
+            .create_or_update(needs_agent_workspace(update_conversation.clone()))
+            .await
+            .expect("seed update-only workspace");
+        let update_run = update_state
+            .agent_run_repo
+            .create(AgentRun::new(update_conversation.clone()))
+            .await
+            .expect("seed update-only run");
+        append_provenance(
+            &update_state,
+            &update_conversation,
+            "agent_fixable:update_only",
+            &update_run.id,
+        )
+        .await;
+        recover_stale_agent_workspace_publish_repairs_for_state(&update_state)
+            .await
+            .expect("import update-only provenance");
+        let update_attempt = update_state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&update_conversation)
+            .await
+            .expect("load update-only repair")
+            .expect("exact update-only provenance imports");
+        assert_eq!(
+            update_attempt.continuation,
+            AgentWorkspaceRepairContinuation::UpdateOnly
+        );
+        assert_eq!(update_attempt.phase, AgentWorkspaceRepairPhase::Repairing);
+
+        let terminal_state = AppState::new_test();
+        let terminal_conversation = conversation_id(82);
+        terminal_state
+            .agent_conversation_workspace_repo
+            .create_or_update(needs_agent_workspace(terminal_conversation.clone()))
+            .await
+            .expect("seed terminal legacy workspace");
+        let terminal_run = terminal_state
+            .agent_run_repo
+            .create(AgentRun::new(terminal_conversation.clone()))
+            .await
+            .expect("seed terminal legacy run");
+        terminal_state
+            .agent_run_repo
+            .fail(&terminal_run.id, "legacy repair stopped")
+            .await
+            .expect("terminalize legacy run");
+        append_provenance(
+            &terminal_state,
+            &terminal_conversation,
+            "agent_fixable:publish",
+            &terminal_run.id,
+        )
+        .await;
+        assert_eq!(
+            recover_stale_agent_workspace_publish_repairs_for_state(&terminal_state)
+                .await
+                .expect("import terminal provenance"),
+            1
+        );
+        let terminal_attempt = terminal_state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&terminal_conversation)
+            .await
+            .expect("load terminal legacy repair")
+            .expect("terminal exact provenance remains actionable");
+        assert_eq!(terminal_attempt.phase, AgentWorkspaceRepairPhase::Blocked);
+        assert!(terminal_attempt
+            .blocker
+            .as_deref()
+            .is_some_and(|blocker| blocker.contains("without a durable completion receipt")));
+
+        for (suffix, continuation, clear_base, run_owner_matches) in [
+            (83, "agent_fixable:manual", false, true),
+            (84, "agent_fixable:publish", true, true),
+            (85, "agent_fixable:publish", false, false),
+        ] {
+            let state = AppState::new_test();
+            let conversation_id = conversation_id(suffix);
+            let mut workspace = needs_agent_workspace(conversation_id.clone());
+            if clear_base {
+                workspace.base_commit = None;
+            }
+            state
+                .agent_conversation_workspace_repo
+                .create_or_update(workspace)
+                .await
+                .expect("seed ambiguous legacy workspace");
+            let run_conversation = if run_owner_matches {
+                conversation_id.clone()
+            } else {
+                ChatConversationId::from_string(format!("wrong-owner-{suffix}"))
+            };
+            let run = state
+                .agent_run_repo
+                .create(AgentRun::new(run_conversation))
+                .await
+                .expect("seed ambiguous legacy run");
+            append_provenance(&state, &conversation_id, continuation, &run.id).await;
+
+            assert_eq!(
+                recover_stale_agent_workspace_publish_repairs_for_state(&state)
+                    .await
+                    .expect("ambiguous provenance fails closed"),
+                1
+            );
+            let blocked = state
+                .agent_workspace_repair_repo
+                .get_current_repair_attempt(&conversation_id)
+                .await
+                .expect("load ambiguous legacy repair")
+                .expect("ambiguous provenance remains actionable");
+            assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+            assert_eq!(
+                blocked.continuation,
+                AgentWorkspaceRepairContinuation::Manual
+            );
+        }
+
+        let missing_run_state = AppState::new_test();
+        let missing_run_conversation = conversation_id(86);
+        missing_run_state
+            .agent_conversation_workspace_repo
+            .create_or_update(needs_agent_workspace(missing_run_conversation.clone()))
+            .await
+            .expect("seed missing-run workspace");
+        append_provenance(
+            &missing_run_state,
+            &missing_run_conversation,
+            "agent_fixable:publish",
+            &AgentRunId::new(),
+        )
+        .await;
+        assert_eq!(
+            recover_stale_agent_workspace_publish_repairs_for_state(&missing_run_state)
+                .await
+                .expect("missing exact run fails closed"),
+            1
+        );
     }
 
     #[tokio::test]

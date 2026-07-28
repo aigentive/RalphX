@@ -6,11 +6,15 @@ use super::git_mutation_recovery::{
     GitMutationRecoveryOutcome,
 };
 use super::publish_resilience::{
-    continue_agent_workspace_repair_publish, observe_agent_workspace_repair_pr_handoff_effect,
-    prepare_agent_workspace_repair_pr_handoff_effect, push_agent_workspace_repair_branch,
+    continue_agent_workspace_repair_publish, has_observed_agent_workspace_repair_pr_handoff,
+    initialize_agent_workspace_repair_push_effect, next_effect_checkpoint_at,
+    observe_agent_workspace_repair_pr_handoff_effect, observe_agent_workspace_repair_push_effect,
+    observed_workspace_repair_push_outcome, prepare_agent_workspace_repair_pr_handoff_effect,
+    prepare_agent_workspace_repair_push_attempt, push_agent_workspace_repair_branch,
     reconcile_linked_plan_agent_workspace_repair_pr_handoff, repair_pr_handoff_from_observed_push,
-    verify_agent_workspace_repair_pr_handoff, AgentWorkspaceRepairPrHandoff,
-    AgentWorkspaceRepairPushOutcome, AgentWorkspaceRepairPushRequest,
+    verify_agent_workspace_repair_pr_handoff, verify_workspace_repair_push_remote_precondition,
+    AgentWorkspaceRepairPrHandoff, AgentWorkspaceRepairPushOutcome,
+    AgentWorkspaceRepairPushRequest,
 };
 use super::{AppState, GitService};
 use chrono::{Duration, Utc};
@@ -320,6 +324,391 @@ fn observed_push_handoff_requires_one_exact_base_and_head_receipt() {
     assert_eq!(handoff.expected_head_oid, remote_oid);
 }
 
+#[test]
+fn observed_push_receipts_fail_closed_without_one_exact_remote_head() {
+    let attempt_id = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("observed-push-receipt"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    )
+    .id;
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt_id,
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "observed-push-receipt",
+        Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::Observed;
+    effect.completed_at = Some(Utc::now());
+    effect.receipt_json = Some(r#"{"remote_ref":"refs/heads/repair"}"#.to_string());
+
+    let missing = observed_workspace_repair_push_outcome(effect.clone())
+        .expect_err("an observed push needs its exact remote OID");
+    assert!(missing.to_string().contains("remote receipt"));
+
+    effect.receipt_json =
+        Some(r#"{"remote_ref":"refs/heads/repair","remote_oid":"remote-head"}"#.to_string());
+    effect.intended_head_oid = Some("different-head".to_string());
+    let mismatched = observed_workspace_repair_push_outcome(effect)
+        .expect_err("the remote receipt must match the intended repair head");
+    assert!(mismatched.to_string().contains("intended head"));
+}
+
+#[test]
+fn durable_push_remote_preconditions_reject_absent_and_oid_drift() {
+    let attempt_id = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("push-precondition"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    )
+    .id;
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt_id,
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "push-precondition",
+        Utc::now(),
+    );
+    effect.expected_remote_absent = true;
+    assert!(verify_workspace_repair_push_remote_precondition(&effect, None).is_ok());
+    assert!(verify_workspace_repair_push_remote_precondition(&effect, Some("unexpected")).is_err());
+
+    effect.expected_remote_absent = false;
+    effect.expected_remote_oid = Some("expected".to_string());
+    assert!(verify_workspace_repair_push_remote_precondition(&effect, Some("expected")).is_ok());
+    assert!(verify_workspace_repair_push_remote_precondition(&effect, Some("drifted")).is_err());
+}
+
+#[tokio::test]
+async fn pr_handoff_effect_creation_fails_closed_after_lost_attempt_authority() {
+    for forced in [
+        ForcedCreateAgentWorkspaceRepairEffectOutcome::Stale,
+        ForcedCreateAgentWorkspaceRepairEffectOutcome::Missing,
+    ] {
+        let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+        let mut continuing = fixture.attempt.clone();
+        continuing.phase = AgentWorkspaceRepairPhase::Continuing;
+        continuing.updated_at += Duration::microseconds(1);
+        let continuing = match fixture
+            .state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: continuing,
+                expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+                expected_updated_at: fixture.attempt.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Continuing,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("enter PR handoff")
+        {
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+            outcome => panic!("expected current PR handoff attempt, got {outcome:?}"),
+        };
+        fixture
+            .memory_repair_repo
+            .force_next_create_repair_effect_outcome(forced);
+
+        let error = prepare_agent_workspace_repair_pr_handoff_effect(
+            fixture.state.agent_workspace_repair_repo.as_ref(),
+            &continuing,
+            &fixture.workspace,
+            None,
+        )
+        .await
+        .expect_err("a stale PR checkpoint must fail closed");
+        assert!(error.to_string().contains("lost authority"));
+        assert!(
+            fixture
+                .state
+                .agent_workspace_repair_repo
+                .get_open_repair_effect(&continuing.id)
+                .await
+                .expect("inspect PR effects")
+                .is_none(),
+            "a rejected checkpoint must not leave an external effect"
+        );
+    }
+}
+
+#[tokio::test]
+async fn push_checkpoint_helpers_reject_malformed_and_stale_attempt_receipts() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("push-checkpoint-helper"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    let wrong_kind = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::CreatePr,
+        "push-checkpoint-wrong-kind",
+        Utc::now(),
+    );
+    let wrong_target =
+        initialize_agent_workspace_repair_push_effect(&repo, &attempt, wrong_kind, "head", None)
+            .await
+            .expect_err("push initialization must reject another effect kind");
+    assert!(wrong_target.to_string().contains("current attempt target"));
+
+    let mut wrong_head = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "push-checkpoint-wrong-head",
+        Utc::now(),
+    );
+    wrong_head.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    wrong_head.intended_head_oid = Some("old-head".to_string());
+    wrong_head.expected_remote_absent = true;
+    let head_error = initialize_agent_workspace_repair_push_effect(
+        &repo, &attempt, wrong_head, "new-head", None,
+    )
+    .await
+    .expect_err("an initialized checkpoint cannot change its intended head");
+    assert!(head_error.to_string().contains("current attempt head"));
+
+    assert!(prepare_agent_workspace_repair_push_attempt(
+        &repo,
+        attempt.clone(),
+        AgentWorkspaceRepairPhase::Requested,
+    )
+    .await
+    .expect("an invalid push phase is a stale outcome")
+    .is_none());
+    let mut missing = attempt;
+    missing.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    assert!(prepare_agent_workspace_repair_push_attempt(
+        &repo,
+        missing,
+        AgentWorkspaceRepairPhase::ContinuationPending,
+    )
+    .await
+    .expect("a disappeared attempt is a stale outcome")
+    .is_none());
+
+    let future = Utc::now() + Duration::minutes(1);
+    assert_eq!(
+        next_effect_checkpoint_at(future),
+        future + Duration::microseconds(1)
+    );
+}
+
+#[tokio::test]
+async fn in_flight_pr_handoff_is_not_mistaken_for_an_observed_receipt() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut continuing = fixture.attempt.clone();
+    continuing.phase = AgentWorkspaceRepairPhase::Continuing;
+    continuing.updated_at += Duration::microseconds(1);
+    let continuing = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: continuing,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at: fixture.attempt.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("enter PR handoff")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected current PR handoff attempt, got {outcome:?}"),
+    };
+    let effect = prepare_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        &fixture.workspace,
+        None,
+    )
+    .await
+    .expect("checkpoint an in-flight PR handoff");
+    assert_eq!(effect.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    assert!(
+        !has_observed_agent_workspace_repair_pr_handoff(
+            fixture.state.agent_workspace_repair_repo.as_ref(),
+            &continuing,
+        )
+        .await
+        .expect("inspect PR handoff receipts"),
+        "an in-flight checkpoint is not proof that monitoring owns the PR"
+    );
+}
+
+#[tokio::test]
+async fn stale_attempt_snapshots_cannot_complete_pr_or_push_effect_receipts() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut continuing = fixture.attempt.clone();
+    continuing.phase = AgentWorkspaceRepairPhase::Continuing;
+    continuing.updated_at += Duration::microseconds(1);
+    let continuing = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: continuing,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at: fixture.attempt.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("enter stale PR handoff fixture")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected current PR handoff attempt, got {outcome:?}"),
+    };
+    let pr_effect = prepare_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        &fixture.workspace,
+        None,
+    )
+    .await
+    .expect("checkpoint PR handoff");
+    let mut advanced = continuing.clone();
+    advanced.updated_at += Duration::microseconds(1);
+    assert!(matches!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: advanced,
+                expected_phase: AgentWorkspaceRepairPhase::Continuing,
+                expected_updated_at: continuing.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Continuing,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("advance current PR attempt"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+    let stale_pr = observe_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        pr_effect,
+        91,
+        Some("https://github.com/example/repo/pull/91"),
+    )
+    .await
+    .expect_err("a stale attempt cannot record the PR receipt");
+    assert!(stale_pr.to_string().contains("lost authority"));
+
+    let push_fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut push_attempt = push_fixture.attempt.clone();
+    push_attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    push_attempt.updated_at += Duration::microseconds(1);
+    let push_attempt = match push_fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: push_attempt,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at: push_fixture.attempt.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("enter stale push fixture")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected current push attempt, got {outcome:?}"),
+    };
+    let mut push_effect = AgentWorkspaceRepairEffect::new(
+        push_attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "stale-push-effect",
+        Utc::now(),
+    );
+    push_effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    let push_effect = match push_fixture
+        .state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: push_attempt.id.clone(),
+            generation: push_attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: push_attempt.updated_at,
+            effect: push_effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint push effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => panic!("expected push effect, got {outcome:?}"),
+    };
+    let mut advanced_push = push_attempt.clone();
+    advanced_push.updated_at += Duration::microseconds(1);
+    assert!(matches!(
+        push_fixture
+            .state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: advanced_push,
+                expected_phase: AgentWorkspaceRepairPhase::Continuing,
+                expected_updated_at: push_attempt.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Continuing,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("advance current push attempt"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    let stale_preflight = initialize_agent_workspace_repair_push_effect(
+        push_fixture.state.agent_workspace_repair_repo.as_ref(),
+        &push_attempt,
+        push_effect.clone(),
+        "repair-head",
+        None,
+    )
+    .await
+    .expect_err("a stale attempt cannot initialize its push receipt");
+    assert!(stale_preflight
+        .to_string()
+        .contains("lost current attempt authority"));
+
+    let mut initialized = push_effect;
+    initialized.intended_head_oid = Some("repair-head".to_string());
+    initialized.expected_remote_absent = true;
+    let stale_observation = observe_agent_workspace_repair_push_effect(
+        push_fixture.state.agent_workspace_repair_repo.as_ref(),
+        &push_attempt,
+        initialized,
+        "refs/heads/repair",
+        "repair-head",
+    )
+    .await
+    .expect_err("a stale attempt cannot observe its push receipt");
+    assert!(stale_observation
+        .to_string()
+        .contains("lost current attempt authority"));
+}
+
 #[tokio::test]
 async fn pr_handoff_verification_rejects_ref_remote_and_head_drift() {
     let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
@@ -446,6 +835,78 @@ async fn repair_publish_continuation_fails_closed_before_git_for_missing_runtime
             .is_some_and(|blocker| blocker.contains("GitHub integration")),
         "the runtime-owner failure must become an actionable durable blocker"
     );
+}
+
+#[tokio::test]
+async fn repair_publish_continuation_requires_the_exact_linked_plan_pr() {
+    let missing_branch_fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut missing_branch_state = AppState::new_test();
+    missing_branch_state
+        .project_repo
+        .create(missing_branch_fixture.project.clone())
+        .await
+        .expect("persist missing-branch project");
+    let missing_plan_branch_id = PlanBranchId::from_string("missing-repair-plan-branch");
+    let mut missing_branch_workspace = missing_branch_fixture.workspace.clone();
+    missing_branch_workspace.linked_plan_branch_id = Some(missing_plan_branch_id);
+    missing_branch_fixture
+        .memory_repair_repo
+        .create_or_update(missing_branch_workspace)
+        .await
+        .expect("persist linked workspace");
+    missing_branch_state.agent_conversation_workspace_repo =
+        missing_branch_fixture.memory_repair_repo.clone();
+    missing_branch_state.agent_workspace_repair_repo =
+        missing_branch_fixture.memory_repair_repo.clone();
+    missing_branch_state.branch_update_repo =
+        missing_branch_fixture.state.branch_update_repo.clone();
+
+    let missing_branch = continue_agent_workspace_repair_publish(
+        &missing_branch_state,
+        missing_branch_fixture.attempt,
+    )
+    .await
+    .expect_err("a linked repair requires its canonical plan branch");
+    assert!(missing_branch.to_string().contains("linked plan branch"));
+
+    let missing_pr_fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut missing_pr_state = AppState::new_test();
+    missing_pr_state
+        .project_repo
+        .create(missing_pr_fixture.project.clone())
+        .await
+        .expect("persist missing-PR project");
+    let plan_branch_id = PlanBranchId::from_string("missing-repair-plan-pr");
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("missing-repair-plan-pr-artifact"),
+        IdeationSessionId::from_string("missing-repair-plan-pr-session"),
+        missing_pr_fixture.project.id.clone(),
+        missing_pr_fixture.branch.clone(),
+        "main".to_string(),
+    );
+    plan_branch.id = plan_branch_id.clone();
+    missing_pr_state
+        .plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("persist plan branch without a PR");
+    let mut missing_pr_workspace = missing_pr_fixture.workspace.clone();
+    missing_pr_workspace.linked_plan_branch_id = Some(plan_branch_id);
+    missing_pr_fixture
+        .memory_repair_repo
+        .create_or_update(missing_pr_workspace)
+        .await
+        .expect("persist missing-PR linked workspace");
+    missing_pr_state.agent_conversation_workspace_repo =
+        missing_pr_fixture.memory_repair_repo.clone();
+    missing_pr_state.agent_workspace_repair_repo = missing_pr_fixture.memory_repair_repo.clone();
+    missing_pr_state.branch_update_repo = missing_pr_fixture.state.branch_update_repo.clone();
+
+    let missing_pr =
+        continue_agent_workspace_repair_publish(&missing_pr_state, missing_pr_fixture.attempt)
+            .await
+            .expect_err("a linked repair cannot continue without its exact PR");
+    assert!(missing_pr.to_string().contains("pull request"));
 }
 
 #[tokio::test]

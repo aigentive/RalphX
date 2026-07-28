@@ -435,7 +435,7 @@ pub(crate) fn repair_pr_handoff_from_observed_push(
     })
 }
 
-async fn has_observed_agent_workspace_repair_pr_handoff(
+pub(crate) async fn has_observed_agent_workspace_repair_pr_handoff(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<bool> {
@@ -1004,7 +1004,7 @@ pub(crate) async fn push_agent_workspace_repair_branch(
     mutation_result
 }
 
-async fn prepare_agent_workspace_repair_push_attempt(
+pub(crate) async fn prepare_agent_workspace_repair_push_attempt(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     mut attempt: AgentWorkspaceRepairAttempt,
     expected_phase: AgentWorkspaceRepairPhase,
@@ -1037,7 +1037,7 @@ async fn prepare_agent_workspace_repair_push_attempt(
     }
 }
 
-fn observed_workspace_repair_push_outcome(
+pub(crate) fn observed_workspace_repair_push_outcome(
     effect: AgentWorkspaceRepairEffect,
 ) -> AppResult<AgentWorkspaceRepairPushOutcome> {
     let remote_oid = effect
@@ -1068,7 +1068,7 @@ fn observed_workspace_repair_push_outcome(
     })
 }
 
-async fn initialize_agent_workspace_repair_push_effect(
+pub(crate) async fn initialize_agent_workspace_repair_push_effect(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,
@@ -1129,7 +1129,7 @@ async fn initialize_agent_workspace_repair_push_effect(
     }
 }
 
-fn verify_workspace_repair_push_remote_precondition(
+pub(crate) fn verify_workspace_repair_push_remote_precondition(
     effect: &AgentWorkspaceRepairEffect,
     remote_oid: Option<&str>,
 ) -> AppResult<()> {
@@ -1156,7 +1156,7 @@ async fn read_origin_branch_oid(repo_path: &Path, branch_name: &str) -> AppResul
         .map(Some)
 }
 
-async fn observe_agent_workspace_repair_push_effect(
+pub(crate) async fn observe_agent_workspace_repair_push_effect(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,
@@ -1198,7 +1198,7 @@ async fn observe_agent_workspace_repair_push_effect(
     }
 }
 
-fn next_effect_checkpoint_at(previous: DateTime<Utc>) -> DateTime<Utc> {
+pub(crate) fn next_effect_checkpoint_at(previous: DateTime<Utc>) -> DateTime<Utc> {
     let now = Utc::now();
     if now > previous {
         now
