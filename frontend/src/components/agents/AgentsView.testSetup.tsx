@@ -117,6 +117,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   preloadAgentsArtifactPaneMock: vi.fn(),
   preloadAgentTerminalExperienceMock: vi.fn(),
   artifactPaneModuleLoadedMock: vi.fn(),
+  artifactPaneRenderMock: vi.fn(),
   realPublishPanelState: {
     enabled: false,
     reviewContext: null as unknown,
@@ -265,6 +266,7 @@ const {
   preloadAgentsArtifactPaneMock,
   preloadAgentTerminalExperienceMock,
   artifactPaneModuleLoadedMock,
+  artifactPaneRenderMock,
   realPublishPanelState,
   terminalDrawerModuleLoadedMock,
   terminalDrawerMountMock,
@@ -1115,7 +1117,7 @@ vi.mock("./AgentsArtifactPane", async () => {
     AgentsArtifactPane: ({
       conversation,
       activeTab,
-      focusedIdeationSessionId,
+      focusedIdeationSession,
       publishFocusRequest,
       publishSubTabRequest,
       onClose,
@@ -1131,7 +1133,10 @@ vi.mock("./AgentsArtifactPane", async () => {
       conversation: AgentConversation | null;
       workspace?: AgentConversationWorkspace | null;
       activeTab?: string;
-      focusedIdeationSessionId?: string | null;
+      focusedIdeationSession?: {
+        conversationId: string;
+        sessionId: string;
+      } | null;
       publishFocusRequest?: AgentPublishFocusRequest | null;
       publishSubTabRequest?: AgentPublishSubTabRequest | null;
       projectBaseBranch?: string | null;
@@ -1156,11 +1161,16 @@ vi.mock("./AgentsArtifactPane", async () => {
       ) => void;
       onOpenAutomation?: (automationId: string) => void;
       onPublishWorkspace?: (conversationId: string) => Promise<void>;
-    }) => realPublishPanelState.enabled && activeTab === "publish" ? (
+    }) => {
+      artifactPaneRenderMock({
+        conversationId: conversation?.id ?? null,
+        focusedIdeationSessionId: focusedIdeationSession?.sessionId ?? null,
+      });
+      return realPublishPanelState.enabled && activeTab === "publish" ? (
       <div
         data-testid="agents-artifact-pane"
         data-active-tab={activeTab ?? ""}
-        data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
+        data-focused-ideation-session-id={focusedIdeationSession?.sessionId ?? ""}
         data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
         data-publish-sub-tab={
@@ -1203,7 +1213,7 @@ vi.mock("./AgentsArtifactPane", async () => {
       <div
         data-testid="agents-artifact-pane"
         data-active-tab={activeTab ?? ""}
-        data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
+        data-focused-ideation-session-id={focusedIdeationSession?.sessionId ?? ""}
         data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
         data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
         data-publish-sub-tab={
@@ -1278,7 +1288,8 @@ vi.mock("./AgentsArtifactPane", async () => {
           </button>
         ) : null}
       </div>
-  ),
+      );
+    },
   };
 });
 
@@ -1739,6 +1750,7 @@ export function setupAgentsViewTest() {
   integratedChatPanelUserMessageSentMock.mockReset();
   preloadAgentsArtifactPaneMock.mockReset();
   artifactPaneModuleLoadedMock.mockReset();
+  artifactPaneRenderMock.mockReset();
   realPublishPanelState.enabled = false;
   realPublishPanelState.reviewContext = null;
   preloadAgentTerminalExperienceMock.mockReset();

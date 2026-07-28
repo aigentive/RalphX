@@ -2,6 +2,7 @@ import {
   fireAgentViewEvent,
   getAgentsViewTestMocks,
   mockAgentViewData,
+  mockAgentSidebarData,
   mockSessionWithData,
   renderAgentsView,
   resetAgentSessionState,
@@ -9,7 +10,7 @@ import {
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
 import { QueryClient } from "@tanstack/react-query";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationKeys } from "@/hooks/useIdeation";
@@ -21,9 +22,12 @@ import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 
 const {
+  artifactPaneRenderMock,
   getAgentConversationWorkspaceMock,
   getWorkspaceReviewContextMock,
   startWorkspaceReviewMock,
+  useConversationMock,
+  useProjectAgentConversationsMock,
 } = getAgentsViewTestMocks();
 
 const workspaceReviewTarget = {
@@ -766,6 +770,95 @@ describe("AgentsView artifact pane", () => {
     await waitFor(() =>
       expect(screen.getByTestId("agents-artifact-pane")).toBeInTheDocument()
     );
+  });
+
+  it("never renders the previous conversation's focused plan during a conversation switch", async () => {
+    const planConversation = conversation({
+      id: "conversation-1",
+      agentMode: "ideation",
+      title: "Plan conversation",
+    });
+    const unlinkedConversation = conversation({
+      id: "conversation-2",
+      agentMode: "edit",
+      title: "Unlinked conversation",
+    });
+    const conversations = [planConversation, unlinkedConversation];
+    mockAgentViewData(planConversation);
+    mockAgentSidebarData(conversations);
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: conversations,
+      conversations,
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useConversationMock.mockImplementation((conversationId: string | null) => {
+      const current = conversations.find((item) => item.id === conversationId);
+      return {
+        data: current ? { conversation: current, messages: [] } : null,
+        isLoading: false,
+      };
+    });
+    getAgentConversationWorkspaceMock.mockImplementation(
+      async (conversationId: string) =>
+        conversationWorkspace({
+          conversationId,
+          mode: conversationId === "conversation-1" ? "ideation" : "edit",
+          linkedIdeationSessionId:
+            conversationId === "conversation-1" ? "session-1" : null,
+        }),
+    );
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+        },
+        "conversation-2": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+    await waitFor(() =>
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "conversation-1",
+      ),
+    );
+    fireEvent.click(
+      await screen.findByTestId("mock-focus-stale-proposals-session"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+        "data-focused-ideation-session-id",
+        "session-1",
+      ),
+    );
+    artifactPaneRenderMock.mockClear();
+
+    const unlinkedConversationRow = await screen.findByTestId(
+      "agents-session-conversation-2",
+    );
+    fireEvent.click(
+      within(unlinkedConversationRow).getAllByRole("button")[0] ??
+        unlinkedConversationRow,
+    );
+
+    expect(artifactPaneRenderMock).not.toHaveBeenCalledWith({
+      conversationId: "conversation-2",
+      focusedIdeationSessionId: "session-1",
+    });
   });
 
   it("opens plan artifacts and header controls when a plan-mode session gains a plan", async () => {
