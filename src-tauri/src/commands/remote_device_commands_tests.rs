@@ -163,9 +163,10 @@ fn device_view_maps_active_agent_control_device_fields() {
 
 #[test]
 fn device_view_maps_revoked_device_without_agent_control_or_last_seen() {
-    let mut device = coverage_sample_device(crate::domain::entities::RemoteScopeSet::from_scopes(
-        [ralphx_remote_protocol::Scope::UiOperate],
-    ));
+    let mut device =
+        coverage_sample_device(crate::domain::entities::RemoteScopeSet::from_scopes([
+            ralphx_remote_protocol::Scope::UiOperate,
+        ]));
     device.last_seen_at = None;
     device.revoked_at = Some("2026-07-27T21:15:00+00:00".to_string());
 
@@ -178,4 +179,226 @@ fn device_view_maps_revoked_device_without_agent_control_or_last_seen() {
         Some("2026-07-27T21:15:00+00:00")
     );
     assert_eq!(view.live_session_count, 0);
+}
+
+// ---------------------------------------------------------------------------------------
+// §5.5: an authority change whose decision left no audit trail must not report success.
+// ---------------------------------------------------------------------------------------
+
+mod audit_is_fatal {
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use ralphx_remote_protocol::Scope;
+
+    use crate::commands::remote_device_commands::{
+        revoke_device_with_context, set_agent_control_with_context, RemoteDeviceIdInput,
+        SetRemoteDeviceAgentControlInput,
+    };
+    use crate::domain::entities::{
+        RemoteAuditAction, RemoteAuditEntry, RemoteDevice, RemoteDeviceId, RemoteScopeSet,
+    };
+    use crate::domain::repositories::{
+        RemoteAuditLogRepository, RemoteDeviceLookup, RemoteDeviceRepository,
+    };
+    use crate::error::{AppError, AppResult};
+    use crate::infrastructure::sqlite::{run_migrations, DbConnection};
+    use crate::remote_server::auth::RemoteAuthContext;
+
+    /// Records every scope write so a compensating revert is observable.
+    struct RecordingDeviceRepository {
+        device: Mutex<RemoteDevice>,
+        scope_writes: Mutex<Vec<RemoteScopeSet>>,
+        revocations: Mutex<usize>,
+    }
+
+    impl RecordingDeviceRepository {
+        fn with_scopes(scopes: RemoteScopeSet) -> Self {
+            Self {
+                device: Mutex::new(RemoteDevice {
+                    id: RemoteDeviceId::from_string("device-1".to_string()),
+                    name: "iPhone".to_string(),
+                    token_hash: "hash".to_string(),
+                    token_prefix: "rxd_live_abcd".to_string(),
+                    scopes,
+                    created_at: "2026-07-27T00:00:00+00:00".to_string(),
+                    last_seen_at: None,
+                    revoked_at: None,
+                }),
+                scope_writes: Mutex::new(Vec::new()),
+                revocations: Mutex::new(0),
+            }
+        }
+
+        fn scope_writes(&self) -> Vec<RemoteScopeSet> {
+            self.scope_writes.lock().expect("scope writes").clone()
+        }
+    }
+
+    #[async_trait]
+    impl RemoteDeviceRepository for RecordingDeviceRepository {
+        async fn lookup_by_token_hash(&self, _token_hash: &str) -> AppResult<RemoteDeviceLookup> {
+            unreachable!("host-local commands do not resolve tokens")
+        }
+
+        async fn get(&self, _id: &RemoteDeviceId) -> AppResult<Option<RemoteDevice>> {
+            Ok(Some(self.device.lock().expect("device").clone()))
+        }
+
+        async fn list(&self) -> AppResult<Vec<RemoteDevice>> {
+            Ok(vec![self.device.lock().expect("device").clone()])
+        }
+
+        async fn revoke(&self, _id: &RemoteDeviceId, now: &str) -> AppResult<Option<RemoteDevice>> {
+            *self.revocations.lock().expect("revocations") += 1;
+            let mut device = self.device.lock().expect("device");
+            device.revoked_at = Some(now.to_string());
+            Ok(Some(device.clone()))
+        }
+
+        async fn set_scopes(
+            &self,
+            _id: &RemoteDeviceId,
+            scopes: &RemoteScopeSet,
+        ) -> AppResult<Option<RemoteDevice>> {
+            self.scope_writes
+                .lock()
+                .expect("scope writes")
+                .push(scopes.clone());
+            let mut device = self.device.lock().expect("device");
+            device.scopes = scopes.clone();
+            Ok(Some(device.clone()))
+        }
+
+        async fn touch_last_seen(&self, _id: &RemoteDeviceId, _now: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingAuditRepository;
+
+    #[async_trait]
+    impl RemoteAuditLogRepository for FailingAuditRepository {
+        async fn record(
+            &self,
+            _device_id: Option<&RemoteDeviceId>,
+            _action: RemoteAuditAction,
+            _detail: Option<&str>,
+            _now: &str,
+        ) -> AppResult<()> {
+            Err(AppError::Database("database is locked".to_string()))
+        }
+
+        async fn list_recent(&self, _limit: Option<i64>) -> AppResult<Vec<RemoteAuditEntry>> {
+            Err(AppError::Database("database is locked".to_string()))
+        }
+
+        async fn prune_before(&self, _cutoff: &str) -> AppResult<usize> {
+            Err(AppError::Database("database is locked".to_string()))
+        }
+    }
+
+    fn context_with(devices: Arc<RecordingDeviceRepository>) -> RemoteAuthContext {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory database should open");
+        run_migrations(&conn).expect("migrations should apply");
+        let mut context = RemoteAuthContext::host_local(
+            DbConnection::new(conn),
+            crate::remote_server::session_registry::RemoteSessionRegistry::new(),
+        );
+        context.devices = devices;
+        context.audit = Arc::new(FailingAuditRepository);
+        context
+    }
+
+    #[tokio::test]
+    async fn agent_control_grant_is_reverted_and_refused_when_the_audit_write_fails() {
+        let devices = Arc::new(RecordingDeviceRepository::with_scopes(
+            RemoteScopeSet::default_pairing_grant(),
+        ));
+        let context = context_with(devices.clone());
+
+        let error = set_agent_control_with_context(
+            &context,
+            SetRemoteDeviceAgentControlInput {
+                device_id: "device-1".to_string(),
+                enabled: true,
+            },
+        )
+        .await
+        .expect_err("an unaudited grant must not report success");
+
+        assert!(error.contains("audit log"), "unexpected message: {error}");
+        let writes = devices.scope_writes();
+        assert_eq!(writes.len(), 2, "the grant must be compensated: {writes:?}");
+        assert!(
+            writes[0].contains(Scope::UiAgent),
+            "the grant is written first"
+        );
+        assert!(
+            !writes[1].contains(Scope::UiAgent),
+            "the unaudited grant must be reverted"
+        );
+        assert!(!devices
+            .device
+            .lock()
+            .expect("device")
+            .scopes
+            .contains(Scope::UiAgent));
+    }
+
+    #[tokio::test]
+    async fn agent_control_withdrawal_keeps_the_narrowed_grant_but_still_refuses() {
+        let devices = Arc::new(RecordingDeviceRepository::with_scopes(
+            RemoteScopeSet::default_pairing_grant().with(Scope::UiAgent),
+        ));
+        let context = context_with(devices.clone());
+
+        let error = set_agent_control_with_context(
+            &context,
+            SetRemoteDeviceAgentControlInput {
+                device_id: "device-1".to_string(),
+                enabled: false,
+            },
+        )
+        .await
+        .expect_err("an unaudited withdrawal must not report success");
+
+        assert!(error.contains("audit log"), "unexpected message: {error}");
+        let writes = devices.scope_writes();
+        assert_eq!(
+            writes.len(),
+            1,
+            "withdrawal is fail-safe and must not be reverted: {writes:?}"
+        );
+        assert!(!devices
+            .device
+            .lock()
+            .expect("device")
+            .scopes
+            .contains(Scope::UiAgent));
+    }
+
+    #[tokio::test]
+    async fn device_revocation_stands_but_is_refused_when_the_audit_write_fails() {
+        let devices = Arc::new(RecordingDeviceRepository::with_scopes(
+            RemoteScopeSet::default_pairing_grant(),
+        ));
+        let context = context_with(devices.clone());
+
+        let error = revoke_device_with_context(
+            &context,
+            RemoteDeviceIdInput {
+                device_id: "device-1".to_string(),
+            },
+        )
+        .await
+        .expect_err("an unaudited revocation must not report success");
+
+        assert!(error.contains("audit log"), "unexpected message: {error}");
+        assert_eq!(*devices.revocations.lock().expect("revocations"), 1);
+        assert!(
+            devices.device.lock().expect("device").revoked_at.is_some(),
+            "revocation is the fail-safe direction and must stand"
+        );
+    }
 }
