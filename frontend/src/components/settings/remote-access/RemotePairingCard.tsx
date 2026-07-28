@@ -2,9 +2,9 @@
  * RemotePairingCard — "Pair a device" flow (§4.2, §5.4).
  *
  * Shows the freshly minted code exactly once: grouped for manual entry (R-12),
- * as a copyable `ralphx://pair` URL with the code in the hash fragment (§3.7),
- * under a live 10-minute countdown. Outstanding codes list with cancel covers
- * the §4.6 stolen-QR row.
+ * as a QR and a copyable `ralphx://pair` URL with the code in the hash fragment
+ * (§3.7), under a live 10-minute countdown. Outstanding codes list with cancel
+ * covers the §4.6 stolen-QR row.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -19,16 +19,125 @@ import { Card } from "@/components/ui/card";
 import { CopyableRef } from "@/components/ui/copyable-ref";
 import { NoticeBanner } from "@/components/ui/notice-banner";
 import { StatusPill } from "@/components/ui/status-pill";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { formatDateTime } from "@/lib/formatters";
+import {
+  encodeQrMatrix,
+  qrMatrixToPath,
+  qrSvgExtent,
+} from "@/lib/qr/qr-encode";
 
-import { RemoteAccessCardHeader, RemoteAccessSkeletonRows } from "./RemoteAccessSection";
+import {
+  cancelScheduledJob,
+  scheduleAfterPaint,
+} from "../SettingsDialog.performance";
+import {
+  RemoteAccessCardHeader,
+  RemoteAccessSkeletonRows,
+} from "./RemoteAccessSection";
 import {
   buildPairingUrl,
   formatCountdown,
   groupPairingCode,
   remainingSeconds,
 } from "./remote-access-utils";
+
+/** Side of the white QR plate, in pixels. Fixed so hydration shifts no layout. */
+const QR_PLATE_PX = 132;
+
+interface EncodedQr {
+  /** The URL this symbol encodes, used to reject a symbol from a previous code. */
+  url: string;
+  path: string;
+  extent: number;
+}
+
+/**
+ * Encodes `url` into QR path data AFTER a paint boundary (rule 24).
+ *
+ * The card must appear the instant a code is minted, and the manual code is the
+ * primary path — neither may wait on encoding. A version-5 symbol costs about a
+ * millisecond, which is small but not nothing, and it has no business running
+ * inside the click commit. Returning null on the first render keeps it out.
+ *
+ * The stored URL is compared against the current one before the symbol is shown,
+ * so the frame after a regeneration can never display the previous code's QR. A
+ * stale symbol here would point a phone at a code that is already burned.
+ */
+function useDeferredQr(url: string | null): EncodedQr | null {
+  const [encoded, setEncoded] = useState<EncodedQr | null>(null);
+
+  useEffect(() => {
+    if (!url) {
+      setEncoded(null);
+      return undefined;
+    }
+
+    const job = scheduleAfterPaint(() => {
+      const matrix = encodeQrMatrix(url);
+      setEncoded({
+        url,
+        path: qrMatrixToPath(matrix),
+        extent: qrSvgExtent(matrix),
+      });
+    });
+
+    return () => cancelScheduledJob(job);
+  }, [url]);
+
+  return encoded && encoded.url === url ? encoded : null;
+}
+
+/**
+ * The scannable symbol.
+ *
+ * Colours are literal `#000000` on `#FFFFFF` in both themes: a scanner expects
+ * that polarity, and per the WKWebView rules a dropped `var()` here would not
+ * look wrong so much as silently fail to scan. The plate keeps its size before
+ * the symbol arrives so hydration never nudges the layout.
+ */
+function PairingQrCode({ url }: { url: string }) {
+  const qr = useDeferredQr(url);
+
+  return (
+    <div className="shrink-0 space-y-1.5">
+      <div
+        data-testid="remote-pairing-qr"
+        role="img"
+        aria-label="Scan to pair this device"
+        className="rounded-md"
+        style={{
+          backgroundColor: "#FFFFFF",
+          borderColor: "var(--border-default, #393940)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          width: `${QR_PLATE_PX}px`,
+          height: `${QR_PLATE_PX}px`,
+        }}
+      >
+        {qr && (
+          <svg
+            viewBox={`0 0 ${qr.extent} ${qr.extent}`}
+            width="100%"
+            height="100%"
+            shapeRendering="crispEdges"
+            aria-hidden="true"
+          >
+            <rect width={qr.extent} height={qr.extent} fill="#FFFFFF" />
+            <path d={qr.path} fill="#000000" />
+          </svg>
+        )}
+      </div>
+      <p className="text-[10px] text-center text-[var(--text-muted)]">
+        Scan on the device
+      </p>
+    </div>
+  );
+}
 
 export interface RemotePairingCardProps {
   pairing: MintedRemotePairingCode | null;
@@ -116,8 +225,8 @@ export function RemotePairingCard({
         )}
         {expired && (
           <NoticeBanner tone="warning" testId="remote-pairing-expired">
-            Pairing code expired. Expired codes are single-use and can no longer be
-            redeemed.
+            Pairing code expired. Expired codes are single-use and can no longer
+            be redeemed.
           </NoticeBanner>
         )}
 
@@ -156,30 +265,39 @@ export function RemotePairingCard({
               </Tooltip>
             </div>
 
-            {/* QR: deferred — no QR library exists in frontend/package.json and PR 1.7
-                does not add dependencies without a bundle-convention review. The manual
-                block below is the R-12 fallback; the QR would encode pairingUrl. */}
-            <div className="space-y-1">
-              <p className="text-xs text-[var(--text-muted)]">
-                Enter this code on the device
-              </p>
-              <p
-                data-testid="remote-pairing-code"
-                className="font-mono text-lg tracking-wide text-[var(--text-primary)] select-all"
-              >
-                <span className="text-[var(--text-muted)]">{grouped.prefix}</span>
-                {grouped.groups.map((group, index) => (
-                  <span key={index}>
-                    {index > 0 && <span className="text-[var(--text-muted)]"> </span>}
-                    {group}
+            {/* Manual entry stays the primary path (R-12); the QR is the shortcut
+                beside it, and wraps underneath once the pane gets narrow. */}
+            <div className="flex flex-wrap items-start gap-4">
+              <div className="space-y-1 min-w-[11rem] flex-1">
+                <p className="text-xs text-[var(--text-muted)]">
+                  Enter this code on the device
+                </p>
+                <p
+                  data-testid="remote-pairing-code"
+                  className="font-mono text-lg tracking-wide text-[var(--text-primary)] select-all"
+                >
+                  <span className="text-[var(--text-muted)]">
+                    {grouped.prefix}
                   </span>
-                ))}
-              </p>
-              <CopyableRef
-                value={pairing.code}
-                ariaLabel="Copy pairing code"
-                testId="remote-pairing-code-copy"
-              />
+                  {grouped.groups.map((group, index) => (
+                    <span key={index}>
+                      {index > 0 && (
+                        <span className="text-[var(--text-muted)]"> </span>
+                      )}
+                      {group}
+                    </span>
+                  ))}
+                </p>
+                <CopyableRef
+                  value={pairing.code}
+                  ariaLabel="Copy pairing code"
+                  testId="remote-pairing-code-copy"
+                />
+              </div>
+
+              {/* No advertised endpoint means no URL, so there is nothing to
+                  encode — R-12 forbids inventing a multi-endpoint payload. */}
+              {pairingUrl && <PairingQrCode url={pairingUrl} />}
             </div>
 
             <div className="space-y-1">
@@ -197,8 +315,8 @@ export function RemotePairingCard({
                   data-testid="remote-pairing-url-unavailable"
                   className="text-xs text-[var(--text-muted)]"
                 >
-                  No advertised endpoint is known yet — enter the host address and
-                  the code manually on the device.
+                  No advertised endpoint is known yet — enter the host address
+                  and the code manually on the device.
                 </p>
               )}
             </div>
@@ -239,7 +357,9 @@ export function RemotePairingCard({
                         <X className="h-4 w-4" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Cancel outstanding pairing code</TooltipContent>
+                    <TooltipContent>
+                      Cancel outstanding pairing code
+                    </TooltipContent>
                   </Tooltip>
                 </li>
               ))}
