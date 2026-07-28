@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { TaskProposal, Priority } from "@/types/ideation";
 
 // ============================================================================
@@ -136,6 +138,8 @@ export const useProposalStore = create<ProposalState & ProposalActions>()(
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useProposalStore", reset: () => useProposalStore.setState(useProposalStore.getInitialState(), true) });
 
 if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
   window.__proposalStore = useProposalStore;

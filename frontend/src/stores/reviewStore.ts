@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { ReviewResponse } from "@/lib/tauri";
 
 // ============================================================================
@@ -103,6 +105,8 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useReviewStore", reset: () => useReviewStore.setState(useReviewStore.getInitialState(), true) });
 
 // ============================================================================
 // Selectors

@@ -1,4 +1,6 @@
 import { create } from "zustand";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import { immer } from "zustand/middleware/immer";
 
 export type GitHubBranchAssociationFilter = "all" | "pull_requests" | "tickets" | "rx";
@@ -135,3 +137,5 @@ export const useIntegrationDashboardStore = create<
       }),
   })),
 );
+
+registerEnvIsolatedStore({ name: "useIntegrationDashboardStore", reset: () => useIntegrationDashboardStore.setState(useIntegrationDashboardStore.getInitialState(), true) });

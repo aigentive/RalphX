@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
+import { createEnvScopedStorage } from "@/lib/remote/env-scoped-storage";
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { TicketRef, TicketingProvider } from "@/api/ticketing";
 
 export type TicketingViewMode = "list" | "kanban";
@@ -161,6 +163,7 @@ export const useTicketingStore = create<TicketingState & TicketingActions>()(
     })),
     {
       name: "ralphx-ticketing-store",
+      storage: createEnvScopedStorage("ralphx-ticketing-store"),
       version: 2,
       migrate: migrateTicketingState,
       partialize: (state) => ({
@@ -174,3 +177,11 @@ export const useTicketingStore = create<TicketingState & TicketingActions>()(
     },
   ),
 );
+
+registerEnvIsolatedStore({
+  name: "useTicketingStore",
+  reset: () => useTicketingStore.setState(useTicketingStore.getInitialState(), true),
+  rehydrate: () => {
+    void useTicketingStore.persist.rehydrate();
+  },
+});

@@ -11,6 +11,9 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { createEnvScopedStorage } from "@/lib/remote/env-scoped-storage";
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import { persist } from "zustand/middleware";
 import type { Project } from "@/types/project";
 
@@ -88,11 +91,20 @@ export const useProjectStore = create<ProjectState & ProjectActions>()(
     })),
     {
       name: "ralphx-project-store",
+      storage: createEnvScopedStorage("ralphx-project-store"),
       // Only persist the activeProjectId, not the projects (those come from backend)
       partialize: (state) => ({ activeProjectId: state.activeProjectId }),
     }
   )
 );
+
+registerEnvIsolatedStore({
+  name: "useProjectStore",
+  reset: () => useProjectStore.setState(useProjectStore.getInitialState(), true),
+  rehydrate: () => {
+    void useProjectStore.persist.rehydrate();
+  },
+});
 
 // ============================================================================
 // Selectors (defined outside store for memoization)
