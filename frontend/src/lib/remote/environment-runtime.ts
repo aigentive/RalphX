@@ -466,6 +466,32 @@ export function initializeEnvironmentRuntime(): () => void {
       : detachedBus(environmentId, fallbackLocalBus);
   });
 
+  /**
+   * Pulls the durable registry from Rust into the store.
+   *
+   * This is the ONLY unprompted reader of the registry. `loadEnvironments` first, then
+   * `hydrateActiveEnvironment`: the active id Rust reports is meaningless until the
+   * list that can contain it is present, and hydrating first would see an unknown id
+   * and clamp the mirror to local — telling Rust to abandon an environment it is still
+   * authorizing.
+   *
+   * Failures are swallowed deliberately. A registry that cannot be read shows no remote
+   * environments at all, which is the fail-closed presentation; there is no retry here
+   * (A-5: the supervisor is the sole retry owner) and the user re-opens Connections.
+   */
+  const loadRegistry = (): void => {
+    if (!enabled) {
+      return;
+    }
+    void (async () => {
+      const store = useEnvironmentStore.getState();
+      await store.loadEnvironments();
+      await store.hydrateActiveEnvironment();
+    })().catch((error: unknown) => {
+      console.warn("[remote] registry load failed; no remote environments shown", error);
+    });
+  };
+
   const unsubscribeUi = useUiStore.subscribe((state, previous) => {
     const next = state.featureFlags.remoteEnvironments;
     if (next === previous.featureFlags.remoteEnvironments) {
@@ -478,6 +504,7 @@ export function initializeEnvironmentRuntime(): () => void {
     }
     reconcile();
     activate(useEnvironmentStore.getState().activeEnvironmentId);
+    loadRegistry();
   });
 
   const unsubscribeEnvironment = useEnvironmentStore.subscribe((state, previous) => {
@@ -514,6 +541,7 @@ export function initializeEnvironmentRuntime(): () => void {
   if (enabled) {
     reconcile();
     activate(activeEnvironmentId);
+    loadRegistry();
   }
 
   const teardown = (): void => {

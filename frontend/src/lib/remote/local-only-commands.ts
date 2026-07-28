@@ -62,6 +62,12 @@ export const LOCAL_ONLY_COMMANDS: readonly LocalOnlyCommand[] = [
 
   // --- This client's environment registry (§6.1/§6.4). ---
   {
+    command: "preview_remote_environment",
+    disposition: "run-locally",
+    reason:
+      "Probes a prospective host's descriptor from THIS client before pairing; a remote host cannot answer for a host this client has not paired with yet.",
+  },
+  {
     command: "pair_remote_environment",
     disposition: "run-locally",
     reason:

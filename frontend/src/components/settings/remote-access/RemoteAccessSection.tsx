@@ -33,10 +33,7 @@ import { Switch } from "@/components/ui/switch";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useEventBus } from "@/providers/EventProvider";
 
-import {
-  cancelScheduledJob,
-  scheduleAfterPaint,
-} from "../SettingsDialog.performance";
+import { usePaintBoundaryHydration } from "../usePaintBoundaryHydration";
 
 import { RemoteDeviceList } from "./RemoteDeviceList";
 import { RemotePairingCard } from "./RemotePairingCard";
@@ -90,16 +87,6 @@ function errorMessage(error: unknown, fallback: string): string {
     return error.message;
   }
   return typeof error === "string" && error.length > 0 ? error : fallback;
-}
-
-/** Paint-boundary gate (rule 24): true only after a frame + macrotask have passed. */
-function usePaintBoundaryHydration(): boolean {
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => {
-    const job = scheduleAfterPaint(() => setHydrated(true));
-    return () => cancelScheduledJob(job);
-  }, []);
-  return hydrated;
 }
 
 // ============================================================================

@@ -1228,6 +1228,19 @@ const mockRemoteHost = {
   codeCounter: 0,
 };
 
+/**
+ * Client-side environment registry (PR 2.5). Separate from `mockRemoteHost`, which is
+ * the HOST pane's state: this is what THIS Mac has paired with.
+ *
+ * `previewSkew` lets a journey drive the version-contradiction path without standing up
+ * a second mock host, using the service's own `REMOTE_VERSION_MISMATCH` code.
+ */
+const mockRemoteEnvironments: {
+  rows: Array<Record<string, unknown>>;
+  previewSkew: boolean;
+  counter: number;
+} = { rows: [], previewSkew: false, counter: 0 };
+
 const commandHandlers: Record<
   string,
   (args: Record<string, unknown>) => Promise<unknown>
@@ -1512,6 +1525,75 @@ const commandHandlers: Record<
     );
     return mockRemoteHost.sessions.length < before;
   },
+  // --- Client environment registry (PR 2.5) ---
+  preview_remote_environment: async (args) => {
+    const url = String((args as { input?: { url?: unknown } }).input?.url ?? "");
+    const skew =
+      typeof window !== "undefined"
+        ? (window as Window & { __mockRemoteEnvironmentSkew?: boolean })
+            .__mockRemoteEnvironmentSkew === true
+        : false;
+    if (skew || mockRemoteEnvironments.previewSkew) {
+      throw new Error(
+        "REMOTE_VERSION_MISMATCH: host requires client protocol >= 2, this client speaks 1",
+      );
+    }
+    if (url.includes("offline")) {
+      throw new Error("REMOTE_UNREACHABLE: host unreachable: mock host offline");
+    }
+    const existing = mockRemoteEnvironments.rows.find(
+      (row) => row.environmentId === "env-mock-1",
+    );
+    return {
+      environmentId: "env-mock-1",
+      appVersion: "0.9.4",
+      platform: "macos",
+      protocolVersion: 1,
+      minClientProtocol: 1,
+      alreadyPairedAs: existing ? (existing.name as string) : null,
+    };
+  },
+  pair_remote_environment: async (args) => {
+    const input = (args as { input?: Record<string, unknown> }).input ?? {};
+    const name = String(input.name ?? "Remote Mac");
+    const baseUrl = String(input.url ?? "https://mock-host.tailnet.ts.net");
+    // Upsert on environmentId, exactly like the Rust registry (§6.1).
+    const existing = mockRemoteEnvironments.rows.find(
+      (row) => row.environmentId === "env-mock-1",
+    );
+    if (existing) {
+      Object.assign(existing, { name, baseUrl, status: "active" });
+      return { ...existing };
+    }
+    mockRemoteEnvironments.counter += 1;
+    const row: Record<string, unknown> = {
+      id: `renv-${mockRemoteEnvironments.counter}`,
+      environmentId: "env-mock-1",
+      name,
+      baseUrl,
+      candidateUrls: [baseUrl],
+      scopes: ["ui:read", "ui:operate"],
+      protocolVersion: 1,
+      status: "active",
+      createdAt: new Date().toISOString(),
+      lastConnectedAt: null,
+    };
+    mockRemoteEnvironments.rows.push(row);
+    return { ...row };
+  },
+  list_remote_environments: async () =>
+    mockRemoteEnvironments.rows.map((row) => ({ ...row })),
+  remove_remote_environment: async (args) => {
+    const id = String((args as { input?: { id?: unknown } }).input?.id ?? "");
+    const row = mockRemoteEnvironments.rows.find((entry) => entry.id === id);
+    if (row) {
+      // Staged removal: the row goes to pending_delete, it does not vanish.
+      row.status = "pending_delete";
+    }
+    return null;
+  },
+  get_active_environment: async () => "local",
+  set_active_environment: async () => null,
   list_remote_advertised_endpoints: async () =>
     mockRemoteHost.status.exposureMode === "serve"
       ? [

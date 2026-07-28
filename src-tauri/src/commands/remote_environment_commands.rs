@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::remote_environment_service::{
-    RemoteEnvironmentError, RemoteEnvironmentService, RemoteFetchCall, RemoteFetchOutcome,
-    RemoteInvokeOutcome,
+    RemoteEnvironmentError, RemoteEnvironmentPreview, RemoteEnvironmentService, RemoteFetchCall,
+    RemoteFetchOutcome, RemoteInvokeOutcome,
 };
 use crate::application::remote_event_relay::RemoteConnectOutcome;
 use crate::domain::entities::remote_environment::{RemoteEnvironment, RemoteEnvironmentStatus};
@@ -54,6 +54,40 @@ impl From<RemoteEnvironment> for RemoteEnvironmentSummary {
             last_connected_at: env.last_connected_at,
         }
     }
+}
+
+/// JS-facing projection of a pre-pair host identity probe (PR 2.5).
+///
+/// Descriptor truth only, and no credential of any kind: this response is produced
+/// before any pairing code is consumed, so there is nothing secret to omit (P-18).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteEnvironmentPreviewResponse {
+    pub environment_id: String,
+    pub app_version: String,
+    pub platform: String,
+    pub protocol_version: u32,
+    pub min_client_protocol: u32,
+    pub already_paired_as: Option<String>,
+}
+
+impl From<RemoteEnvironmentPreview> for RemoteEnvironmentPreviewResponse {
+    fn from(preview: RemoteEnvironmentPreview) -> Self {
+        Self {
+            environment_id: preview.environment_id,
+            app_version: preview.app_version,
+            platform: preview.platform,
+            protocol_version: preview.protocol_version,
+            min_client_protocol: preview.min_client_protocol,
+            already_paired_as: preview.already_paired_as,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewRemoteEnvironmentInput {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -112,6 +146,23 @@ fn service<'a>(state: &'a State<'_, AppState>) -> &'a RemoteEnvironmentService {
 
 fn to_command_error(error: RemoteEnvironmentError) -> String {
     error.to_command_error()
+}
+
+/// Read-only host identity probe for the add-environment flow (PR 2.5).
+///
+/// Runs the same descriptor fetch and version-contradiction gate as
+/// `pair_remote_environment`, so what the user is shown is what pairing will enforce.
+/// Writes nothing: no row, no Keychain access, no active-environment change.
+#[tauri::command]
+pub async fn preview_remote_environment(
+    input: PreviewRemoteEnvironmentInput,
+    state: State<'_, AppState>,
+) -> Result<RemoteEnvironmentPreviewResponse, String> {
+    service(&state)
+        .preview(&input.url)
+        .await
+        .map(RemoteEnvironmentPreviewResponse::from)
+        .map_err(to_command_error)
 }
 
 /// Performs the pairing exchange in the Rust backend (§4.2): descriptor →

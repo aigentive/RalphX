@@ -13,6 +13,7 @@ export type SettingsSectionId =
   | "api-keys"
   | "external-mcp"
   | "remote-access"
+  | "connections"
   | "integrations"
   | "github"
   | "linear"
@@ -69,6 +70,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "api-keys", groupId: "access", label: "API Keys" },
   { id: "external-mcp", groupId: "access", label: "External MCP" },
   { id: "remote-access", groupId: "access", label: "Remote Access" },
+  { id: "connections", groupId: "access", label: "Connections" },
   { id: "updates", groupId: "preferences", label: "Updates" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },
   { id: "notifications", groupId: "preferences", label: "Notifications" },
@@ -80,14 +82,24 @@ export interface SettingsSectionFlagGates {
 }
 
 /**
- * Sections visible for the given feature flags. `remote-access` ships dark
- * behind `remoteEnvironments` (PR 1.7, §8 flags note).
+ * Section ids that ship dark behind `remoteEnvironments` (§8 flags note): the host
+ * pane (PR 1.7) and the client pane (PR 2.5). A set rather than a chain of id
+ * comparisons — the next gated section should be one entry here, not a third special
+ * case someone can forget to add to the filter.
  */
+const REMOTE_ENVIRONMENT_GATED_SECTIONS: ReadonlySet<SettingsSectionId> = new Set([
+  "remote-access",
+  "connections",
+]);
+
+/** Sections visible for the given feature flags. */
 export function visibleSettingsSections(
   flags: SettingsSectionFlagGates,
 ): SettingsSectionMeta[] {
   return SETTINGS_SECTIONS.filter(
-    (section) => section.id !== "remote-access" || flags.remoteEnvironments === true,
+    (section) =>
+      !REMOTE_ENVIRONMENT_GATED_SECTIONS.has(section.id) ||
+      flags.remoteEnvironments === true,
   );
 }
 
