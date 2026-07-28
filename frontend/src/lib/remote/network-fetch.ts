@@ -25,21 +25,70 @@ import {
 const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
 
 /**
- * Reason phrases worth preserving: a few call sites put `res.statusText` in their
- * error message, and the proxy envelope carries only the numeric status.
+ * IANA reason phrases. Several migrated call sites put `res.statusText` straight into their
+ * error message (`diff.ts`, `artifact.ts`, `chat.ts`'s `AgentWorkspaceHttpError`), and the
+ * proxy envelope carries only the numeric status — a partial table degraded those messages to
+ * "… failed: 501 " for exactly the statuses a user most needs named. The upstream phrase is
+ * not forwarded today, so the full registry is the closest faithful reconstruction.
  */
 const REASON_PHRASES: Readonly<Record<number, string>> = {
+  200: "OK",
+  201: "Created",
+  202: "Accepted",
+  203: "Non-Authoritative Information",
+  204: "No Content",
+  205: "Reset Content",
+  206: "Partial Content",
+  207: "Multi-Status",
+  208: "Already Reported",
+  226: "IM Used",
+  300: "Multiple Choices",
+  301: "Moved Permanently",
+  302: "Found",
+  303: "See Other",
+  304: "Not Modified",
+  305: "Use Proxy",
+  307: "Temporary Redirect",
+  308: "Permanent Redirect",
   400: "Bad Request",
   401: "Unauthorized",
+  402: "Payment Required",
   403: "Forbidden",
   404: "Not Found",
+  405: "Method Not Allowed",
+  406: "Not Acceptable",
+  407: "Proxy Authentication Required",
+  408: "Request Timeout",
   409: "Conflict",
-  422: "Unprocessable Entity",
+  410: "Gone",
+  411: "Length Required",
+  412: "Precondition Failed",
+  413: "Content Too Large",
+  414: "URI Too Long",
+  415: "Unsupported Media Type",
+  416: "Range Not Satisfiable",
+  417: "Expectation Failed",
+  421: "Misdirected Request",
+  422: "Unprocessable Content",
+  423: "Locked",
+  424: "Failed Dependency",
+  425: "Too Early",
+  426: "Upgrade Required",
+  428: "Precondition Required",
   429: "Too Many Requests",
+  431: "Request Header Fields Too Large",
+  451: "Unavailable For Legal Reasons",
   500: "Internal Server Error",
+  501: "Not Implemented",
   502: "Bad Gateway",
   503: "Service Unavailable",
   504: "Gateway Timeout",
+  505: "HTTP Version Not Supported",
+  506: "Variant Also Negotiates",
+  507: "Insufficient Storage",
+  508: "Loop Detected",
+  510: "Not Extended",
+  511: "Network Authentication Required",
 };
 
 interface RemoteFetchEnvelope {
@@ -150,6 +199,9 @@ function toResponse(
     ...(REASON_PHRASES[envelope.status] === undefined
       ? {}
       : { statusText: REASON_PHRASES[envelope.status] as string }),
+    // The envelope carries no headers, so this is a reconstruction, not a forward: every
+    // remounted route this proxy serves answers JSON. A caller that needs a real response
+    // header needs the envelope to carry it first — do not infer one from the body here.
     headers: { "Content-Type": "application/json" },
   };
   return new Response(

@@ -420,9 +420,16 @@ pub async fn disconnect_remote_session(
         .close(&session_id, &now)
         .await
         .map_err(|error| error.to_string())?;
+    // `Revoked`, not `HostDisabled`: the host stays enabled and the device stays paired — only
+    // THIS socket is closed. `host_disabled` tells a client remote access is off, which parks it
+    // and turns a one-session disconnect into a device-wide outage. `Revoked` is the same closest
+    // member of the pinned v1 vocabulary that `set_remote_device_agent_control` and
+    // `DELETE /remote/v1/session` already use for session-scoped teardown, and it carries the same
+    // advisory contract: the client must reconnect and re-run `GET /remote/v1/session` (P-28)
+    // before entering any terminal state — only an introspection 401 proves the token died.
     context
         .registry
-        .kill_session(&session.device_id, &session_id, ResetReason::HostDisabled);
+        .kill_session(&session.device_id, &session_id, ResetReason::Revoked);
     context
         .record_audit(
             Some(&session.device_id),

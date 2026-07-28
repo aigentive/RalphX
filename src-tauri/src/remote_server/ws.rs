@@ -469,11 +469,14 @@ pub(crate) async fn run_session(
             }
             SessionEvent::Live(LiveFrame::Durable(event)) => {
                 // A frame published under a different epoch than the one this session subscribed
-                // to is not this client's stream. The `EpochRolled` frame that follows it will
-                // tear the session down; forwarding it in the meantime would splice a seq from a
-                // numbering the client never agreed to.
+                // to is not this client's stream, and forwarding it would splice a seq from a
+                // numbering the client never agreed to. Tear down rather than skip: the receiver
+                // is forked before the epoch window is read (`begin_subscription`) and broadcast
+                // preserves the sequencer's publish order, so a mismatch can only mean this
+                // session already crossed a roll boundary. Skipping instead would turn a missed
+                // roll into a healthy-looking session that never receives another durable event.
                 if subscribed_epoch.as_ref() != Some(&event.epoch) {
-                    continue;
+                    return close_with_teardown(socket, ResetReason::EpochChanged).await;
                 }
                 // The client already has everything through `through_seq` from the replay; the
                 // fork deliberately overlaps it (§3.4).
@@ -581,17 +584,26 @@ pub(crate) struct Subscription {
     pub frames: tokio::sync::broadcast::Receiver<StreamFrame>,
 }
 
-/// Validate → fork the live buffer → acquire the lease → drain → `replayDone`.
+/// Fork the live buffer → validate → acquire the lease → drain → `replayDone`.
 ///
 /// The fork happens **before** the drain and the lease is taken at `afterSeq`. Together those two
 /// lines are the exactly-once contiguous handoff: the fork closes the drain-end→live gap, and the
 /// lease keeps the rows the drain is about to read from being pruned underneath it (§3.4).
+///
+/// The fork also happens before the epoch window is READ. A roll landing between a window read and
+/// a later fork would publish its `EpochRolled` into a buffer this receiver does not hold yet: the
+/// window would validate against the dead epoch, the session would pin itself to it, and every
+/// later durable frame would be skipped forever — a live-looking socket carrying no durable events.
+/// Forking first collapses that window: a roll before the read fails validation (`epoch_changed`),
+/// a roll after it is delivered to this very receiver.
 pub(crate) async fn begin_subscription(
     socket: &mut dyn SessionSocket,
     stream: &RemoteStreamHandle,
     after_seq: u64,
     client_epoch: &str,
 ) -> Result<Subscription, ResetReason> {
+    // ORDER IS THE CONTRACT: fork first, then read/validate the window, then lease, then read.
+    let frames = stream.subscribe_frames();
     let window = stream.epoch_window();
     validate_subscribe(
         &window,
@@ -601,8 +613,6 @@ pub(crate) async fn begin_subscription(
         client_epoch,
     )?;
 
-    // ORDER IS THE CONTRACT: fork first, then lease, then read.
-    let frames = stream.subscribe_frames();
     let lease = stream.leases().acquire(after_seq);
     let through_seq = stream.max_seq();
 
@@ -825,10 +835,14 @@ pub(crate) async fn ws_events_handler(
     let environment_id = state.environment_id().to_string();
     let lifecycle = state.lifecycle();
 
+    // The guard owns registry membership and the durable row. It is constructed HERE — after
+    // admission, before the upgrade — and MOVED into the closure. axum drops a callback it never
+    // runs when the upgrade fails (client vanishes between the 101 and the upgraded I/O), so only
+    // a guard that already exists can release the cap slot on that path; constructing it inside
+    // the callback leaked one slot per failed upgrade until the process restarted.
+    let guard = SessionGuard::new(auth.clone(), device.id.clone(), session_id.clone());
+
     upgrade.on_upgrade(move |socket| async move {
-        // The guard owns registry membership and the durable row: moving it INTO this closure
-        // means a failed upgrade drops the closure, drops the guard, and unregisters — no leak.
-        let guard = SessionGuard::new(auth.clone(), device.id.clone(), session_id.clone());
         guard.open(&remote_addr).await;
         lifecycle.emit(
             REMOTE_SESSION_CONNECTED_EVENT,

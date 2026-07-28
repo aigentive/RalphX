@@ -287,8 +287,6 @@
     "list_personas",
     "list_plan_selector_candidates",
     "list_release_notes_versions",
-    "list_remote_advertised_endpoints",
-    "list_remote_audit_entries",
     "list_session_activity_events",
     "list_session_proposals",
     "list_sessions_by_group",
