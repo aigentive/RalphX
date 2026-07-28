@@ -1,6 +1,11 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import {
+  chatApi,
+  type AgentConversationWorkspace,
+} from "@/api/chat";
+import { invoke as webModeInvoke } from "@/mocks/tauri-api-core";
 import type { ChatConversation } from "@/types/chat-conversation";
 import {
   mockChatApi,
@@ -216,6 +221,50 @@ describe("mockListAgentSidebarConversations", () => {
     expect(archivedOnly.groups[0].rows.map((row) => row.conversation.id)).toEqual([
       "archive",
     ]);
+  });
+
+  it("preserves inbox fields and mute writes through the web-mode invoke adapter", async () => {
+    seedMockConversation(
+      conversation("needs-attention", "Needs attention", {
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      []
+    );
+    const invokeMock = vi.mocked(tauriInvoke);
+    invokeMock.mockImplementation(webModeInvoke);
+
+    try {
+      const before = await chatApi.listAgentSidebarConversations({
+        projectIds: ["project-1"],
+        groupBy: "inbox",
+      });
+      expect(before.groups.find((group) => group.key === "needs")?.rows).toEqual([
+        expect.objectContaining({
+          conversation: expect.objectContaining({ id: "needs-attention" }),
+          attentionLane: "needs",
+          actionVerb: "Continue",
+          isMuted: false,
+        }),
+      ]);
+
+      await chatApi.setAgentConversationMuted("needs-attention", true);
+
+      const after = await chatApi.listAgentSidebarConversations({
+        projectIds: ["project-1"],
+        groupBy: "inbox",
+      });
+      expect(after.groups.find((group) => group.key === "needs")?.rows).toEqual([]);
+      expect(after.groups.find((group) => group.key === "stale")?.rows).toEqual([
+        expect.objectContaining({
+          conversation: expect.objectContaining({ id: "needs-attention" }),
+          attentionLane: "stale",
+          isMuted: true,
+        }),
+      ]);
+    } finally {
+      invokeMock.mockReset();
+    }
   });
 });
 

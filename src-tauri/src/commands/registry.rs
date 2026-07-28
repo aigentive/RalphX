@@ -405,6 +405,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::list_agent_conversations,
             commands::unified_chat_commands::list_agent_conversations_page,
             commands::agent_sidebar_commands::list_agent_sidebar_conversations,
+            commands::agent_conversation_mute_commands::set_agent_conversation_muted,
             commands::agent_sidebar_commands::get_bulk_workspace_publication_states,
             commands::unified_chat_commands::get_agent_conversation,
             commands::unified_chat_commands::get_agent_conversation_summary,

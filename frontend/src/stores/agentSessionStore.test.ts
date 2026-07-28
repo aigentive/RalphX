@@ -52,7 +52,7 @@ describe("agentSessionStore", () => {
   it("defaults the Agents sidebar to all projects", () => {
     expect(useAgentSessionStore.getInitialState().showAllProjects).toBe(true);
     expect(useAgentSessionStore.getInitialState().showEmptyProjectGroups).toBe(true);
-    expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("project");
+    expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("inbox");
     expect(useAgentSessionStore.getInitialState().sidebarPublicationStateFilters).toEqual([
       "active",
       "draft",
@@ -128,7 +128,7 @@ describe("agentSessionStore", () => {
       showAllProjects: false,
       showEmptyProjectGroups: true,
       projectSort: "za",
-      sidebarGroupBy: "project",
+      sidebarGroupBy: "inbox",
       sidebarProjectFilterIds: ["project-1", "project-2"],
       sidebarPublicationStateFilters: ["active", "draft"],
     });
@@ -146,7 +146,45 @@ describe("agentSessionStore", () => {
     ).toEqual({
       showEmptyProjectGroups: false,
       sidebarProjectFilterIds: ["project-2"],
+      sidebarGroupBy: "inbox",
+      sidebarInboxCollapsedLanes: [],
     });
+  });
+
+  it("promotes stores persisted before the inbox existed to the inbox default", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarGroupBy: "publication" },
+      10,
+    ) as { sidebarGroupBy?: unknown };
+
+    expect(migrated.sidebarGroupBy).toBe("inbox");
+  });
+
+  it("preserves a grouping chosen after the inbox shipped", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarGroupBy: "publication" },
+      11,
+    ) as { sidebarGroupBy?: unknown };
+
+    expect(migrated.sidebarGroupBy).toBe("publication");
+  });
+
+  it("defaults inbox lane collapse state for stores persisted before lanes existed", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarGroupBy: "project" },
+      10,
+    ) as { sidebarInboxCollapsedLanes?: unknown };
+
+    expect(migrated.sidebarInboxCollapsedLanes).toEqual([]);
+  });
+
+  it("preserves an already persisted inbox lane collapse state", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarInboxCollapsedLanes: ["done"] },
+      11,
+    ) as { sidebarInboxCollapsedLanes?: unknown };
+
+    expect(migrated.sidebarInboxCollapsedLanes).toEqual(["done"]);
   });
 
   it("migrates remembered runtimes to include model-specific effort", () => {
@@ -301,7 +339,7 @@ describe("agentSessionStore", () => {
         3,
       ),
     ).toMatchObject({
-      sidebarGroupBy: "project",
+      sidebarGroupBy: "inbox",
       sidebarProjectFilterIds: [],
       sidebarPublicationStateFilters: [
         "active",

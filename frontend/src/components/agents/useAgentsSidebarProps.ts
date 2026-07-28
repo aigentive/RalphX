@@ -9,6 +9,8 @@ interface UseAgentsSidebarPropsParams {
   focusedProjectId: string | null;
   onArchiveConversation: AgentsSidebarShellProps["onArchiveConversation"];
   onBulkArchiveConversations: AgentsSidebarShellProps["onBulkArchiveConversations"];
+  onBulkMuteConversations: AgentsSidebarShellProps["onBulkMuteConversations"];
+  onSetConversationMuted: AgentsSidebarShellProps["onSetConversationMuted"];
   onArchiveProject: AgentsSidebarShellProps["onArchiveProject"];
   onAutoRenameConversation: AgentsSidebarShellProps["onAutoRenameConversation"];
   onCreateAgent: AgentsSidebarShellProps["onCreateAgent"];
@@ -30,6 +32,8 @@ export function useAgentsSidebarProps({
   focusedProjectId,
   onArchiveConversation,
   onBulkArchiveConversations,
+  onBulkMuteConversations,
+  onSetConversationMuted,
   onArchiveProject,
   onAutoRenameConversation,
   onCreateAgent,
@@ -61,6 +65,8 @@ export function useAgentsSidebarProps({
       onRenameConversation,
       onArchiveConversation,
       onBulkArchiveConversations,
+      onBulkMuteConversations,
+      onSetConversationMuted,
       onRestoreConversation,
       showArchived,
       onShowArchivedChange,
@@ -70,6 +76,8 @@ export function useAgentsSidebarProps({
       focusedProjectId,
       onArchiveConversation,
       onBulkArchiveConversations,
+      onBulkMuteConversations,
+      onSetConversationMuted,
       onArchiveProject,
       onAutoRenameConversation,
       onCreateAgent,

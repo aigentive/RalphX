@@ -554,6 +554,9 @@ mod v20260724222347_agent_task_assignment_planned_run_identity_tests;
 mod v20260727115037_agent_workspace_publication_metadata_receipts;
 #[cfg(test)]
 mod v20260727115037_agent_workspace_publication_metadata_receipts_tests;
+mod v20260728155615_agent_conversation_mutes;
+#[cfg(test)]
+mod v20260728155615_agent_conversation_mutes_tests;
 mod v20260728183000_workspace_review_plan_context;
 #[cfg(test)]
 mod v20260728183000_workspace_review_plan_context_tests;
@@ -1786,6 +1789,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260727115037,
         name: "agent_workspace_publication_metadata_receipts",
         migrate: v20260727115037_agent_workspace_publication_metadata_receipts::migrate,
+    },
+    Migration {
+        version: 20260728155615,
+        name: "agent_conversation_mutes",
+        migrate: v20260728155615_agent_conversation_mutes::migrate,
     },
     Migration {
         version: 20260728183000,
