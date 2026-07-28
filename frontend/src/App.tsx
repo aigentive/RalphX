@@ -8,6 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import { EnvironmentScopedProviders } from "@/providers/EnvironmentScopedProviders";
+import { RemoteConnectionBanner } from "@/components/remote/RemoteConnectionBanner";
 import { NotificationCenterPanel } from "@/components/notifications/NotificationCenterPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
 import {
@@ -1053,6 +1054,15 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
 
           {/* Spacer for fixed header */}
           <div className="h-12 flex-shrink-0" />
+
+          {/*
+            Degraded-connection banner for the active REMOTE environment. Mounted once,
+            directly under the fixed-header spacer so it pushes the app body down rather
+            than overlaying it, and above the nav rail so it is never scrolled out of
+            view while the connection is down. Renders null on local / connected /
+            suspended / flag-off (2.7-a).
+          */}
+          <RemoteConnectionBanner />
 
           {/* App body: left nav rail + main content */}
           <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>

@@ -59,8 +59,32 @@ export const permissionApi = {
    * (e.g., because the permission dialog wasn't mounted when the event fired).
    */
   getPendingPermissions: async (): Promise<PermissionRequest[]> => {
-    const raw = await invoke<PendingPermissionInfoRaw[]>("get_pending_permissions");
-    return raw.map((item) => ({
+    return toPermissionRequests(
+      await invoke<PendingPermissionInfoRaw[]>("get_pending_permissions")
+    );
+  },
+
+  /**
+   * The AUTHORITATIVE pending set (P-21, PR 2.7-c).
+   *
+   * Distinct from `getPendingPermissions` in two ways that matter. It calls the strict
+   * facade command, which FAILS rather than answering an empty list when the backing
+   * state cannot be read — "no data" must never be mistaken for "no gates" and used to
+   * clear the dialog. And its result is a REPLACEMENT set, not an additive one: a gate
+   * the host no longer lists has been resolved or expired, and leaving it on screen
+   * invites the user to answer something nobody is waiting for.
+   */
+  listPendingPermissionGates: async (): Promise<PermissionRequest[]> => {
+    return toPermissionRequests(
+      await invoke<PendingPermissionInfoRaw[]>("list_pending_permission_gates")
+    );
+  },
+} as const;
+
+function toPermissionRequests(
+  raw: PendingPermissionInfoRaw[]
+): PermissionRequest[] {
+  return raw.map((item) => ({
       request_id: item.request_id,
       tool_name: item.tool_name,
       tool_input: item.tool_input,
@@ -69,6 +93,5 @@ export const permissionApi = {
       ...(item.task_id != null && { task_id: item.task_id }),
       ...(item.context_type != null && { context_type: item.context_type }),
       ...(item.context_id != null && { context_id: item.context_id }),
-    }));
-  },
-} as const;
+  }));
+}

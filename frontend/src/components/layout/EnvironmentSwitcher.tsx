@@ -32,7 +32,11 @@ import {
   parseRemoteTransportErrorCode,
 } from "@/lib/remote/transport-errors";
 
-import { ENVIRONMENT_STATUS_DOT } from "./environment-switcher-status";
+import {
+  ENVIRONMENT_STATUS_DOT,
+  environmentStatusReason,
+} from "./environment-switcher-status";
+import type { AttemptFailure } from "@/lib/remote/supervisor";
 
 interface EnvironmentDotProps {
   environmentId: string;
@@ -57,6 +61,7 @@ function EnvironmentDot({ environmentId, state }: EnvironmentDotProps) {
 interface EnvironmentRowProps {
   environment: EnvironmentEntry;
   state: EnvironmentConnectionState;
+  blockedFailure: AttemptFailure | null;
   selected: boolean;
   optionRef: (node: HTMLButtonElement | null) => void;
   onSelect: (id: string) => void;
@@ -66,6 +71,7 @@ interface EnvironmentRowProps {
 const EnvironmentRow = memo(function EnvironmentRow({
   environment,
   state,
+  blockedFailure,
   selected,
   optionRef,
   onSelect,
@@ -95,7 +101,10 @@ const EnvironmentRow = memo(function EnvironmentRow({
       ) : null}
     </button>
   );
-  const reason = environment.kind === "remote" ? ENVIRONMENT_STATUS_DOT[state].reason : null;
+  const reason =
+    environment.kind === "remote"
+      ? environmentStatusReason(state, blockedFailure)
+      : null;
 
   if (!reason) return row;
 
@@ -141,6 +150,9 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
   const environments = useEnvironmentStore((state) => state.environments);
   const activeEnvironmentId = useEnvironmentStore((state) => state.activeEnvironmentId);
   const connectionStates = useEnvironmentStore((state) => state.connectionStates);
+  const connectionPresentations = useEnvironmentStore(
+    (state) => state.connectionPresentations,
+  );
   const setActiveEnvironment = useEnvironmentStore((state) => state.setActiveEnvironment);
   const optionRefs = useRef(new Map<string, HTMLButtonElement>());
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -299,6 +311,9 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
                 key={environment.id}
                 environment={environment}
                 state={state}
+                blockedFailure={
+                  connectionPresentations[environment.id]?.blockedFailure ?? null
+                }
                 selected={environment.id === activeEnvironmentId}
                 optionRef={(node) => {
                   if (node) optionRefs.current.set(environment.id, node);

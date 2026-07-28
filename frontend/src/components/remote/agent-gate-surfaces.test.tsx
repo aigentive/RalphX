@@ -26,11 +26,21 @@ function setColumn(column: Column): void {
       activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
       environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
       effectiveScopes: {},
+      connectionPresentations: {},
     });
     return;
   }
   useEnvironmentStore.setState({
     activeEnvironmentId: REMOTE_ID,
+    // Healthy connection: 2.7-a's read-only mode outranks the scope answer, so these
+    // scope-dimension cases hold the connection dimension fixed.
+    connectionPresentations: {
+      [REMOTE_ID]: {
+        presentation: "connected",
+        blockedFailure: null,
+        blockedMessage: null,
+      },
+    },
     environments: [
       { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
       { id: REMOTE_ID, name: "Studio Mac", kind: "remote" },

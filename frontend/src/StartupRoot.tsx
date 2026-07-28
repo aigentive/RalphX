@@ -6,6 +6,7 @@ import { StartupBackgroundStatus } from "@/components/StartupBackgroundStatus";
 import { StartupScreen } from "@/components/StartupScreen";
 import { useStartupStatus } from "@/hooks/useStartupStatus";
 import { getQueryClient } from "@/lib/queryClient";
+import { LOCAL_ENVIRONMENT_ID } from "@/lib/remote/active-environment";
 import { clearPostUpdatePreparing, readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 
 function loadAppShell() {
@@ -170,6 +171,21 @@ function StartupRootContent() {
   );
 }
 
+/**
+ * Startup is a LOCAL concern — backend boot status, update markers, log access — and
+ * it renders above `EnvironmentScopedProviders`, which owns the env-scoped client.
+ *
+ * This provider is therefore pinned to the local environment rather than defaulting to
+ * `getTransportEnvironmentId()`. Unpinned, a session restored with a remote environment
+ * active gave the startup screen the REMOTE client while the same subtree's
+ * `EnvironmentScopedProviders` gave the app tree a second, differently-keyed one: two
+ * providers, two caches, and startup queries landing in whichever the transport happened
+ * to name at module evaluation.
+ */
 export function StartupRoot() {
-  return <QueryClientProvider client={getQueryClient()}><StartupRootContent /></QueryClientProvider>;
+  return (
+    <QueryClientProvider client={getQueryClient(LOCAL_ENVIRONMENT_ID)}>
+      <StartupRootContent />
+    </QueryClientProvider>
+  );
 }

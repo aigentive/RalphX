@@ -19,7 +19,7 @@ const { supervisors } = vi.hoisted(() => ({
       refreshScopes: () => Promise<readonly string[]>;
       applyScopes: (scopes: readonly string[]) => void;
       openStream: () => Promise<unknown>;
-      onStateChange: (state: string) => void;
+      onStateChange: (state: string, presentation: string) => void;
       beginStream: (outcome: {
         environmentId: string;
         hostEnvironmentId: string;
@@ -36,6 +36,9 @@ const { supervisors } = vi.hoisted(() => ({
     streamLosses: number;
     authorityWithdrawals: string[];
     setState: (state: string) => void;
+    setBlocked: (
+      blocked: { failure: string; message: string } | null
+    ) => void;
   }>,
 }));
 
@@ -56,11 +59,19 @@ vi.mock("./supervisor", async (importOriginal) => {
         setState: (state: string) => {
           this.state = state;
         },
+        setBlocked: (blocked) => {
+          this.blockedReason = blocked;
+        },
       };
       supervisors.push(this.record);
     }
 
     state: string = "idle";
+    blockedReason: { failure: string; message: string } | null = null;
+
+    blocked(): { failure: string; message: string } | null {
+      return this.state === "blocked" ? this.blockedReason : null;
+    }
 
     start(): void {
       this.record.starts += 1;
@@ -315,6 +326,92 @@ describe("environment runtime composition", () => {
     expect(createEventBus("env-b")).not.toBe(first);
   });
 
+  /**
+   * 2.7-a: the composition root is the SINGLE writer of connection presentation, and it
+   * writes the FSM state and the presentation projection in one commit — so no reader can
+   * ever observe a blocked message under a still-connecting presentation.
+   */
+  it("writes presentation and blocked cause as one slice (single writer)", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const b = supervisors.filter((item) => item.deps.environmentId === "env-b").at(-1)!;
+
+    b.setState("backoff");
+    b.deps.onStateChange("backoff", "reconnecting");
+    expect(
+      useEnvironmentStore.getState().connectionPresentations["env-b"]
+    ).toEqual({
+      presentation: "reconnecting",
+      blockedFailure: null,
+      blockedMessage: null,
+    });
+
+    b.setState("blocked");
+    b.setBlocked({ failure: "unauthorized", message: "revoked" });
+    b.deps.onStateChange("blocked", "error");
+    expect(
+      useEnvironmentStore.getState().connectionPresentations["env-b"]
+    ).toEqual({
+      presentation: "error",
+      blockedFailure: "unauthorized",
+      blockedMessage: "revoked",
+    });
+
+    // Leaving blocked clears the cause: no surface may keep offering re-pair over a
+    // connection that is coming back.
+    b.setState("connecting");
+    b.setBlocked(null);
+    b.deps.onStateChange("connecting", "reconnecting");
+    expect(
+      useEnvironmentStore.getState().connectionPresentations["env-b"]
+    ).toEqual({
+      presentation: "reconnecting",
+      blockedFailure: null,
+      blockedMessage: null,
+    });
+  });
+
+  /**
+   * P-24 (b)/(c) + P-21 ordering: `goLive` fires the env-scoped sweep on EVERY reconnect,
+   * warm or cold, and the gate reconcile rides the same seam — replay → sweep → gates.
+   */
+  it("sweeps the env-scoped cache and announces a gate reconcile on goLive", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    const { PENDING_GATE_RECONCILE_EVENT } = await import(
+      "./pending-gate-reconcile"
+    );
+    useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const b = supervisors.filter((item) => item.deps.environmentId === "env-b").at(-1)!;
+
+    const activeInvalidate = vi.spyOn(getQueryClient("env-b"), "invalidateQueries");
+    const otherInvalidate = vi.spyOn(getQueryClient("env-c"), "invalidateQueries");
+    const announced: string[] = [];
+    const listener = (event: Event) => {
+      if (event instanceof CustomEvent) {
+        announced.push((event.detail as { environmentId: string }).environmentId);
+      }
+    };
+    window.addEventListener(PENDING_GATE_RECONCILE_EVENT, listener);
+
+    try {
+      await b.deps.beginStream(OUTCOME);
+
+      expect(activeInvalidate).toHaveBeenCalled();
+      // A-8: env scoping is the KEYED client, so another environment's cache is
+      // structurally unreachable from this sweep.
+      expect(otherInvalidate).not.toHaveBeenCalled();
+      expect(announced).toEqual(["env-b"]);
+    } finally {
+      window.removeEventListener(PENDING_GATE_RECONCILE_EVENT, listener);
+    }
+  });
+
   it("never paints a background environment as connected (P-25)", async () => {
     const { initializeEnvironmentRuntime } = await import("./environment-runtime");
     useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
@@ -330,9 +427,9 @@ describe("environment runtime composition", () => {
     // env-c never sends `subscribe` and never projects: its attempt is a probe on a
     // socket nobody reads, so it must not wear the connected dot.
     c.setState("connected");
-    c.deps.onStateChange("connected");
+    c.deps.onStateChange("connected", "connected");
     b.setState("connected");
-    b.deps.onStateChange("connected");
+    b.deps.onStateChange("connected", "connected");
 
     expect(useEnvironmentStore.getState().connectionStates["env-c"]).toBe("health_only");
     expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("connected");
@@ -346,7 +443,7 @@ describe("environment runtime composition", () => {
     useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
     const b = supervisors.filter((item) => item.deps.environmentId === "env-b").at(-1)!;
     b.setState("connected");
-    b.deps.onStateChange("connected");
+    b.deps.onStateChange("connected", "connected");
     expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("connected");
 
     useEnvironmentStore.setState({ activeEnvironmentId: "env-c" });

@@ -48,6 +48,7 @@ import type { CapabilityIntent, TeamIntent } from "@/api/chat";
 import type { AgentStatus } from "@/stores/chatStore";
 import { useAgentGate } from "@/hooks/useAgentGate";
 import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
+import { RemoteErrorBanner } from "@/components/remote/RemoteErrorBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
@@ -472,6 +473,13 @@ export function AgentComposerSurface({
    */
   const agentGate = useAgentGate("agentComposerSend");
   const effectiveSendDisabledReason = agentGate.reason ?? sendDisabledReason;
+  /**
+   * The last send rejection, kept ONLY so the two remote codes the 2.6 mapper knows
+   * how to explain can be shown here. Every other rejection still surfaces through the
+   * parent exactly as before — `RemoteErrorBanner` renders nothing for them, so this
+   * state adds a surface without taking one over.
+   */
+  const [sendError, setSendError] = useState<unknown>(null);
   const canSubmit =
     hasSubmittableValue &&
     !isReadOnly &&
@@ -1619,10 +1627,12 @@ export function AgentComposerSurface({
         ? onSend(outgoing.message, outgoing.options)
         : onSend(outgoing.message);
 
+    setSendError(null);
     if (questionMode || isControlled) {
       try {
         await sendOutgoing();
-      } catch {
+      } catch (error: unknown) {
+        setSendError(error);
         return;
       }
       setSelectedInternalSkillNames(new Set());
@@ -1637,8 +1647,10 @@ export function AgentComposerSurface({
     try {
       await sendOutgoing();
       setSelectedExcerptReferences(new Map());
-    } catch {
-      // Errors surface through the parent; preserve the current interaction model.
+    } catch (error: unknown) {
+      // Errors still surface through the parent; this only adds the inline banner for
+      // the remote codes retrying cannot fix.
+      setSendError(error);
     }
   }, [
     addHistoryEntry,
@@ -2211,6 +2223,11 @@ export function AgentComposerSurface({
           </div>
         </div>
       </div>
+      <RemoteErrorBanner
+        error={sendError}
+        className="mt-2"
+        testId="agent-composer-remote-error"
+      />
       {isAttachmentDragging && (
         <ChatAttachmentDropOverlay roundedClassName="rounded-[22px]" />
       )}
