@@ -173,6 +173,55 @@ describe("remote send routing", () => {
     expect(primitiveInvoke).not.toHaveBeenCalled();
   });
 
+  it("turns a host refusal code into copy a person can act on", async () => {
+    useRemoteEnvironment();
+    primitiveInvoke.mockResolvedValue({
+      outcome: "commandError",
+      error: "REMOTE_CHAT_SEND_NOT_STEERABLE",
+    });
+
+    await expect(
+      sendAgentMessage("project", "project-1", "hi", undefined, {
+        conversationId: CONVERSATION_ID,
+      }),
+    ).rejects.toThrow(/isn't running right now/);
+  });
+
+  it("leaves a RemoteTransportError intact so unknown-outcome reconcile still fires", async () => {
+    useRemoteEnvironment();
+    // A timeout is the unknown-outcome case: the composer must be able to tell it apart
+    // from a plain failure, which it does by TYPE. Rewrapping it as an Error would make
+    // a possibly-applied send look definitively failed.
+    primitiveInvoke.mockRejectedValue(
+      new RemoteTransportError({
+        code: "REMOTE_TIMEOUT_UNKNOWN",
+        message: "timed out",
+        environmentId: REMOTE_ID,
+        cmd: "send_remote_chat_message",
+      }),
+    );
+
+    await expect(
+      sendAgentMessage("project", "project-1", "hi", undefined, {
+        conversationId: CONVERSATION_ID,
+      }),
+    ).rejects.toBeInstanceOf(RemoteTransportError);
+  });
+
+  it("passes an unrecognised error through rather than inventing prose for it", async () => {
+    useRemoteEnvironment();
+    primitiveInvoke.mockResolvedValue({
+      outcome: "commandError",
+      error: "something nobody mapped",
+    });
+
+    await expect(
+      sendAgentMessage("project", "project-1", "hi", undefined, {
+        conversationId: CONVERSATION_ID,
+      }),
+    ).rejects.toThrow(/something nobody mapped/);
+  });
+
   it("local environment still uses send_agent_message", async () => {
     primitiveInvoke.mockResolvedValue({
       conversation_id: CONVERSATION_ID,

@@ -4659,6 +4659,36 @@ const SendRemoteChatMessageResponseSchema = z
   .passthrough();
 
 /**
+ * Human copy for the host's spawn-free-send refusals.
+ *
+ * The host answers with stable codes; a user who taps send after the agent has finished
+ * its turn should not be shown `REMOTE_CHAT_SEND_NOT_STEERABLE`. Unrecognised errors pass
+ * through untouched — inventing prose for an error we do not understand would hide it.
+ */
+const REMOTE_CHAT_SEND_MESSAGES: Readonly<Record<string, string>> = {
+  REMOTE_CHAT_SEND_NOT_STEERABLE:
+    "That agent isn't running right now — remote sends can only reach a conversation the host has already started.",
+  REMOTE_CHAT_SEND_CONVERSATION_ARCHIVED:
+    "This conversation is archived. Restore it on the host to keep talking.",
+  REMOTE_CHAT_SEND_CONVERSATION_NOT_FOUND:
+    "That conversation no longer exists on the host.",
+  REMOTE_CHAT_SEND_LOOKUP_FAILED:
+    "The host couldn't confirm whether that conversation is live, so nothing was sent.",
+  REMOTE_CHAT_SEND_ENQUEUE_FAILED: "The host couldn't queue that message. Try again.",
+  REMOTE_CHAT_SEND_EMPTY_CONTENT: "Type a message before sending.",
+  REMOTE_CHAT_SEND_ROLE_NOT_PERMITTED:
+    "Remote devices can only send your own messages.",
+};
+
+/** The readable refusal for a known host code, or `null` to leave the error alone. */
+function remoteChatSendRefusal(error: unknown): Error | null {
+  if (error instanceof RemoteTransportError) return null;
+  const raw = error instanceof Error ? error.message : String(error);
+  const copy = REMOTE_CHAT_SEND_MESSAGES[raw.trim()];
+  return copy === undefined ? null : new Error(copy);
+}
+
+/**
  * The remote half of {@link sendAgentMessage}.
  *
  * `send_agent_message` is not, and will not be, registered on the remote facade — it
@@ -4704,7 +4734,13 @@ async function sendRemoteChatMessage(
       },
     },
     SendRemoteChatMessageResponseSchema,
-  );
+  ).catch((error: unknown) => {
+    // Only plain command errors are remapped. A RemoteTransportError must reach the
+    // caller INTACT — the composer's unknown-outcome reconcile and the remote error
+    // banner both discriminate on its type, and rewrapping it here would silently
+    // convert a "did that go through?" into an ordinary failure.
+    throw remoteChatSendRefusal(error) ?? error;
+  });
 
   return {
     conversationId: raw.conversationId,
