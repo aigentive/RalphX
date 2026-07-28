@@ -478,7 +478,20 @@ async fn simultaneous_first_repair_pushes_create_one_preflight_owner_before_git_
         fixture.branch.clone(),
         fixture.local_head.clone(),
     ));
-    push_started.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if github
+                .state()
+                .push_branch_with_expected_remote_oid_lease_calls
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first push should reach its exact-lease GitHub call");
 
     let continuing = fixture
         .state

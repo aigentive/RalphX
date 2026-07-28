@@ -92,6 +92,7 @@ async fn bind_repair_run_rejects_a_stale_same_phase_snapshot() {
 #[tokio::test]
 async fn concurrent_legacy_import_loses_to_durable_generation_without_projection_or_event_replay() {
     let (_db, repo, conversation_id) = setup_repo();
+    let repo = std::sync::Arc::new(repo);
     repo.create_or_update(workspace(conversation_id.clone()))
         .await
         .expect("persist workspace");
@@ -105,21 +106,36 @@ async fn concurrent_legacy_import_loses_to_durable_generation_without_projection
     legacy_attempt.source = AgentWorkspaceRepairSource::Legacy;
     legacy_attempt.generation = 1;
     legacy_attempt.phase = AgentWorkspaceRepairPhase::Repairing;
-    let start_durable = async {
-        repo.start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
-            attempt: repair_attempt(conversation_id.clone()),
-            reason: "concurrent durable start".to_string(),
-            verified_newer_base: false,
-            compatibility_projection: None,
-            events: Vec::new(),
-        })
-        .await
-    };
-    let import_legacy = async {
-        // Give durable creation the first transaction/lock acquisition, as a concurrent
-        // startup/import race must join the new durable owner rather than replay legacy state.
-        tokio::task::yield_now().await;
-        repo.import_legacy_repair_attempt(ImportLegacyAgentWorkspaceRepairAttempt {
+    let durable_repo = std::sync::Arc::clone(&repo);
+    let durable_conversation_id = conversation_id.clone();
+    let start_durable = tokio::spawn(async move {
+        durable_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: repair_attempt(durable_conversation_id),
+                reason: "concurrent durable start".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if repo
+                .get_current_repair_attempt(&conversation_id)
+                .await
+                .expect("observe durable generation")
+                .is_some()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("durable generation should become observable before legacy import");
+    let outcome = repo
+        .import_legacy_repair_attempt(ImportLegacyAgentWorkspaceRepairAttempt {
             attempt: legacy_attempt,
             compatibility_projection: Some(AgentWorkspaceRepairCompatibilityProjection {
                 publication_push_status: Some("legacy-mutated".to_string()),
@@ -131,9 +147,10 @@ async fn concurrent_legacy_import_loses_to_durable_generation_without_projection
             }),
             events: vec![legacy_event],
         })
+        .await;
+    let start_outcome = start_durable
         .await
-    };
-    let (start_outcome, outcome) = tokio::join!(start_durable, import_legacy);
+        .expect("durable start task should finish");
     let durable = match start_outcome.expect("start durable generation") {
         StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
         outcome => panic!("expected durable start, got {outcome:?}"),

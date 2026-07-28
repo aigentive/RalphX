@@ -1868,7 +1868,7 @@ async fn fixable_update_failure_retries_an_uncertain_immediate_repair_delivery_o
 #[tokio::test]
 async fn live_base_update_and_publish_repair_paths_coalesce_without_stale_authority_overwrite() {
     let state = AppState::new_test();
-    let mut workspace = command_test_workspace();
+    let (_temp, mut workspace, repair_target) = command_test_workspace_with_git_target();
     workspace.base_commit = Some("base-oid-before-join".to_string());
     let conversation_id = workspace.conversation_id.clone();
     state
@@ -1884,7 +1884,7 @@ async fn live_base_update_and_publish_repair_paths_coalesce_without_stale_author
         "merge conflict while updating from base",
         None,
         &service,
-        &AgentConversationWorkspaceRepairTarget::from_workspace(&workspace),
+        &repair_target,
     )
     .await;
 

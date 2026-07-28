@@ -8966,30 +8966,6 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     S: ChatService + ?Sized,
 {
     let failure_class = classify_publish_failure(error);
-    // A stale publisher must not overwrite the durable attempt's compatibility projection or
-    // produce an independent failure event. The attempt coordinator/recovery owns settlement.
-    match state
-        .agent_workspace_repair_repo
-        .get_current_repair_attempt(&workspace.conversation_id)
-        .await
-    {
-        Ok(Some(_)) => {
-            tracing::debug!(
-                conversation_id = workspace.conversation_id.as_str(),
-                "Skipped legacy publish-failure routing while a durable repair attempt is current"
-            );
-            return;
-        }
-        Ok(None) => {}
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = workspace.conversation_id.as_str(),
-                error = %error,
-                "Failed closed before legacy publish-failure routing"
-            );
-            return;
-        }
-    }
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         workspace,
@@ -9080,7 +9056,8 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_),
         ) => return,
         Err(error) => {
-            let summary = format!("Failed to persist the durable workspace repair request: {error}");
+            let summary =
+                format!("Failed to persist the durable workspace repair request: {error}");
             tracing::warn!(
                 conversation_id = %workspace.conversation_id,
                 error = %error,

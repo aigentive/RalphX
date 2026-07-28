@@ -724,6 +724,11 @@ async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
     monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("durable-repair-review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id = Some(ArtifactId::from_string(
+        "durable-repair-requested-changes-artifact",
+    ));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.reviewed_target_scope = Some(review_target.scope);
     monitor.reviewed_head_sha = review_target.head_sha.clone();
     monitor.reviewed_diff_fingerprint = Some(review_target.diff_fingerprint.clone());
