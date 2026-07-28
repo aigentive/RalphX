@@ -73,13 +73,16 @@
   - delegated-session repository trait
   - memory + SQLite delegated-session repositories
   - SQLite migration creating `delegated_sessions`
-- Still required:
   - `ChatContextType::Delegation`
   - delegated-session AppState wiring
   - conversation/runtime helpers for delegation context
-  - native bridge migration off ideation child sessions
+  - native bridge migration off ideation child-session storage
+  - delegated conversation/provider-session continuation and explicit session reuse
+  - exact caller-task assignment settlement and startup orphan recovery
+- Separate concern:
+  - standing roster/member/message lifecycle belongs to `rx-native-team-mode.md`
 
 ## Non-Negotiables
-- Do not widen cross-context delegation on top of `IdeationSession`.
+- Do not reintroduce `IdeationSession` as generic cross-context delegation storage.
 - Do not couple delegated specialist history to ideation proposal/verification state.
 - Canonical `agents/` remains the source of truth for delegated specialist identity and prompt content.

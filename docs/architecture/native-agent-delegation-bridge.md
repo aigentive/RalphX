@@ -4,6 +4,7 @@
 
 ## Goal
 - Let any RalphX agent delegate to any canonical RalphX agent on any supported harness through RalphX-owned MCP tools, not harness-native agent discovery.
+- Standing named teammates, routed messages, and Team lifecycle build on this bridge per `rx-native-team-mode.md`; they are not properties of an ordinary delegation job.
 
 ## Why
 - Claude `Task(...)` and Codex native subagents are not a stable cross-harness contract.
@@ -32,12 +33,12 @@
 
 ## Session Model
 - Parent agent calls `delegate_start` with:
-  - parent context identity
   - canonical `agent_name`
   - prompt/instructions for the specialist
+  - optional caller task reference
   - optional harness/model/effort/policy overrides
-- Final target model: RalphX creates or reuses a dedicated delegated session for the specialist.
-- Current bridge remains ideation-only until that backing model lands.
+- Caller/parent identity is injected from trusted runtime transport.
+- RalphX creates or reuses a dedicated delegated session for the specialist.
 - The delegated process runs with:
   - `RALPHX_CONTEXT_TYPE=delegation`
   - `RALPHX_CONTEXT_ID=<delegation_session_id>`
@@ -59,7 +60,7 @@
   - optional general-purpose plan-review lenses selected by the active model
   - future execution / review / QA specialists
 
-## Phase Plan
+## Historical Phase Plan
 - Phase 1:
   - ideation-family sessions only
   - backend-owned `delegate_start/wait/cancel`
@@ -82,19 +83,19 @@
   - HTTP endpoints and MCP tool exposure for `delegate_start`, `delegate_wait`, `delegate_cancel`
   - backend delegation job registry with running/completed/failed/cancelled snapshots
   - canonical agent lookup + harness-aware spawn through the existing runtime clients
-  - ideation parent -> child session continuity for delegated specialists as a temporary bridge
+  - dedicated `DelegatedSession` entity/repositories and `ChatContextType::Delegation`
+  - delegated conversations with provider-session continuation and explicit session reuse
+  - ideation, project, task-like, and nested-delegation parents; standalone remains unsupported
   - explicit parent turn/message lineage in request metadata, agent env, prompt context, and returned job snapshots
+  - exact caller-task reservation, delegated-run settlement, and startup orphan recovery
   - per-job status history (`running`, `completed`, `failed`, `cancelled`) on the snapshot contract
-  - `delegate_wait` hydration of live child-session status, with optional recent-message inclusion through the existing child-session status contract
+  - `delegate_wait` hydration of delegated-session status with optional recent messages
 - Still required:
-  - dedicated delegated-session backing model
-  - non-ideation parent contexts
-  - provider-session continuity / resume
-  - richer live progress relay beyond child-session snapshot hydration
   - prompt migration for specialist paths still assuming Claude-native delegation
+  - standing roster/member/message semantics described in `rx-native-team-mode.md`
 
 ## Non-Negotiables
 - Canonical `agents/` remains the agent source of truth.
 - MCP allowlists remain per-agent and must stay aligned across prompts, `ralphx.yaml`, and MCP server tool exposure.
 - Cross-harness specialized delegation must use the RalphX bridge, not provider-specific plugin/subagent discovery hacks.
-- Do not widen the bridge beyond ideation on top of `IdeationSession`; use the dedicated delegated-session model instead.
+- All supported parent contexts use the dedicated delegated-session model; never reintroduce `IdeationSession` as generic delegation storage.
