@@ -25,7 +25,6 @@ import {
   buildAnnotationIndex,
   buildHunkAnnotationIndex,
   hunkAnnotationsForHunk,
-  renderAnnotationRows,
   renderDiffLine,
   renderHunkHeader,
   renderHunkAnnotationRows,
@@ -63,8 +62,6 @@ export interface SimpleDiffViewProps {
   showContextGaps?: boolean | undefined;
   /** Disable per-row sticky line-number gutters for WebKit-sensitive embedded diffs. */
   stickyGutter?: boolean | undefined;
-  /** Full code diff or review narrative without code rows. */
-  contentMode?: "full" | "review-only" | undefined;
 }
 
 type GapState = "loading" | "error" | RangeLine[];
@@ -277,7 +274,6 @@ export function SimpleDiffView({
   showContextGaps = true,
   stickyGutter = true,
   hunkAnnotations = [],
-  contentMode = "full",
 }: SimpleDiffViewProps) {
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   // gapCache state drives rendering; gapCacheRef mirrors it so callbacks
@@ -419,48 +415,6 @@ export function SimpleDiffView({
         style={{ color: "var(--text-muted)" }}
       >
         <p className="text-sm">No changes</p>
-      </div>
-    );
-  }
-
-  if (contentMode === "review-only") {
-    return (
-      <div className={scrollContainer ? "h-full overflow-y-auto" : "w-full overflow-visible"}>
-        <div
-          className={bodyTextClass}
-          data-density={density}
-          data-testid="simple-diff-review-only"
-          style={{ backgroundColor: "var(--bg-base)" }}
-        >
-          {hunks.map((hunk, hunkIdx) => {
-            const hunkLineAnnotations = [
-              ...new Map(
-                hunk.lines
-                  .flatMap((line) => annotationsForLine(annotationIndex, line))
-                  .map((annotation) => [annotation.id, annotation]),
-              ).values(),
-            ];
-            return (
-              <div
-                key={`review-hunk-${hunkIdx}`}
-                data-testid="diff-review-only-hunk"
-                style={{
-                  borderBottomColor: "var(--overlay-faint)",
-                  borderBottomStyle: "solid",
-                  borderBottomWidth: "1px",
-                }}
-              >
-                {renderHunkHeader(hunk.header)}
-                {renderHunkAnnotationRows(
-                  hunkAnnotationsForHunk(hunkAnnotationIndex, hunk),
-                  true,
-                  variant,
-                )}
-                {renderAnnotationRows(hunkLineAnnotations, true, variant)}
-              </div>
-            );
-          })}
-        </div>
       </div>
     );
   }
