@@ -2660,3 +2660,27 @@ pub struct ManagedTeamAssignmentResponse {
     pub agent_run_id: String,
     pub member: ManagedTeamMemberSummary,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SendManagedTeamMessageRequest {
+    pub target: String,
+    pub member_name: Option<String>,
+    pub kind: Option<String>,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMessageResponse {
+    pub sequence: i64,
+    pub recipient_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamRosterEntry {
+    pub name: String,
+    pub normalized_name: String,
+    pub role_summary: String,
+    pub status: String,
+}

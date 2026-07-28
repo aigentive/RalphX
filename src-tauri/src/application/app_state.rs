@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 use super::services::PrPollerRegistry;
 use crate::application::agent_capability_gate::AgentCapabilityGate;
 use crate::application::app_paths::AppPaths;
-use crate::application::managed_team::ManagedTeamService;
 use crate::application::chat_service::AppChatService;
+use crate::application::managed_team::ManagedTeamService;
 use crate::application::notification_service::{
     NoopDesktopNotifier, NoopNotificationEventEmitter, NotificationEventEmitter,
     NotificationService, TauriDesktopNotifier, TauriNotificationEventEmitter, WindowFocusState,
@@ -552,9 +552,10 @@ impl AppState {
         feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     ) -> Arc<crate::application::managed_team::ManagedTeamService> {
         use crate::infrastructure::sqlite::{
-            SqliteTeamCoordinationTransitionRepository, SqliteTeamMessageRepository,
-            SqliteTeamRepository, SqliteTeamRunBindingRepository, SqliteTeamWakeBatchRepository,
-            SqliteTeamWorkspaceReservationRepository,
+            SqliteAgentRunRepository, SqliteChatConversationRepository,
+            SqliteQueuedMessageRepository, SqliteTeamCoordinationTransitionRepository,
+            SqliteTeamMessageRepository, SqliteTeamRepository, SqliteTeamRunBindingRepository,
+            SqliteTeamWakeBatchRepository, SqliteTeamWorkspaceReservationRepository,
         };
         Arc::new(crate::application::managed_team::ManagedTeamService::new(
             Arc::new(SqliteTeamRepository::from_shared(Arc::clone(shared_conn))),
@@ -570,6 +571,15 @@ impl AppState {
             Arc::new(SqliteTeamWakeBatchRepository::from_shared(Arc::clone(
                 shared_conn,
             ))),
+            Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                shared_conn,
+            ))),
+            Arc::new(SqliteChatConversationRepository::from_shared(Arc::clone(
+                shared_conn,
+            ))),
+            Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
+                shared_conn,
+            ))),
             Arc::new(SqliteTeamWorkspaceReservationRepository::from_shared(
                 Arc::clone(shared_conn),
             )),
@@ -581,9 +591,10 @@ impl AppState {
         feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     ) -> Arc<crate::application::managed_team::ManagedTeamService> {
         use crate::infrastructure::memory::{
-            MemoryTeamCoordinationTransitionRepository, MemoryTeamMessageRepository,
-            MemoryTeamRepository, MemoryTeamRunBindingRepository, MemoryTeamWakeBatchRepository,
-            MemoryTeamWorkspaceReservationRepository,
+            MemoryAgentRunRepository, MemoryChatConversationRepository,
+            MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
+            MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
+            MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
         };
         let sessions = MemoryTeamRepository::new_shared_sessions();
         Arc::new(crate::application::managed_team::ManagedTeamService::new(
@@ -594,6 +605,9 @@ impl AppState {
             Arc::new(MemoryTeamRunBindingRepository::new()),
             Arc::new(MemoryTeamMessageRepository::new()),
             Arc::new(MemoryTeamWakeBatchRepository::new()),
+            Arc::new(MemoryQueuedMessageRepository::new()),
+            Arc::new(MemoryChatConversationRepository::new()),
+            Arc::new(MemoryAgentRunRepository::new()),
             Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
             feature_overrides_repo,
         ))
@@ -1356,8 +1370,10 @@ impl AppState {
         let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> = Arc::new(
             SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
         );
-        let managed_team =
-            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+        );
         let state = Self {
             task_repo: Arc::clone(&task_repo),
             branch_update_repo: Arc::new(
@@ -1680,8 +1696,10 @@ impl AppState {
 
         let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
             Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
-        let managed_team =
-            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+        );
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -1879,8 +1897,10 @@ impl AppState {
 
         let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
             Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
-        let managed_team =
-            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+        );
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -2083,8 +2103,10 @@ impl AppState {
 
         let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
             Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
-        let managed_team =
-            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+        );
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(

@@ -193,6 +193,29 @@ impl TeamWakeBatchRepository for SqliteTeamWakeBatchRepository {
             .await
     }
 
+    async fn list_queued_for_team(
+        &self,
+        team_id: &TeamSessionId,
+        limit: u32,
+    ) -> AppResult<Vec<TeamWakeBatch>> {
+        let team_id = team_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM managed_team_wake_batches
+                     WHERE team_id = ?1 AND status = 'queued'
+                     ORDER BY created_at, id LIMIT ?2",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![team_id, i64::from(limit)])?;
+                let mut batches = Vec::new();
+                while let Some(row) = rows.next()? {
+                    batches.push(batch_from_row(row)?);
+                }
+                Ok(batches)
+            })
+            .await
+    }
+
     async fn transition(
         &self,
         id: &TeamWakeBatchId,

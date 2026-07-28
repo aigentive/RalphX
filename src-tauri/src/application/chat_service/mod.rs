@@ -93,7 +93,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewOutcome, ChatAttachment, ChatAttachmentId, ChatContextType,
     ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
     CoordinationMode, IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective,
-    PersonaId, PersonaStatus, ProjectId, TaskId, TeamIntent, TeamMessageTarget,
+    PersonaId, PersonaStatus, ProjectId, TaskId, TeamIntent, TeamMessageKind, TeamMessageTarget,
+    TeamMessageTargetKind,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -5400,7 +5401,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             // Diagnostic: dump all registered IPR keys when lookup fails
             ipr_ref.log_registered_keys("GATE_1_MISS").await;
         }
-        if has_ipr_entry && provider_switch_requires_fresh_session {
+        if has_ipr_entry
+            && options.team_message_target.is_none()
+            && provider_switch_requires_fresh_session
+        {
             if let Some(existing) = self
                 .active_provider_switch_blocking_run(
                     &RunningAgentKey::new(context_type.to_string(), &runtime_context_id),
@@ -5444,7 +5448,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 });
             }
         }
-        if has_ipr_entry && persona_switch_requires_process_invalidation {
+        if has_ipr_entry
+            && options.team_message_target.is_none()
+            && persona_switch_requires_process_invalidation
+        {
             if let Some(existing) = self
                 .active_provider_switch_blocking_run(
                     &RunningAgentKey::new(context_type.to_string(), &runtime_context_id),
@@ -5494,7 +5501,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: removed stale interactive process after persona mismatch"
             );
         }
-        if has_ipr_entry && force_new_provider_session {
+        if has_ipr_entry && options.team_message_target.is_none() && force_new_provider_session {
             ipr_ref.remove(&interactive_key).await;
             tracing::info!(
                 %context_type,
@@ -5531,6 +5538,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             }
         }
         if has_ipr_entry
+            && options.team_message_target.is_none()
             && !force_new_provider_session
             && !persona_switch_requires_process_invalidation
         {
@@ -5976,6 +5984,81 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         agent_run.apply_action_metadata_json(options.metadata.as_deref());
         let agent_run_id = agent_run.id.as_str().to_string();
         let run_chain_id = agent_run.run_chain_id.clone();
+
+        if let Some(target) = options.team_message_target.as_ref() {
+            if conversation.coordination_mode != CoordinationMode::RxNativeTeam {
+                return Err(ChatServiceError::InvalidInput(
+                    "Team message targeting requires an RX-native Team conversation".to_string(),
+                ));
+            }
+            let managed_team = self.managed_team.as_ref().ok_or_else(|| {
+                ChatServiceError::SpawnFailed(
+                    "managed Team authority is unavailable for message targeting".to_string(),
+                )
+            })?;
+            if !managed_team
+                .team_capability_enabled()
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+            {
+                return Err(ChatServiceError::InvalidInput(
+                    "Team message targeting is disabled".to_string(),
+                ));
+            }
+            let target = match target.kind {
+                TeamMessageTargetKind::Member => {
+                    let member_name = target.member_name.as_deref().ok_or_else(|| {
+                        ChatServiceError::InvalidInput(
+                            "Team member target requires a normalized member name".to_string(),
+                        )
+                    })?;
+                    crate::application::managed_team::ManagedTeamMessageTarget::MemberName(
+                        member_name.to_string(),
+                    )
+                }
+                TeamMessageTargetKind::Broadcast => {
+                    crate::application::managed_team::ManagedTeamMessageTarget::Broadcast
+                }
+                TeamMessageTargetKind::Coordinator => {
+                    return Err(ChatServiceError::InvalidInput(
+                        "Coordinator composer messages must target a member or broadcast"
+                            .to_string(),
+                    ));
+                }
+            };
+            let session = managed_team
+                .team_status(&conversation.id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                .ok_or_else(|| {
+                    ChatServiceError::SpawnFailed(
+                        "RX-native Team conversation has no durable Team session".to_string(),
+                    )
+                })?
+                .session;
+            let (message, _) = managed_team
+                .send_team_message(crate::application::managed_team::ManagedTeamMessageRequest {
+                    team_id: session.id,
+                    sender: crate::application::managed_team::ManagedTeamMessageSender::Coordinator {
+                        conversation_id: conversation.id,
+                        source_run_id: None,
+                    },
+                    target,
+                    kind: TeamMessageKind::Instruction,
+                    content: message.to_string(),
+                    idempotency_key: format!("team-composer:{agent_run_id}"),
+                })
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+            return Ok(SendResult {
+                conversation_id: conversation.id.as_str(),
+                agent_run_id: String::new(),
+                is_new_conversation: spawn_path_is_new_conversation,
+                was_queued: true,
+                queued_message_id: Some(message.id.0),
+                queued_as_pending: false,
+            });
+        }
 
         let branch_update_binding = if context_type == ChatContextType::BranchUpdate {
             let branch_update_repo =

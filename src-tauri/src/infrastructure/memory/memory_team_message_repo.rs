@@ -47,7 +47,7 @@ impl TeamMessageRepository for MemoryTeamMessageRepository {
                 && (value.sequence == message.sequence
                     || value.idempotency_key == message.idempotency_key)
         }) {
-            return Err(AppError::Validation(
+            return Err(AppError::Conflict(
                 "duplicate team message sequence or idempotency key".to_string(),
             ));
         }
@@ -65,6 +65,42 @@ impl TeamMessageRepository for MemoryTeamMessageRepository {
     }
     async fn get_message(&self, id: &TeamMessageId) -> AppResult<Option<TeamMessage>> {
         Ok(self.messages.read().await.get(id).cloned())
+    }
+    async fn get_envelope_by_idempotency_key(
+        &self,
+        team: &TeamSessionId,
+        idempotency_key: &str,
+    ) -> AppResult<Option<(TeamMessage, Vec<TeamMessageDelivery>)>> {
+        let messages = self.messages.read().await;
+        let Some(message) = messages
+            .values()
+            .find(|message| message.team_id == *team && message.idempotency_key == idempotency_key)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let mut deliveries: Vec<_> = self
+            .deliveries
+            .read()
+            .await
+            .values()
+            .filter(|delivery| delivery.message_id == message.id)
+            .cloned()
+            .collect();
+        deliveries.sort_by(|left, right| left.id.0.cmp(&right.id.0));
+        Ok(Some((message, deliveries)))
+    }
+    async fn next_message_sequence(&self, team: &TeamSessionId) -> AppResult<i64> {
+        Ok(self
+            .messages
+            .read()
+            .await
+            .values()
+            .filter(|message| message.team_id == *team)
+            .map(|message| message.sequence)
+            .max()
+            .unwrap_or(0)
+            + 1)
     }
     async fn list_messages_after(
         &self,

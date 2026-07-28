@@ -115,7 +115,7 @@ impl TeamMessageDeliveryStatus {
                     Self::Delivered,
                     Self::Acknowledged | Self::Cancelled | Self::Failed
                 )
-                | (Self::Failed, Self::Pending | Self::Cancelled)
+                | (Self::Failed, Self::Pending | Self::Queued | Self::Cancelled)
         )
     }
 }

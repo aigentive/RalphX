@@ -17,6 +17,8 @@ use crate::domain::entities::{
 use crate::domain::repositories::TeamMessageRepository;
 use crate::error::{AppError, AppResult};
 
+const TEAM_MESSAGE_UNIQUE_CONFLICT: &str = "managed_team_message_unique_conflict";
+
 pub struct SqliteTeamMessageRepository {
     db: DbConnection,
 }
@@ -107,6 +109,22 @@ fn insert_delivery(conn: &Connection, delivery: &TeamMessageDelivery) -> AppResu
     Ok(())
 }
 
+fn deliveries_for_message(
+    conn: &Connection,
+    message_id: &TeamMessageId,
+) -> AppResult<Vec<TeamMessageDelivery>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM managed_team_message_deliveries
+         WHERE message_id = ?1 ORDER BY created_at, id",
+    )?;
+    let mut rows = stmt.query([message_id.as_str()])?;
+    let mut deliveries = Vec::new();
+    while let Some(row) = rows.next()? {
+        deliveries.push(delivery_from_row(row)?);
+    }
+    Ok(deliveries)
+}
+
 #[async_trait]
 impl TeamMessageRepository for SqliteTeamMessageRepository {
     async fn create_envelope_with_deliveries(
@@ -125,7 +143,7 @@ impl TeamMessageRepository for SqliteTeamMessageRepository {
         }
         self.db
             .run_transaction(move |conn| {
-                conn.execute(
+                if let Err(error) = conn.execute(
                     "INSERT INTO managed_team_messages (
                         id, team_id, sequence, sender_kind, sender_member_id, target_kind,
                         target_member_id, kind, content, source_run_id, assignment_id,
@@ -158,7 +176,16 @@ impl TeamMessageRepository for SqliteTeamMessageRepository {
                         message.idempotency_key,
                         message.created_at.to_rfc3339(),
                     ],
-                )?;
+                ) {
+                    if matches!(
+                        &error,
+                        rusqlite::Error::SqliteFailure(failure, _)
+                            if failure.code == rusqlite::ErrorCode::ConstraintViolation
+                    ) {
+                        return Err(AppError::Conflict(TEAM_MESSAGE_UNIQUE_CONFLICT.to_string()));
+                    }
+                    return Err(error.into());
+                }
                 for delivery in &deliveries {
                     insert_delivery(conn, delivery)?;
                 }
@@ -177,6 +204,47 @@ impl TeamMessageRepository for SqliteTeamMessageRepository {
                     Some(row) => Ok(Some(message_from_row(row)?)),
                     None => Ok(None),
                 }
+            })
+            .await
+    }
+
+    async fn get_envelope_by_idempotency_key(
+        &self,
+        team_id: &TeamSessionId,
+        idempotency_key: &str,
+    ) -> AppResult<Option<(TeamMessage, Vec<TeamMessageDelivery>)>> {
+        let team_id = team_id.as_str().to_string();
+        let idempotency_key = idempotency_key.to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM managed_team_messages
+                     WHERE team_id = ?1 AND idempotency_key = ?2",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![team_id, idempotency_key])?;
+                match rows.next()? {
+                    Some(row) => {
+                        let message = message_from_row(row)?;
+                        let deliveries = deliveries_for_message(conn, &message.id)?;
+                        Ok(Some((message, deliveries)))
+                    }
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
+    async fn next_message_sequence(&self, team_id: &TeamSessionId) -> AppResult<i64> {
+        let team_id = team_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1
+                     FROM managed_team_messages WHERE team_id = ?1",
+                    [team_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
             })
             .await
     }

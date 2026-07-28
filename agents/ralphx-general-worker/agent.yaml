@@ -34,6 +34,8 @@ capabilities:
     - pause_agent_workflow_run
     - resume_agent_workflow_run
     - cancel_agent_workflow_run
+    - team_send_message
+    - team_roster
   internal_skills:
     allowed:
       - ralphx-agent-workflow-orchestrator
@@ -85,6 +87,7 @@ profiles:
         - team_assign
         - team_list
         - team_stop_member
+        - team_send_message
     harnesses:
       claude:
         model: sonnet

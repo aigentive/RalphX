@@ -3,6 +3,8 @@ const TEAM_TOOL_NAMES = new Set([
   "team_assign",
   "team_list",
   "team_stop_member",
+  "team_send_message",
+  "team_roster",
 ]);
 
 /** Team coordinator tools exist only inside the backend-owned RX Team mode. */

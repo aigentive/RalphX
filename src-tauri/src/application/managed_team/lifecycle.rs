@@ -68,6 +68,21 @@ pub fn new_coordinator_run_binding(
     }
 }
 
+/// Builds the pre-launch binding for a claimed coordinator wake batch.
+pub fn new_coordinator_wake_run_binding(
+    team_id: TeamSessionId,
+    conversation_id: ChatConversationId,
+    agent_run_id: AgentRunId,
+    first_message_sequence: i64,
+    last_message_sequence: i64,
+) -> TeamRunBinding {
+    let mut binding = new_coordinator_run_binding(team_id, conversation_id, agent_run_id);
+    binding.trigger_kind = TeamRunTriggerKind::WakeBatch;
+    binding.first_message_sequence = Some(first_message_sequence);
+    binding.last_message_sequence = Some(last_message_sequence);
+    binding
+}
+
 /// Builds the durable pre-launch binding for an exact member assignment.
 pub fn new_member_assignment_run_binding(
     member: &TeamMember,

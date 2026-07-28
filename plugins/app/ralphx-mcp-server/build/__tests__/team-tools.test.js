@@ -15,7 +15,7 @@ function captureCalls() {
         },
     };
 }
-describe("Team coordinator tools", () => {
+describe("Team tools", () => {
     afterEach(() => {
         delete process.env.RALPHX_COORDINATION_MODE;
     });
@@ -26,10 +26,13 @@ describe("Team coordinator tools", () => {
         }
     });
     it("denies Team tools outside RX-native Team mode", () => {
-        expect(applyTeamToolPolicy(["team_assign", "get_artifact"])).toEqual(["get_artifact"]);
+        expect(applyTeamToolPolicy(["team_send_message", "team_roster", "get_artifact"])).toEqual([
+            "get_artifact",
+        ]);
         process.env.RALPHX_COORDINATION_MODE = "rx_native_team";
-        expect(applyTeamToolPolicy(["team_assign", "get_artifact"])).toEqual([
-            "team_assign",
+        expect(applyTeamToolPolicy(["team_send_message", "team_roster", "get_artifact"])).toEqual([
+            "team_send_message",
+            "team_roster",
             "get_artifact",
         ]);
     });
@@ -51,7 +54,33 @@ describe("Team coordinator tools", () => {
     });
     it("rejects Team dispatch without trusted runtime authority", async () => {
         const { post, get } = captureCalls();
-        await expect(callTeamTool("team_list", post, get, {}, {})).rejects.toThrow("requires trusted coordinator conversation and run context");
+        await expect(callTeamTool("team_list", post, get, {}, {})).rejects.toThrow("requires trusted Team conversation and run context");
+    });
+    it("routes member-safe Team messaging and roster reads with transport authority", async () => {
+        const { calls, post, get } = captureCalls();
+        await callTeamTool("team_send_message", post, get, { target: "coordinator", content: "result ready" }, { conversationId: "conversation-1", agentRunId: "run-1" });
+        await callTeamTool("team_roster", post, get, {}, { conversationId: "conversation-1", agentRunId: "run-1" });
+        expect(calls).toEqual([
+            {
+                path: "managed_team/message",
+                body: { target: "coordinator", content: "result ready" },
+                options: {
+                    headers: {
+                        "x-ralphx-conversation-id": "conversation-1",
+                        "x-ralphx-agent-run-id": "run-1",
+                    },
+                },
+            },
+            {
+                path: "managed_team/member/roster",
+                options: {
+                    headers: {
+                        "x-ralphx-conversation-id": "conversation-1",
+                        "x-ralphx-agent-run-id": "run-1",
+                    },
+                },
+            },
+        ]);
     });
 });
 //# sourceMappingURL=team-tools.test.js.map

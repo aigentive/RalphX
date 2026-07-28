@@ -23,6 +23,7 @@ enum BarrierState {
     /// full Team recovery (later slice) can relaunch them safely.
     Ready {
         open_team_conversations: HashSet<String>,
+        delivery_projection_released: bool,
     },
 }
 
@@ -59,6 +60,7 @@ impl ManagedTeamStartupBarrier {
                 );
                 *self.state.write().await = BarrierState::Ready {
                     open_team_conversations,
+                    delivery_projection_released: false,
                 };
             }
             Err(error) => {
@@ -85,7 +87,35 @@ impl ManagedTeamStartupBarrier {
             BarrierState::NotRun | BarrierState::Failed => true,
             BarrierState::Ready {
                 open_team_conversations,
+                ..
             } => open_team_conversations.contains(&conversation_id.as_str()),
         }
+    }
+
+    /// Opens durable delivery projection only after Team assignment recovery
+    /// has completed successfully. Failed or incomplete barrier passes remain
+    /// fail-closed and cannot be released by callers.
+    pub async fn release_delivery_projection(&self) -> bool {
+        let mut state = self.state.write().await;
+        match &mut *state {
+            BarrierState::Ready {
+                delivery_projection_released,
+                ..
+            } => {
+                *delivery_projection_released = true;
+                true
+            }
+            BarrierState::NotRun | BarrierState::Failed => false,
+        }
+    }
+
+    pub async fn delivery_projection_released(&self) -> bool {
+        matches!(
+            &*self.state.read().await,
+            BarrierState::Ready {
+                delivery_projection_released: true,
+                ..
+            }
+        )
     }
 }

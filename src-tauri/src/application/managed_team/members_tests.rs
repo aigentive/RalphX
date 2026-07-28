@@ -12,7 +12,8 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{AgentTaskRepository, UiFeatureFlagOverridesRepository};
 use crate::infrastructure::memory::{
-    MemoryAgentTaskRepository, MemoryTeamCoordinationTransitionRepository,
+    MemoryAgentRunRepository, MemoryAgentTaskRepository, MemoryChatConversationRepository,
+    MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
     MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
     MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
     MemoryUiFeatureFlagOverridesRepository,
@@ -29,6 +30,9 @@ fn build_service() -> ManagedTeamService {
         Arc::new(MemoryTeamRunBindingRepository::new()),
         Arc::new(MemoryTeamMessageRepository::new()),
         Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
         Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
             as Arc<dyn UiFeatureFlagOverridesRepository>,

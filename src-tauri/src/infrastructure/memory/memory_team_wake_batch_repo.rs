@@ -50,6 +50,29 @@ impl TeamWakeBatchRepository for MemoryTeamWakeBatchRepository {
     async fn get_by_id(&self, id: &TeamWakeBatchId) -> AppResult<Option<TeamWakeBatch>> {
         Ok(self.values.read().await.get(id).cloned())
     }
+    async fn list_queued_for_team(
+        &self,
+        team_id: &crate::domain::entities::TeamSessionId,
+        limit: u32,
+    ) -> AppResult<Vec<TeamWakeBatch>> {
+        let mut batches: Vec<_> = self
+            .values
+            .read()
+            .await
+            .values()
+            .filter(|batch| {
+                batch.team_id == *team_id && batch.status == TeamWakeBatchStatus::Queued
+            })
+            .cloned()
+            .collect();
+        batches.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.0.cmp(&right.id.0))
+        });
+        batches.truncate(limit as usize);
+        Ok(batches)
+    }
     async fn transition(
         &self,
         id: &TeamWakeBatchId,

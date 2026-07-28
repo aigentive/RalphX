@@ -220,10 +220,22 @@ describe('getAllowedToolNames', () => {
     expect(tools).not.toContain('finalize_proposals');
   });
 
-  it('grants Team tools only to Team coordinator profiles in RX-native Team mode', () => {
+  it('grants coordinator and member Team tools only to their canonical roles in RX-native Team mode', () => {
     process.env.RALPHX_COORDINATION_MODE = 'rx_native_team';
     setAgentType(GENERAL_WORKER);
     expect(getAllowedToolNames()).not.toContain('team_assign');
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining(['team_send_message', 'team_roster'])
+    );
+
+    setAgentType(GENERAL_EXPLORER);
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining(['team_send_message', 'team_roster'])
+    );
+    expect(getAllowedToolNames()).not.toContain('team_add_member');
+
+    setAgentType('ralphx-chat-task');
+    expect(getAllowedToolNames()).not.toContain('team_send_message');
 
     process.env.RALPHX_AGENT_PROFILE = 'team_coordinator';
     expect(getAllowedToolNames()).toEqual(
@@ -232,12 +244,19 @@ describe('getAllowedToolNames', () => {
         'team_assign',
         'team_list',
         'team_stop_member',
+        'team_send_message',
       ])
     );
 
-    setAgentType('ralphx-chat-task');
+    setAgentType(GENERAL_WORKER);
     expect(getAllowedToolNames()).toEqual(
-      expect.arrayContaining(['team_add_member', 'team_assign', 'team_list', 'team_stop_member'])
+      expect.arrayContaining([
+        'team_add_member',
+        'team_assign',
+        'team_list',
+        'team_stop_member',
+        'team_send_message',
+      ])
     );
 
     process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
@@ -1209,7 +1228,13 @@ describe('agent workspace publish tools', () => {
 
     try {
       const toolNames = getFilteredTools().map((tool) => tool.name);
-      expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(GENERAL_WORKER)));
+      expect(new Set(toolNames)).toEqual(
+        new Set(
+          (loadCanonicalMcpTools(GENERAL_WORKER) ?? []).filter(
+            (tool) => tool !== 'team_send_message' && tool !== 'team_roster'
+          )
+        )
+      );
       for (const toolName of publishTools) {
         expect(toolNames).toContain(toolName);
       }

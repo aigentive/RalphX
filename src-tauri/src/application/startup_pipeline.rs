@@ -969,12 +969,28 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         )
         .with_managed_team(Arc::clone(&app_state.managed_team));
     match assignment_recovery.recover().await {
-        Ok(report) => tracing::info!(
-            inspected = report.inspected,
-            settled = report.settled,
-            retained_running = report.retained_running,
-            "Startup delegate assignment recovery completed"
-        ),
+        Ok(report) => {
+            tracing::info!(
+                inspected = report.inspected,
+                settled = report.settled,
+                retained_running = report.retained_running,
+                "Startup delegate assignment recovery completed"
+            );
+            match app_state
+                .managed_team
+                .release_delivery_projection_after_recovery()
+                .await
+            {
+                Ok(projected) => tracing::info!(
+                    projected,
+                    "Managed Team delivery projection released after assignment recovery"
+                ),
+                Err(error) => tracing::error!(
+                    %error,
+                    "Managed Team delivery projection remains deferred after recovery"
+                ),
+            }
+        }
         Err(error) => tracing::error!(
             %error,
             "Startup delegate assignment recovery failed closed; unresolved tasks remain unavailable"

@@ -48,6 +48,7 @@ profiles:
         - team_assign
         - team_list
         - team_stop_member
+        - team_send_message
         - delegate_start
         - delegate_wait
         - delegate_cancel

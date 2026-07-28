@@ -7,6 +7,7 @@ use crate::domain::entities::{ProjectId, UiFeatureFlagOverrides};
 use crate::domain::repositories::{TeamRunBindingRepository, UiFeatureFlagOverridesRepository};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
+    MemoryAgentRunRepository, MemoryChatConversationRepository, MemoryQueuedMessageRepository,
     MemoryTeamCoordinationTransitionRepository, MemoryTeamMessageRepository, MemoryTeamRepository,
     MemoryTeamRunBindingRepository, MemoryTeamWakeBatchRepository,
     MemoryTeamWorkspaceReservationRepository, MemoryUiFeatureFlagOverridesRepository,
@@ -51,6 +52,9 @@ fn build_service() -> ServiceParts {
         Arc::clone(&run_binding_repo) as Arc<dyn TeamRunBindingRepository>,
         Arc::new(MemoryTeamMessageRepository::new()),
         Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
         Arc::clone(&overrides_repo) as Arc<dyn UiFeatureFlagOverridesRepository>,
     );
@@ -68,6 +72,9 @@ fn build_service_with_failing_overrides() -> ManagedTeamService {
         Arc::new(MemoryTeamRunBindingRepository::new()),
         Arc::new(MemoryTeamMessageRepository::new()),
         Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
         Arc::new(FailingOverridesRepo),
     )

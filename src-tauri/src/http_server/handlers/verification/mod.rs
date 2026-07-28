@@ -11,11 +11,11 @@ use super::super::types::{
     ConfirmVerificationRequest, HttpError, HttpServerState, VerificationActionResponse,
 };
 
-mod confirm;
 mod complete;
+mod confirm;
 
-pub use confirm::confirm_verification;
 pub use complete::complete_plan_verification_http;
+pub use confirm::confirm_verification;
 
 /// Map an AppError to an HttpError for verification handler responses.
 fn map_app_err_local(e: AppError) -> HttpError {

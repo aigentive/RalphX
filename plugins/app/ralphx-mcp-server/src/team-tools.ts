@@ -79,6 +79,31 @@ export const TEAM_TOOLS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "team_send_message",
+    description:
+      "Send a durable Team message. Coordinators may target one member or broadcast; members may target the coordinator or broadcast. The backend derives sender identity and idempotency from trusted runtime context.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string", enum: ["coordinator", "member", "broadcast"] },
+        member_name: memberName,
+        kind: {
+          type: "string",
+          enum: ["instruction", "result", "question", "status", "control", "approval"],
+        },
+        content: { type: "string", description: "Bounded Team message content." },
+      },
+      required: ["target", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "team_roster",
+    description:
+      "Read the bounded name, role, and status roster for the caller's current Team. The backend resolves Team membership from trusted runtime context.",
+    inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+  },
 ];
 
 const TEAM_TOOL_NAMES = new Set(TEAM_TOOLS.map((tool) => tool.name));
@@ -105,6 +130,10 @@ export async function callTeamTool(
       return callTauriGet("managed_team/members/idle", { headers });
     case "team_stop_member":
       return callTauri("managed_team/member/stop", body, { headers });
+    case "team_send_message":
+      return callTauri("managed_team/message", body, { headers });
+    case "team_roster":
+      return callTauriGet("managed_team/member/roster", { headers });
     default:
       throw new Error(`Unsupported Team tool: ${name}`);
   }
@@ -117,7 +146,7 @@ function teamHeaders(
   const conversationId = runtimeContext?.conversationId?.trim() ?? "";
   const agentRunId = runtimeContext?.agentRunId?.trim() ?? "";
   if (!conversationId || !agentRunId) {
-    throw new Error(`${toolName} requires trusted coordinator conversation and run context.`);
+    throw new Error(`${toolName} requires trusted Team conversation and run context.`);
   }
   return {
     "x-ralphx-conversation-id": conversationId,

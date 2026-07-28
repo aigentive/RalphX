@@ -10,21 +10,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path_for_send;
-use crate::application::native_delegation_launcher::{
-    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
-};
 use crate::application::agent_workspace_pr_description::escape_xml_text;
 use crate::application::chat_service::{
     chat_service_context, events, resolve_working_directory, AgentTaskCompletedPayload,
     AgentTaskStartedPayload, CachedStreamingTask, ChatService, StreamingStateCache,
 };
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
+use crate::application::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
+};
 use crate::application::AgentTaskService;
 use crate::domain::entities::{
     AgentRun, AgentRunId, AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView,
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    DelegatedSession, DelegatedSessionId, IdeationSessionId, Project, ProjectId, SessionPurpose,
-    TaskId,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, DelegatedSession,
+    DelegatedSessionId, IdeationSessionId, Project, ProjectId, SessionPurpose, TaskId,
 };
 use crate::http_server::delegation::{
     persist_terminal_projection, DelegationAssignmentSummary, DelegationJobSnapshot,
@@ -836,8 +835,7 @@ mod native_delegation;
 use native_delegation::resolve_parent_conversation_id;
 pub(crate) use native_delegation::{
     build_delegated_session_status_response, cancel_delegate_impl, ensure_delegated_conversation,
-    fail_started_delegated_launch,
-    start_delegate_impl_with_parent_run,
+    fail_started_delegated_launch, start_delegate_impl_with_parent_run,
 };
 pub use native_delegation::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,

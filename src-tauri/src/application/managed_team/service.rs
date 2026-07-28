@@ -13,6 +13,7 @@ use crate::domain::entities::{
     TeamSessionId,
 };
 use crate::domain::repositories::{
+    AgentRunRepository, ChatConversationRepository, QueuedMessageRepository,
     TeamCoordinationTransitionRepository, TeamMessageRepository, TeamRepository,
     TeamRunBindingRepository, TeamWakeBatchRepository, TeamWorkspaceReservationRepository,
     UiFeatureFlagOverridesRepository,
@@ -30,10 +31,11 @@ pub struct ManagedTeamService {
     pub(super) team_repo: Arc<dyn TeamRepository>,
     pub(super) coordination_transition_repo: Arc<dyn TeamCoordinationTransitionRepository>,
     pub(super) run_binding_repo: Arc<dyn TeamRunBindingRepository>,
-    #[allow(dead_code)] // wired for later slices (durable messaging)
     pub(super) message_repo: Arc<dyn TeamMessageRepository>,
-    #[allow(dead_code)] // wired for later slices (wake batching)
     pub(super) wake_batch_repo: Arc<dyn TeamWakeBatchRepository>,
+    pub(super) queued_message_repo: Arc<dyn QueuedMessageRepository>,
+    pub(super) chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+    pub(super) agent_run_repo: Arc<dyn AgentRunRepository>,
     pub(super) reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
     pub(super) feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     startup_barrier: Arc<ManagedTeamStartupBarrier>,
@@ -47,6 +49,9 @@ impl ManagedTeamService {
         run_binding_repo: Arc<dyn TeamRunBindingRepository>,
         message_repo: Arc<dyn TeamMessageRepository>,
         wake_batch_repo: Arc<dyn TeamWakeBatchRepository>,
+        queued_message_repo: Arc<dyn QueuedMessageRepository>,
+        chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
         reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
         feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     ) -> Self {
@@ -56,6 +61,9 @@ impl ManagedTeamService {
             run_binding_repo,
             message_repo,
             wake_batch_repo,
+            queued_message_repo,
+            chat_conversation_repo,
+            agent_run_repo,
             reservation_repo,
             feature_overrides_repo,
             startup_barrier: Arc::new(ManagedTeamStartupBarrier::new()),
