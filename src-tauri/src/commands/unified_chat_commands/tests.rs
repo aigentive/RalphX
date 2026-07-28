@@ -2011,8 +2011,8 @@ async fn repair_request_event_failure_settles_without_dispatch() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     state.agent_conversation_workspace_repo =
         workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
-    let workspace = command_test_workspace();
-    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    state.agent_workspace_repair_repo = workspace_repo.clone();
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
     workspace_repo
         .create_or_update(workspace.clone())
         .await
@@ -2043,6 +2043,27 @@ async fn repair_request_event_failure_settles_without_dispatch() {
         .unwrap()
         .unwrap();
     assert_eq!(settled.pr_supervision_status.as_deref(), Some("blocked"));
+    assert_eq!(settled.publication_push_status.as_deref(), Some("failed"));
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .expect("failed audit persistence should leave a blocked durable attempt");
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(attempt
+        .blocker
+        .as_deref()
+        .unwrap_or_default()
+        .contains("audit could not be persisted"));
+    assert!(attempt.git_common_dir.is_none());
+    assert!(attempt.target_ref.is_none());
+    assert!(attempt.target_lease_epoch.is_none());
+    assert!(workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -2051,8 +2072,8 @@ async fn successful_dispatch_remains_completable_when_success_event_write_fails(
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     state.agent_conversation_workspace_repo =
         workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
-    let workspace = command_test_workspace();
-    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    state.agent_workspace_repair_repo = workspace_repo.clone();
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
     workspace_repo
         .create_or_update(workspace.clone())
         .await
@@ -2083,14 +2104,33 @@ async fn successful_dispatch_remains_completable_when_success_event_write_fails(
         .unwrap()
         .unwrap();
     assert_eq!(current.pr_supervision_status.as_deref(), Some("fixing"));
-    assert!(crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion(
-        state.agent_conversation_workspace_repo,
-        state.agent_run_repo,
-        &current,
-    )
-    .await
-    .unwrap()
-    .is_some());
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Repairing);
+    let run_id = attempt
+        .reserved_agent_run_id
+        .as_ref()
+        .expect("delivered repair should retain its run authority");
+    assert!(matches!(
+        crate::application::agent_workspace_publish_repair_state::classify_agent_workspace_repair_completion_authority(
+            Arc::clone(&state.agent_workspace_repair_repo),
+            &workspace.conversation_id,
+            run_id,
+        )
+        .await
+        .unwrap(),
+        crate::domain::entities::AgentWorkspaceRepairCompletionAuthority::Current(_)
+    ));
+    assert!(!workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|event| event.step == "repair_sent" && event.status == "succeeded"));
 }
 
 #[tokio::test]
@@ -3439,6 +3479,32 @@ fn command_test_workspace() -> AgentConversationWorkspace {
         "ralphx/test/agent-command".to_string(),
         "/tmp/agent-command-workspace".to_string(),
     )
+}
+
+fn command_test_workspace_with_git_target() -> (
+    tempfile::TempDir,
+    AgentConversationWorkspace,
+    AgentConversationWorkspaceRepairTarget,
+) {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let worktree_path = temp.path().join("agent-workspace");
+    std::fs::create_dir_all(&worktree_path).expect("worktree root should be created");
+    git(&worktree_path, &["init", "-b", "ralphx/test/agent-command"]);
+    git(
+        &worktree_path,
+        &["config", "user.email", "test@example.com"],
+    );
+    git(&worktree_path, &["config", "user.name", "Test User"]);
+    std::fs::write(worktree_path.join("README.md"), "repair fixture\n")
+        .expect("fixture file should be written");
+    git(&worktree_path, &["add", "README.md"]);
+    git(&worktree_path, &["commit", "-m", "repair fixture"]);
+
+    let mut workspace = command_test_workspace();
+    workspace.worktree_path = worktree_path.to_string_lossy().to_string();
+    let mut target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    target.worktree_path = Some(worktree_path);
+    (temp, workspace, target)
 }
 
 async fn seed_ready_command_repair_attempt(

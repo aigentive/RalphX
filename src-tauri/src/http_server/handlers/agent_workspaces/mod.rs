@@ -74,7 +74,9 @@ use crate::application::agent_workspace_review_auto_merge::{
 use crate::application::agent_workspace_review_diff::{
     ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
 };
-use crate::application::agent_workspace_review_publish_handoff::workspace_review_authorization_kind;
+use crate::application::agent_workspace_review_publish_handoff::{
+    resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
+};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 #[cfg(test)]
 use crate::application::publish_resilience::push_publish_branch;
@@ -3998,6 +4000,43 @@ async fn resume_initial_auto_publish_after_workspace_review(
     }
 }
 
+async fn resume_legacy_pr_fix_publish_after_workspace_review(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), JsonError> {
+    let review_context = load_agent_workspace_review_context(state.app_state.as_ref(), workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let app_state = Arc::clone(&state.app_state);
+    let execution_state = Arc::clone(&state.execution_state);
+    resume_pr_fix_publish_after_passed_workspace_review(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        conversation_id,
+        workspace,
+        &review_context.monitor,
+        review_context.target.as_ref(),
+        move |conversation_id| {
+            let app_state = Arc::clone(&app_state);
+            let execution_state = Arc::clone(&execution_state);
+            async move {
+                publish_agent_conversation_workspace_for_app_state(
+                    app_state.as_ref(),
+                    &execution_state,
+                    conversation_id,
+                    false,
+                )
+                .await
+                .map(|result| result.workspace.pr_auto_merge_current)
+            }
+        },
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    Ok(())
+}
+
 pub(crate) async fn settle_workspace_review_publish_authorization(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -4015,6 +4054,7 @@ pub(crate) async fn settle_workspace_review_publish_authorization(
     {
         return Ok(());
     }
+    resume_legacy_pr_fix_publish_after_workspace_review(state, conversation_id, workspace).await?;
     resume_initial_auto_publish_after_workspace_review(state, conversation_id, workspace, monitor)
         .await
 }

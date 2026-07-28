@@ -898,7 +898,7 @@ async fn late_stale_effect_creation_preserves_a_preexisting_same_attempt_lease()
         .expect("pre-existing target lease acquisition");
     assert!(matches!(
         acquired,
-        AcquireGitTargetLeaseOutcome::Acquired { .. }
+        AcquireGitTargetLeaseOutcome::AlreadyOwned { .. }
     ));
     fixture
         .memory_repair_repo

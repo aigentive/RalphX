@@ -9078,11 +9078,31 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_),
         ) => return,
         Err(error) => {
+            let summary = format!("Failed to persist the durable workspace repair request: {error}");
             tracing::warn!(
                 conversation_id = %workspace.conversation_id,
                 error = %error,
                 "Failed to start or join the durable agent workspace repair attempt"
             );
+            let _ = state
+                .agent_conversation_workspace_repo
+                .update_publication(
+                    &workspace.conversation_id,
+                    workspace.publication_pr_number,
+                    workspace.publication_pr_url.as_deref(),
+                    pr_status_override.or(workspace.publication_pr_status.as_deref()),
+                    Some("failed"),
+                )
+                .await;
+            let _ = state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &workspace.conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(&summary),
+                )
+                .await;
             return;
         }
     };

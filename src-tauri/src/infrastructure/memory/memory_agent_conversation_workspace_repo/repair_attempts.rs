@@ -31,6 +31,30 @@ fn validate_repair_events(
     Ok(())
 }
 
+#[cfg(test)]
+fn fail_for_forced_repair_event(
+    repo: &MemoryAgentConversationWorkspaceRepository,
+    events: &[AgentConversationWorkspacePublicationEvent],
+) -> AppResult<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    if let Some(message) = repo.next_publication_event_error.lock().unwrap().take() {
+        return Err(AppError::Infrastructure(message));
+    }
+    let mut matching_error = repo.matching_publication_event_error.lock().unwrap();
+    if let Some((_, _, message)) = matching_error.as_ref().filter(|(step, status, _)| {
+        events
+            .iter()
+            .any(|event| event.step == *step && event.status == *status)
+    }) {
+        let message = message.clone();
+        matching_error.take();
+        return Err(AppError::Infrastructure(message));
+    }
+    Ok(())
+}
+
 fn apply_compatibility_projection(
     workspace: &mut AgentConversationWorkspace,
     projection: Option<&AgentWorkspaceRepairCompatibilityProjection>,
@@ -183,6 +207,8 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         request: StartOrJoinAgentWorkspaceRepairAttempt,
     ) -> AppResult<StartOrJoinAgentWorkspaceRepairAttemptOutcome> {
         validate_repair_events(&request.attempt.conversation_id, &request.events)?;
+        #[cfg(test)]
+        fail_for_forced_repair_event(self, &request.events)?;
         let conversation_id = request.attempt.conversation_id.clone();
         let mut attempts = self.repair_attempts.write().await;
         let mut workspaces = self.workspaces.write().await;
@@ -294,6 +320,8 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         request: AgentWorkspaceRepairAttemptTransition,
     ) -> AppResult<AgentWorkspaceRepairAttemptTransitionOutcome> {
         validate_repair_events(&request.attempt.conversation_id, &request.events)?;
+        #[cfg(test)]
+        fail_for_forced_repair_event(self, &request.events)?;
         let mut attempts = self.repair_attempts.write().await;
         let mut workspaces = self.workspaces.write().await;
         let mut events_by_conversation = self.publication_events.write().await;

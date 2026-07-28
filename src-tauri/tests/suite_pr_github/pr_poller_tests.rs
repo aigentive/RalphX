@@ -379,13 +379,15 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
     ));
     let chat_service = Arc::new(MockChatService::new());
 
-    ralphx_lib::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
+    ralphx_lib::application::pr_startup_recovery::recover_agent_workspace_pr_pollers_with_notifications(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&app_state.project_repo),
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
         Arc::clone(&registry),
         Arc::clone(&app_state.agent_run_repo),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        None,
+        Some(Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>),
         empty_startup_blocked_projects(),
     )
     .await;

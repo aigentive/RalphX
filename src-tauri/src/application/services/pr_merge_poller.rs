@@ -2872,7 +2872,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     // Test-only compatibility dispatch has no durable target authority. Keep its historical
     // behavior isolated; production always takes the reservation-first path below.
     let auto_merge_before_reservation = if repair_repo.is_none() {
-        let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
+        match prepare_agent_workspace_pr_repair_auto_merge_state(
             Arc::clone(&github),
             working_dir,
             target.pr_number,
@@ -2880,11 +2880,27 @@ async fn route_agent_workspace_pr_autofix_for_target(
             &health,
             Arc::clone(&workspace_repo),
         )
-        .await?
-        else {
-            return Ok(false);
-        };
-        Some(auto_merge_current)
+        .await
+        {
+            Ok(Some(auto_merge_current)) => Some(auto_merge_current),
+            Ok(None) => return Ok(false),
+            Err(error) => {
+                let summary = format!(
+                    "PR autofix could not persist the GitHub auto-merge disarm state: {error}"
+                );
+                record_agent_workspace_pr_autofix_pre_start_failure(
+                    Arc::clone(&github),
+                    working_dir,
+                    target.pr_number,
+                    workspace_repo.as_ref(),
+                    conversation_id,
+                    health.auto_merge_request.is_some(),
+                    &summary,
+                )
+                .await?;
+                return Ok(false);
+            }
+        }
     } else {
         workspace_for_options.pr_auto_merge_current
     };
@@ -2930,6 +2946,61 @@ async fn route_agent_workspace_pr_autofix_for_target(
         },
     )
     .await
+}
+
+async fn record_agent_workspace_pr_autofix_pre_start_failure(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    restore_auto_merge: bool,
+    summary: &str,
+) -> crate::AppResult<()> {
+    let workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    workspace_repo
+        .update_publication(
+            conversation_id,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.as_deref(),
+            workspace.publication_pr_status.as_deref(),
+            Some("failed"),
+        )
+        .await?;
+    workspace_repo
+        .update_pr_auto_merge_state(conversation_id, Some(false), Some("blocked"), Some(summary))
+        .await?;
+
+    if !restore_auto_merge || !workspace.pr_auto_merge_desired {
+        return Ok(());
+    }
+
+    let (auto_merge_current, final_summary) = match github
+        .enable_pr_auto_merge(working_dir, pr_number, &workspace.pr_auto_merge_method)
+        .await
+    {
+        Ok(()) => (true, format!("{summary} GitHub auto-merge was restored.")),
+        Err(error) => (
+            false,
+            format!("{summary} {}", auto_merge_enable_failure_summary(&error)),
+        ),
+    };
+    workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            Some(auto_merge_current),
+            Some("blocked"),
+            Some(&final_summary),
+        )
+        .await
 }
 
 async fn settle_agent_workspace_pr_autofix_dispatch_failure(

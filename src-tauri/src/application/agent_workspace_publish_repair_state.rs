@@ -854,7 +854,37 @@ pub(crate) async fn reserve_agent_workspace_repair_dispatch(
             )),
             events: repair_transition_events(&dispatching, &run_id, summary),
         })
-        .await?;
+        .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let blocker =
+                format!("Workspace repair dispatch audit could not be persisted: {error}");
+            let blocked = block_agent_workspace_repair_completion(
+                Arc::clone(&repair_repo),
+                Arc::clone(&branch_update_repo),
+                bound,
+                "Workspace repair dispatch was blocked before delivery.",
+                &blocker,
+                auto_merge_current,
+            )
+            .await;
+            if !matches!(
+                blocked,
+                Ok(AgentWorkspaceRepairTransitionOutcome::Applied(_))
+            ) {
+                release_new_agent_workspace_repair_dispatch_lease(
+                    branch_update_repo.as_ref(),
+                    &target_identity,
+                    &owner,
+                    fencing_epoch,
+                    lease_acquired_here,
+                )
+                .await?;
+            }
+            return Err(error);
+        }
+    };
     match outcome {
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => {
             Ok(AgentWorkspaceRepairDispatchOutcome::Reserved(attempt))
@@ -1286,7 +1316,7 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
         .summary
         .clone()
         .unwrap_or_else(|| summary.to_string());
-    let outcome = repair_repo
+    let transition = repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt: attempt.clone(),
             expected_phase,
@@ -1299,8 +1329,33 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
             )),
             events: vec![event],
         })
-        .await
-        .map(repair_attempt_transition_outcome)?;
+        .await;
+    let outcome = match transition {
+        Ok(outcome) => repair_attempt_transition_outcome(outcome),
+        Err(error) if settlement == AgentWorkspaceRepairDispatchSettlement::Delivered => {
+            tracing::warn!(
+                conversation_id = attempt.conversation_id.as_str(),
+                error = %error,
+                "Workspace repair delivery succeeded but its success audit event could not be persisted; retrying the authoritative phase transition without the audit event"
+            );
+            repair_repo
+                .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                    attempt: attempt.clone(),
+                    expected_phase,
+                    expected_updated_at,
+                    next_phase,
+                    compatibility_projection: Some(repair_attempt_projection(
+                        &attempt,
+                        &projection_summary,
+                        auto_merge_current,
+                    )),
+                    events: Vec::new(),
+                })
+                .await
+                .map(repair_attempt_transition_outcome)?
+        }
+        Err(error) => return Err(error),
+    };
     if next_phase != AgentWorkspaceRepairPhase::Blocked {
         return Ok(outcome);
     }

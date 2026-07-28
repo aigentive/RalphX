@@ -28,7 +28,7 @@ use crate::domain::integrations::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
-    ProjectRepository,
+    BranchUpdateRepository, ProjectRepository,
 };
 use crate::domain::services::github_service::{
     PrDetail, PrHealth, PrMergeStateStatus, PrMergeableState, PrSyncState,
@@ -36,8 +36,9 @@ use crate::domain::services::github_service::{
 use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus, SecretStore};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryClickUpIntegrationSettingsRepository, MemoryExternalIssueLinkRepository,
-    MemoryPlanBranchRepository, MemoryProjectRepository, MemorySecretStore,
+    MemoryBranchUpdateRepository, MemoryClickUpIntegrationSettingsRepository,
+    MemoryExternalIssueLinkRepository, MemoryPlanBranchRepository, MemoryProjectRepository,
+    MemorySecretStore,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -89,6 +90,7 @@ impl ClickUpApiClient for StaticClickUpClient {
 fn test_project() -> Project {
     let mut project = Project::new("Demo".to_string(), "/tmp/ralphx-demo".to_string());
     project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
     project
 }
 
@@ -373,8 +375,30 @@ async fn live_reconciliation_fails_closed_without_a_durable_repair_repository() 
 
 #[tokio::test]
 async fn live_reconciliation_routes_pr_conflicts_through_one_durable_repair_attempt() {
-    let project = test_project();
+    let git_root = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("git root");
+    for args in [
+        vec!["init", "-b", "ralphx/demo/agent-conflict"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "RalphX Test"],
+        vec!["commit", "--allow-empty", "-m", "base"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(git_root.path())
+            .output()
+            .expect("git fixture command should spawn");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut project = test_project();
+    project.working_directory = git_root.path().to_string_lossy().to_string();
     let mut workspace = test_workspace(&project);
+    workspace.branch_name = "ralphx/demo/agent-conflict".to_string();
+    workspace.worktree_path = git_root.path().to_string_lossy().to_string();
     workspace.auto_publish_enabled = true;
     workspace.pr_auto_merge_desired = false;
     let conversation_id = workspace.conversation_id.clone();
@@ -413,6 +437,9 @@ async fn live_reconciliation_routes_pr_conflicts_through_one_durable_repair_atte
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::new(MemoryPlanBranchRepository::new()),
     ));
+    registry.set_branch_update_repo(
+        Arc::new(MemoryBranchUpdateRepository::new()) as Arc<dyn BranchUpdateRepository>
+    );
     let chat = Arc::new(MockChatService::new());
     deps.pr_poller_registry = Some(Arc::clone(&registry));
     deps.chat_service = Some(chat.clone() as Arc<dyn ChatService>);
