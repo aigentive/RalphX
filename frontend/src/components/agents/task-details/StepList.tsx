@@ -5,6 +5,7 @@
  * Supports editing and deletion when editable=true.
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { ListChecks } from 'lucide-react';
 import { StepItem } from './StepItem';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -32,6 +33,8 @@ interface StepListProps {
 export function StepList({ taskId, editable = false, hideCompletionNotes = false }: StepListProps) {
   const { data: steps, isLoading, isError } = useTaskSteps(taskId);
   const { skip: skipStep } = useStepMutations(taskId);
+  // Skipping a step re-plans work in flight — `ui:agent` (2.6-b).
+  const agentGate = useAgentGate();
 
   // Loading state
   if (isLoading) {
@@ -77,7 +80,7 @@ export function StepList({ taskId, editable = false, hideCompletionNotes = false
           index,
           editable,
           hideCompletionNote: hideCompletionNotes,
-          ...(editable && { onSkip: (stepId: string) => skipStep.mutate({ stepId, reason: "Skipped by user" }) }),
+          ...(editable && !agentGate.gated && { onSkip: (stepId: string) => skipStep.mutate({ stepId, reason: "Skipped by user" }) }),
         };
         return (
           <div key={step.id}>

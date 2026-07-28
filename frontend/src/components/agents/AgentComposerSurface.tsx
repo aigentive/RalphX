@@ -46,6 +46,8 @@ import {
 import type { ChatComposerFolder } from "@/stores/chatStore";
 import type { CapabilityIntent, TeamIntent } from "@/api/chat";
 import type { AgentStatus } from "@/stores/chatStore";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
@@ -462,10 +464,18 @@ export function AgentComposerSurface({
   const emptySubmitValue = emptySubmitMessage?.trim() ?? "";
   const hasSubmittableValue =
     value.trim().length > 0 || emptySubmitValue.length > 0;
+  /**
+   * Sending a message steers the agent, so it needs `ui:agent` (2.6-b). Folded into
+   * the EXISTING `sendDisabledReason` seam rather than added beside it: one reason
+   * string means one disabled-explanation path, and the keyboard submit at the top
+   * of `handleSend` is gated by the same value as the button.
+   */
+  const agentGate = useAgentGate();
+  const effectiveSendDisabledReason = agentGate.reason ?? sendDisabledReason;
   const canSubmit =
     hasSubmittableValue &&
     !isReadOnly &&
-    !sendDisabledReason &&
+    !effectiveSendDisabledReason &&
     (!isSubmitting || canSendWhileAgentActive);
   const attachmentDisabled =
     isReadOnly || (isSubmitting && !canSendWhileAgentActive);
@@ -1593,7 +1603,11 @@ export function AgentComposerSurface({
       return;
     }
 
-    if ((isSubmitting && !canSendWhileAgentActive) || isReadOnly || sendDisabledReason) {
+    if (
+      (isSubmitting && !canSendWhileAgentActive) ||
+      isReadOnly ||
+      effectiveSendDisabledReason
+    ) {
       return;
     }
 
@@ -2129,6 +2143,12 @@ export function AgentComposerSurface({
               </div>
             )}
 
+            <AgentGateTooltip
+              gated={agentGate.gated && !shouldShowStop}
+              reason={agentGate.reason}
+              className="ml-auto inline-flex"
+              testId="agent-composer-send-gate"
+            >
             <Button
               type="button"
               className={cn(
@@ -2158,7 +2178,13 @@ export function AgentComposerSurface({
               }}
               disabled={shouldShowStop ? false : !canSubmit}
               data-testid={actionTestId}
-              aria-label={shouldShowStop ? "Stop agent" : submitLabel}
+              aria-label={
+                agentGate.gated && !shouldShowStop
+                  ? `${submitLabel} — ${agentGate.reason}`
+                  : shouldShowStop
+                    ? "Stop agent"
+                    : submitLabel
+              }
             >
               {shouldShowStop ? (
                 <>
@@ -2181,6 +2207,7 @@ export function AgentComposerSurface({
                 </>
               )}
             </Button>
+            </AgentGateTooltip>
           </div>
         </div>
       </div>

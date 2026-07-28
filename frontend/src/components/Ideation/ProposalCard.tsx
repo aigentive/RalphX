@@ -5,6 +5,7 @@
  * and warm orange accent for selection states.
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -74,6 +75,7 @@ export const ProposalCard = React.memo(function ProposalCard({
   isSelected = false,
   onDelete,
 }: ProposalCardProps) {
+  const agentGate = useAgentGate();
   const [isDepsExpanded, setIsDepsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const effectivePriority = proposal.userPriority ?? proposal.suggestedPriority;
@@ -172,12 +174,13 @@ export const ProposalCard = React.memo(function ProposalCard({
                         style={{ background: "transparent" }}
                         onMouseEnter={(e) => { e.currentTarget.style.background = "var(--overlay-weak)"; }}
                         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                        onClick={(e) => { e.stopPropagation(); onEdit(proposal.id); }}
+                        disabled={agentGate.gated}
+                        onClick={(e) => { e.stopPropagation(); if (agentGate.gated) return; onEdit(proposal.id); }}
                       >
                         <FileEdit className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Edit</TooltipContent>
+                    <TooltipContent>{agentGate.reason ?? "Edit"}</TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 {onDelete !== undefined && (

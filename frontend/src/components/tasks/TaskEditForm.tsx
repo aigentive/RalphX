@@ -13,6 +13,7 @@
  * Design spec: specs/design/refined-studio-patterns.md
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useState, useCallback, type FormEvent } from "react";
 import { UpdateTaskSchema, type Task, type UpdateTask } from "@/types/task";
 import { ACTIVE_STATUSES } from "@/types/status";
@@ -65,6 +66,18 @@ export function TaskEditForm({
   // Check if task is executing (steps are editable only when not executing)
   const isExecuting = ACTIVE_STATUSES.includes(task.internalStatus);
 
+  /**
+   * Title and description are AGENT-CONSUMED content — editing them re-aims work in
+   * flight — so they need `ui:agent` (2.6-b). Category and priority are inert under
+   * the viewer-with-brakes boundary (A6).
+   *
+   * Both halves share one `update_task` call, so the gate has to be argument-level,
+   * not command-level: the gated fields are stripped from the diff here AND their
+   * inputs are disabled, so neither the form nor a stale state value can smuggle a
+   * title change into an otherwise-inert priority edit.
+   */
+  const agentGate = useAgentGate();
+
   const handleSubmit = useCallback(
     (e: FormEvent) => {
       e.preventDefault();
@@ -73,7 +86,7 @@ export function TaskEditForm({
       // Build update data (only include changed fields)
       const updateData: UpdateTask = {};
 
-      if (title.trim() !== task.title) {
+      if (!agentGate.gated && title.trim() !== task.title) {
         updateData.title = title.trim();
       }
 
@@ -82,7 +95,7 @@ export function TaskEditForm({
       }
 
       const descValue = description.trim() || null;
-      if (descValue !== task.description) {
+      if (!agentGate.gated && descValue !== task.description) {
         updateData.description = descValue;
       }
 
@@ -105,14 +118,15 @@ export function TaskEditForm({
 
       onSave(updateData);
     },
-    [title, category, description, priority, task, onSave, onCancel]
+    [agentGate.gated, title, category, description, priority, task, onSave, onCancel]
   );
 
-  const hasChanges =
-    title.trim() !== task.title ||
-    category !== task.category ||
-    (description.trim() || null) !== task.description ||
-    priority !== task.priority;
+  const hasChanges = agentGate.gated
+    ? category !== task.category || priority !== task.priority
+    : title.trim() !== task.title ||
+      category !== task.category ||
+      (description.trim() || null) !== task.description ||
+      priority !== task.priority;
 
   const handleAddStep = useCallback(async () => {
     if (!newStepTitle.trim()) return;
@@ -141,6 +155,8 @@ export function TaskEditForm({
         priority={priority}
         setPriority={setPriority}
         disabled={isSaving}
+        contentDisabled={agentGate.gated}
+        contentDisabledReason={agentGate.reason}
         validationError={validationError}
       />
 
@@ -188,7 +204,9 @@ export function TaskEditForm({
             <button
               type="button"
               onClick={handleAddStep}
-              disabled={isSaving || isAddingStep || !newStepTitle.trim()}
+              disabled={
+                isSaving || isAddingStep || agentGate.gated || !newStepTitle.trim()
+              }
               className="h-10 px-3 rounded-lg text-[0.8125rem] font-medium shrink-0 flex items-center justify-center gap-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
                 background: "transparent",

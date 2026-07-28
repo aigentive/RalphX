@@ -29,6 +29,7 @@
  * ```
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useCallback } from "react";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
@@ -78,6 +79,7 @@ export function GroupContextMenuItems({
   onArchiveAll,
   confirm,
 }: GroupContextMenuItemsProps) {
+  const agentGate = useAgentGate();
   const cancelAction = GROUP_ACTIONS.cancelAll;
   const pauseAction = GROUP_ACTIONS.pauseAll;
   const resumeAction = GROUP_ACTIONS.resumeAll;
@@ -155,7 +157,14 @@ export function GroupContextMenuItems({
         </ContextMenuItem>
       )}
       {onResumeAll && (
-        <ContextMenuItem onClick={handleResumeAll} data-testid="resume-all-action">
+        <ContextMenuItem
+          onClick={handleResumeAll}
+          disabled={agentGate.gated}
+          data-testid="resume-all-action"
+          {...(agentGate.gated
+            ? { "data-agent-gated": "true", title: agentGate.reason ?? undefined }
+            : {})}
+        >
           <ResumeIcon className="w-4 h-4 mr-2" />
           {resumeLabel}
         </ContextMenuItem>

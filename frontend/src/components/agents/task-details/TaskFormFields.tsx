@@ -33,6 +33,13 @@ interface TaskFormFieldsProps {
   priority: number;
   setPriority: (value: number) => void;
   disabled?: boolean;
+  /**
+   * Disables only the AGENT-CONSUMED fields (title, description) while leaving
+   * category and priority editable — the argument-level shape of the `ui:agent`
+   * gate, since all four share one `update_task` call (2.6-b).
+   */
+  contentDisabled?: boolean;
+  contentDisabledReason?: string | null;
   /** Optional validation error to display */
   validationError?: string | null;
 }
@@ -50,6 +57,8 @@ export function TaskFormFields({
   priority,
   setPriority,
   disabled = false,
+  contentDisabled = false,
+  contentDisabledReason = null,
   validationError,
 }: TaskFormFieldsProps) {
   const baseId = useId();
@@ -66,7 +75,8 @@ export function TaskFormFields({
           id={`${baseId}-title`}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          disabled={disabled}
+          disabled={disabled || contentDisabled}
+          title={contentDisabled ? contentDisabledReason ?? undefined : undefined}
           placeholder="Enter task title"
           className={inputBaseStyles}
         />
@@ -123,7 +133,8 @@ export function TaskFormFields({
           id={`${baseId}-description`}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          disabled={disabled}
+          disabled={disabled || contentDisabled}
+          title={contentDisabled ? contentDisabledReason ?? undefined : undefined}
           rows={4}
           placeholder="Enter task description (optional)"
           className={textareaBaseStyles}

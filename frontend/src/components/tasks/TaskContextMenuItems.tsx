@@ -25,6 +25,8 @@
  */
 
 import { useState, createContext, useContext, useCallback } from "react";
+
+import { useAgentGate } from "@/hooks/useAgentGate";
 import {
   ContextMenuItem,
   ContextMenuSeparator,
@@ -173,6 +175,26 @@ function resolveHandler(
   }
 }
 
+/**
+ * Handler keys that STEER work forward and therefore require `ui:agent` (2.6-b).
+ *
+ * The complement is deliberate, not an oversight: `onPause`, `onBlockWithReason`,
+ * `onStatusChange` for `cancel`, and the view-only actions are authority-reducing or
+ * inert, so a paired device keeps them under the viewer-with-brakes boundary. This
+ * one map covers both the Kanban and graph menus, so neither surface can drift from
+ * the other.
+ */
+const AGENT_STEERING_HANDLER_KEYS: ReadonlySet<string> = new Set([
+  "onStatusChange",
+  "onUnblock",
+  "onStartExecution",
+  "onResume",
+  "onApprove",
+  "onReject",
+  "onRequestChanges",
+  "onMarkResolved",
+]);
+
 // ============================================================================
 // Items Component (renders inside ContextMenuContent)
 // ============================================================================
@@ -188,6 +210,12 @@ export function TaskContextMenuItems({
   }
 
   const { confirm, setShowBlockDialog } = dialogState;
+  const agentGate = useAgentGate();
+  const isGatedAction = useCallback(
+    (action: TaskAction) =>
+      agentGate.gated && AGENT_STEERING_HANDLER_KEYS.has(action.handlerKey),
+    [agentGate.gated]
+  );
 
   const isArchived = task.archivedAt !== null;
   const canEditTask = canEdit(task);
@@ -195,6 +223,11 @@ export function TaskContextMenuItems({
   const statusActions = getTaskActions(task.internalStatus, context);
 
   const handleRegistryAction = useCallback(async (action: TaskAction) => {
+    // Belt-and-braces: the item is already disabled, but a keyboard activation path
+    // must not be able to dispatch a steering mutation either.
+    if (agentGate.gated && AGENT_STEERING_HANDLER_KEYS.has(action.handlerKey)) {
+      return;
+    }
     if (action.opensDialog && action.handlerKey === "onBlockWithReason") {
       setShowBlockDialog(true);
       return;
@@ -223,7 +256,7 @@ export function TaskContextMenuItems({
     }
 
     handler();
-  }, [handlers, confirm, setShowBlockDialog]);
+  }, [agentGate.gated, handlers, confirm, setShowBlockDialog]);
 
   const handleArchive = useCallback(async () => {
     const confirmed = await confirm({
@@ -272,17 +305,22 @@ export function TaskContextMenuItems({
       {statusActions.length > 0 && (
         <>
           <ContextMenuSeparator />
-          {statusActions.map((action) => (
+          {statusActions.map((action) => {
+            const gated = isGatedAction(action);
+            return (
             <ContextMenuItem
               key={action.id}
+              disabled={gated}
               onClick={() => handleRegistryAction(action)}
               className={action.variant === "destructive" ? "text-destructive" : ""}
               data-testid={`${action.id}-action`}
+              {...(gated ? { "data-agent-gated": "true", title: agentGate.reason ?? undefined } : {})}
             >
               <action.icon className="w-4 h-4 mr-2" />
               {action.label}
             </ContextMenuItem>
-          ))}
+            );
+          })}
         </>
       )}
 

@@ -7,6 +7,7 @@
  * - Calls update_plan_artifact HTTP endpoint on save
  */
 
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useState, useCallback } from "react";
 import { Save, X, Eye, Edit2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -147,6 +148,7 @@ const markdownComponents = {
 // ============================================================================
 
 export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEditorProps) {
+  const agentGate = useAgentGate();
   // Get initial content
   const initialContent = plan.content.type === "inline" ? plan.content.text : "";
 
@@ -263,7 +265,8 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
             variant="default"
             size="sm"
             onClick={handleSave}
-            disabled={isSaving || !hasChanges}
+            disabled={isSaving || !hasChanges || agentGate.gated}
+            title={agentGate.reason ?? undefined}
             className="bg-[var(--accent-primary)] hover:bg-[var(--accent-hover)] text-white"
           >
             <Save className="h-4 w-4 mr-1.5" />

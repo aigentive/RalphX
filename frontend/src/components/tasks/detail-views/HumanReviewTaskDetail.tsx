@@ -11,6 +11,8 @@ import remarkGfm from "remark-gfm";
 import { reviewIssuesApi } from "@/api/review-issues";
 import { IssueList, IssueProgressBar } from "@/components/reviews/IssueList";
 import type { ReviewIssue, IssueProgressSummary } from "@/types/review-issue";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -243,6 +245,8 @@ function ActionButtonsCard({
     }
   };
 
+  const agentGate = useAgentGate();
+
   const handleApprove = useCallback(async () => {
     const confirmed = await confirm({
       title: "Approve this task?",
@@ -304,10 +308,15 @@ function ActionButtonsCard({
           )}
         </div>
         <div className="flex gap-2">
+        <AgentGateTooltip
+          gated={agentGate.gated}
+          reason={agentGate.reason}
+          testId="approve-button-gate"
+        >
         <Button
           data-testid="approve-button"
           onClick={handleApprove}
-          disabled={isLoading || showFeedback}
+          disabled={isLoading || showFeedback || agentGate.gated}
           className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
           style={{
             backgroundColor: "var(--status-success)",
@@ -321,6 +330,7 @@ function ActionButtonsCard({
           )}
           Approve
         </Button>
+        </AgentGateTooltip>
 
         <Button
           data-testid="request-changes-button"

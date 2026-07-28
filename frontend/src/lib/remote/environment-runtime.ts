@@ -22,6 +22,8 @@ import {
 } from "@/stores/environmentStore";
 import { useUiStore } from "@/stores/uiStore";
 
+import { getClientOwnedFeatureFlag } from "./feature-flag-authority";
+
 import { NetworkEventBus } from "./network-event-bus";
 import { networkFetch } from "./network-fetch";
 import { attachRemoteStreamRelay, type RemoteStreamTarget } from "./stream-relay";
@@ -61,11 +63,20 @@ interface RuntimeEntry {
   relayKind: "full" | "health" | null;
 }
 
-const confirmedScopes = new Map<string, readonly string[]>();
 let activeTeardown: (() => void) | null = null;
 
+/**
+ * The confirmed scope set lives on `environmentStore.effectiveScopes` and NOWHERE
+ * else (PR 2.6-b).
+ *
+ * It used to be a module-local `Map` here, which meant the value gates need was
+ * unreachable from React and would have had to be copied into the store — two
+ * representations of one fact, drifting the moment either write path was missed.
+ * Keeping one copy makes the store the single reader and this module the single
+ * writer.
+ */
 export function getConfirmedScopes(environmentId: string): readonly string[] | null {
-  return confirmedScopes.get(environmentId) ?? null;
+  return useEnvironmentStore.getState().effectiveScopes[environmentId] ?? null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -159,7 +170,11 @@ export function initializeEnvironmentRuntime(): () => void {
 
   const localBus = createEventBus(LOCAL_ENVIRONMENT_ID);
   const runtimes = new Map<string, RuntimeEntry>();
-  let enabled = useUiStore.getState().featureFlags.remoteEnvironments;
+  // `remoteEnvironments` is CLIENT-owned: it decides whether THIS device runs the
+  // remote runtime at all, so it must never be answered by a host. Read through the
+  // authority helper rather than `uiStore` directly, so the constraint is stated
+  // where it is relied on. See `feature-flag-authority.ts`.
+  let enabled = getClientOwnedFeatureFlag("remoteEnvironments");
   let activeEnvironmentId = useEnvironmentStore.getState().activeEnvironmentId;
 
   /**
@@ -342,9 +357,7 @@ export function initializeEnvironmentRuntime(): () => void {
           // PR 3.3 owns background introspection. Until then, never make an
           // active-env-bound session request: retain confirmed or pairing-time scopes.
           return (
-            confirmedScopes.get(environmentId) ??
-            runtime.entry.remote?.scopes ??
-            []
+            getConfirmedScopes(environmentId) ?? runtime.entry.remote?.scopes ?? []
           );
         }
         const response = await networkFetch(environmentId, SESSION_PATH);
@@ -354,7 +367,7 @@ export function initializeEnvironmentRuntime(): () => void {
         return parseScopes(await response.json());
       },
       applyScopes: (scopes) => {
-        confirmedScopes.set(environmentId, [...scopes]);
+        useEnvironmentStore.getState().setEffectiveScopes(environmentId, scopes);
       },
       beginStream: async (outcome) => {
         if (useEnvironmentStore.getState().activeEnvironmentId !== environmentId) {
@@ -413,7 +426,7 @@ export function initializeEnvironmentRuntime(): () => void {
       runtime.supervisor.stop();
       detachRelay(runtime);
       runtime.bus.abandonStream();
-      confirmedScopes.delete(environmentId);
+      useEnvironmentStore.getState().clearEffectiveScopes(environmentId);
     }
     runtimes.clear();
   };
@@ -433,7 +446,7 @@ export function initializeEnvironmentRuntime(): () => void {
         runtimes.delete(environmentId);
         // The registry row is gone, so this environment's bus identity may go too.
         buses.delete(environmentId);
-        confirmedScopes.delete(environmentId);
+        useEnvironmentStore.getState().clearEffectiveScopes(environmentId);
         removeQueryClient(environmentId);
       }
     }
@@ -492,9 +505,12 @@ export function initializeEnvironmentRuntime(): () => void {
     });
   };
 
+  // Subscribes to `uiStore` deliberately: this is the CLIENT-owned copy of the flag
+  // (see `feature-flag-authority.ts`). The env-scoped `useFeatureFlags` query must
+  // never drive this, or a host would control whether this device does remote.
   const unsubscribeUi = useUiStore.subscribe((state, previous) => {
-    const next = state.featureFlags.remoteEnvironments;
-    if (next === previous.featureFlags.remoteEnvironments) {
+    const next = state.featureFlags.remoteEnvironments === true;
+    if (next === (previous.featureFlags.remoteEnvironments === true)) {
       return;
     }
     enabled = next;
