@@ -470,6 +470,24 @@ describe("authority withdrawal parks instead of redialling", () => {
     expect(r.spies.openStream).not.toHaveBeenCalled();
     expect(r.supervisor.presentation()).toBe("error");
   });
+
+  it("keeps the block and its reason across a background/foreground cycle", async () => {
+    const r = rig({
+      fetchDescriptor: vi.fn(async () => ({ ...DESCRIPTOR, minClientProtocol: 2 })),
+    });
+    await connect(r);
+    expect(r.supervisor.blocked()?.failure).toBe("version");
+
+    // Backgrounding for longer than the debounce must not downgrade the actionable
+    // block to a benign "Suspended" with no re-pair affordance.
+    r.supervisor.visibilityChanged(true);
+    await vi.advanceTimersByTimeAsync(SUSPEND_DEBOUNCE_MS + 10);
+
+    expect(r.supervisor.currentState()).toBe("blocked");
+    expect(r.supervisor.blocked()?.failure).toBe("version");
+    expect(r.supervisor.presentation()).toBe("error");
+    expect(r.supervisor.armedTimers()).toEqual([]);
+  });
 });
 
 // ===========================================================================
