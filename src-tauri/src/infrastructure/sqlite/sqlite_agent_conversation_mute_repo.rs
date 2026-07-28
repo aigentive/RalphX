@@ -124,8 +124,7 @@ impl AgentConversationMuteRepository for SqliteAgentConversationMuteRepository {
             .run(move |conn| {
                 let mut mutes = Vec::new();
                 for chunk in conversation_ids.chunks(SQLITE_BIND_PARAMETER_LIMIT) {
-                    let placeholders = std::iter::repeat("?")
-                        .take(chunk.len())
+                    let placeholders = std::iter::repeat_n("?", chunk.len())
                         .collect::<Vec<_>>()
                         .join(", ");
                     let query = format!(
