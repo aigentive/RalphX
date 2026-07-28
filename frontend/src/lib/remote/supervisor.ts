@@ -585,6 +585,10 @@ function classifyFailure(error: unknown): AttemptFailure {
         return "unauthorized";
       case "REMOTE_VERSION_MISMATCH":
         return "version";
+      case "REMOTE_INVALID_ARGUMENTS":
+        // A client-side request bug. Retrying an identical malformed request cannot
+        // succeed, so it must not enter the backoff ladder as transient.
+        return "malformed_descriptor";
       default:
         return "transient";
     }

@@ -1,5 +1,5 @@
 /**
- * The canonical 8-code remote transport error taxonomy (§6.3 / §3.3, R5-L1).
+ * The canonical 10-code remote transport error taxonomy (§6.3 / §3.3, R5-L1).
  *
  * These describe the TRANSPORT, never the command. A registered command that runs
  * on the host and returns `Err(E)` is NOT a transport error — `NetworkInvoke`
@@ -23,6 +23,14 @@ export const REMOTE_TRANSPORT_ERROR_CODES = [
   "REMOTE_TIMEOUT_UNKNOWN",
   "REMOTE_REQUEST_IN_PROGRESS",
   "REMOTE_REQUEST_ID_REUSED",
+  // A registered command whose ARGUMENTS were rejected (400). Kept distinct from
+  // REMOTE_COMMAND_UNAVAILABLE (404) because that code means "this host does not
+  // support the command at all" and is about to gate remote affordances: an argument
+  // bug must never be read as a missing capability.
+  "REMOTE_INVALID_ARGUMENTS",
+  // The host failed while producing the answer (500) — a host-side fault, not a
+  // statement about the request.
+  "REMOTE_INTERNAL_ERROR",
 ] as const;
 
 export type RemoteTransportErrorCode =

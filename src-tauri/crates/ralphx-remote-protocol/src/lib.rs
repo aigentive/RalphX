@@ -164,6 +164,14 @@ pub enum ErrorCode {
     RemoteRequestInProgress,
     #[serde(rename = "REMOTE_REQUEST_ID_REUSED")]
     RemoteRequestIdReused,
+    /// The request reached a registered command but its arguments could not be deserialized.
+    /// Distinct from `RemoteCommandUnavailable`, which is reserved for "no such command".
+    #[serde(rename = "REMOTE_INVALID_ARGUMENTS")]
+    RemoteInvalidArguments,
+    /// The host failed while producing the answer (e.g. a response that will not serialize).
+    /// A host-side fault, never a statement about the client's request.
+    #[serde(rename = "REMOTE_INTERNAL_ERROR")]
+    RemoteInternalError,
 }
 pub const ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::RemoteCommandUnavailable,
@@ -174,6 +182,8 @@ pub const ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::RemoteTimeoutUnknown,
     ErrorCode::RemoteRequestInProgress,
     ErrorCode::RemoteRequestIdReused,
+    ErrorCode::RemoteInvalidArguments,
+    ErrorCode::RemoteInternalError,
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

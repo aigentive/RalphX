@@ -76,7 +76,7 @@ fn descriptor_and_wire_enums_match_the_closed_contract() {
     assert_eq!(RISK_CLASSES.len(), 6);
     assert_eq!(CAPABILITIES.len(), 11);
     assert_eq!(RESET_REASONS.len(), 6);
-    assert_eq!(ERROR_CODES.len(), 8);
+    assert_eq!(ERROR_CODES.len(), 10);
 }
 
 #[test]

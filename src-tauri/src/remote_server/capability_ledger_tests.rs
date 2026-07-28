@@ -290,6 +290,27 @@ fn agent_content_writers() -> Vec<serde_json::Value> {
     .collect()
 }
 
+/// The worker-safe task projection, DERIVED from `WorkerTaskView` rather than restated as a
+/// literal: a field added to the struct appears here (and stales the manifest) instead of
+/// silently widening the projection behind a hand-written list.
+fn worker_task_view_allowlist() -> Vec<String> {
+    use crate::domain::entities::{IdeationSessionId, ProjectId, Task, WorkerTaskView};
+
+    let mut task = Task::new(ProjectId::new(), "allowlist probe".to_string());
+    // Every optional field must be populated or `skip_serializing_if` hides it from the
+    // derived key set.
+    task.description = Some("populated".to_string());
+    task.ideation_session_id = Some(IdeationSessionId::new());
+    let view: WorkerTaskView = task.into();
+    serde_json::to_value(view)
+        .expect("worker task view serializes")
+        .as_object()
+        .expect("worker task view is a JSON object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
 fn generated_manifest() -> serde_json::Value {
     let rows = census();
     let graph = CallGraph::build(&load_production_sources());
@@ -375,9 +396,7 @@ fn generated_manifest() -> serde_json::Value {
         "background_loop_inventory": background_loop_inventory,
         "spawn_triggering_state_surface": spawn_triggering_state_surface,
         "agent_consumed_content_surface": {"reads": agent_content_reads(), "writers": agent_content_writers()},
-        "worker_task_view_allowlist": [
-            "id", "project_id", "title", "description", "internal_status", "ideation_session_id"
-        ],
+        "worker_task_view_allowlist": worker_task_view_allowlist(),
         "authority_reducing_exemptions": authority_reducing_exemptions,
         "declared_memberships": declared_memberships,
         "ledger": ledger,

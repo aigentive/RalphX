@@ -145,7 +145,7 @@ describe("the 8-code taxonomy", () => {
   });
 
   it("maps every code — none is dropped", () => {
-    expect(REMOTE_TRANSPORT_ERROR_CODES).toHaveLength(8);
+    expect(REMOTE_TRANSPORT_ERROR_CODES).toHaveLength(10);
   });
 
   it.each([
