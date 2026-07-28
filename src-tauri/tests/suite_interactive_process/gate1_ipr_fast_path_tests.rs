@@ -206,6 +206,32 @@ async fn setup_live_project_continuation(
     (project_dir, conversation_id, run_id, interactive_key, child)
 }
 
+async fn seed_live_run_owner(
+    state: &AppState,
+    context_id: &str,
+    conversation_id: ralphx_lib::domain::entities::ChatConversationId,
+) -> String {
+    let run = AgentRun::new(conversation_id);
+    let run_id = run.id.as_str().to_string();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("persist live run owner");
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", context_id),
+            0,
+            conversation_id.as_str().to_string(),
+            run_id.clone(),
+            None,
+            None,
+        )
+        .await;
+    run_id
+}
+
 // ============================================================================
 // Test 1: Gate 1 HIT — IPR has entry, writes to stdin, reuses existing conversation
 // ============================================================================
@@ -602,11 +628,13 @@ async fn matching_persona_metadata_reuses_stdin_fast_path() {
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
     conversation.persona_id = Some(persona.id.to_string());
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
         .await
         .unwrap();
+    let run_id = seed_live_run_owner(&state, context_id, conversation_id).await;
     let mut child = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -620,7 +648,7 @@ async fn matching_persona_metadata_reuses_stdin_fast_path() {
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
             InteractiveProcessMetadata {
-                agent_run_id: None,
+                agent_run_id: Some(run_id.clone()),
                 harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
@@ -643,6 +671,7 @@ async fn matching_persona_metadata_reuses_stdin_fast_path() {
         .await
         .expect("matching bound persona metadata must write stdin");
     assert!(!result.was_queued);
+    assert_eq!(result.agent_run_id, run_id);
     assert!(
         state
             .interactive_process_registry
@@ -682,11 +711,13 @@ async fn native_agent_flag_with_bound_persona_keeps_stdin_fast_path() {
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
     conversation.persona_id = Some(persona.id.to_string());
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
         .await
         .unwrap();
+    let run_id = seed_live_run_owner(&state, context_id, conversation_id).await;
 
     let mut child = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
@@ -700,7 +731,10 @@ async fn native_agent_flag_with_bound_persona_keeps_stdin_fast_path() {
         .register_with_metadata(
             interactive_key.clone(),
             child.stdin.take().expect("observer stdin"),
-            InteractiveProcessMetadata::default(),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.clone()),
+                ..Default::default()
+            },
         )
         .await;
     let service = state
@@ -709,7 +743,7 @@ async fn native_agent_flag_with_bound_persona_keeps_stdin_fast_path() {
         .with_persona_feature_enabled(true);
 
     for message in ["native persona first", "native persona second"] {
-        service
+        let result = service
             .send_message(
                 ChatContextType::Project,
                 context_id,
@@ -718,6 +752,7 @@ async fn native_agent_flag_with_bound_persona_keeps_stdin_fast_path() {
             )
             .await
             .expect("native --agent suppression must preserve the existing stdin process");
+        assert_eq!(result.agent_run_id, run_id);
     }
     assert!(
         state
