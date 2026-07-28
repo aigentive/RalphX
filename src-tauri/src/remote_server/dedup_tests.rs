@@ -888,3 +888,158 @@ fn the_dedup_error_codes_keep_their_documented_statuses() {
         StatusCode::INTERNAL_SERVER_ERROR
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// P-20 (a)/(b)/(d2), proven SPECIFICALLY for an AgentControl command
+//
+// Every scenario above drives `create_task`, an Operate-class command. P-20 names the
+// AgentControl case explicitly — "a replayed `approve_permission_request` does not
+// double-approve" — because the failure it fears is a second agent-facing DECISION, not a
+// second row. `approve_permission_request` is registered AgentControl today, so the proof is
+// constructible; `send_agent_message` waits on PR 3.1 and is deliberately not covered here.
+// ---------------------------------------------------------------------------------------
+
+/// The registered AgentControl gate op. Its `decision` field is pinned to `allow` by the spec,
+/// so the only thing a caller controls is WHICH request is approved — and how many times.
+const AGENT_CONTROL_COMMAND: &str = "approve_permission_request";
+
+fn agent_control_args() -> Value {
+    json!({"args": {"requestId": "perm-1"}})
+}
+
+async fn agent_control_device(auth: &RemoteAuthContext) -> (String, RemoteDeviceId) {
+    pair_device_with_scopes(
+        auth,
+        "agent phone",
+        RemoteScopeSet::from_scopes([Scope::UiRead, Scope::UiOperate, Scope::UiAgent]),
+    )
+    .await
+}
+
+/// (a) for AgentControl: a replayed approval resolves the gate exactly once.
+#[tokio::test]
+async fn a_replayed_permission_approval_does_not_approve_twice() {
+    let (auth, store) = shared_context();
+    let (token, _) = agent_control_device(&auth).await;
+    let (dispatcher, calls) = CountingDispatcher::ok();
+
+    let first = router(&auth, dispatcher.clone(), store.clone())
+        .oneshot(invoke(
+            &token,
+            "approve-1",
+            AGENT_CONTROL_COMMAND,
+            agent_control_args(),
+        ))
+        .await
+        .expect("first approval should complete");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = body_json(first).await;
+
+    let replay = router(&auth, dispatcher, store)
+        .oneshot(invoke(
+            &token,
+            "approve-1",
+            AGENT_CONTROL_COMMAND,
+            agent_control_args(),
+        ))
+        .await
+        .expect("replay should complete");
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(replay).await,
+        first_body,
+        "the replay must return the cached envelope, not a fresh decision"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "ABSENCE: the permission gate must have been resolved exactly once"
+    );
+}
+
+/// (b) for AgentControl: a duplicate approval arriving mid-flight is refused, not dispatched.
+#[tokio::test]
+async fn a_duplicate_permission_approval_in_flight_is_refused_not_approved() {
+    let (auth, store) = shared_context();
+    let (token, device) = agent_control_device(&auth).await;
+    let (dispatcher, calls) = CountingDispatcher::ok();
+    let dedup = Arc::new(RemoteDedupState::new(store.clone()));
+    let app = authenticated_remote_routes(
+        RemoteRouterState::new_with_invoke_dispatcher(
+            TEST_ENVIRONMENT_ID,
+            auth.clone(),
+            dispatcher.clone(),
+        )
+        .with_dedup(dedup.clone()),
+    );
+
+    let holder = dedup
+        .begin(
+            &device,
+            "approve-race",
+            AGENT_CONTROL_COMMAND,
+            &agent_control_args(),
+        )
+        .await
+        .expect("the first claim should succeed");
+    assert!(matches!(holder, DedupDecision::Proceed));
+
+    let response = app
+        .oneshot(invoke(
+            &token,
+            "approve-race",
+            AGENT_CONTROL_COMMAND,
+            agent_control_args(),
+        ))
+        .await
+        .expect("duplicate approval should complete");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(response).await["code"],
+        json!("REMOTE_REQUEST_IN_PROGRESS")
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "ABSENCE: the loser of an approval race must not resolve the gate"
+    );
+}
+
+/// (d2) for AgentControl: the durable row survives a restart, so a retry after a host restart
+/// still cannot double-approve.
+#[tokio::test]
+async fn a_permission_approval_replays_across_a_restart_without_approving_again() {
+    let (auth, store) = shared_context();
+    let (token, _) = agent_control_device(&auth).await;
+    let (dispatcher, calls) = CountingDispatcher::ok();
+
+    let first = router(&auth, dispatcher.clone(), store.clone())
+        .oneshot(invoke(
+            &token,
+            "approve-d2",
+            AGENT_CONTROL_COMMAND,
+            agent_control_args(),
+        ))
+        .await
+        .expect("first approval should complete");
+    let first_body = body_json(first).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // A brand new router + dedup state over the SAME durable store: the restart.
+    let replay = router(&auth, dispatcher, store)
+        .oneshot(invoke(
+            &token,
+            "approve-d2",
+            AGENT_CONTROL_COMMAND,
+            agent_control_args(),
+        ))
+        .await
+        .expect("replay should complete");
+    assert_eq!(body_json(replay).await, first_body);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "ABSENCE: the durable row must prevent a second approval after a restart"
+    );
+}
