@@ -195,6 +195,7 @@ fn service_with_repo(
             descriptor("env-1"),
             pair_response("env-1"),
         )),
+        test_relay(),
     )
 }
 
@@ -1969,6 +1970,7 @@ async fn reconciler_defers_when_activation_write_fails() {
             descriptor("env-pending"),
             pair_response("env-pending"),
         )),
+        test_relay(),
     );
 
     let report = service.reconcile_on_startup().await;
@@ -2000,6 +2002,7 @@ async fn reconciler_pending_delete_defers_each_destructive_failure() {
         Arc::clone(&repo) as _,
         Arc::clone(&secrets) as _,
         Arc::clone(&host) as _,
+        test_relay(),
     );
     let env = inner
         .upsert_paired(crate::domain::repositories::UpsertPairedEnvironment {
@@ -2054,6 +2057,7 @@ async fn reconciler_keeps_pending_delete_row_when_secret_delete_fails() {
         Arc::clone(&repo) as _,
         Arc::clone(&secrets) as _,
         Arc::clone(&host) as _,
+        test_relay(),
     );
     let env = repo
         .upsert_paired(crate::domain::repositories::UpsertPairedEnvironment {
@@ -2081,6 +2085,8 @@ async fn reconciler_keeps_pending_delete_row_when_secret_delete_fails() {
         .await
         .expect("secret read")
         .is_some());
+}
+
 #[tokio::test]
 async fn stream_send_reaches_the_live_socket() {
     let f = fixture();
