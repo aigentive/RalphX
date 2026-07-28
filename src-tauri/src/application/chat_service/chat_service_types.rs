@@ -867,6 +867,11 @@ pub struct TeamArtifactCreatedPayload {
 // Error type
 // ============================================================================
 
+/// Marker prefix for `ChatServiceError::MessageDeliveredNotPersisted`. The frontend
+/// matches on it to keep the sent turn visible instead of reporting a failed send.
+/// ❌ Don't reword without updating `frontend/src/lib/sendDeliveryErrors.ts`.
+pub const MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX: &str = "[Message delivered but not saved:";
+
 #[derive(Debug, Clone)]
 pub enum ChatServiceError {
     InvalidInput(String),
@@ -884,6 +889,9 @@ pub enum ChatServiceError {
     RepositoryError(String),
     AgentRunFailed(String),
     PersonaUnavailable(String),
+    /// The live interactive process accepted this turn, but persisting it failed.
+    /// The agent IS answering: the UI must not report the turn as never sent.
+    MessageDeliveredNotPersisted(String),
 }
 
 impl std::fmt::Display for ChatServiceError {
@@ -907,6 +915,7 @@ impl std::fmt::Display for ChatServiceError {
             Self::RepositoryError(msg) => write!(f, "Repository error: {}", msg),
             Self::AgentRunFailed(msg) => write!(f, "Agent run failed: {}", msg),
             Self::PersonaUnavailable(message) => write!(f, "{message}"),
+            Self::MessageDeliveredNotPersisted(message) => write!(f, "{message}"),
         }
     }
 }

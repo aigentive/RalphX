@@ -10,16 +10,19 @@
 
 use std::sync::Arc;
 
+use ralphx_lib::application::chat_service::SendMessageOptions;
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
+use ralphx_lib::application::{AppState, ChatService};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
-use ralphx_lib::domain::entities::{ChatConversation, TaskId};
+use ralphx_lib::domain::entities::{ChatContextType, ChatConversation, ProjectId, TaskId};
 use ralphx_lib::domain::repositories::ChatConversationRepository;
 use ralphx_lib::domain::services::running_agent_registry::{
     MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
 };
+use ralphx_lib::domain::services::QueueKey;
 use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
 
 // ========================================
@@ -479,11 +482,11 @@ async fn test_reconciler_pattern_with_mixed_active_and_idle() {
 
     // 5 registered agents
     let contexts = vec![
-        ("task_execution", "task-1", true),  // active (has IPR, actively processing)
-        ("task_execution", "task-2", true),  // idle (has IPR, between turns)
-        ("ideation", "session-1", true),     // idle (has IPR, between turns)
+        ("task_execution", "task-1", true), // active (has IPR, actively processing)
+        ("task_execution", "task-2", true), // idle (has IPR, between turns)
+        ("ideation", "session-1", true),    // idle (has IPR, between turns)
         ("task_execution", "task-3", false), // dead (no IPR, process crashed)
-        ("review", "task-4", false),         // normal task agent (no IPR)
+        ("review", "task-4", false),        // normal task agent (no IPR)
     ];
 
     for (ct, ci, has_ipr) in &contexts {
@@ -586,8 +589,8 @@ async fn test_interactive_turn_complete_persists_session_id() {
             provider_session_id: session_id.to_string(),
         },
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     // Verify persisted
     let after = repo.get_by_id(&conv_id).await.unwrap().unwrap();
@@ -623,8 +626,8 @@ async fn test_session_id_first_capture_wins() {
                 provider_session_id: first_session_id.to_string(),
             },
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         session_id_persisted = true;
     }
 
@@ -638,8 +641,8 @@ async fn test_session_id_first_capture_wins() {
                 provider_session_id: second_session_id.to_string(),
             },
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
 
     // First session_id must win
@@ -677,8 +680,8 @@ async fn test_turn_complete_with_none_session_id_does_not_clear_existing() {
             provider_session_id: existing_session_id.to_string(),
         },
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     // Second TurnComplete with session_id=None — simulate the if-let guard
     let session_id_from_event: Option<String> = None;
@@ -691,8 +694,8 @@ async fn test_turn_complete_with_none_session_id_does_not_clear_existing() {
                 provider_session_id: sess_id.clone(),
             },
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
     // clear_provider_session_ref is never called in TurnComplete path
 
@@ -739,8 +742,8 @@ async fn test_non_interactive_post_loop_persists_session_id() {
                 provider_session_id: sess_id.clone(),
             },
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
 
     // Verify persisted
@@ -754,6 +757,104 @@ async fn test_non_interactive_post_loop_persists_session_id() {
         after.claude_session_id,
         Some("noninteractive-session-789".to_string()),
         "Non-interactive post-loop must persist the legacy Claude alias from StreamOutcome"
+    );
+}
+
+/// Codex uses the background launch path, so an occupied agent-conversation
+/// runtime has no interactive stdin entry and a follow-up must remain visible
+/// as a durable queued message instead of taking the IPR fast path.
+#[tokio::test]
+async fn test_codex_agent_conversation_queues_behind_active_background_agent() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-codex-background-queue".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "codex-running-session".to_string(),
+    });
+    let conversation_id = conversation.id;
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist Codex agent conversation");
+
+    let runtime_context_id = conversation_id.as_str().to_string();
+    let interactive_key = InteractiveProcessKey::new("project", &runtime_context_id);
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await,
+        "Codex background agents must not have an IPR stdin entry"
+    );
+
+    let running_key = RunningAgentKey::new("project", &runtime_context_id);
+    state
+        .running_agent_registry
+        .register(
+            running_key,
+            0,
+            runtime_context_id.clone(),
+            "codex-background-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let result = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .send_message(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "queue this Codex follow-up",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                harness_override: Some(AgentHarnessKind::Codex),
+                model_override: Some("gpt-5.5".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("occupied Codex background runtime should queue the follow-up");
+
+    assert!(
+        result.was_queued,
+        "non-IPR follow-up must be visibly queued"
+    );
+    assert_eq!(result.conversation_id, conversation_id.as_str());
+    let queued_message_id = result
+        .queued_message_id
+        .as_deref()
+        .expect("queued send must return its durable message id");
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await,
+        "queueing a Codex follow-up must not create an IPR entry"
+    );
+
+    let queue_key = QueueKey::new(ChatContextType::Project, &runtime_context_id);
+    let durable_messages = state
+        .queued_message_repo
+        .list(&queue_key)
+        .await
+        .expect("read durable Codex queue");
+    assert_eq!(
+        durable_messages.len(),
+        1,
+        "queue row must survive beyond memory"
+    );
+    assert_eq!(durable_messages[0].id, queued_message_id);
+    assert_eq!(durable_messages[0].content, "queue this Codex follow-up");
+    assert_eq!(
+        durable_messages[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
+    assert_eq!(
+        durable_messages[0].model_override.as_deref(),
+        Some("gpt-5.5")
     );
 }
 

@@ -1914,6 +1914,56 @@ async fn test_resume_restores_durable_non_slot_message_when_send_fails() {
 }
 
 #[tokio::test]
+async fn test_resume_does_not_requeue_a_turn_the_agent_already_received() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Delivered Durable Task Chat".to_string(),
+        "/test/delivered-durable-task-chat".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(
+            project.id.clone(),
+            "Delivered task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "delivered-task-chat".to_string(),
+        "delivered task chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.fail_next_send_as_delivered_not_persisted().await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable task chat queue");
+
+    // The live process accepted this turn: restoring it would deliver it twice.
+    assert_eq!(resumed, 0);
+    assert!(app_state.message_queue.get_queued_with_key(&key).is_empty());
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn test_resume_relaunches_queued_review_message_with_harness_override() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
