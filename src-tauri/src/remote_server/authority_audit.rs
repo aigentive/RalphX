@@ -89,6 +89,54 @@ pub const ARMING_TRANSITION_TARGETS: &[&str] = &[
 pub const HALTING_TRANSITION_TARGETS: &[&str] =
     &["Paused", "Blocked", "Stopped", "Cancelled", "Archived"];
 
+/// Detector (c) — process-launch resolution sinks.
+///
+/// Every production subprocess must resolve its binary through
+/// `infrastructure/tool_paths.rs` (`.claude/rules/production-cli-resolution.md`), so reaching
+/// one of these IS spawning a process. `Capability::SpawnsProcess` is permitted only under
+/// `Elevated`, which makes "reaches a launch sink but is ledgered `Read`/`Operate`" a
+/// mechanically detectable under-labelling — the exact shape the `list_projects` mislabel had.
+pub const PROCESS_LAUNCH_SINKS: &[&str] = &[
+    "resolve_gh_cli_path",
+    "resolve_git_cli_path",
+    "resolve_node_cli_path",
+    "resolve_shell_cli_path",
+    "resolve_rm_cli_path",
+    "resolve_ps_cli_path",
+    "resolve_lsof_cli_path",
+    "resolve_pgrep_cli_path",
+    "resolve_pkill_cli_path",
+    "resolve_taskkill_cli_path",
+    "resolve_tasklist_cli_path",
+    "find_claude_cli_path",
+    "claude_native_cli_path",
+    "find_claude_native_cli_path",
+    "find_codex_cli_path",
+    "find_codex_cli_candidates",
+    "find_tailscale_cli_path",
+    "find_launchable_cli_path",
+    "find_launchable_cli_path_without_shell",
+];
+
+// No `WritesArbitraryPath` counterpart exists, and that is a measured result rather than an
+// omission: `fs::write`/`create_dir_all`/`remove_*` are reachable from the transitive closure of
+// nearly every command, including `list_tasks` and the `pause_task`/`block_task`/`stop_task`
+// brakes. A gate that fires on pure reads is not a floor, so path authority stays a hand-audited
+// ledger judgement (`chat_attachment_commands` is `Denied` on exactly that basis) and is recorded
+// here as a stated soundness limit.
+
+/// True when any closure token names one of `sinks`, exactly or as a path suffix
+/// (`write_thing`, `std::fs::write` and `fs::write` all match the sink `fs::write`; a token
+/// merely *containing* the text does not).
+pub fn tokens_reach_any(tokens: &BTreeSet<String>, sinks: &[&str]) -> bool {
+    tokens.iter().any(|token| {
+        sinks.iter().any(|sink| {
+            token == sink
+                || (token.ends_with(sink) && token[..token.len() - sink.len()].ends_with("::"))
+        })
+    })
+}
+
 fn all_cut_sinks() -> BTreeSet<&'static str> {
     TRANSITION_SINKS
         .iter()
@@ -155,14 +203,75 @@ pub struct Closure {
     pub sink_hits: BTreeSet<SinkHit>,
 }
 
+/// A writer whose authority is real but which no source token can express mechanically.
+///
+/// The R4-C3 honest form: an explicit, reason-coded declaration rather than a marker invented
+/// to make a known command match. Adding one is a review event; adding a marker is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaredWriter {
+    pub command: &'static str,
+    pub reason: &'static str,
+}
+
 /// Persisted state read by an authority-bearing background loop as a spawn/steer predicate.
+///
+/// # Why markers are persistence-layer tokens and not command names
+///
+/// A marker that IS the writer's own command name matches that command against itself: every
+/// function node carries its own bare name as a token, so `writer_markers: &["inject_task"]`
+/// flags `inject_task` no matter what its body does, and a *new* writer of the same surface is
+/// a silent false negative. Markers are therefore drawn from the write site the command
+/// reaches — repository/service method names, enum variant paths, and distinguishing string
+/// literals — and [`super::capability_ledger_tests`] asserts mechanically that no marker is a
+/// census command name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StateSurfaceEntry {
     pub id: &'static str,
     pub surface: &'static str,
     pub armed_value: &'static str,
     pub read_by_loops: &'static [&'static str],
-    pub writer_markers: &'static [&'static str],
+    /// Persistence-layer write sites for this surface. Never a registered command name.
+    pub write_markers: &'static [&'static str],
+    /// Tokens identifying the ARMED value. A command must reach BOTH a write site and the
+    /// armed value; a write site alone is an unrelated write and an armed value alone is a
+    /// read. Empty means the surface has no armed-value discriminator (any write arms it).
+    pub armed_markers: &'static [&'static str],
+    /// Writers not derivable from source tokens, each carrying a reason code.
+    pub declared_writers: &'static [DeclaredWriter],
+}
+
+impl StateSurfaceEntry {
+    /// True when `command` writes this surface's armed value.
+    pub fn flags(&self, command: &str, tokens: &BTreeSet<String>) -> bool {
+        if self
+            .declared_writers
+            .iter()
+            .any(|declared| declared.command == command)
+        {
+            return true;
+        }
+        let reaches_write_site = self
+            .write_markers
+            .iter()
+            .any(|marker| tokens.contains(*marker));
+        let reaches_armed_value = self.armed_markers.is_empty()
+            || self
+                .armed_markers
+                .iter()
+                .any(|marker| tokens.contains(*marker));
+        reaches_write_site && reaches_armed_value
+    }
+
+    /// The markers that actually matched, for tests that must prove a command was not flagged
+    /// by its own name.
+    pub fn matched_markers(&self, tokens: &BTreeSet<String>) -> BTreeSet<&'static str> {
+        self.write_markers
+            .iter()
+            .chain(self.armed_markers.iter())
+            .filter(|marker| tokens.contains(**marker))
+            .copied()
+            .collect()
+    }
 }
 
 /// Detector-(b)'s mechanically matched command writers.
@@ -175,25 +284,95 @@ pub fn spawn_triggering_writers(
         .into_iter()
         .filter(|command| {
             let tokens = &graph.closure([command.clone()]).tokens;
-            surface.iter().any(|entry| {
-                entry
-                    .writer_markers
-                    .iter()
-                    .any(|marker| tokens.contains(*marker))
-            })
+            surface.iter().any(|entry| entry.flags(command, tokens))
         })
         .collect()
 }
 
 /// Derived from the read sites reached by the settled authority-bearing loop inventory.
+///
+/// Every `write_markers`/`armed_markers` token below is a persistence-layer identifier taken
+/// from the write site itself — repository trait methods, enum variant paths, distinguishing
+/// field idents and string literals — never the name of the command that reaches it.
 pub const SPAWN_TRIGGERING_STATE_SURFACE: &[StateSurfaceEntry] = &[
-    StateSurfaceEntry { id: "ready-task", surface: "tasks.internal_status", armed_value: "Ready", read_by_loops: &["application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f"], writer_markers: &["inject_task", "restart_terminal_task_to_ready"] },
-    StateSurfaceEntry { id: "pending-review-freshness", surface: "tasks.internal_status + task_status_history.entered_at + agent_runs.status", armed_value: "PendingReview with no fresh/running reviewer", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_watchdog@8c28974ee8ca859d"], writer_markers: &["re_review_task_from_escalated", "request_task_changes_from_reviewing"] },
-    StateSurfaceEntry { id: "automation-active", surface: "automations.status", armed_value: "Active", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_automation_scheduler@c034c5fc2b8fe7b8"], writer_markers: &["resume_automation_smart", "finalize_automation"] },
-    StateSurfaceEntry { id: "workspace-bridge", surface: "agent_conversation_workspaces.linked_ideation_session_id/status/mode", armed_value: "linked active plan/edit workspace", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"], writer_markers: &["activate_agent_plan_direct_implementation", "activate_agent_task_pipeline", "close_agent_workspace_pr", "commit_agent_conversation_workspace_locally", "copy_agent_conversation_plan", "import_agent_conversation_plan", "publish_agent_conversation_workspace", "reconcile_agent_conversation_workspace_publication", "resume_deferred_git_startup", "set_agent_conversation_workspace_pr_supervision", "start_agent_conversation", "start_ralphx_work_from_ticket", "switch_agent_conversation_mode", "update_agent_conversation_workspace_from_base"] },
-    StateSurfaceEntry { id: "external-event-cursor", surface: "external_events rows/cursor", armed_value: "unconsumed row", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"], writer_markers: &["insert_event"] },
-    StateSurfaceEntry { id: "workspace-auto-publish", surface: "agent_conversation_workspaces.auto_publish_enabled/publication_push_status", armed_value: "enabled and publishable/needs_agent", read_by_loops: &["commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::start_agent_workspace_auto_publish_freshness_scan@3a8d62e625ea5914"], writer_markers: &["set_agent_conversation_workspace_auto_publish_for_state"] },
-    StateSurfaceEntry { id: "workspace-auto-review", surface: "review_settings.require_workspace_review", armed_value: "true", read_by_loops: &["commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_for_workspace@a952be79d060c28f"], writer_markers: &["update_review_settings"] },
+    StateSurfaceEntry {
+        id: "ready-task",
+        surface: "tasks.internal_status",
+        armed_value: "Ready",
+        read_by_loops: &["application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f"],
+        write_markers: &["restart_terminal_task_to_ready_with_history_for_action"],
+        armed_markers: &["InternalStatus::Ready"],
+        declared_writers: &[DeclaredWriter {
+            command: "inject_task",
+            reason: "seeds-ready-row-through-generic-repository-create: the row is born in Ready \
+                     via `TaskRepository::create`, whose write-site token is shared with 54 \
+                     unrelated creators, so no marker distinguishes this write mechanically",
+        }],
+    },
+    StateSurfaceEntry {
+        id: "pending-review-freshness",
+        surface: "tasks.internal_status + task_status_history.entered_at + agent_runs.status",
+        armed_value: "PendingReview with no fresh/running reviewer",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_watchdog@8c28974ee8ca859d"],
+        write_markers: &["ensure_re_review_from_escalated_status", "add_note"],
+        armed_markers: &["InternalStatus::PendingReview", "InternalStatus::RevisionNeeded"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "automation-active",
+        surface: "automations.status",
+        armed_value: "Active",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_automation_scheduler@c034c5fc2b8fe7b8"],
+        write_markers: &["reopen_run_corrective"],
+        armed_markers: &["AutomationStatus::Active"],
+        declared_writers: &[DeclaredWriter {
+            command: "finalize_automation",
+            reason: "shared-automation-status-chokepoint: the finalize path reaches \
+                     `transition_automation_status` through the automation service, a token 53 \
+                     of 539 census commands reach transitively, so it cannot discriminate",
+        }],
+    },
+    StateSurfaceEntry {
+        id: "workspace-bridge",
+        surface: "agent_conversation_workspaces.linked_ideation_session_id/status/mode",
+        armed_value: "linked active plan/edit workspace",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"],
+        write_markers: &["create_or_update", "update_links"],
+        armed_markers: &[
+            "AgentConversationWorkspaceMode::Ideation",
+            "AgentConversationWorkspaceMode::Plan",
+            "AgentConversationWorkspaceMode::Edit",
+            "AgentConversationWorkspaceMode::Tasks",
+        ],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "external-event-cursor",
+        surface: "external_events rows/cursor",
+        armed_value: "unconsumed row",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"],
+        write_markers: &["insert_event"],
+        armed_markers: &[],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "workspace-auto-publish",
+        surface: "agent_conversation_workspaces.auto_publish_enabled/publication_push_status",
+        armed_value: "enabled and publishable/needs_agent",
+        read_by_loops: &["commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::start_agent_workspace_auto_publish_freshness_scan@3a8d62e625ea5914"],
+        write_markers: &["update_auto_publish_preferences", "update_auto_publish_initial_pr_preference"],
+        armed_markers: &["auto_publish"],
+        declared_writers: &[],
+    },
+    StateSurfaceEntry {
+        id: "workspace-auto-review",
+        surface: "review_settings.require_workspace_review",
+        armed_value: "true",
+        read_by_loops: &["commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_for_workspace@a952be79d060c28f"],
+        write_markers: &["update_settings"],
+        armed_markers: &["require_workspace_review"],
+        declared_writers: &[],
+    },
 ];
 
 impl CallGraph {
@@ -926,24 +1105,57 @@ pub fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Fail-closed floor on the size of the loaded production graph.
+///
+/// The detectors are only a floor if the graph they run over is the whole program. A load that
+/// silently returns a fraction of the tree would collapse every downstream classification to
+/// "nothing is authority-bearing" and could be baked into the checked-in manifest through
+/// `RALPHX_REGENERATE_REMOTE_MANIFEST`. The tree has ~1060 production files; anything under
+/// this floor means the walk lost the tree, not that the tree shrank.
+pub const MIN_PRODUCTION_SOURCE_FILES: usize = 900;
+
 /// Loads every production `.rs` file under `src-tauri/src`.
 ///
 /// `*_tests.rs` files are excluded: test bodies would inject edges no production caller has.
+///
+/// Every I/O failure is a hard error. An unreadable directory or file shrinks the call graph
+/// exactly the way an unparseable file does, and the parse path already panics rather than
+/// skip (see [`CallGraph::build`]); silent skipping here would have been the same
+/// silent-graph-shrinkage with a quieter failure mode.
 pub fn load_production_sources() -> Vec<(String, String)> {
     let root = crate_src_root();
     let mut files = Vec::new();
     collect_rs_files(&root, &root, &mut files);
     files.sort_by(|a, b| a.0.cmp(&b.0));
+    assert!(
+        files.len() >= MIN_PRODUCTION_SOURCE_FILES,
+        "authority audit loaded only {} production sources, below the {MIN_PRODUCTION_SOURCE_FILES} floor: the graph collapsed",
+        files.len()
+    );
     files
 }
 
-fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+/// Recursive `.rs` walk. Public so the fail-closed behaviour is testable against a fixture
+/// tree; production callers go through [`load_production_sources`].
+pub fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|error| {
+        panic!(
+            "authority audit could not read directory {}: {error}",
+            dir.display()
+        )
+    });
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!(
+                "authority audit could not read a directory entry under {}: {error}",
+                dir.display()
+            )
+        });
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().unwrap_or_else(|error| {
+            panic!("authority audit could not stat {}: {error}", path.display())
+        });
+        if file_type.is_dir() {
             if matches!(
                 path.file_name().and_then(|name| name.to_str()),
                 Some("tests" | "testing")
@@ -962,9 +1174,9 @@ fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
         {
             continue;
         }
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("authority audit could not read {}: {error}", path.display())
+        });
         let relative = path
             .strip_prefix(root)
             .unwrap_or(&path)

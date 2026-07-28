@@ -4,13 +4,14 @@ use ralphx_remote_protocol::{class_permits, Capability, RiskClass};
 
 use super::authority_audit::{
     closure_is_arming, load_production_sources, parse_registered_commands, repo_root,
-    spawn_triggering_writers, CallGraph, StateSurfaceEntry, SPAWN_TRIGGERING_STATE_SURFACE,
+    spawn_triggering_writers, tokens_reach_any, CallGraph, StateSurfaceEntry, PROCESS_LAUNCH_SINKS,
+    SPAWN_TRIGGERING_STATE_SURFACE,
 };
 use super::capability_ledger::{
     policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, DECLARED_MEMBERSHIPS,
     MODULE_DEFAULTS,
 };
-use super::registry::find_spec;
+use super::registry::{find_spec, REMOTE_COMMANDS};
 
 fn registry_source() -> &'static str {
     include_str!("../commands/registry.rs")
@@ -79,7 +80,7 @@ fn agent_content_reads() -> Vec<serde_json::Value> {
         );
         for tool in tools
             .intersection(&live)
-            .filter(|tool| is_content_read_tool(tool))
+            .filter(|tool| classify_granted_tool(tool) == GrantedToolClass::ContentRead)
         {
             grants
                 .entry(tool.clone())
@@ -99,29 +100,88 @@ fn agent_content_reads() -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn is_content_read_tool(tool: &str) -> bool {
-    matches!(
-        tool,
-        "get_task_context"
-            | "get_review_notes"
-            | "get_task_issues"
-            | "get_artifact"
-            | "get_artifact_version"
-            | "get_related_artifacts"
-            | "get_task_steps"
-            | "get_step_context"
-            | "get_task_diff"
-            | "get_task_diff_stat"
-            | "get_agent_task"
-            | "list_agent_tasks"
-            | "get_sub_steps"
-            | "get_project_analysis"
-            | "get_task_validation_summary"
-            | "search_project_artifacts"
-            | "get_memory"
-            | "search_memories"
-            | "get_memories_for_paths"
-    )
+/// Worker-granted MCP tools that read content a remote writer could poison.
+const CONTENT_READ_TOOLS: &[&str] = &[
+    "get_task_context",
+    "get_review_notes",
+    "get_task_issues",
+    "get_artifact",
+    "get_artifact_version",
+    "get_related_artifacts",
+    "get_task_steps",
+    "get_step_context",
+    "get_task_diff",
+    "get_task_diff_stat",
+    "get_agent_task",
+    "list_agent_tasks",
+    "get_sub_steps",
+    "get_project_analysis",
+    "get_task_validation_summary",
+    "search_project_artifacts",
+    "get_memory",
+    "search_memories",
+    "get_memories_for_paths",
+    // Surfaced by the fail-closed classifier below: worker-granted live reads the old
+    // `matches!` allowlist silently dropped while `coverage.agentConsumedContent` still read
+    // "complete".
+    "get_step_progress",
+    "get_issue_progress",
+    "get_merge_target",
+    "list_ticket_attachments",
+    "fetch_ticket_attachment",
+];
+
+/// Worker-granted MCP tools deliberately OUTSIDE the content-read surface: each one WRITES or
+/// steers rather than reading worker-consumed content. Explicit, because silence is what made
+/// the old allowlist fail open.
+const NON_CONTENT_TOOLS: &[&str] = &[
+    "add_step",
+    "claim_agent_task",
+    "complete_agent_task",
+    "complete_merge",
+    "complete_review",
+    "complete_step",
+    "create_agent_task",
+    "create_followup_agent_conversation",
+    "delegate_cancel",
+    "delegate_start",
+    "delegate_wait",
+    "execution_complete",
+    "fail_step",
+    "mark_issue_addressed",
+    "mark_issue_in_progress",
+    "register_agent_issue",
+    "report_conflict",
+    "report_incomplete",
+    "run_task_validation",
+    "skip_step",
+    "start_step",
+    "update_agent_task",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantedToolClass {
+    ContentRead,
+    NonContent,
+}
+
+/// Fail-CLOSED classification (R5-H2).
+///
+/// The previous `matches!` allowlist returned `false` for an unknown tool, so a newly granted
+/// content read was silently dropped from the surface while `coverage.agentConsumedContent`
+/// kept claiming "complete". An unclassifiable worker grant is now a hard failure: the surface
+/// cannot claim completeness over a tool nobody has classified.
+fn classify_granted_tool(tool: &str) -> GrantedToolClass {
+    if CONTENT_READ_TOOLS.contains(&tool) {
+        return GrantedToolClass::ContentRead;
+    }
+    if NON_CONTENT_TOOLS.contains(&tool) {
+        return GrantedToolClass::NonContent;
+    }
+    panic!(
+        "worker-granted MCP tool `{tool}` is unclassified; add it to CONTENT_READ_TOOLS or \
+         NON_CONTENT_TOOLS before the agent-consumed-content surface can claim completeness"
+    );
 }
 
 fn content_read_surface(tool: &str) -> &'static str {
@@ -135,6 +195,10 @@ fn content_read_surface(tool: &str) -> &'static str {
         "memory_entries"
     } else if tool.contains("diff") {
         "task/worktree diff"
+    } else if tool.contains("ticket") {
+        "ticket attachments"
+    } else if tool.contains("merge") {
+        "merge target/branch state"
     } else if tool.contains("agent_task") {
         "agent_tasks"
     } else if tool.contains("validation") {
@@ -290,13 +354,18 @@ fn generated_manifest() -> serde_json::Value {
         .iter()
         .map(|(command, reason)| serde_json::json!({ "command": command, "reason": reason }))
         .collect::<Vec<_>>();
+    // Only AUTHORITY-BEARING loop roots may anchor a surface. The inventory also contains ~98
+    // inert roots; accepting those let a surface row inflate `agent_control_floor` on evidence
+    // that nothing arms an agent.
     let loop_ids = graph
         .loop_roots
         .iter()
+        .filter(|root| closure_is_arming(&graph.loop_closure(root)))
         .map(|root| root.id.as_str())
         .collect::<BTreeSet<_>>();
     let spawn_triggering_state_surface = SPAWN_TRIGGERING_STATE_SURFACE.iter().map(|entry| {
-        assert!(entry.read_by_loops.iter().all(|id| loop_ids.contains(id)), "surface {} references a non-inventory loop", entry.id);
+        assert!(!entry.read_by_loops.is_empty(), "surface {} names no read site", entry.id);
+        assert!(entry.read_by_loops.iter().all(|id| loop_ids.contains(id)), "surface {} references a loop that is not authority-bearing", entry.id);
         let writers = spawn_triggering_writers(&graph, rows.iter().map(|(command, _)| command.clone()), std::slice::from_ref(entry));
         serde_json::json!({"id": entry.id, "surface": entry.surface, "armedValue": entry.armed_value, "readByLoops": entry.read_by_loops, "writers": writers})
     }).collect::<Vec<_>>();
@@ -618,7 +687,9 @@ fn synthetic_unregistered_authority_loop_requires_a_surface_tie_and_stales_manif
         surface: "synthetic.armed_state",
         armed_value: "true",
         read_by_loops,
-        writer_markers: &["write_synthetic_armed_state"],
+        write_markers: &["write_synthetic_armed_state"],
+        armed_markers: &[],
+        declared_writers: &[],
     };
     let without_surface = spawn_triggering_writers(
         &graph,
@@ -655,16 +726,61 @@ fn detector_b_surface_rows_cannot_evaporate() {
         .collect::<Vec<_>>();
     let complete =
         spawn_triggering_writers(&graph, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+    let published: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/generated/remote-commands.json"))
+            .expect("checked-in manifest parses");
+    let published_surfaces = published["spawn_triggering_state_surface"]
+        .as_array()
+        .expect("published state surface is an array");
+    let mut uniquely_load_bearing = 0usize;
+
     for index in 0..SPAWN_TRIGGERING_STATE_SURFACE.len() {
-        let mut stripped = SPAWN_TRIGGERING_STATE_SURFACE.to_vec();
-        let removed = stripped.remove(index);
-        let reduced = spawn_triggering_writers(&graph, commands.clone(), &stripped);
+        let entry = &SPAWN_TRIGGERING_STATE_SURFACE[index];
+        let own = spawn_triggering_writers(&graph, commands.clone(), std::slice::from_ref(entry));
+        // A surface whose markers stopped matching anything has silently evaporated even though
+        // the row is still present.
         assert!(
-            reduced.len() < complete.len(),
-            "removing state surface {} did not shrink its writer/floor set",
-            removed.id
+            !own.is_empty(),
+            "state surface {} attributes no writer at all",
+            entry.id
         );
+        // Its attribution is published and CI-compared, so deleting the row cannot be invisible.
+        let row = published_surfaces
+            .iter()
+            .find(|row| row["id"] == entry.id)
+            .unwrap_or_else(|| panic!("state surface {} is not in the manifest", entry.id));
+        let published_writers = row["writers"]
+            .as_array()
+            .expect("published writers are an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            published_writers, own,
+            "state surface {} drifted from its published writer attribution",
+            entry.id
+        );
+
+        let mut stripped = SPAWN_TRIGGERING_STATE_SURFACE.to_vec();
+        stripped.remove(index);
+        let reduced = spawn_triggering_writers(&graph, commands.clone(), &stripped);
+        // Write-site markers legitimately overlap between surfaces (one command can write two
+        // of them), so a shrinking global floor is required only where this surface is the sole
+        // attributor. Where it is, removal must be visible in the floor as well as the manifest.
+        if own.iter().any(|writer| !reduced.contains(writer)) {
+            uniquely_load_bearing += 1;
+            assert!(
+                reduced.len() < complete.len(),
+                "removing state surface {} lost a sole-attributed writer without shrinking the floor",
+                entry.id
+            );
+        }
     }
+    assert!(
+        uniquely_load_bearing > 0,
+        "no state surface is the sole attributor of any writer; the floor rests entirely on overlap"
+    );
 }
 
 #[test]
@@ -714,11 +830,33 @@ fn agent_consumed_content_derivation_is_calibrated() {
 
 #[test]
 fn content_surface_rows_cannot_evaporate_and_reads_are_not_writers() {
+    // Mirrors `detector_b_surface_rows_cannot_evaporate`: each row must be load-bearing on the
+    // CI-gated artifact. The previous form asserted `Vec::remove` arithmetic, which holds for
+    // any input — deleting a content-writer row and regenerating passed every gate.
+    let published: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/generated/remote-commands.json"))
+            .expect("checked-in manifest parses");
+    let published_writers = published["agent_consumed_content_surface"]["writers"]
+        .as_array()
+        .expect("published content writers are an array");
     let writers = agent_content_writers();
+    assert_eq!(
+        published_writers, &writers,
+        "content-writer surface drifted from the checked-in manifest"
+    );
     for index in 0..writers.len() {
         let mut stripped = writers.clone();
-        stripped.remove(index);
-        assert_eq!(stripped.len() + 1, writers.len());
+        let removed = stripped.remove(index);
+        assert_ne!(
+            &stripped, published_writers,
+            "removing content writer {removed} left the gated manifest surface unchanged"
+        );
+        // Every remaining row must still be a row the manifest publishes; a strip must remove
+        // exactly one observable row, never silently re-derive it.
+        assert!(
+            !stripped.contains(&removed),
+            "content writer {removed} appears more than once"
+        );
     }
     let names = writers
         .iter()
@@ -883,25 +1021,297 @@ fn representative_capability_stripping_cannot_lower_membership() {
     }
 }
 
+/// P-17 binding gate: the class the runtime ENFORCES must be the class the ledger FLOORS.
+///
+/// `enforce_scope` reads `RemoteCommandSpec.class` — the value declared in `remote_commands!`.
+/// The ledger/detector floor was a disconnected value nothing compared it against, so a
+/// registration declaring `Read` for a command the ledger classifies `Elevated` shipped with
+/// green CI. That is a scope escalation: the request is admitted on `ui:read`.
 #[test]
-fn wry_monomorphic_remote_reads_are_ledgered_but_unregistered() {
+fn every_registered_spec_matches_its_ledger_row() {
+    let modules = census().into_iter().collect::<BTreeMap<_, _>>();
+    assert!(
+        !REMOTE_COMMANDS.is_empty(),
+        "the registered surface must not be empty or this gate is vacuous"
+    );
+    for spec in REMOTE_COMMANDS {
+        let module = modules.get(spec.name).unwrap_or_else(|| {
+            panic!(
+                "registered command `{}` is not in the live census",
+                spec.name
+            )
+        });
+        let row = policy_for(spec.name, module)
+            .unwrap_or_else(|| panic!("registered command `{}` is not ledgered", spec.name));
+        assert_eq!(
+            spec.class, row.class,
+            "`{}` is registered as {:?} but the ledger floors it at {:?}; runtime authorization \
+             would admit it on the weaker scope",
+            spec.name, spec.class, row.class
+        );
+        assert_eq!(
+            spec.capabilities, row.capabilities,
+            "`{}` declares capabilities {:?} but the ledger records {:?}",
+            spec.name, spec.capabilities, row.capabilities
+        );
+    }
+}
+
+/// R4-C1: a marker that is the writer's own command name matches that command against itself.
+///
+/// Every function node carries its own bare name as a token, so such a marker flags its
+/// command regardless of what the body does, and a NEW writer of the same surface is a silent
+/// false negative. Markers must come from the write site, not the command list.
+#[test]
+fn state_surface_markers_are_never_census_command_names() {
+    let commands = census()
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect::<BTreeSet<_>>();
+    let mut marker_count = 0usize;
+    for entry in SPAWN_TRIGGERING_STATE_SURFACE {
+        assert!(
+            !entry.write_markers.is_empty(),
+            "surface {} has no write site",
+            entry.id
+        );
+        for marker in entry.write_markers.iter().chain(entry.armed_markers.iter()) {
+            marker_count += 1;
+            assert!(
+                !commands.contains(*marker),
+                "surface {} marker `{marker}` is a census command name; the match is tautological",
+                entry.id
+            );
+        }
+        for declared in entry.declared_writers {
+            assert!(
+                !declared.reason.is_empty(),
+                "surface {} declares writer {} without a reason code",
+                entry.id,
+                declared.command
+            );
+        }
+    }
+    assert!(
+        marker_count >= SPAWN_TRIGGERING_STATE_SURFACE.len(),
+        "marker set collapsed"
+    );
+}
+
+/// P-17g follow-through: each proof-class writer must be flagged by a marker that is NOT its
+/// own name — otherwise the proof-class assertions are self-fulfilling.
+#[test]
+fn proof_class_writers_are_flagged_by_write_site_markers() {
+    let graph = CallGraph::build(&load_production_sources());
     for command in [
+        "inject_task",
+        "finalize_automation",
+        "resume_automation",
+        "set_agent_conversation_workspace_auto_publish",
+    ] {
+        let tokens = graph.closure([command.to_string()]).tokens;
+        let flagging = SPAWN_TRIGGERING_STATE_SURFACE
+            .iter()
+            .filter(|entry| entry.flags(command, &tokens))
+            .flat_map(|entry| entry.matched_markers(&tokens))
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !flagging.is_empty(),
+            "proof-class writer {command} is flagged by no marker"
+        );
+        assert!(
+            !flagging.contains(command),
+            "proof-class writer {command} is flagged by its own name"
+        );
+    }
+}
+
+/// Detector (c): a process launch reached from a command is authority the `Read`/`Operate`
+/// classes cannot express — `class_permits` allows `SpawnsProcess` only under `Elevated`.
+///
+/// Until this gate existed every audit sink was an AGENT-authority sink, so a `CommandOverride`
+/// lowering a process-spawning getter to `Read` passed CI by construction. That is exactly the
+/// shape the `list_projects`/`get_project` mislabel had, and running this gate for the first
+/// time found a live one: `list_remote_advertised_endpoints` was ledgered `Read` while
+/// resolving the Tailscale CLI.
+#[test]
+fn detector_c_floors_process_spawn_authority() {
+    let graph = CallGraph::build(&load_production_sources());
+    let mut spawners = BTreeSet::new();
+
+    for (command, module) in census() {
+        let tokens = graph.closure([command.clone()]).tokens;
+        if !tokens_reach_any(&tokens, PROCESS_LAUNCH_SINKS) {
+            continue;
+        }
+        spawners.insert(command.clone());
+        let row = policy_for(&command, &module).expect("census is ledgered");
+        assert!(
+            !matches!(row.class, RiskClass::Read | RiskClass::Operate),
+            "detector (c): `{command}` resolves a CLI binary but is ledgered {:?}; \
+             SpawnsProcess is only expressible under Elevated",
+            row.class
+        );
+        assert!(
+            find_spec(&command).is_none(),
+            "detector (c): `{command}` carries process authority and must not be registered \
+             on the remote facade in this PR"
+        );
+    }
+
+    // Calibration — the detector must actually fire, or the floor above is vacuous.
+    for command in [
+        "list_projects",
+        "get_git_branches",
+        "get_task_file_changes",
+        "get_codex_cli_diagnostics",
+    ] {
+        assert!(
+            spawners.contains(command),
+            "detector (c) missed known process-spawning command {command}"
+        );
+    }
+    for command in [
+        "health_check",
+        "get_valid_transitions",
+        "list_tasks",
+        "get_task",
+        "search_tasks",
+    ] {
+        assert!(
+            !spawners.contains(command),
+            "detector (c) false-positive on registered read {command}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "calibration probe"]
+fn probe_detector_calibration() {
+    let live = live_mcp_tool_names();
+    for agent in WORKER_AGENTS {
+        let path = repo_root().join("agents").join(agent).join("agent.yaml");
+        let tools = yaml_mcp_tools(&std::fs::read_to_string(path).unwrap());
+        for tool in tools.intersection(&live) {
+            if !CONTENT_READ_TOOLS.contains(&tool.as_str())
+                && !NON_CONTENT_TOOLS.contains(&tool.as_str())
+            {
+                eprintln!("PROBE unclassified-tool {agent} {tool}");
+            }
+        }
+    }
+
+    let graph = CallGraph::build(&load_production_sources());
+    for command in [
+        "pause_task",
+        "block_task",
+        "stop_task",
+        "pause_tasks_in_group",
+        "deny_permission_request",
+        "list_tasks",
+        "get_task",
+        "search_tasks",
+        "health_check",
+        "get_valid_transitions",
         "list_remote_advertised_endpoints",
         "list_remote_audit_entries",
     ] {
-        let row = policy_for(
-            command,
-            if command.contains("advertised") {
-                "remote_host_commands"
-            } else {
-                "remote_device_commands"
-            },
-        )
-        .unwrap();
-        assert_eq!(row.class, RiskClass::Read);
-        assert!(
-            find_spec(command).is_none(),
-            "AppHandle-only command must await PR 3.1"
+        let tokens = graph.closure([command.to_string()]).tokens;
+        for entry in SPAWN_TRIGGERING_STATE_SURFACE {
+            if entry.flags(command, &tokens) {
+                eprintln!(
+                    "PROBE detb {command} <- {} via {:?}",
+                    entry.id,
+                    entry.matched_markers(&tokens)
+                );
+            }
+        }
+        let proc = PROCESS_LAUNCH_SINKS
+            .iter()
+            .copied()
+            .filter(|sink| tokens_reach_any(&tokens, &[sink]))
+            .collect::<Vec<_>>();
+        eprintln!("PROBE detc {command} proc={proc:?}");
+    }
+
+    let commands = census()
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect::<Vec<_>>();
+    let token_sets = commands
+        .iter()
+        .map(|command| (command.clone(), graph.closure([command.clone()]).tokens))
+        .collect::<Vec<_>>();
+    for candidate in [
+        "create",
+        "restart_terminal_task_to_ready_with_history_for_action",
+        "InternalStatus::Ready",
+        "ensure_re_review_from_escalated_status",
+        "add_note",
+        "InternalStatus::PendingReview",
+        "InternalStatus::RevisionNeeded",
+        "transition_automation_status",
+        "transition_automation_status_or_conflict",
+        "reopen_run_corrective",
+        "compare_and_swap_status",
+        "AutomationStatus::Active",
+        "create_or_update",
+        "update_links",
+        "restore_after_restart",
+        "update_status",
+        "update_pr_supervision_preferences",
+        "linked_ideation_session_id",
+        "AgentConversationWorkspaceMode::Ideation",
+        "AgentConversationWorkspaceMode::Plan",
+        "AgentConversationWorkspaceMode::Edit",
+        "AgentConversationWorkspaceMode::Tasks",
+        "insert_event",
+        "insert_event_once_for_attempt",
+        "update_auto_publish_preferences",
+        "update_auto_publish_initial_pr_preference",
+        "auto_publish",
+        "update_settings",
+        "require_workspace_review",
+    ] {
+        let hits = token_sets
+            .iter()
+            .filter(|(_, tokens)| tokens.contains(candidate))
+            .map(|(command, _)| command.as_str())
+            .collect::<Vec<_>>();
+        eprintln!(
+            "PROBE token {candidate} hits={} sample={:?}",
+            hits.len(),
+            hits.iter().take(6).collect::<Vec<_>>()
         );
     }
+    for entry in SPAWN_TRIGGERING_STATE_SURFACE {
+        let writers =
+            spawn_triggering_writers(&graph, commands.clone(), std::slice::from_ref(entry));
+        eprintln!(
+            "PROBE surface {} writers={} {:?}",
+            entry.id,
+            writers.len(),
+            writers.iter().take(14).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn wry_monomorphic_remote_reads_are_ledgered_but_unregistered() {
+    let row = policy_for("list_remote_audit_entries", "remote_device_commands").unwrap();
+    assert_eq!(row.class, RiskClass::Read);
+    assert!(
+        find_spec("list_remote_audit_entries").is_none(),
+        "AppHandle-only command must await PR 3.1"
+    );
+
+    // Not a read: detector (c) proved this one resolves the Tailscale CLI.
+    let advertised =
+        policy_for("list_remote_advertised_endpoints", "remote_host_commands").unwrap();
+    assert_eq!(advertised.class, RiskClass::Elevated);
+    assert_eq!(advertised.capabilities, &[Capability::SpawnsProcess]);
+    assert!(
+        find_spec("list_remote_advertised_endpoints").is_none(),
+        "process-spawning endpoint listing must not be registered"
+    );
 }
