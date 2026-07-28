@@ -2023,6 +2023,8 @@ export interface SendAgentMessageOptions {
   codexFastMode?: boolean | null;
   runtimeOverride?: ManualRoleRuntimeSelection;
   suppressUserMessage?: boolean;
+  requireApprovedLinkedPlan?: boolean;
+  expectedLinkedPlanFingerprint?: string;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   teamMessageTarget?: TeamMessageTarget | null;
@@ -4603,6 +4605,7 @@ export async function activateAgentPlanDirectImplementation(input: {
 }): Promise<{
   workspace: AgentConversationWorkspace;
   artifactReferences: ComposerArtifactReference[];
+  planContextFingerprint: string;
 }> {
   const responseSchema = z.object({
     workspace: AgentConversationWorkspaceResponseSchema,
@@ -4616,6 +4619,7 @@ export async function activateAgentPlanDirectImplementation(input: {
         status: z.string().optional(),
       }),
     ),
+    plan_context_fingerprint: z.string().min(1),
   });
   const raw = await typedInvoke(
     "activate_agent_plan_direct_implementation",
@@ -4638,6 +4642,7 @@ export async function activateAgentPlanDirectImplementation(input: {
       ...(reference.version ? { version: reference.version } : {}),
       ...(reference.status ? { status: reference.status } : {}),
     })),
+    planContextFingerprint: raw.plan_context_fingerprint,
   };
 }
 
@@ -4715,6 +4720,15 @@ export async function sendAgentMessage(
           ? { runtimeOverride: roleRuntimeOverrideInvokeInput(options.runtimeOverride) }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
+        ...(options?.requireApprovedLinkedPlan
+          ? { requireApprovedLinkedPlan: true }
+          : {}),
+        ...(options?.expectedLinkedPlanFingerprint
+          ? {
+              expectedLinkedPlanFingerprint:
+                options.expectedLinkedPlanFingerprint,
+            }
+          : {}),
         ...(options?.capabilityIntent
           ? { capabilityIntent: options.capabilityIntent }
           : options?.teamIntent

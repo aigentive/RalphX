@@ -1228,10 +1228,14 @@ async fn ensure_plan_link_is_noop_when_already_linked_to_planning_session() {
         .await
         .expect("seed project");
 
+    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Plan);
+
     // Seed a Planning-flow ideation session and link the workspace to it.
     let session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
         .build();
     let session = state
         .ideation_session_repo
@@ -1239,7 +1243,6 @@ async fn ensure_plan_link_is_noop_when_already_linked_to_planning_session() {
         .await
         .expect("seed ideation session");
 
-    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Plan);
     workspace.linked_ideation_session_id = Some(session.id.clone());
 
     let created = ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace)

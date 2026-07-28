@@ -4,6 +4,7 @@ use super::types::{
     AgentComposerPlanReferenceResponse, SearchAgentComposerPlanReferencesInput,
     SearchAgentComposerPlanReferencesResponse,
 };
+use crate::application::agent_plan_context::{lookup_plan_approval, plan_reference_status};
 use crate::application::AppState;
 use crate::domain::entities::{
     ArtifactId, IdeationSession, IdeationSessionFlow, IdeationSessionStatus, ProjectId,
@@ -150,46 +151,10 @@ struct ScoredPlanReference {
     response: AgentComposerPlanReferenceResponse,
 }
 
-pub(crate) struct PlanApprovalLookup {
-    pub(crate) approved_at: Option<String>,
-}
-
 pub(crate) fn session_can_reference_plan(session: &IdeationSession) -> bool {
     session.session_purpose != SessionPurpose::Verification
         && session.status != IdeationSessionStatus::Archived
         && (session.plan_artifact_id.is_some() || session.inherited_plan_artifact_id.is_some())
-}
-
-pub(crate) fn plan_reference_status(
-    session: &IdeationSession,
-    approval: Option<&PlanApprovalLookup>,
-) -> String {
-    if session.status == IdeationSessionStatus::Accepted {
-        return "accepted".to_string();
-    }
-    if approval.is_some() {
-        return "approved".to_string();
-    }
-    "draft".to_string()
-}
-
-pub(crate) async fn lookup_plan_approval(
-    state: &AppState,
-    session_id: &crate::domain::entities::IdeationSessionId,
-    artifact: &crate::domain::entities::Artifact,
-    blueprint: Option<&crate::domain::entities::Artifact>,
-) -> Result<Option<PlanApprovalLookup>, String> {
-    let approval = state
-        .plan_approval_repo
-        .get_by_session(session_id)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    Ok(approval
-        .filter(|approval| approval.matches_artifacts(artifact, blueprint))
-        .map(|approval| PlanApprovalLookup {
-            approved_at: Some(approval.approved_at),
-        }))
 }
 
 pub(crate) fn score_reference(

@@ -196,8 +196,14 @@ import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
 } from "./agentPlanModeActions";
-import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
-import { implementAgentPlanDirectly } from "./implementAgentPlanDirectly";
+import {
+  activateAgentPlanProposals,
+  PlanContinuationCommittedError,
+} from "./agentPlanProposalActivation";
+import {
+  implementAgentPlanDirectly,
+  type DirectImplementationActivationSnapshot,
+} from "./implementAgentPlanDirectly";
 import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
 import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
 import { ArtifactSelectionProvider } from "./artifact-selection/ArtifactSelectionProvider";
@@ -3232,35 +3238,49 @@ function AgentPlanPanel({
     if (!session || !workspace?.conversationId || !canImplementDirectly) {
       return;
     }
+    let pinnedActivation: DirectImplementationActivationSnapshot | undefined;
+    let committedRuntimeOverride:
+      | import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection
+      | null = null;
     void confirmImplementDirectly(async (runtimeOverride) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
       setIsImplementingPlanDirectly(true);
       try {
         await implementAgentPlanDirectly({
           projectId: session.projectId,
-          workspace,
+          workspace: pinnedActivation?.workspace ?? workspace,
           queryClient,
           ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
-          sendOptions: { runtimeOverride },
+          ...(pinnedActivation ? { pinnedActivation } : {}),
+          onActivated: (snapshot) => {
+            if (!pinnedActivation) {
+              pinnedActivation = snapshot;
+              committedRuntimeOverride = { ...runtimeForAttempt };
+            }
+          },
+          sendOptions: { runtimeOverride: runtimeForAttempt },
         });
         useAgentSessionStore
           .getState()
           .setRuntimeForConversation(
             workspace.conversationId,
             session.projectId,
-            materializeWorkspaceRuntimeSelection(runtimeOverride, modelRegistry),
+            materializeWorkspaceRuntimeSelection(runtimeForAttempt, modelRegistry),
           );
         useAgentSessionStore
           .getState()
           .setServiceTierForConversation(
             workspace.conversationId,
-            runtimeOverride.serviceTier,
+            runtimeForAttempt.serviceTier,
           );
         toast.success("Implementation started");
       } catch (err) {
         console.error("Failed to implement plan directly:", err);
-        toast.error(
-          err instanceof Error ? err.message : "Failed to start implementation",
-        );
+        if (!(err instanceof PlanContinuationCommittedError)) {
+          toast.error(
+            err instanceof Error ? err.message : "Failed to start implementation",
+          );
+        }
         throw err;
       } finally {
         setIsImplementingPlanDirectly(false);

@@ -2061,13 +2061,14 @@ describe("AgentsArtifactPane", () => {
         },
         {
           artifactId: "blueprint-1",
-          kind: "plan",
+          kind: "plan_blueprint",
           title: "Implementation Blueprint",
           sessionId: "session-1",
           version: 2,
           status: "approved",
         },
       ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     activateAgentTaskPipelineMock.mockResolvedValue(
       workspace({
@@ -9030,14 +9031,15 @@ describe("AgentsArtifactPane", () => {
         {
           conversationId: "conversation-1",
           runtimeOverride: approvedPlanRuntime,
-          composerArtifactReferences: [
-            expect.objectContaining({ artifactId: "artifact-1" }),
-            expect.objectContaining({ artifactId: "blueprint-1" }),
-          ],
+          requireApprovedLinkedPlan: true,
+          expectedLinkedPlanFingerprint: "plan-context-fingerprint-1",
           suppressUserMessage: true,
         },
       ),
     );
+    expect(
+      sendAgentMessageMock.mock.calls[0]?.[4],
+    ).not.toHaveProperty("composerArtifactReferences");
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
       "do not create task proposals",

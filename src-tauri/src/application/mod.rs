@@ -16,6 +16,9 @@ pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
+pub(crate) mod agent_plan_context;
+#[cfg(test)]
+mod agent_plan_context_tests;
 pub mod manual_role_default_service;
 pub mod manual_router_config;
 pub mod mcp_policy_config;
