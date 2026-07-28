@@ -3,17 +3,17 @@
   "generatedBy": "scripts/generate-remote-coverage-census.mjs",
   "purpose": "PR 3.1 work manifest: every P-11-unclassified invoke command name, grouped into module-scoped work batches with a recommended registration order. A census and a plan — it registers nothing and decides no final class.",
   "scan": {
-    "invokedCommands": 498,
+    "invokedCommands": 499,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
     "unclassified": 431,
-    "line": "PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 431 unclassified (baseline, → 0 in PR 3.1)."
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 431 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
-    "invokedCommandNames": 498,
-    "remoteRegistered": 39,
+    "invokedCommandNames": 499,
+    "remoteRegistered": 40,
     "localOnlyRows": 29,
-    "ledgerRows": 540,
+    "ledgerRows": 541,
     "unclassified": 431,
     "assignedToBatches": 431,
     "batches": 14

@@ -1022,6 +1022,28 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // Spawn-free chat send. This is the ONLY registered way to put words into an agent
+    // conversation from a paired device: `send_agent_message` and `start_agent_conversation`
+    // both fire detector (c) and stay unregistered, so remote participation is confined to
+    // steering a run the host already started.
+    //
+    // `role` is server-pinned to `"user"`. The transcript's role field is what downstream
+    // prompt assembly trusts to tell instruction from user input, so a client that could
+    // author an `orchestrator` turn could put words in the agent's own mouth. The pin is
+    // read from `spec.pins` at dispatch, and the command independently rejects any other
+    // role — the declaration cannot drift from the behaviour.
+    "send_remote_chat_message" => crate::commands::remote_chat_commands::send_remote_chat_message {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (pinned_arg input: crate::commands::remote_chat_commands::SendRemoteChatMessageInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+        pins: [("input", "role", "user")],
+    },
+
     // Agent-consumed content surface.
     "create_task_step" => crate::commands::task_step_commands::create_task_step {
         class: AgentControl,

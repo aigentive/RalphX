@@ -236,6 +236,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "send_remote_chat_message": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent"],
+    pins: [{"param":"input","field":"role","value":"user"}],
+  },
   "stop_task": {
     opClass: "operate",
     argumentSensitive: false,

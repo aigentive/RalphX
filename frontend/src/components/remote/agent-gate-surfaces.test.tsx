@@ -14,7 +14,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AGENT_CONTROL_DISABLED_HINT } from "@/lib/remote/agent-gate";
+import {
+  AGENT_CONTROL_DISABLED_HINT,
+  resolveAffordanceGate,
+} from "@/lib/remote/agent-gate";
 
 const REMOTE_ID = "env-remote";
 
@@ -64,7 +67,7 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Chat send — currently UNAVAILABLE remotely, not scope-gated
+// Chat send — scope-gated remotely since send_remote_chat_message was registered
 // ---------------------------------------------------------------------------
 
 describe("chat send", () => {
@@ -85,28 +88,50 @@ describe("chat send", () => {
     expect(onSend).toHaveBeenCalled();
   });
 
-  it.each(["granted", "absent"] as const)(
-    "remote/%s: send is disabled with the AVAILABILITY reason, and never dispatches",
-    async (column) => {
-      setColumn(column);
-      const onSend = vi.fn();
-      await renderInput(onSend);
+  // Chat send used to be `unavailable` in BOTH remote columns, because the affordance
+  // pointed at `send_agent_message` and no spawn-free send existed. Registering
+  // `send_remote_chat_message` makes the two columns differ, which is the whole point:
+  // the device is now told the truth about WHY it cannot send, and granting ui:agent
+  // now actually changes the answer.
 
-      const button = screen.getByTestId("chat-input-send");
-      expect(button).toBeDisabled();
-      button.click();
-      expect(onSend).not.toHaveBeenCalled();
+  it("remote/granted: send is enabled and dispatches", async () => {
+    setColumn("granted");
+    const onSend = vi.fn();
+    await renderInput(onSend);
 
-      // `send_agent_message` is not in the host's facade_ops, so granting ui:agent
-      // would not help. Saying "enable it on the host" here would be a lie, and this
-      // assertion is what stops the two copies being swapped.
-      const tooltip = screen.getByTestId("agent-gate-tooltip");
-      expect(tooltip).toHaveAttribute("data-agent-gated", "true");
-      expect(tooltip.parentElement?.textContent ?? "").not.toContain(
-        AGENT_CONTROL_DISABLED_HINT
-      );
-    }
-  );
+    const button = screen.getByTestId("chat-input-send");
+    expect(button).toBeEnabled();
+    button.click();
+    expect(onSend).toHaveBeenCalled();
+  });
+
+  it("remote/absent: send is SCOPE-gated, not unavailable, and never dispatches", async () => {
+    setColumn("absent");
+    const onSend = vi.fn();
+    await renderInput(onSend);
+
+    const button = screen.getByTestId("chat-input-send");
+    expect(button).toBeDisabled();
+    button.click();
+    expect(onSend).not.toHaveBeenCalled();
+
+    const tooltip = screen.getByTestId("agent-gate-tooltip");
+    expect(tooltip).toHaveAttribute("data-agent-gated", "true");
+
+    // Which of the two disabled reasons this is, asserted at the seam that decides it —
+    // the hint itself lives in Radix tooltip content that only mounts on hover. The
+    // distinction is the point: "enable it on the host" is now TRUE advice, where
+    // before the op was absent and it would have been a lie.
+    expect(resolveAffordanceGate("chatSend", true, ["ui:read", "ui:operate"])).toEqual({
+      status: "gated",
+      gated: true,
+      reason: AGENT_CONTROL_DISABLED_HINT,
+    });
+    expect(
+      resolveAffordanceGate("chatSend", true, ["ui:read", "ui:operate", "ui:agent"])
+        .status
+    ).toBe("enabled");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -849,7 +849,7 @@ fn detector_b_is_calibrated_and_floor_enforced() {
     let rows = census();
     assert_eq!(
         rows.len(),
-        540,
+        541,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -1894,6 +1894,60 @@ fn b1_sibling_getters_that_audit_dirty_stay_above_read() {
         find_spec("set_active_project").is_none(),
         "set_active_project must not be registered"
     );
+}
+
+/// Calibration probe for the spawn-free remote send.
+///
+/// Prints the detector verdict for `send_remote_chat_message` alongside the two commands
+/// it deliberately is NOT — `send_agent_message` and `start_agent_conversation`, which
+/// fire all three. Run before registering the command on the facade; a `c=true` here is a
+/// redesign signal, never an exemption request.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_remote_chat_send_sink_paths() {
+    const SUBJECTS: &[&str] = &[
+        "send_remote_chat_message",
+        "send_agent_message",
+        "start_agent_conversation",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+    let modules = rows.into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in SUBJECTS {
+        let Some(module) = modules.get(*command) else {
+            eprintln!("PROBE-CHATSEND {command} NOT-IN-CENSUS");
+            continue;
+        };
+        let closure = graph.closure([command.to_string()]);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-CHATSEND {command} module={module} a={} b={} c={} class={:?} caps={:?}",
+            closure_is_arming(&closure),
+            detector_b.contains(*command),
+            tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            row.class,
+            row.capabilities,
+        );
+        for sinks in [
+            ("STEER", &super::authority_audit::STEER_SINKS[..]),
+            ("SCHEDULER", &super::authority_audit::SCHEDULER_SINKS[..]),
+            ("TRANSITION", &super::authority_audit::TRANSITION_SINKS[..]),
+            ("LAUNCH", PROCESS_LAUNCH_SINKS),
+        ] {
+            let hits = closure
+                .tokens
+                .iter()
+                .filter(|t| tokens_reach_any(&std::iter::once((*t).clone()).collect(), sinks.1))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !hits.is_empty() {
+                eprintln!("PROBE-CHATSEND   {command} {} -> {hits:?}", sinks.0);
+            }
+        }
+    }
 }
 
 #[test]
