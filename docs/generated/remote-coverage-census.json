@@ -6,16 +6,16 @@
     "invokedCommands": 499,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "unclassified": 431,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 431 unclassified (baseline, → 0 in PR 3.1)."
+    "unclassified": 424,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 424 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 499,
-    "remoteRegistered": 40,
+    "remoteRegistered": 47,
     "localOnlyRows": 29,
     "ledgerRows": 541,
-    "unclassified": 431,
-    "assignedToBatches": 431,
+    "unclassified": 424,
+    "assignedToBatches": 424,
     "batches": 14
   },
   "dispositionModel": {
@@ -41,7 +41,7 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 269,
+    "registerCandidate": 262,
     "v1DeferredElevated": 26,
     "hostDeniedSpawn": 49,
     "hostDeniedClass": 87
@@ -78,7 +78,7 @@
         "Confirm the brakes in these modules stay `ui:operate` (A-14) and that no arming transition lands below the `AgentControl` floor."
       ],
       "gate": "P-17 suite green; P-17b generated scope entries exist for every new AgentControl member; C-9 dual-lens review recorded.",
-      "commandCount": 32,
+      "commandCount": 29,
       "modules": [
         "execution_commands",
         "permission_commands",
@@ -87,22 +87,20 @@
         "task_step_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 30,
+        "registerCandidate": 27,
         "hostDeniedClass": 2
       },
-      "registerCandidates": 30,
+      "registerCandidates": 27,
       "nonRegistering": 2,
       "commandsByModule": {
         "execution_commands": [
           "get_execution_status",
           "get_running_processes",
-          "pause_execution",
           "recover_task_execution",
           "resolve_recovery_prompt",
           "restart_task",
           "resume_execution",
           "set_active_project",
-          "stop_execution",
           "update_execution_settings",
           "update_global_execution_settings"
         ],
@@ -117,7 +115,6 @@
         "task_commands": [
           "archive_task",
           "archive_tasks_in_group",
-          "cancel_tasks_in_group",
           "cleanup_task",
           "cleanup_tasks_in_group",
           "pause_execution_plan",
@@ -139,7 +136,6 @@
       "commands": [
         "archive_task",
         "archive_tasks_in_group",
-        "cancel_tasks_in_group",
         "cleanup_task",
         "cleanup_tasks_in_group",
         "complete_step",
@@ -148,7 +144,6 @@
         "get_pending_permissions",
         "get_pending_questions",
         "get_running_processes",
-        "pause_execution",
         "pause_execution_plan",
         "recover_task_execution",
         "reorder_task_steps",
@@ -165,7 +160,6 @@
         "set_active_project",
         "skip_step",
         "start_step",
-        "stop_execution",
         "stop_execution_plan",
         "update_execution_settings",
         "update_global_execution_settings"
@@ -179,23 +173,23 @@
       "work": [
         "Split the module by authority: the send/steer commands register as `AgentControl`; the publish/PR surface (`publish_agent_conversation_workspace`, `update_agent_conversation_workspace_from_base`, `close_agent_workspace_pr`) stays denied, and `set_agent_conversation_workspace_auto_publish` is an already-proven detector-(c) rejection.",
         "Verify per command that the process-launch sink sits BEYOND the steer-sink cut (`chat_service.send_message`) rather than inside the command's own closure — the cut is what makes chat send registerable while `resume_task` is not. Any command whose own closure resolves a CLI path is a detector-(c) rejection, not a registration.",
-        "P-4 rows must cover `SendAgentMessageInput`'s optional/override fields (the `runtimeOverride` vs legacy-field rejection is an error-path parity row)."
+        "P-4 rows must cover `SendAgentMessageInput`'s optional/override fields (the `runtimeOverride` vs legacy-field rejection is an error-path parity row).",
+        "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace."
       ],
       "gate": "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
-      "commandCount": 56,
+      "commandCount": 52,
       "modules": [
         "agent_composer_commands",
         "agent_model_commands",
         "agent_sidebar_commands",
         "conversation_folder_reference_commands",
-        "conversation_stats_commands",
         "unified_chat_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 51,
+        "registerCandidate": 47,
         "hostDeniedClass": 5
       },
-      "registerCandidates": 51,
+      "registerCandidates": 47,
       "nonRegistering": 5,
       "commandsByModule": {
         "agent_composer_commands": [
@@ -216,12 +210,6 @@
           "add_conversation_folder_reference",
           "list_conversation_folder_references",
           "remove_conversation_folder_reference"
-        ],
-        "conversation_stats_commands": [
-          "get_agent_conversation_stats",
-          "get_insights_chat_usage_stats",
-          "get_project_chat_usage_stats",
-          "get_task_chat_usage_stats"
         ],
         "unified_chat_commands": [
           "abort_seeded_agent_conversation",
@@ -281,7 +269,6 @@
         "get_agent_conversation_messages_page",
         "get_agent_conversation_runtime_index",
         "get_agent_conversation_runtime_statuses",
-        "get_agent_conversation_stats",
         "get_agent_conversation_summary",
         "get_agent_conversation_timeline_page",
         "get_agent_conversation_workspace",
@@ -291,10 +278,7 @@
         "get_agent_running_states",
         "get_agent_timeline_item_tool_call_detail",
         "get_bulk_workspace_publication_states",
-        "get_insights_chat_usage_stats",
-        "get_project_chat_usage_stats",
         "get_queued_agent_messages",
-        "get_task_chat_usage_stats",
         "is_agent_running",
         "is_chat_service_available",
         "list_agent_composer_skills",
@@ -1742,17 +1726,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "cancel_tasks_in_group",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "cleanup_task",
       "batch": "B1",
       "module": "task_commands",
@@ -2396,17 +2369,6 @@
       "command": "get_agent_conversation_runtime_statuses",
       "batch": "B2",
       "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_conversation_stats",
-      "batch": "B2",
-      "module": "conversation_stats_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -3229,17 +3191,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_insights_chat_usage_stats",
-      "batch": "B2",
-      "module": "conversation_stats_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_insights_pr_insights",
       "batch": "B5",
       "module": "metrics_commands",
@@ -3502,17 +3453,6 @@
       ],
       "disposition": "hostDeniedSpawn",
       "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
-      "command": "get_project_chat_usage_stats",
-      "batch": "B2",
-      "module": "conversation_stats_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
       "command": "get_project_plan_branches",
@@ -3793,17 +3733,6 @@
       "command": "get_task_blockers",
       "batch": "B4",
       "module": "ideation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_chat_usage_stats",
-      "batch": "B2",
-      "module": "conversation_stats_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -4521,17 +4450,6 @@
       "command": "pause_automation",
       "batch": "B5",
       "module": "automation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "pause_execution",
-      "batch": "B1",
-      "module": "execution_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -5603,17 +5521,6 @@
       "command": "stop_automation",
       "batch": "B5",
       "module": "automation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "stop_execution",
-      "batch": "B1",
-      "module": "execution_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"

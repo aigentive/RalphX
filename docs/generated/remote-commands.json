@@ -595,6 +595,27 @@
       "scope": "ui:operate"
     },
     {
+      "command": "pause_execution",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "commands/execution_commands/lifecycle.rs sets the pause flag and transitions agent-active tasks only to Paused; commands/execution_commands/state.rs can_start_task returns false on is_paused before reading any quota",
+      "scope": "ui:operate"
+    },
+    {
+      "command": "stop_execution",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "commands/execution_commands/lifecycle.rs sets the pause flag and transitions agent-active tasks only to Stopped; the only production caller of ExecutionState::resume is resume_execution, which re-syncs the quota first",
+      "scope": "ui:operate"
+    },
+    {
+      "command": "cancel_tasks_in_group",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "commands/task_commands/mutation.rs skips terminal tasks and transitions only to Cancelled, whose on_exit in domain/state_machine/transition_handler/mod.rs stops pollers and decrements the running count",
+      "scope": "ui:operate"
+    },
+    {
       "command": "deny_permission_request",
       "direction": "authority-reducing",
       "kind": "command",
@@ -2215,6 +2236,38 @@
       "target": "crate::commands::execution_commands::get_active_project"
     },
     {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_conversation_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_agent_conversation_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_project_chat_usage_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_project_chat_usage_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_chat_usage_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_task_chat_usage_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_insights_chat_usage_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_insights_chat_usage_stats"
+    },
+    {
       "argumentSensitive": true,
       "capabilities": [],
       "class": "operate",
@@ -2261,6 +2314,30 @@
       "command": "pause_tasks_in_group",
       "pins": [],
       "target": "crate::commands::task_commands::mutation::pause_tasks_in_group"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "pause_execution",
+      "pins": [],
+      "target": "crate::commands::execution_commands::pause_execution"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "stop_execution",
+      "pins": [],
+      "target": "crate::commands::execution_commands::stop_execution"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "cancel_tasks_in_group",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::cancel_tasks_in_group"
     },
     {
       "argumentSensitive": false,
@@ -3549,14 +3626,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "operate",
       "command": "cancel_tasks_in_group",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "authority-reducing: transitions only to Cancelled",
+      "registered": true
     },
     {
       "capabilities": [],
@@ -4512,14 +4587,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "operate",
       "command": "pause_execution",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "authority-reducing: gates scheduling and transitions agent-active tasks only to Paused",
+      "registered": true
     },
     {
       "capabilities": [
@@ -4532,14 +4605,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "operate",
       "command": "stop_execution",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "authority-reducing: gates scheduling and transitions agent-active tasks only to Stopped",
+      "registered": true
     },
     {
       "capabilities": [
@@ -4676,44 +4747,36 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_conversation_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "aggregates conversation/message/run repository reads into usage totals; propagates read errors",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_insights_chat_usage_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "project-or-all-projects usage aggregation over repository reads; propagates read errors",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_project_chat_usage_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "project-scoped usage aggregation over repository reads; propagates read errors",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_chat_usage_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "task-scoped usage aggregation over repository reads; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [

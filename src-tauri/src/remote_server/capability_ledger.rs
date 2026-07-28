@@ -918,6 +918,100 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              born in a spawn-triggering state",
         ),
     },
+    // -------------------------------------------------------------------------------------
+    // PR 3.1-b batch 3 — census `B2`, the conversation-stats read cluster.
+    //
+    // `B2` is the census's highest-risk batch and this is deliberately the smallest complete
+    // module in it. All four audit detector-silent on (a)/(b)/(c)/(d), and each body was
+    // hand-traced to repository reads whose errors are propagated with `map_err(...)?` rather
+    // than collapsed into an empty result — the `get_pending_permissions` fail-open shape that
+    // kept two batch-1 candidates unregistered does not appear here.
+    //
+    // The payloads are token/cost AGGREGATES — usage totals, coverage counts and per-harness,
+    // per-model and per-effort buckets. No message text, no prompt, no tool input. This is a
+    // usage-reporting surface, not the transcript surface; the transcript reads stay at the
+    // module default and are the next batch's problem.
+    CommandOverride {
+        command: "get_agent_conversation_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "aggregates conversation/message/run repository reads into usage totals; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_project_chat_usage_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "project-scoped usage aggregation over repository reads; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_chat_usage_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "task-scoped usage aggregation over repository reads; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_insights_chat_usage_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "project-or-all-projects usage aggregation over repository reads; propagates read errors",
+        ),
+    },
+
+    // -------------------------------------------------------------------------------------
+    // PR 3.1-b batch 3 — the Operate brakes.
+    //
+    // Batch 2 registered the `B1` reads and left the module defaults at `AgentControl`. These
+    // three are the halting half of that remainder: each moves the system strictly toward
+    // less autonomous work and none can start, resume, or steer any of it. They close a real
+    // asymmetry — before this batch a remote viewer could watch execution it had no way to
+    // stop.
+    //
+    // Detectors (a)/(b)/(c)/(d) are silent on all three (`probe_operate_brakes_audit`), but
+    // detector silence is necessary and never sufficient here: `pause_execution` and
+    // `stop_execution` both call `sync_quota_from_project`, which is the exact write that
+    // disqualified `set_active_project` in batch 2. The distinction is proven, not asserted —
+    // see `the_brake_quota_write_is_dominated_by_the_pause_flag`.
+    CommandOverride {
+        command: "pause_execution",
+        policy: policy(
+            RiskClass::Operate,
+            NONE,
+            "authority-reducing: gates scheduling and transitions agent-active tasks only to Paused",
+        ),
+    },
+    CommandOverride {
+        command: "stop_execution",
+        policy: policy(
+            RiskClass::Operate,
+            NONE,
+            "authority-reducing: gates scheduling and transitions agent-active tasks only to Stopped",
+        ),
+    },
+    CommandOverride {
+        command: "cancel_tasks_in_group",
+        policy: policy(
+            RiskClass::Operate,
+            NONE,
+            "authority-reducing: transitions only to Cancelled",
+        ),
+    },
+    // NOT reclassified — `archive_tasks_in_group` stays at the `task_commands` AgentControl
+    // default. It is the batch-3 counterpart of batch 2's `set_active_project`: detector-silent,
+    // superficially a sibling of the bulk brakes, and disqualified only by hand-tracing.
+    // Archiving writes `archived_at` and nothing else — there is no `InternalStatus::Archived`,
+    // so the ledger's `Archived` transition-target exemption does not reach this command. An
+    // archived Executing task keeps its agent process, keeps its execution slot, and becomes
+    // invisible to the reconciler (`get_by_status` filters `archived_at IS NULL`) while
+    // `transition_task` refuses every recovery. That is authority-OBSCURING, not
+    // authority-reducing. Pinned by `bulk_archive_is_not_a_brake_and_stays_unregistered`.
+
     // Declared memberships not inferable from transition/process sinks.
     CommandOverride {
         command: "resolve_permission_request",
@@ -972,6 +1066,28 @@ pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
         direction: "authority-reducing",
         scope: "ui:operate",
         rationale: "transitions only to Paused",
+    },
+    // PR 3.1-b batch 3 — the Operate brakes.
+    AuthorityReducingExemption {
+        subject: "pause_execution",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "commands/execution_commands/lifecycle.rs sets the pause flag and transitions agent-active tasks only to Paused; commands/execution_commands/state.rs can_start_task returns false on is_paused before reading any quota",
+    },
+    AuthorityReducingExemption {
+        subject: "stop_execution",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "commands/execution_commands/lifecycle.rs sets the pause flag and transitions agent-active tasks only to Stopped; the only production caller of ExecutionState::resume is resume_execution, which re-syncs the quota first",
+    },
+    AuthorityReducingExemption {
+        subject: "cancel_tasks_in_group",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "commands/task_commands/mutation.rs skips terminal tasks and transitions only to Cancelled, whose on_exit in domain/state_machine/transition_handler/mod.rs stops pollers and decrements the running count",
     },
     AuthorityReducingExemption {
         subject: "deny_permission_request",

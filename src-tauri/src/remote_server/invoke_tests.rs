@@ -680,6 +680,24 @@ async fn seed_b1_tasks(app: &tauri::App<tauri::test::MockRuntime>) -> (String, S
     .await
     .expect("seeding the second task succeeds");
 
+    // A real dependency edge: task two is blocked by task one.
+    //
+    // Without it the dependency-graph parity row was both weaker and flaky. Weaker because
+    // `edges` was empty, so nothing proved the facade reproduced edge data at all. Flaky
+    // because with two unconnected tasks the critical path is a tie between two single-node
+    // paths, and the command breaks that tie by whatever order the underlying `HashMap`
+    // iteration produced — two calls of the same command genuinely disagreed. With the edge
+    // the graph has one longest path, so `critical_path`, `tier`, `in_degree` and `out_degree`
+    // are all uniquely determined and asserted exactly.
+    app.state::<crate::application::AppState>()
+        .task_dependency_repo
+        .add_dependency(
+            &crate::domain::entities::TaskId::from_string(second.id.clone()),
+            &crate::domain::entities::TaskId::from_string(first.id.clone()),
+        )
+        .await
+        .expect("seeding the dependency edge succeeds");
+
     (first.id, second.id)
 }
 
@@ -690,7 +708,7 @@ async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
     use tauri::Manager;
 
     let app = app_with_task_state();
-    let (task_id, _other) = seed_b1_tasks(&app).await;
+    let (task_id, other_task_id) = seed_b1_tasks(&app).await;
 
     let direct_archived = crate::commands::task_commands::query::get_archived_count(
         B1_FIXTURE_PROJECT.to_string(),
@@ -760,6 +778,19 @@ async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
         2,
         "dependency graph must carry both seeded tasks"
     );
+    // The seeded edge must actually be visible, or the parity row proves nothing about edge
+    // data — and the critical path must be the unique two-node path rather than a coin flip.
+    assert_eq!(
+        direct_graph.edges.len(),
+        1,
+        "the seeded dependency edge must appear in the graph"
+    );
+    assert_eq!(direct_graph.critical_path.len(), 2);
+    assert_eq!(
+        direct_graph.critical_path,
+        vec![task_id.clone(), other_task_id.clone()],
+        "the critical path must run blocker -> blocked, deterministically"
+    );
     // The remaining four reads are empty-by-construction over a freshly seeded fixture
     // (no archived task, no review-status task, no recorded status history, and therefore no
     // timeline event). Their parity rows below are consequently weaker than the two above,
@@ -814,12 +845,45 @@ async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
         let outcome = registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
             .await
             .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        let DispatchOutcome::Ok(facade) = outcome else {
+            panic!("`{command}` returned a business error: {outcome:?}");
+        };
         assert_eq!(
-            outcome,
-            DispatchOutcome::Ok(direct),
+            canonicalize_unordered_collections(facade),
+            canonicalize_unordered_collections(direct),
             "P-4 parity mismatch for `{command}`"
         );
     }
+}
+
+/// Sorts the payload arrays whose order is not part of any command's contract.
+///
+/// `get_task_dependency_graph` builds its node list from `task_repo.get_by_project`, which
+/// promises no ordering — the in-memory repository iterates a `HashMap`, so two calls in the
+/// same process can legitimately return the same nodes in different orders. Asserting raw
+/// equality made this parity row intermittently red (observed repeatedly while landing batch
+/// 3) while proving nothing the command guarantees.
+///
+/// This canonicalizes rather than skips: the node and edge SETS must still match exactly, and
+/// every other field is compared untouched. A facade that dropped, added or reshaped a node
+/// still fails. What is deliberately no longer asserted is an ordering neither the local IPC
+/// path nor the facade ever promised.
+///
+/// `critical_path` is deliberately NOT canonicalized here. It was the other half of the flake,
+/// and canonicalizing it would have hidden something real: over the ORIGINAL fixture — two
+/// unconnected tasks — the command picked one of two tied single-node paths arbitrarily, so
+/// two calls genuinely disagreed about which task was critical. The fix is in the fixture,
+/// which now seeds a real dependency edge and therefore has a uniquely determined critical
+/// path, so the field is asserted exactly.
+fn canonicalize_unordered_collections(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        for field in ["nodes", "edges"] {
+            if let Some(Value::Array(items)) = object.get_mut(field) {
+                items.sort_by_key(|item| item.to_string());
+            }
+        }
+    }
+    value
 }
 
 /// Scope negative — no grant weaker than (or sideways from) `ui:read` reaches these reads.
@@ -1055,6 +1119,745 @@ async fn the_b1_step_and_execution_reads_are_refused_below_ui_read() {
         assert!(
             registry::find_spec(command).is_none(),
             "`{command}` must not be registered by sibling analogy"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 3 — the Operate brakes (`ui:operate`)
+//
+// Three halting ops, reclassified from the conservative `AgentControl` module default. The
+// asymmetry they close is concrete: before this batch a paired device could watch execution
+// it had no way to stop.
+//
+// `archive_tasks_in_group` was audited alongside them and REFUSED. Its absence is asserted
+// here, not merely omitted — see `bulk_archive_is_not_a_brake_and_stays_unregistered` in
+// `capability_ledger_tests` for the reason.
+// ---------------------------------------------------------------------------------------
+
+const BATCH3_BRAKES: [&str; 3] = ["pause_execution", "stop_execution", "cancel_tasks_in_group"];
+
+/// A mock app carrying every state the brakes are injected with.
+fn app_with_brake_state() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .manage(std::sync::Arc::new(
+            crate::commands::execution_commands::ActiveProjectState::new(),
+        ))
+        .manage(std::sync::Arc::new(
+            crate::commands::execution_commands::ExecutionState::default(),
+        ))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
+}
+
+/// P-4 parity for the two global brakes.
+///
+/// Both are idempotent — pausing an already-paused runtime is a no-op — and their response
+/// carries no clock-derived field, so the direct local IPC call and the facade dispatch must
+/// produce byte-identical payloads. This is a genuine mutating-op parity row, not a Read one:
+/// the direct call performs the halt and the dispatch performs it again.
+#[tokio::test]
+async fn p4_parity_for_the_batch3_execution_brakes() {
+    use tauri::Manager;
+
+    for (command, expected_halt_mode) in
+        [("pause_execution", "paused"), ("stop_execution", "stopped")]
+    {
+        let app = app_with_brake_state();
+        let execution_state =
+            app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>();
+
+        // Non-vacuity: the runtime must start UNPAUSED, or "parity after halting" would be
+        // satisfied by a command that does nothing at all.
+        assert!(
+            !execution_state.is_paused(),
+            "the fixture must start unpaused for `{command}` parity to mean anything"
+        );
+
+        let direct = match command {
+            "pause_execution" => crate::commands::execution_commands::pause_execution(
+                None,
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ActiveProjectState>>(),
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>(),
+                app.state::<crate::application::AppState>(),
+            )
+            .await
+            .expect("direct pause succeeds"),
+            _ => crate::commands::execution_commands::stop_execution(
+                None,
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ActiveProjectState>>(),
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>(),
+                app.state::<crate::application::AppState>(),
+            )
+            .await
+            .expect("direct stop succeeds"),
+        };
+
+        // The effect actually happened, and it is the HALTING direction.
+        assert!(
+            direct.status.is_paused,
+            "`{command}` must leave the runtime paused"
+        );
+        assert_eq!(
+            direct.status.halt_mode, expected_halt_mode,
+            "`{command}` must record its own halt mode"
+        );
+        assert!(
+            !direct.status.can_start_task,
+            "`{command}` must leave the runtime unable to start work"
+        );
+
+        let outcome = registry::dispatch(
+            &app.handle().clone(),
+            &[Scope::UiOperate],
+            command,
+            &json!({"projectId": null}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:operate: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(registry::serialize_ok(&direct).unwrap()),
+            "P-4 parity mismatch for `{command}`"
+        );
+    }
+}
+
+/// The load-bearing hand-trace, pinned.
+///
+/// `pause_execution` and `stop_execution` open with `sync_quota_from_project` — the runtime
+/// scheduler-quota write that disqualified `set_active_project` in batch 2. Registering them
+/// is only sound because the quota is inert while halted. Both halves are asserted:
+///
+/// 1. **Behavioural** — the pause flag dominates any quota, however large.
+/// 2. **Structural** — the one production path that clears the pause flag re-syncs the quota
+///    before it does, so a quota raised while halting cannot survive into a scheduling window.
+#[test]
+fn the_brake_quota_write_is_dominated_by_the_pause_flag() {
+    let execution_state = crate::commands::execution_commands::ExecutionState::default();
+
+    // A quota far above any real configuration, exactly what a hostile `projectId` argument
+    // could select by naming a project whose persisted settings are large.
+    execution_state.set_max_concurrent(10_000);
+    execution_state.set_project_ideation_max(10_000);
+    assert!(
+        execution_state.can_start_task(),
+        "calibration: an unpaused runtime with headroom must be able to start work, or the \
+         assertion below would pass against a permanently-false gate"
+    );
+
+    execution_state.pause();
+    assert!(
+        !execution_state.can_start_task(),
+        "the pause flag must dominate the quota; if it does not, a brake that raises the \
+         quota is a scheduler-arming op"
+    );
+    assert!(
+        !execution_state.can_start_any_execution_context(),
+        "the scheduler entry gate must also be dominated by the pause flag"
+    );
+    assert!(
+        !execution_state.can_start_ideation(0, 0, 0, 10_000, 10_000, false, false),
+        "the ideation gate must also be dominated by the pause flag, even with every headroom \
+         argument set generously"
+    );
+
+    // Structural half: `resume()` is the only way back, and it must be preceded by a re-sync.
+    let lifecycle = include_str!("../commands/execution_commands/lifecycle.rs");
+    let resume_sites = lifecycle.matches("execution_state.resume()").count();
+    assert_eq!(
+        resume_sites, 1,
+        "a second production caller of ExecutionState::resume appeared in lifecycle.rs; the \
+         brake registration assumes exactly one ungating path, which re-syncs the quota first"
+    );
+    let resume_at = lifecycle
+        .find("execution_state.resume()")
+        .expect("the resume call site exists");
+    let sync_at = lifecycle
+        .find("sync_quota_from_project")
+        .expect("resume_execution re-syncs the quota");
+    assert!(
+        sync_at < resume_at,
+        "the quota re-sync must precede the pause-flag clear, or a quota raised during a \
+         remote halt could arm the scheduler on resume"
+    );
+}
+
+/// Scope negative — no grant weaker than (or sideways from) `ui:operate` reaches a brake,
+/// and `ui:operate` is genuinely required rather than incidentally sufficient.
+#[tokio::test]
+async fn the_batch3_brakes_are_refused_below_ui_operate() {
+    let app = app_with_brake_state();
+
+    for command in BATCH3_BRAKES {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(
+            spec.class,
+            RiskClass::Operate,
+            "`{command}` must be an Operate row"
+        );
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` must carry no capability; an Operate row cannot express one"
+        );
+        assert!(spec.pins.is_empty(), "`{command}` declares no pinned field");
+
+        for scopes in [
+            vec![],
+            vec![Scope::UiRead],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiRead, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let error = registry::dispatch(&app.handle().clone(), &scopes, command, &json!({}))
+                .await
+                .expect_err("insufficient scope must be refused");
+            assert_eq!(
+                error.code,
+                ErrorCode::RemoteForbidden,
+                "`{command}` admitted {scopes:?}"
+            );
+        }
+    }
+
+    // The refused sibling. Its absence is the audit's finding, so it is asserted at the
+    // facade too: no scope, including the full v1 set, reaches it.
+    for scopes in [
+        vec![Scope::UiRead],
+        vec![Scope::UiOperate],
+        vec![Scope::UiAgent],
+        vec![Scope::UiElevated],
+        vec![
+            Scope::UiRead,
+            Scope::UiOperate,
+            Scope::UiAgent,
+            Scope::UiElevated,
+        ],
+    ] {
+        let error = registry::dispatch(
+            &app.handle().clone(),
+            &scopes,
+            "archive_tasks_in_group",
+            &json!({"groupKind": "status", "groupId": "ready", "projectId": "p"}),
+        )
+        .await
+        .expect_err("archive_tasks_in_group must stay unreachable");
+        assert_eq!(
+            error.code,
+            ErrorCode::RemoteCommandUnavailable,
+            "archive_tasks_in_group became reachable at {scopes:?}"
+        );
+    }
+}
+
+/// The bulk cancel needs the Wry handle, so under a mock runtime it must fail CLOSED.
+///
+/// This is the `(host_app_handle)` contract: a missing handle is a host fault, never a reason
+/// to take a degraded path that cancels without emitting lifecycle events.
+#[tokio::test]
+async fn the_bulk_cancel_brake_fails_closed_without_a_host_handle() {
+    let app = app_with_brake_state();
+
+    let error = registry::dispatch(
+        &app.handle().clone(),
+        &[Scope::UiOperate],
+        "cancel_tasks_in_group",
+        &json!({"groupKind": "status", "groupId": "ready", "projectId": "p"}),
+    )
+    .await
+    .expect_err("a missing host handle must not be substituted");
+    assert_eq!(
+        error.code,
+        ErrorCode::RemoteInternalError,
+        "cancel_tasks_in_group degraded instead of failing closed"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// Owner decision R3 — P-4 parity extended to a representative MUTATING trio.
+//
+// All four pre-existing `p4_parity_*` tables cover `Read` commands. The registered
+// Operate/AgentControl ops asserted authorization and absence-of-effect but never
+// result-vs-wire envelope parity, so a facade that reshaped a mutating result — dropped a
+// field, re-cased one, swallowed an error into a success envelope — would not have been
+// caught by P-4 at all.
+//
+// R3 resolves the scoping as: Read = exhaustive, mutating = representative + scope-suite
+// effect coverage. This is that representative table.
+//
+// The machinery a mutating parity row needs, and the reason it is not simply "call twice":
+// mutating ops are not idempotent, so each row runs over TWO independently-seeded but
+// IDENTICAL fixtures — one driven through the direct local IPC fn, one through the production
+// facade dispatch — and compares the payloads. Fields that legitimately differ between two
+// separate executions (generated ids, clock stamps) are normalized rather than asserted, and
+// every normalization is named, so the test cannot quietly normalize away a real divergence.
+// ---------------------------------------------------------------------------------------
+
+const R3_FIXTURE_PROJECT: &str = "55555555-5555-5555-5555-555555555555";
+const R3_FIXTURE_TASK: &str = "66666666-6666-6666-6666-666666666666";
+
+/// Strips exactly the fields two separate executions may legitimately disagree on.
+///
+/// Returns the removed values alongside the normalized payload so the caller can assert they
+/// were actually PRESENT — a normalizer that silently no-ops when a field disappears would
+/// hide the very regression this table exists to catch.
+fn normalize_generated_fields(mut value: Value) -> (Value, Vec<String>) {
+    // `TaskResponse` carries no `rename_all`, so the wire fields are snake_case — the facade
+    // deserializes and re-serializes exactly what the local IPC path does, which is itself part
+    // of what P-4 asserts. Listing the camelCase spellings too would silently tolerate a
+    // re-casing regression, so they are deliberately absent.
+    const GENERATED: [&str; 3] = ["id", "created_at", "updated_at"];
+    let mut seen = Vec::new();
+    if let Some(object) = value.as_object_mut() {
+        for field in GENERATED {
+            if object.remove(field).is_some() {
+                seen.push(field.to_string());
+            }
+        }
+    }
+    (value, seen)
+}
+
+/// Seeds a task with a FIXED id so both fixtures address the same row.
+async fn seed_r3_task(app: &tauri::App<tauri::test::MockRuntime>) {
+    use tauri::Manager;
+
+    let mut task = crate::domain::entities::Task::new(
+        crate::domain::entities::ProjectId::from_string(R3_FIXTURE_PROJECT.to_string()),
+        "R3 parity subject".to_string(),
+    );
+    task.id = crate::domain::entities::TaskId::from_string(R3_FIXTURE_TASK.to_string());
+    task.priority = 1;
+    app.state::<crate::application::AppState>()
+        .task_repo
+        .create(task)
+        .await
+        .expect("seeding the parity subject succeeds");
+}
+
+/// Seeds a pending permission request with a FIXED id.
+async fn seed_r3_permission(app: &tauri::App<tauri::test::MockRuntime>, request_id: &str) {
+    use tauri::Manager;
+
+    app.state::<crate::application::AppState>()
+        .permission_state
+        .register(
+            crate::application::permission_state::PendingPermissionInfo {
+                request_id: request_id.to_string(),
+                tool_name: "Bash".to_string(),
+                tool_input: json!({"command": "ls"}),
+                context: None,
+                agent_type: None,
+                task_id: None,
+                context_type: None,
+                context_id: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
+}
+
+/// P-4 parity — `create_task`.
+#[tokio::test]
+async fn p4_parity_for_the_r3_mutating_trio_create_task() {
+    use tauri::Manager;
+
+    let input = || crate::commands::task_commands::types::CreateTaskInput {
+        project_id: R3_FIXTURE_PROJECT.to_string(),
+        title: "R3 created".to_string(),
+        category: None,
+        description: Some("described".to_string()),
+        priority: Some(3),
+        steps: None,
+        ideation_session_id: None,
+        execution_plan_id: None,
+    };
+
+    let direct_app = app_with_task_state();
+    let direct = crate::commands::task_commands::mutation::create_task(
+        input(),
+        direct_app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct create succeeds");
+
+    let facade_app = app_with_task_state();
+    let outcome = registry::dispatch(
+        &facade_app.handle().clone(),
+        &[Scope::UiOperate],
+        "create_task",
+        &json!({"input": {
+            "projectId": R3_FIXTURE_PROJECT,
+            "title": "R3 created",
+            "description": "described",
+            "priority": 3,
+        }}),
+    )
+    .await
+    .expect("create_task must dispatch at ui:operate");
+
+    let DispatchOutcome::Ok(facade) = outcome else {
+        panic!("create_task returned a business error: {outcome:?}");
+    };
+
+    let (direct_norm, direct_stripped) =
+        normalize_generated_fields(registry::serialize_ok(&direct).unwrap());
+    let (facade_norm, facade_stripped) = normalize_generated_fields(facade);
+
+    // The normalizer must have had something to do, in both directions.
+    assert!(
+        direct_stripped.contains(&"id".to_string()),
+        "the created task carries no id; the normalizer is hiding a shape change"
+    );
+    assert_eq!(
+        direct_stripped, facade_stripped,
+        "the two payloads do not even agree on WHICH generated fields exist"
+    );
+    assert_eq!(
+        direct_norm, facade_norm,
+        "P-4 mutating parity mismatch for `create_task`"
+    );
+    // Non-vacuity: a normalizer bug that emptied both sides would satisfy the line above.
+    assert!(
+        direct_norm.get("title").is_some(),
+        "the normalized payload must still carry the substantive fields"
+    );
+    assert_eq!(direct_norm["title"], json!("R3 created"));
+    assert_eq!(direct_norm["priority"], json!(3));
+}
+
+/// P-4 parity — `update_task`, over identically-seeded fixtures, plus its error envelope.
+#[tokio::test]
+async fn p4_parity_for_the_r3_mutating_trio_update_task() {
+    use tauri::Manager;
+
+    let direct_app = app_with_task_state();
+    seed_r3_task(&direct_app).await;
+    let direct = crate::commands::task_commands::mutation::update_task(
+        R3_FIXTURE_TASK.to_string(),
+        crate::commands::task_commands::types::UpdateTaskInput {
+            title: None,
+            description: None,
+            category: None,
+            priority: Some(9),
+            internal_status: None,
+        },
+        direct_app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct update succeeds");
+
+    let facade_app = app_with_task_state();
+    seed_r3_task(&facade_app).await;
+    let outcome = registry::dispatch(
+        &facade_app.handle().clone(),
+        &[Scope::UiOperate],
+        "update_task",
+        &json!({"taskId": R3_FIXTURE_TASK, "input": {"priority": 9}}),
+    )
+    .await
+    .expect("update_task must dispatch at ui:operate");
+    let DispatchOutcome::Ok(facade) = outcome else {
+        panic!("update_task returned a business error: {outcome:?}");
+    };
+
+    let (direct_norm, direct_stripped) =
+        normalize_generated_fields(registry::serialize_ok(&direct).unwrap());
+    let (facade_norm, facade_stripped) = normalize_generated_fields(facade);
+    assert_eq!(direct_stripped, facade_stripped);
+    assert_eq!(
+        direct_norm, facade_norm,
+        "P-4 mutating parity mismatch for `update_task`"
+    );
+    // The mutation actually landed, so parity is over a CHANGED row, not an untouched one.
+    assert_eq!(
+        direct_norm["priority"],
+        json!(9),
+        "the seeded priority was 1; parity over an unapplied update would prove nothing"
+    );
+
+    // Error-path envelope parity (R3 names this explicitly): a command-level failure must
+    // reach the wire as a business error carrying the SAME payload, never as a facade error
+    // and never reshaped into a success envelope.
+    let missing_app = app_with_task_state();
+    let direct_error = crate::commands::task_commands::mutation::update_task(
+        "77777777-7777-7777-7777-777777777777".to_string(),
+        crate::commands::task_commands::types::UpdateTaskInput {
+            title: None,
+            description: None,
+            category: None,
+            priority: Some(9),
+            internal_status: None,
+        },
+        missing_app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect_err("updating a missing task fails");
+
+    let facade_error_app = app_with_task_state();
+    let outcome = registry::dispatch(
+        &facade_error_app.handle().clone(),
+        &[Scope::UiOperate],
+        "update_task",
+        &json!({
+            "taskId": "77777777-7777-7777-7777-777777777777",
+            "input": {"priority": 9},
+        }),
+    )
+    .await
+    .expect("a command-level failure is still a successful dispatch");
+    assert_eq!(
+        outcome,
+        DispatchOutcome::Err(registry::serialize_ok(&direct_error).unwrap()),
+        "the error envelope must match the direct call's error payload"
+    );
+}
+
+/// P-4 parity — `deny_permission_request`, the pinned op, plus its error envelope.
+#[tokio::test]
+async fn p4_parity_for_the_r3_mutating_trio_deny_permission_request() {
+    use tauri::Manager;
+
+    const REQUEST_ID: &str = "r3-permission-request";
+
+    let direct_app = app_with_task_state();
+    seed_r3_permission(&direct_app, REQUEST_ID).await;
+    let direct = crate::commands::permission_commands::resolve_permission_request(
+        direct_app.state::<crate::application::AppState>(),
+        crate::commands::permission_commands::ResolvePermissionArgs {
+            request_id: REQUEST_ID.to_string(),
+            decision: "deny".to_string(),
+            message: Some("not this time".to_string()),
+        },
+    )
+    .await
+    .expect("direct deny succeeds");
+
+    let facade_app = app_with_task_state();
+    seed_r3_permission(&facade_app, REQUEST_ID).await;
+    let outcome = registry::dispatch(
+        &facade_app.handle().clone(),
+        &[Scope::UiOperate],
+        "deny_permission_request",
+        // The client asserts the OPPOSITE decision; the server pin must win, and parity must
+        // hold against the direct DENY call rather than against an allow.
+        &json!({"args": {
+            "request_id": REQUEST_ID,
+            "decision": "allow",
+            "message": "not this time",
+        }}),
+    )
+    .await
+    .expect("deny_permission_request must dispatch at ui:operate");
+    let DispatchOutcome::Ok(facade) = outcome else {
+        panic!("deny_permission_request returned a business error: {outcome:?}");
+    };
+
+    // Fully deterministic payload — no generated field to normalize.
+    assert_eq!(
+        registry::serialize_ok(&direct).unwrap(),
+        facade,
+        "P-4 mutating parity mismatch for `deny_permission_request`"
+    );
+    assert_eq!(
+        facade["success"],
+        json!(true),
+        "parity over a failed resolution would prove nothing"
+    );
+
+    // The payload is about the request the client named, not a generic acknowledgement — a
+    // facade that resolved a DIFFERENT request would still have returned `success: true`.
+    assert_eq!(
+        facade["message"],
+        json!(format!("Permission request {REQUEST_ID} resolved")),
+    );
+
+    // Error-path envelope parity: an unknown request id.
+    let direct_missing_app = app_with_task_state();
+    let direct_error = crate::commands::permission_commands::resolve_permission_request(
+        direct_missing_app.state::<crate::application::AppState>(),
+        crate::commands::permission_commands::ResolvePermissionArgs {
+            request_id: "no-such-request".to_string(),
+            decision: "deny".to_string(),
+            message: None,
+        },
+    )
+    .await
+    .expect_err("resolving a missing request fails");
+
+    let facade_missing_app = app_with_task_state();
+    let outcome = registry::dispatch(
+        &facade_missing_app.handle().clone(),
+        &[Scope::UiOperate],
+        "deny_permission_request",
+        &json!({"args": {"request_id": "no-such-request", "decision": "deny"}}),
+    )
+    .await
+    .expect("a command-level failure is still a successful dispatch");
+    assert_eq!(
+        outcome,
+        DispatchOutcome::Err(registry::serialize_ok(&direct_error).unwrap()),
+        "the error envelope must match the direct call's error payload"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 3 — census `B2`, the conversation-stats read cluster (`ui:read`)
+//
+// Four aggregate reads, the smallest complete module in the census's highest-risk batch.
+// What is ABSENT is the finding: the transcript reads (`get_agent_conversation`,
+// `get_agent_conversation_messages_page`, `get_agent_conversation_timeline_page`) all fire
+// detector (a), and the workspace/publish surface fires (a), (b) and (c) together. They stay
+// at the module default, asserted below.
+// ---------------------------------------------------------------------------------------
+
+const B2_STATS_READS: [&str; 4] = [
+    "get_agent_conversation_stats",
+    "get_project_chat_usage_stats",
+    "get_task_chat_usage_stats",
+    "get_insights_chat_usage_stats",
+];
+
+/// P-4 parity for the stats cluster.
+#[tokio::test]
+async fn p4_parity_for_the_b2_stats_reads() {
+    use tauri::Manager;
+
+    let app = app_with_task_state();
+    seed_r3_task(&app).await;
+
+    let direct_conversation =
+        crate::commands::conversation_stats_commands::get_agent_conversation_stats(
+            "no-such-conversation".to_string(),
+            app.state::<crate::application::AppState>(),
+        )
+        .await
+        .expect("direct conversation-stats read succeeds");
+    let direct_project =
+        crate::commands::conversation_stats_commands::get_project_chat_usage_stats(
+            R3_FIXTURE_PROJECT.to_string(),
+            app.state::<crate::application::AppState>(),
+        )
+        .await
+        .expect("direct project-usage read succeeds");
+    let direct_task = crate::commands::conversation_stats_commands::get_task_chat_usage_stats(
+        R3_FIXTURE_TASK.to_string(),
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct task-usage read succeeds");
+    let direct_insights =
+        crate::commands::conversation_stats_commands::get_insights_chat_usage_stats(
+            None,
+            app.state::<crate::application::AppState>(),
+        )
+        .await
+        .expect("direct insights-usage read succeeds");
+
+    // Non-vacuity is recorded honestly rather than manufactured. A mock `AppState` carries no
+    // chat conversations, so three of these are legitimately zero-valued and the fourth is a
+    // genuine `None`. What the rows below prove is ENVELOPE parity — that the facade
+    // reproduces the scope identity and the full aggregate shape, not merely "nothing". The
+    // load-bearing guarantee for these four is the scope negative that follows.
+    assert!(
+        direct_conversation.is_none(),
+        "an unknown conversation must read as None, not as an error"
+    );
+    assert_eq!(
+        direct_project.scope_type, "project",
+        "the project row must identify its own scope"
+    );
+    assert_eq!(direct_project.scope_id, R3_FIXTURE_PROJECT);
+    assert_eq!(direct_task.scope_type, "task");
+    assert_eq!(direct_insights.scope_type, "all_projects");
+
+    for (command, args, direct) in [
+        (
+            "get_agent_conversation_stats",
+            json!({"conversationId": "no-such-conversation"}),
+            registry::serialize_ok(&direct_conversation).unwrap(),
+        ),
+        (
+            "get_project_chat_usage_stats",
+            json!({"projectId": R3_FIXTURE_PROJECT}),
+            registry::serialize_ok(&direct_project).unwrap(),
+        ),
+        (
+            "get_task_chat_usage_stats",
+            json!({"taskId": R3_FIXTURE_TASK}),
+            registry::serialize_ok(&direct_task).unwrap(),
+        ),
+        (
+            "get_insights_chat_usage_stats",
+            json!({"projectId": null}),
+            registry::serialize_ok(&direct_insights).unwrap(),
+        ),
+    ] {
+        let outcome = registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
+            .await
+            .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(direct),
+            "P-4 parity mismatch for `{command}`"
+        );
+    }
+}
+
+/// Scope negative, plus the standing absence of the detector-positive `B2` siblings.
+#[tokio::test]
+async fn the_b2_stats_reads_are_refused_below_ui_read() {
+    let app = app_with_task_state();
+
+    for command in B2_STATS_READS {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(
+            spec.class,
+            RiskClass::Read,
+            "`{command}` must be a Read row"
+        );
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` must carry no capability; a Read row with one is the under-labelling \
+             signature itself"
+        );
+
+        for scopes in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let error = registry::dispatch(&app.handle().clone(), &scopes, command, &json!({}))
+                .await
+                .expect_err("insufficient scope must be refused");
+            assert_eq!(
+                error.code,
+                ErrorCode::RemoteForbidden,
+                "`{command}` admitted {scopes:?}"
+            );
+        }
+    }
+
+    // The detector-positive `B2` siblings stay unreachable. These are the transcript and
+    // workspace/publish reads a later batch must audit on their own evidence; registering the
+    // stats module must not be mistaken for having cleared the module family.
+    for command in [
+        "get_agent_conversation",
+        "get_agent_conversation_messages_page",
+        "get_agent_conversation_timeline_page",
+        "get_agent_conversation_workspace",
+        "list_agent_sidebar_conversations",
+        "send_agent_message",
+        "start_agent_conversation",
+    ] {
+        assert!(
+            registry::find_spec(command).is_none(),
+            "`{command}` fires at least one authority detector and must stay unregistered"
         );
     }
 }
