@@ -29,6 +29,7 @@ macro_rules! register_tauri_commands {
             commands::remote_environment_commands::set_active_environment,
             commands::remote_environment_commands::remote_connect,
             commands::remote_environment_commands::remote_disconnect,
+            commands::remote_environment_commands::remote_stream_send,
             commands::remote_environment_commands::remote_invoke,
             commands::remote_environment_commands::remote_fetch,
             // remote auth (PR 1.2)

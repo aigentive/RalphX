@@ -101,6 +101,34 @@ fn invoke_input_defaults_missing_args_to_null() {
     assert!(input.args.is_null());
 }
 
+/// The frame arrives typed: the `ClientFrame` deserializer bounds what the webview
+/// can put on the socket — never a raw JSON passthrough.
+#[test]
+fn stream_send_input_accepts_camel_case_wire_frames() {
+    let input: RemoteStreamSendInput = serde_json::from_value(serde_json::json!({
+        "id": "row-1",
+        "frame": {"type": "subscribe", "afterSeq": 10, "streamEpoch": "epoch-1"},
+    }))
+    .expect("camelCase frame should deserialize");
+    assert_eq!(input.id, "row-1");
+    assert_eq!(
+        input.frame,
+        ralphx_remote_protocol::ClientFrame::Subscribe {
+            after_seq: 10,
+            stream_epoch: "epoch-1".to_string(),
+        }
+    );
+
+    assert!(
+        serde_json::from_value::<RemoteStreamSendInput>(serde_json::json!({
+            "id": "row-1",
+            "frame": {"type": "not_a_client_frame"},
+        }))
+        .is_err(),
+        "unknown frame types must be refused at the IPC boundary"
+    );
+}
+
 #[test]
 fn pair_input_accepts_camel_case_fields() {
     let input: PairRemoteEnvironmentInput = serde_json::from_value(serde_json::json!({
@@ -140,6 +168,7 @@ fn the_remote_environment_command_surface_is_registered() {
         "remote_environment_commands::set_active_environment",
         "remote_environment_commands::remote_connect",
         "remote_environment_commands::remote_disconnect",
+        "remote_environment_commands::remote_stream_send",
         "remote_environment_commands::remote_invoke",
         "remote_environment_commands::remote_fetch",
     ] {
@@ -263,6 +292,21 @@ async fn remote_disconnect_rejects_an_unknown_id() {
 }
 
 #[tokio::test]
+async fn remote_stream_send_rejects_an_unknown_id() {
+    let app = test_app();
+    let error = remote_stream_send(
+        RemoteStreamSendInput {
+            id: "missing".to_string(),
+            frame: ralphx_remote_protocol::ClientFrame::CursorAck { seq: 1 },
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("unknown environment should be rejected");
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
 async fn remote_invoke_rejects_an_unknown_id() {
     let app = test_app();
     let error = remote_invoke(
@@ -315,6 +359,10 @@ async fn list_remote_environments_maps_a_seeded_environment() {
         Arc::new(MemorySecretStore::new()),
         Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
             "not needed by list",
+        )),
+        Arc::new(crate::application::remote_event_relay::RemoteEventRelay::new(
+            Arc::new(crate::infrastructure::remote_ws_client::MockRemoteWsClient::new()),
+            Arc::new(crate::application::remote_event_relay::NoopFrameSink),
         )),
     );
     let app = test_app_with_service(service);
