@@ -29,6 +29,7 @@ import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
   AgentsChatFocus,
   AutomationRunFocusOptions,
+  FocusedArtifactIdeationSession,
 } from "./agentChatFocus";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
@@ -55,7 +56,7 @@ interface AgentsArtifactPaneRegionProps {
   workspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch: string | null;
-  focusedIdeationSessionId: string | null;
+  focusedIdeationSession: FocusedArtifactIdeationSession | null;
   automationRunFocusTarget: Extract<
     AgentsChatFocus,
     { type: "automation_run" }
@@ -120,7 +121,7 @@ export function AgentsArtifactPaneRegion({
   workspace,
   activeWorkspaceFreshness,
   projectBaseBranch,
-  focusedIdeationSessionId,
+  focusedIdeationSession,
   automationRunFocusTarget,
   hasAutoOpenArtifacts,
   artifactWidthCss,
@@ -199,7 +200,7 @@ export function AgentsArtifactPaneRegion({
                     workspace={workspace}
                     activeWorkspaceFreshness={activeWorkspaceFreshness}
                     projectBaseBranch={projectBaseBranch}
-                    focusedIdeationSessionId={focusedIdeationSessionId}
+                    focusedIdeationSession={focusedIdeationSession}
                     automationRunFocusTarget={automationRunFocusTarget}
                     activeTab={artifactState.activeTab}
                     hiddenTabs={artifactState.hiddenTabs}

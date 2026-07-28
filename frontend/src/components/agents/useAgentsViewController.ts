@@ -87,7 +87,8 @@ import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   focusWorkspaceReview,
   getAgentChatFocusSwitchOptions,
-  getFocusedArtifactIdeationSessionId,
+  getConversationScopedChatFocus,
+  getFocusedArtifactIdeationSession,
   latestVerificationChildSessionIdQueryKey,
   type AgentsChatFocus,
   type AgentsChatFocusType,
@@ -307,6 +308,10 @@ export function useAgentsViewController({
     showArchived,
     storedSelectedConversationId,
   });
+  const conversationScopedChatFocus = getConversationScopedChatFocus(
+    chatFocus,
+    selectedConversationId,
+  );
   const automationRunFocusSeededConversationRef = useRef<string | null>(null);
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -318,20 +323,21 @@ export function useAgentsViewController({
     }
     setVisibleAgentScope({
       workspaceConversationId: selectedConversationId,
-      ...((chatFocus.type === "workspace" || chatFocus.type === "workspace_review") && {
+      ...((conversationScopedChatFocus.type === "workspace" ||
+        conversationScopedChatFocus.type === "workspace_review") && {
         visibleConversationId:
-          chatFocus.type === "workspace_review"
-            ? chatFocus.conversationId
+          conversationScopedChatFocus.type === "workspace_review"
+            ? conversationScopedChatFocus.conversationId
             : selectedConversationId,
       }),
-      ...(chatFocus.type === "automation_run" && {
-        visibleConversationId: chatFocus.conversationId,
-        automationRunId: chatFocus.runId,
-        automationConversationId: chatFocus.conversationId,
+      ...(conversationScopedChatFocus.type === "automation_run" && {
+        visibleConversationId: conversationScopedChatFocus.conversationId,
+        automationRunId: conversationScopedChatFocus.runId,
+        automationConversationId: conversationScopedChatFocus.conversationId,
       }),
     });
     return () => setVisibleAgentScope(null);
-  }, [chatFocus, selectedConversationId, setVisibleAgentScope]);
+  }, [conversationScopedChatFocus, selectedConversationId, setVisibleAgentScope]);
   useEffect(() => {
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
@@ -358,13 +364,21 @@ export function useAgentsViewController({
     }
     void preflightAgentWorkspaceFreshness(queryClient, selectedConversationId);
   }, [activeConversation?.contextType, queryClient, selectedConversationId]);
+  const focusedArtifactIdeationSession =
+    getFocusedArtifactIdeationSession(conversationScopedChatFocus);
   const focusedArtifactIdeationSessionId =
-    getFocusedArtifactIdeationSessionId(chatFocus);
+    focusedArtifactIdeationSession?.sessionId ?? null;
   const handleFocusIdeationSession = useCallback((sessionId: string) => {
+    const conversationId = selectedConversationIdRef.current;
+    if (!conversationId) {
+      return;
+    }
     setChatFocus((current) =>
-      current.type === "ideation" && current.sessionId === sessionId
+      current.type === "ideation" &&
+      current.conversationId === conversationId &&
+      current.sessionId === sessionId
         ? current
-        : { type: "ideation", sessionId },
+        : { type: "ideation", conversationId, sessionId },
     );
   }, []);
   const handleFocusIdeationSessionForConversation = useCallback(
@@ -378,14 +392,20 @@ export function useAgentsViewController({
   );
   const handleFocusVerificationSession = useCallback(
     (parentSessionId: string, childSessionId: string) => {
+      const conversationId = selectedConversationIdRef.current;
+      if (!conversationId) {
+        return;
+      }
       const nextFocus: Extract<AgentsChatFocus, { type: "verification" }> = {
         type: "verification",
+        conversationId,
         parentSessionId,
         childSessionId,
       };
       setLastVerificationFocus(nextFocus);
       setChatFocus((current) =>
         current.type === "verification" &&
+        current.conversationId === conversationId &&
         current.parentSessionId === parentSessionId &&
         current.childSessionId === childSessionId
           ? current
@@ -808,7 +828,11 @@ export function useAgentsViewController({
   const latestVerificationChildSessionId =
     latestVerificationChildQuery.data?.latestChildSessionId ?? null;
   useEffect(() => {
-    if (!knownFocusIdeationSessionId || !latestVerificationChildQuery.isSuccess) {
+    if (
+      !selectedConversationId ||
+      !knownFocusIdeationSessionId ||
+      !latestVerificationChildQuery.isSuccess
+    ) {
       return;
     }
     if (!latestVerificationChildSessionId) {
@@ -819,6 +843,7 @@ export function useAgentsViewController({
     }
     const nextFocus: Extract<AgentsChatFocus, { type: "verification" }> = {
       type: "verification",
+      conversationId: selectedConversationId,
       parentSessionId: knownFocusIdeationSessionId,
       childSessionId: latestVerificationChildSessionId,
     };
@@ -832,6 +857,7 @@ export function useAgentsViewController({
     knownFocusIdeationSessionId,
     latestVerificationChildQuery.isSuccess,
     latestVerificationChildSessionId,
+    selectedConversationId,
   ]);
   const focusSwitcherIdeationSessionId =
     knownFocusIdeationSessionId ??
@@ -1638,7 +1664,7 @@ export function useAgentsViewController({
       activeWorkspaceFreshness,
       attachedIdeationSessionId,
       availableArtifactTabs: availableArtifactTabsWithReview,
-      chatFocus,
+      chatFocus: conversationScopedChatFocus,
       chatFocusOptions,
       defaultProjectId,
       defaultRuntime,
@@ -1707,7 +1733,7 @@ export function useAgentsViewController({
       activeWorkspaceFreshness,
       artifactWidthCss,
       chatDockElement: terminalChatDockElement,
-      focusedIdeationSessionId: focusedArtifactIdeationSessionId,
+      focusedIdeationSession: focusedArtifactIdeationSession,
       hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       hideArtifactTab,
       isArtifactResizing,

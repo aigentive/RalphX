@@ -173,6 +173,7 @@ import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
   AgentsChatFocus,
   AutomationRunFocusOptions,
+  FocusedArtifactIdeationSession,
 } from "./agentChatFocus";
 import {
   AGENT_WORKSPACE_STALE_MS,
@@ -598,7 +599,7 @@ interface AgentsArtifactPaneProps {
   workspace?: AgentConversationWorkspace | null;
   activeWorkspaceFreshness?: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch?: string | null;
-  focusedIdeationSessionId?: string | null;
+  focusedIdeationSession?: FocusedArtifactIdeationSession | null;
   activeTab: AgentArtifactTab;
   hiddenTabs?: readonly AgentArtifactTab[];
   taskMode: AgentTaskArtifactMode;
@@ -655,7 +656,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   workspace = null,
   activeWorkspaceFreshness,
   projectBaseBranch = null,
-  focusedIdeationSessionId = null,
+  focusedIdeationSession = null,
   activeTab,
   hiddenTabs = [],
   taskMode,
@@ -730,6 +731,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     activeWorkspaceFreshness?.conversationId === scopedWorkspace.conversationId
       ? activeWorkspaceFreshness
       : undefined;
+  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
+  const focusedIdeationSessionId =
+    focusedIdeationSession?.conversationId === conversationId
+      ? focusedIdeationSession.sessionId
+      : null;
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
     focusedIdeationSessionId ||
@@ -765,7 +771,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : [],
     [conversationData, conversation?.id, shouldLoadIdeationData],
   );
-  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
   const attachedSessionId = useMemo(
     () =>
       focusedIdeationSessionId ??
