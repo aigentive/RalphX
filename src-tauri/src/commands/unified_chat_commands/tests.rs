@@ -3758,7 +3758,7 @@ async fn setup_linked_plan_publish_command_state(
     workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
 
     let mut task = Task::new(project.id.clone(), "Plan task".to_string());
-    task.ideation_session_id = Some(session_id);
+    task.ideation_session_id = Some(session_id.clone());
     task.execution_plan_id = Some(execution_plan.id.clone());
     task.internal_status = if active_regular_task {
         InternalStatus::Executing
