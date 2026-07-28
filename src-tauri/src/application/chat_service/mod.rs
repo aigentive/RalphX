@@ -203,6 +203,7 @@ pub use chat_service_types::{
     AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
     AgentToolCallPayload, AgentToolCallPreviewFields, ChatConversationWithMessages,
     ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
+    MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -5582,13 +5583,26 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             && !persona_switch_requires_process_invalidation
         {
             interactive_owner = ipr_ref.capture_owner(&interactive_key).await;
-            if interactive_owner.is_none() {
-                return Err(ChatServiceError::CommunicationFailed(format!(
-                    "interactive process for {context_type}/{runtime_context_id} has no authoritative run owner"
-                )));
+            match interactive_owner.as_ref() {
+                Some(owner) => {
+                    interactive_process_metadata = Some(owner.metadata.clone());
+                }
+                None => {
+                    // Fail closed on WRITING into a process we may not own, but not on
+                    // DECIDING whether to reuse one: a concurrent retirement between
+                    // has_process() and capture_owner() must degrade into a clean
+                    // respawn instead of surfacing a send error to the user.
+                    tracing::warn!(
+                        %context_type,
+                        context_id,
+                        runtime_context_id = %runtime_context_id,
+                        "chat_service.send_message: interactive process has no authoritative \
+                         run owner, falling through to new spawn"
+                    );
+                    has_ipr_entry = false;
+                    interactive_process_metadata = None;
+                }
             }
-            interactive_process_metadata =
-                interactive_owner.as_ref().map(|owner| owner.metadata.clone());
         }
         if has_ipr_entry
             && !force_new_provider_session
@@ -5712,105 +5726,118 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     let hide_user_message =
                         message_metadata_hidden_from_ui(persisted_metadata.as_deref());
 
-                    // Store user message for conversation history
-                    if let Some(user_msg) = pending_user_message {
-                        let user_msg_id = user_msg.id.as_str().to_string();
-                        let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        self.chat_message_repo
-                            .create(user_msg.clone())
-                            .await
-                            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
-                        if !hide_user_message {
-                            chat_service_streaming::persist_message_text_timeline_item(
-                                &self.chat_timeline_repo,
-                                &user_msg,
-                            )
-                            .await;
-                        }
-                        self.link_turn_attachments(&turn_attachments, &user_msg_id)
-                            .await?;
-
-                        if !hide_user_message {
-                            if context_type == ChatContextType::Ideation {
-                                let _ = self
-                                    .ideation_session_repo
-                                    .touch_updated_at(context_id)
-                                    .await;
-                            }
-                            self.auto_assign_primary_jira_issue_from_turn(
-                                context_type,
-                                context_id,
-                                &conversation.id,
-                                None,
-                                &options.composer_integration_references,
-                                &user_msg_id,
-                                user_msg.created_at,
-                            )
-                            .await;
-                            self.auto_assign_primary_linear_issue_from_turn(
-                                context_type,
-                                context_id,
-                                &conversation.id,
-                                None,
-                                &options.composer_integration_references,
-                                &user_msg_id,
-                                user_msg.created_at,
-                            )
-                            .await;
-                            self.auto_assign_primary_granola_note_from_turn(
-                                context_type,
-                                context_id,
-                                &conversation.id,
-                                None,
-                                &options.composer_integration_references,
-                                &user_msg_id,
-                                user_msg.created_at,
-                            )
-                            .await;
-
-                            // Emit message_created event for frontend
-                            self.emit_event(
-                                "agent:message_created",
-                                AgentMessageCreatedPayload {
-                                    message_id: user_msg_id,
-                                    conversation_id: conversation.id.as_str().to_string(),
-                                    context_type: context_type.to_string(),
-                                    context_id: context_id.to_string(),
-                                    role: "user".to_string(),
-                                    content: message.to_string(),
-                                    created_at: Some(user_msg_created_at),
-                                    metadata: persisted_metadata.clone(),
-                                    render_ready: None,
-                                },
-                            );
-                        }
-                    } else {
-                        self.persist_hidden_resume_in_place_marker(
-                            context_type,
-                            context_id,
-                            conversation.id,
-                            options.metadata.as_deref(),
-                        )
-                        .await?;
-                    }
-
-                    // Emit run_started so frontend shows activity spinner. Reuse the
-                    // live process run id so later turn_completed/run_completed events
-                    // still pass frontend stale-run guards.
+                    // The live process already accepted this turn. Reuse its run id so
+                    // later turn_completed/run_completed events still pass the frontend
+                    // stale-run guards.
                     let interactive_run_id = interactive_owner.agent_run_id.clone();
-                    self
-                        .agent_run_repo
-                        .update_status(
-                            &AgentRunId::from_string(&interactive_run_id),
-                            AgentRunStatus::Running,
-                        )
-                        .await
-                        .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
                             &conversation,
                             interactive_process_metadata.as_ref(),
                         );
+
+                    // Persistence runs AFTER delivery, so a repository failure here can
+                    // never mean "nothing was sent". Collect the outcome instead of
+                    // propagating it, so run authority is still emitted below.
+                    let delivered_turn_persisted: Result<(), ChatServiceError> = async {
+                        // Store user message for conversation history
+                        if let Some(user_msg) = pending_user_message {
+                            let user_msg_id = user_msg.id.as_str().to_string();
+                            let user_msg_created_at = user_msg.created_at.to_rfc3339();
+                            self.chat_message_repo
+                                .create(user_msg.clone())
+                                .await
+                                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+                            if !hide_user_message {
+                                chat_service_streaming::persist_message_text_timeline_item(
+                                    &self.chat_timeline_repo,
+                                    &user_msg,
+                                )
+                                .await;
+                            }
+                            self.link_turn_attachments(&turn_attachments, &user_msg_id)
+                                .await?;
+
+                            if !hide_user_message {
+                                if context_type == ChatContextType::Ideation {
+                                    let _ = self
+                                        .ideation_session_repo
+                                        .touch_updated_at(context_id)
+                                        .await;
+                                }
+                                self.auto_assign_primary_jira_issue_from_turn(
+                                    context_type,
+                                    context_id,
+                                    &conversation.id,
+                                    None,
+                                    &options.composer_integration_references,
+                                    &user_msg_id,
+                                    user_msg.created_at,
+                                )
+                                .await;
+                                self.auto_assign_primary_linear_issue_from_turn(
+                                    context_type,
+                                    context_id,
+                                    &conversation.id,
+                                    None,
+                                    &options.composer_integration_references,
+                                    &user_msg_id,
+                                    user_msg.created_at,
+                                )
+                                .await;
+                                self.auto_assign_primary_granola_note_from_turn(
+                                    context_type,
+                                    context_id,
+                                    &conversation.id,
+                                    None,
+                                    &options.composer_integration_references,
+                                    &user_msg_id,
+                                    user_msg.created_at,
+                                )
+                                .await;
+
+                                // Emit message_created event for frontend
+                                self.emit_event(
+                                    "agent:message_created",
+                                    AgentMessageCreatedPayload {
+                                        message_id: user_msg_id,
+                                        conversation_id: conversation.id.as_str().to_string(),
+                                        context_type: context_type.to_string(),
+                                        context_id: context_id.to_string(),
+                                        role: "user".to_string(),
+                                        content: message.to_string(),
+                                        created_at: Some(user_msg_created_at),
+                                        metadata: persisted_metadata.clone(),
+                                        render_ready: None,
+                                    },
+                                );
+                            }
+                        } else {
+                            self.persist_hidden_resume_in_place_marker(
+                                context_type,
+                                context_id,
+                                conversation.id,
+                                options.metadata.as_deref(),
+                            )
+                            .await?;
+                        }
+
+                        self.agent_run_repo
+                            .update_status(
+                                &AgentRunId::from_string(&interactive_run_id),
+                                AgentRunStatus::Running,
+                            )
+                            .await
+                            .map_err(|error| {
+                                ChatServiceError::RepositoryError(error.to_string())
+                            })?;
+                        Ok(())
+                    }
+                    .await;
+
+                    // Emit run_started on BOTH paths so the frontend shows activity and
+                    // accepts the streamed response. The process is answering this turn
+                    // whether or not the transcript row survived.
                     self.emit_event(
                         "agent:run_started",
                         AgentRunStartedPayload::with_provider_session(
@@ -5826,6 +5853,23 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             provider_session_id,
                         ),
                     );
+
+                    if let Err(error) = delivered_turn_persisted {
+                        tracing::error!(
+                            %context_type,
+                            context_id,
+                            runtime_context_id = %runtime_context_id,
+                            agent_run_id = %interactive_run_id,
+                            %error,
+                            "chat_service.send_message: interactive turn delivered to the \
+                             live process but not persisted"
+                        );
+                        // The execution slot stays claimed on purpose: the process is
+                        // running this turn and TurnComplete owns the decrement.
+                        return Err(ChatServiceError::MessageDeliveredNotPersisted(format!(
+                            "{MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX} {error}]"
+                        )));
+                    }
 
                     return Ok(SendResult {
                         conversation_id: conversation.id.as_str().to_string(),

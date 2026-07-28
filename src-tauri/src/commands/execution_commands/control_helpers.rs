@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::HashSet;
 
+use crate::application::ChatServiceError;
+
 use crate::domain::services::{QueueKey, QueuedMessage};
 
 pub(super) async fn persist_execution_halt_mode(
@@ -120,6 +122,12 @@ async fn pop_queued_key(
         .pop_front(key)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// True when the send failed only AFTER the live process already accepted the turn.
+/// Restoring such a message to the queue would deliver it to the agent twice.
+fn queued_send_reached_the_agent(error: &ChatServiceError) -> bool {
+    matches!(error, ChatServiceError::MessageDeliveredNotPersisted(_))
 }
 
 async fn restore_queued_front(
@@ -650,7 +658,9 @@ where
                 resumed += 1;
             }
             Err(error) => {
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
                 tracing::warn!(
                     session_id = session.id.as_str(),
                     error = %error,
@@ -730,7 +740,9 @@ where
                     error = %error,
                     "Failed to relaunch paused workspace queued message"
                 );
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
                 break;
             }
         }
@@ -807,7 +819,9 @@ where
                     error = %error,
                     "Failed to relaunch paused non-slot queued message"
                 );
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
             }
         }
     }
@@ -907,7 +921,9 @@ where
                     error = %error,
                     "Failed to relaunch paused slot-consuming queued message"
                 );
-                restore_queued_front(app_state, &key, queued).await?;
+                if !queued_send_reached_the_agent(&error) {
+                    restore_queued_front(app_state, &key, queued).await?;
+                }
             }
         }
     }

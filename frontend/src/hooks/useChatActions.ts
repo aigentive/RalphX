@@ -28,6 +28,7 @@ import {
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isPersonaUnavailableError } from "@/lib/personaErrors";
+import { isMessageDeliveredNotPersistedError } from "@/lib/sendDeliveryErrors";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
   ComposerArtifactReference,
@@ -120,6 +121,15 @@ export function useChatActions({
     const message = extractErrorMessage(err, "The agent runtime could not start.");
     if (isPersonaUnavailableError(message)) {
       onPersonaUnavailable?.(message);
+      return;
+    }
+    // The agent already received this turn — saying "failed to send" would be a lie.
+    if (isMessageDeliveredNotPersistedError(message)) {
+      toast.warning("Message sent, but not saved", {
+        description:
+          "The agent received your message and is replying, but it could not be added to the transcript.",
+        duration: 10000,
+      });
       return;
     }
     toast.error("Failed to send message", {
@@ -407,7 +417,12 @@ export function useChatActions({
           });
         }
       } catch (err) {
-        if (optimisticMessage) {
+        // A delivered-but-unsaved turn is live: the process is answering it. Keep the
+        // bubble and the spinner instead of pretending the send never happened.
+        const deliveredWithoutPersistence = isMessageDeliveredNotPersistedError(
+          extractErrorMessage(err, ""),
+        );
+        if (optimisticMessage && !deliveredWithoutPersistence) {
           removeOptimisticMessageFromConversationCache(
             queryClient,
             optimisticMessage.conversationId,
@@ -418,7 +433,9 @@ export function useChatActions({
         // Reset agent running state on error for the correct store context key.
         // Covers review, task_execution, merge, and ideation (idempotent for ideation
         // where storeContextKey and useChat's contextKey happen to match).
-        setAgentRunning(storeContextKey, false);
+        if (!deliveredWithoutPersistence) {
+          setAgentRunning(storeContextKey, false);
+        }
         if (composerOptions?.selectionSnapshot) {
           throw err;
         }
@@ -496,8 +513,15 @@ export function useChatActions({
           setAgentRunning(storeContextKey, true);
         }
       } catch (err) {
-        if (content) {
+        // Re-queueing a turn the agent already received would send it twice.
+        const deliveredWithoutPersistence = isMessageDeliveredNotPersistedError(
+          extractErrorMessage(err, ""),
+        );
+        if (content && !deliveredWithoutPersistence) {
           queueAcceptedMessage(content, messageId, attachmentIds, selectionSnapshot);
+        }
+        if (deliveredWithoutPersistence) {
+          setAgentRunning(storeContextKey, true);
         }
         reportSendFailure(err);
       } finally {

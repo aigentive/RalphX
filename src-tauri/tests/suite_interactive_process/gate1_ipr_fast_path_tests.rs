@@ -12,11 +12,15 @@ use chrono::Utc;
 use ralphx_events::RecordingEventSink;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tauri::test::{mock_builder, mock_context, noop_assets};
+use tauri::{Listener, Manager};
 use tokio::io::AsyncReadExt;
 
-use ralphx_lib::application::chat_service::{ChatService, ChatServiceError, SendMessageOptions};
+use ralphx_lib::application::chat_service::{
+    ChatService, ChatServiceError, SendMessageOptions, MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
+};
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
@@ -1235,7 +1239,7 @@ async fn gate1_project_agent_conversation_delivers_exact_stream_json_to_live_cla
 }
 
 #[tokio::test]
-async fn gate1_ownerless_process_fails_before_stdin_or_message_side_effects() {
+async fn gate1_ownerless_process_falls_through_without_stdin_or_message_side_effects() {
     let events = RecordingEventSink::new();
     let mut state = AppState::new_test();
     state.events = Arc::new(events.clone());
@@ -1262,7 +1266,7 @@ async fn gate1_ownerless_process_fails_before_stdin_or_message_side_effects() {
         )
         .await;
 
-    let error = state
+    let result = state
         .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
         .send_message(
             ChatContextType::Project,
@@ -1274,25 +1278,30 @@ async fn gate1_ownerless_process_fails_before_stdin_or_message_side_effects() {
                 ..Default::default()
             },
         )
-        .await
-        .expect_err("an ownerless IPR entry must fail closed");
+        .await;
 
+    // Fail closed on WRITING into a process we may not own; do NOT fail closed on
+    // DECIDING to reuse one. A registration that lost its owner between has_process()
+    // and capture_owner() must degrade into the normal spawn path, not a send error.
+    if let Err(ref error) = result {
+        assert!(
+            !error.to_string().contains("no authoritative run owner"),
+            "an ownerless IPR entry must fall through instead of failing the send: {error}"
+        );
+    }
+    let queued = result
+        .expect("an ownerless IPR entry must fall through to the spawn path")
+        .was_queued;
     assert!(
-        error.to_string().contains("no authoritative run owner"),
-        "owner failure must be explicit: {error}"
+        queued,
+        "the spawn path must queue behind the still-registered live run"
     );
     assert!(
-        state
-            .chat_message_repo
-            .get_by_conversation(&conversation_id)
-            .await
-            .expect("read conversation messages")
-            .is_empty(),
-        "owner rejection must happen before user-message persistence"
-    );
-    assert!(
-        events.events().is_empty(),
-        "owner rejection must not emit message_created or run_started"
+        !events
+            .events()
+            .iter()
+            .any(|event| event.event == "agent:run_started"),
+        "Gate 1 must not claim run authority for an ownerless process"
     );
 
     state
@@ -1310,23 +1319,46 @@ async fn gate1_ownerless_process_fails_before_stdin_or_message_side_effects() {
     let _ = ownerless_child.wait().await;
     assert!(
         observed.is_empty(),
-        "owner rejection must happen before any stdin write"
+        "fall-through must happen before any stdin write"
     );
     let _ = original_child.kill().await;
 }
 
 #[tokio::test]
-async fn gate1_message_persistence_failure_returns_error_without_success_side_effects() {
-    let events = RecordingEventSink::new();
-    let mut state = AppState::new_test();
-    state.events = Arc::new(events.clone());
+async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_authority() {
+    let mut seed_state = AppState::new_test();
+    seed_state.chat_message_repo = Arc::new(FailingChatMessageRepository::new());
+    let app = mock_builder()
+        .manage(seed_state)
+        .build(mock_context(noop_assets()))
+        .expect("build mock app");
+    let handle = app.handle().clone();
+    let state = app.state::<AppState>();
     let context_id = "project-gate1-message-persistence-failure";
-    let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
+    let (_project_dir, conversation_id, run_id, interactive_key, mut child) =
         setup_live_project_continuation(&state, context_id, None).await;
-    state.chat_message_repo = Arc::new(FailingChatMessageRepository::new());
+
+    let run_started_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let run_started_listener = Arc::clone(&run_started_events);
+    handle.listen("agent:run_started", move |event| {
+        let payload = serde_json::from_str(event.payload()).expect("run_started payload JSON");
+        run_started_listener
+            .lock()
+            .expect("run_started event lock")
+            .push(payload);
+    });
+    let message_created_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let message_created_listener = Arc::clone(&message_created_events);
+    handle.listen("agent:message_created", move |event| {
+        let payload = serde_json::from_str(event.payload()).expect("message_created payload JSON");
+        message_created_listener
+            .lock()
+            .expect("message_created event lock")
+            .push(payload);
+    });
 
     let error = state
-        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .build_chat_service_for_runtime(Some(Arc::new(ExecutionState::new())), Some(handle.clone()))
         .send_message(
             ChatContextType::Project,
             context_id,
@@ -1340,13 +1372,17 @@ async fn gate1_message_persistence_failure_returns_error_without_success_side_ef
         .await
         .expect_err("a Gate-1 message persistence failure must not return SendResult success");
 
+    // The turn WAS delivered to the live process, so the caller must be told exactly
+    // that — not "failed to send message", which would discard the user's turn from the
+    // transcript while the agent is answering it.
     assert!(
         matches!(
             error,
-            ChatServiceError::RepositoryError(ref message)
-                if message.contains(CHAT_MESSAGE_CREATE_FAILURE)
+            ChatServiceError::MessageDeliveredNotPersisted(ref message)
+                if message.starts_with(MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX)
+                    && message.contains(CHAT_MESSAGE_CREATE_FAILURE)
         ),
-        "Gate 1 must return the typed repository error: {error}"
+        "Gate 1 must report delivery-without-persistence distinctly: {error}"
     );
     assert!(
         state
@@ -1367,13 +1403,26 @@ async fn gate1_message_persistence_failure_returns_error_without_success_side_ef
         "a failed user-message create must not create a timeline row"
     );
     assert!(
-        !events.events().iter().any(|event| {
-            matches!(
-                event.event.as_str(),
-                "agent:message_created" | "agent:run_started"
-            )
-        }),
-        "a failed user-message create must not emit Gate-1 success events"
+        message_created_events
+            .lock()
+            .expect("message_created event lock")
+            .is_empty(),
+        "a failed user-message create must not claim the message was persisted"
+    );
+    // Run authority is still emitted: the live process is streaming this turn, and the
+    // frontend drops chunks for run ids it never saw start.
+    let observed_run_started = run_started_events
+        .lock()
+        .expect("run_started event lock")
+        .clone();
+    assert_eq!(
+        observed_run_started.len(),
+        1,
+        "a delivered turn must emit exactly one run_started even when persistence fails"
+    );
+    assert_eq!(
+        observed_run_started[0]["run_id"], run_id,
+        "run_started must reuse the live process run id"
     );
 
     // Gate 1 intentionally writes the live continuation before persistence. That stdin
