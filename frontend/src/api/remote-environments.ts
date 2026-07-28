@@ -5,7 +5,9 @@
 // copy is the authority the proxy commands enforce (P-26).
 
 import { z } from "zod";
-import { typedInvoke } from "@/lib/tauri";
+// Narrow import, not the `@/lib/tauri` barrel: the environment store sits under
+// every gated component, and the barrel would pull the whole API graph with it.
+import { typedInvoke } from "@/lib/typed-invoke";
 
 export const remoteEnvironmentStatusSchema = z.enum([
   "active",

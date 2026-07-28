@@ -25,6 +25,13 @@
  */
 
 import { useState, createContext, useContext, useCallback } from "react";
+
+import { useAgentGate, useActiveEffectiveScopes } from "@/hooks/useAgentGate";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import {
+  resolveAffordanceGate,
+  type AgentGatedAffordance,
+} from "@/lib/remote/agent-gate";
 import {
   ContextMenuItem,
   ContextMenuSeparator,
@@ -173,6 +180,42 @@ function resolveHandler(
   }
 }
 
+/**
+ * Handler keys that STEER work forward and therefore require `ui:agent` (2.6-b).
+ *
+ * The complement is deliberate, not an oversight: `onPause`, `onBlockWithReason`,
+ * `onStatusChange` for `cancel`, and the view-only actions are authority-reducing or
+ * inert, so a paired device keeps them under the viewer-with-brakes boundary. This
+ * one map covers both the Kanban and graph menus, so neither surface can drift from
+ * the other.
+ */
+const AGENT_STEERING_HANDLER_KEYS: ReadonlySet<string> = new Set([
+  "onStatusChange",
+  "onUnblock",
+  "onStartExecution",
+  "onResume",
+  "onApprove",
+  "onReject",
+  "onRequestChanges",
+  "onMarkResolved",
+]);
+
+/**
+ * The facade op each steering handler fronts, so a menu item can say WHY it is
+ * disabled. `onResume` maps to `resume_task`, which the host does not expose
+ * remotely at all — that item reads "runs only on the host", not "enable agent
+ * control". Keys with no entry fall back to the scope-only answer.
+ */
+const HANDLER_AFFORDANCES: Readonly<
+  Partial<Record<string, AgentGatedAffordance>>
+> = {
+  onStatusChange: "taskMove",
+  onUnblock: "taskUnblock",
+  onStartExecution: "taskMove",
+  onResume: "taskResume",
+  onApprove: "taskApprove",
+};
+
 // ============================================================================
 // Items Component (renders inside ContextMenuContent)
 // ============================================================================
@@ -188,6 +231,21 @@ export function TaskContextMenuItems({
   }
 
   const { confirm, setShowBlockDialog } = dialogState;
+  const agentGate = useAgentGate();
+  const isRemote = useIsRemoteEnvironment();
+  const scopes = useActiveEffectiveScopes();
+  const gateForAction = useCallback(
+    (action: TaskAction) => {
+      if (!AGENT_STEERING_HANDLER_KEYS.has(action.handlerKey)) return null;
+      const affordance = HANDLER_AFFORDANCES[action.handlerKey];
+      const gate =
+        affordance === undefined
+          ? agentGate
+          : resolveAffordanceGate(affordance, isRemote, scopes);
+      return gate.gated ? gate : null;
+    },
+    [agentGate, isRemote, scopes]
+  );
 
   const isArchived = task.archivedAt !== null;
   const canEditTask = canEdit(task);
@@ -195,6 +253,11 @@ export function TaskContextMenuItems({
   const statusActions = getTaskActions(task.internalStatus, context);
 
   const handleRegistryAction = useCallback(async (action: TaskAction) => {
+    // Belt-and-braces: the item is already disabled, but a keyboard activation path
+    // must not be able to dispatch a steering mutation either.
+    if (gateForAction(action) !== null) {
+      return;
+    }
     if (action.opensDialog && action.handlerKey === "onBlockWithReason") {
       setShowBlockDialog(true);
       return;
@@ -223,7 +286,7 @@ export function TaskContextMenuItems({
     }
 
     handler();
-  }, [handlers, confirm, setShowBlockDialog]);
+  }, [gateForAction, handlers, confirm, setShowBlockDialog]);
 
   const handleArchive = useCallback(async () => {
     const confirmed = await confirm({
@@ -272,17 +335,25 @@ export function TaskContextMenuItems({
       {statusActions.length > 0 && (
         <>
           <ContextMenuSeparator />
-          {statusActions.map((action) => (
+          {statusActions.map((action) => {
+            const gate = gateForAction(action);
+            const gated = gate !== null;
+            return (
             <ContextMenuItem
               key={action.id}
+              disabled={gated}
               onClick={() => handleRegistryAction(action)}
               className={action.variant === "destructive" ? "text-destructive" : ""}
               data-testid={`${action.id}-action`}
+              {...(gate !== null
+                ? { "data-agent-gated": "true", title: gate.reason ?? undefined }
+                : {})}
             >
               <action.icon className="w-4 h-4 mr-2" />
               {action.label}
             </ContextMenuItem>
-          ))}
+            );
+          })}
         </>
       )}
 

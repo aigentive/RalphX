@@ -17,6 +17,8 @@ import { taskKeys } from "@/hooks/useTasks";
 import { executionKeys } from "@/hooks/useExecutionControl";
 import { api } from "@/lib/tauri";
 import { Loader2, Play, RotateCcw, Clock, AlertTriangle, ShieldAlert, X, GitBranch } from "lucide-react";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { Button } from "@/components/ui/button";
 import {
   ResumeValidationDialog,
@@ -517,6 +519,8 @@ function UnblockWarningCard({
     },
   });
 
+  const agentGate = useAgentGate("taskUnblock");
+
   const handleUnblock = useCallback(async () => {
     const confirmed = await confirm({
       title: "Unblock despite failed dependency?",
@@ -537,10 +541,15 @@ function UnblockWarningCard({
         >
           Actions
         </span>
+        <AgentGateTooltip
+          gated={agentGate.gated}
+          reason={agentGate.reason}
+          testId="unblock-button-gate"
+        >
         <Button
           data-testid="unblock-button"
           onClick={handleUnblock}
-          disabled={unblockMutation.isPending}
+          disabled={unblockMutation.isPending || agentGate.gated}
           className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
             backgroundColor: "var(--status-warning)",
@@ -554,6 +563,7 @@ function UnblockWarningCard({
           )}
           Unblock Anyway
         </Button>
+        </AgentGateTooltip>
       </div>
       {unblockMutation.error && (
         <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>

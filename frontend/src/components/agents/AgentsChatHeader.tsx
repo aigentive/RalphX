@@ -31,6 +31,7 @@ import {
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
 import * as chatApi from "@/api/chat";
 import { ChatSessionChips } from "@/components/Chat/ChatSessionChips";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -319,6 +320,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   showTitle = true,
   workspaceControl,
 }: AgentsChatHeaderProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const terminalTooltip =
     terminalUnavailableReason ??
     terminalArchivedReason ??
@@ -586,6 +588,11 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
           </Tooltip>
         )}
 
+        {/* The built-in terminal is module-excluded from v1 remoting (2.6-a): it
+            drives a PTY on the machine running the app, so a remote client has
+            nothing to attach to. Hidden rather than disabled — there is no host
+            action that would turn it on. */}
+        {!isRemoteEnvironment && (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -607,6 +614,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             {terminalTooltip}
           </TooltipContent>
         </Tooltip>
+        )}
 
         {showWorkspaceOpenControl && onOpenWorkspaceTarget && (
           <AgentsWorkspaceOpenControl

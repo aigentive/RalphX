@@ -9,6 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { applyFeatureFlagOverrides } from "@/lib/featureFlags";
+import { stripClientOwnedFlags } from "@/lib/remote/feature-flag-authority";
 import { useUiStore } from "@/stores/uiStore";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
@@ -30,12 +31,23 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   agentConversationAutopilot: false,
 };
 
+/**
+ * The env-scoped feature-flag query — authoritative for HOST-BEHAVIOUR flags.
+ *
+ * `get_ui_feature_flags` is not local-only, so under a remote environment this is
+ * answered by the host and cached per environment. Client-owned flags are stripped
+ * from the payload: they describe THIS device and must come from `uiStore`'s
+ * boot-time local fetch instead. See `lib/remote/feature-flag-authority.ts` for the
+ * decision and its rationale.
+ */
 export function useFeatureFlags() {
   const query = useQuery<FeatureFlags>({
     queryKey: FEATURE_FLAGS_QUERY_KEY,
     queryFn: async () => {
       const raw = await invoke("get_ui_feature_flags");
-      return applyFeatureFlagOverrides(featureFlagsSchema.parse(raw));
+      return stripClientOwnedFlags(
+        applyFeatureFlagOverrides(featureFlagsSchema.parse(raw))
+      );
     },
     staleTime: Infinity,
     // placeholderData shows defaults immediately (prevents startup flash) while
@@ -48,7 +60,9 @@ export function useFeatureFlags() {
     ...query,
     // Always return a defined FeatureFlags. Falls back to defaults on error
     // (placeholderData is not shown in error state; query.data would be undefined).
-    data: applyFeatureFlagOverrides(query.data ?? DEFAULT_FEATURE_FLAGS),
+    data: stripClientOwnedFlags(
+      applyFeatureFlagOverrides(query.data ?? DEFAULT_FEATURE_FLAGS)
+    ),
   };
 }
 

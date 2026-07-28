@@ -10,6 +10,8 @@
 
 import { useEffect, useState } from "react";
 import { CheckCircle2, Plug, Settings, Sparkles, X } from "lucide-react";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+
 import AgentConstellation from "./AgentConstellation";
 
 interface WelcomeScreenProps {
@@ -33,6 +35,16 @@ export default function WelcomeScreen({
   // Track idle state for keyboard hint pulse animation
   const [isIdle, setIsIdle] = useState(false);
 
+  /**
+   * Project creation is host-impossible from a remote client (2.6-a): the wizard's
+   * folder picker reads a filesystem this device cannot see. The empty state stays —
+   * a remote session with no visible projects still needs an explanation — but the
+   * CTA and its ⌘N shortcut are removed rather than left to fail on click.
+   */
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  const projectCreationBlocked =
+    isRemoteEnvironment && !providerSetupRequired && !hasProjects;
+
   useEffect(() => {
     // Start idle pulse animation after 3 seconds
     const idleTimer = setTimeout(() => setIsIdle(true), 3000);
@@ -55,12 +67,18 @@ export default function WelcomeScreen({
           onSetupProviders?.();
           return;
         }
+        if (projectCreationBlocked) return;
         onCreateProject();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCreateProject, onSetupProviders, providerSetupRequired]);
+  }, [
+    onCreateProject,
+    onSetupProviders,
+    projectCreationBlocked,
+    providerSetupRequired,
+  ]);
 
   const action = providerSetupRequired
     ? onSetupProviders
@@ -279,6 +297,15 @@ export default function WelcomeScreen({
           }}
         >
           {/* Primary CTA button with glow */}
+          {projectCreationBlocked ? (
+            <p
+              className="max-w-[420px] text-center text-sm"
+              style={{ color: "var(--text-muted)", fontFamily: "var(--font-body)" }}
+              data-testid="welcome-remote-no-create"
+            >
+              Projects are created on the host Mac. Switch to This Mac to add one.
+            </p>
+          ) : (
           <button
             onClick={action}
             className="group flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] cta-button"
@@ -294,9 +321,10 @@ export default function WelcomeScreen({
             <Icon className="w-4 h-4 transition-transform group-hover:rotate-12" />
             {actionLabel}
           </button>
+          )}
 
           {/* Keyboard shortcut hint with idle pulse */}
-          {!providerSetupRequired && !hasProjects && (
+          {!providerSetupRequired && !hasProjects && !projectCreationBlocked && (
             <p
               className={`text-sm transition-all duration-300 ${isIdle ? "keyboard-hint-pulse" : ""}`}
               style={{

@@ -16,6 +16,7 @@ import type { InternalStatus } from "@/types/status";
 import type { Task } from "@/types/task";
 import { TaskCard, type TaskCardDisplayMode } from "./TaskCard";
 import { ColumnGroup } from "./ColumnGroup";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineTaskAdd } from "../InlineTaskAdd";
 import {
@@ -180,6 +181,7 @@ function formatColumnHeaderCount(
 }
 
 export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse, cardDisplayMode = "default", readOnly = false }: ColumnProps) {
+  const agentGate = useAgentGate("taskResume");
   const { setNodeRef } = useDroppable({ id: column.id, disabled: readOnly });
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { active } = useDndContext();
@@ -398,9 +400,12 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
   }, [column.mapsTo, projectId, pauseTasksInGroupMutation]);
 
   const handleResumeAll = useCallback(() => {
+    // Resuming a group arms work — `ui:agent` (2.6-b). Pause/cancel/archive-all are
+    // authority-reducing and stay available under the brakes boundary.
+    if (agentGate.gated) return;
     const { groupKind, groupId } = resolveGroupCleanupParams("column", column.mapsTo);
     resumeTasksInGroupMutation.mutate({ groupKind, groupId, projectId });
-  }, [column.mapsTo, projectId, resumeTasksInGroupMutation]);
+  }, [agentGate.gated, column.mapsTo, projectId, resumeTasksInGroupMutation]);
 
   const handleArchiveAll = useCallback(() => {
     const { groupKind, groupId } = resolveGroupCleanupParams("column", column.mapsTo);

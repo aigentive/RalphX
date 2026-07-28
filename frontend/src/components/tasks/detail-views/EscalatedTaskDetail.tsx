@@ -9,6 +9,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
 import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -257,6 +259,8 @@ function DecisionButtonsCard({
     }
   };
 
+  const agentGate = useAgentGate("taskApprove");
+
   const handleApprove = useCallback(async () => {
     const confirmed = await confirm({
       title: "Approve despite concerns?",
@@ -294,10 +298,15 @@ function DecisionButtonsCard({
   );
 
   const approveButton = (
+    <AgentGateTooltip
+      gated={agentGate.gated}
+      reason={agentGate.reason}
+      testId="approve-button-gate"
+    >
     <Button
       data-testid="approve-button"
       onClick={handleApprove}
-      disabled={isLoading || showFeedback}
+      disabled={isLoading || showFeedback || agentGate.gated}
       className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
       style={{
         backgroundColor: "var(--status-success)",
@@ -311,6 +320,7 @@ function DecisionButtonsCard({
       )}
       Approve Anyway
     </Button>
+    </AgentGateTooltip>
   );
 
   const requestChangesButton = (

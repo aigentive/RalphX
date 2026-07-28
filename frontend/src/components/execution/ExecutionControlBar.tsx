@@ -19,6 +19,7 @@ import {
   Terminal as TerminalIcon,
 } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -193,6 +194,7 @@ export function ExecutionControlBar({
   onNavigateToWorkspace,
   onNavigateToTask,
 }: ExecutionControlBarProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const laneByName = new Map(lanes.map((lane) => [lane.lane, lane]));
   const workspaceLane = laneByName.get("workspaces");
   const taskLane = laneByName.get("tasks");
@@ -639,7 +641,8 @@ export function ExecutionControlBar({
             </>
           )}
 
-          {terminalCount > 0 && (
+          {/* Terminal sessions are host-local (2.6-a) — no remote entry point. */}
+          {terminalCount > 0 && !isRemoteEnvironment && (
             <>
               <StatusSeparator />
               <TerminalsPopover

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import {
   CheckCircle2,
   ExternalLink,
@@ -642,6 +643,15 @@ export function AgentsAutomationPanel({
   onOpenAutomation,
   onFocusAutomationRun,
 }: AgentsAutomationPanelProps) {
+  /**
+   * Running, restarting, and resuming an automation all ARM autonomous work — the
+   * clearest case of agent steering (2.6-b). Pause and stop are authority-reducing
+   * and stay available to a paired device under the brakes boundary.
+   *
+   * Declared before the loading/error early returns: hooks must run in the same
+   * order on every render.
+   */
+  const agentGate = useAgentGate("automationResume");
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
   const queryClient = useQueryClient();
@@ -1100,6 +1110,8 @@ export function AgentsAutomationPanel({
   const judgeRecovery = getAutomationJudgeRecovery(automation, run);
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
+  const armingDisabled = agentGate.gated;
+
   const actionPending =
     pauseMutation.isPending ||
     resumeMutation.isPending ||
@@ -1407,7 +1419,8 @@ export function AgentsAutomationPanel({
             type="button"
             variant="secondary"
             size="sm"
-            disabled={actionPending}
+            disabled={actionPending || armingDisabled}
+            title={agentGate.reason ?? undefined}
             onClick={() => runNowMutation.mutate()}
           >
             Run now
@@ -1448,7 +1461,8 @@ export function AgentsAutomationPanel({
             variant="secondary"
             size="sm"
             className="gap-2"
-            disabled={actionPending}
+            disabled={actionPending || armingDisabled}
+            title={agentGate.reason ?? undefined}
             onClick={() => resumeMutation.mutate()}
             data-testid="agents-automation-resume"
           >
@@ -1476,7 +1490,8 @@ export function AgentsAutomationPanel({
             variant="secondary"
             size="sm"
             className="gap-2"
-            disabled={actionPending}
+            disabled={actionPending || armingDisabled}
+            title={agentGate.reason ?? undefined}
             onClick={() => restartMutation.mutate()}
             data-testid="agents-automation-restart"
           >

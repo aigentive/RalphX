@@ -59,9 +59,12 @@ describe("vite transport alias", () => {
 });
 
 describe("the alias actually covers typedInvoke (A-3)", () => {
-  it("lib/tauri.ts still imports invoke from the aliased specifier", () => {
+  // `typedInvoke` moved out of the `@/lib/tauri` barrel into its own module so that
+  // importing it no longer drags the barrel's whole API graph along. The invariant is
+  // unchanged and now asserted where the function actually lives.
+  it("typed-invoke.ts imports invoke from the aliased specifier", () => {
     const source = fs.readFileSync(
-      path.resolve(frontendRoot, "src/lib/tauri.ts"),
+      path.resolve(frontendRoot, "src/lib/typed-invoke.ts"),
       "utf8"
     );
     expect(source).toMatch(
@@ -71,6 +74,14 @@ describe("the alias actually covers typedInvoke (A-3)", () => {
     // typedInvoke on local IPC while every other caller went remote.
     expect(source).not.toMatch(/@tauri-apps\/api\/core\.js/);
     expect(source).not.toMatch(/#tauri-core-primitive/);
+  });
+
+  it("keeps the barrel re-exporting typedInvoke for existing call sites", () => {
+    const source = fs.readFileSync(
+      path.resolve(frontendRoot, "src/lib/tauri.ts"),
+      "utf8"
+    );
+    expect(source).toMatch(/export\s*\{[\s\S]*typedInvoke[\s\S]*\}\s*from\s*["']\.\/typed-invoke["']/);
   });
 });
 
