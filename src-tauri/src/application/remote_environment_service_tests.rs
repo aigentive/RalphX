@@ -898,6 +898,98 @@ async fn a_non_success_fetch_status_is_returned_not_raised() {
     assert_eq!(outcome.body, r#"{"error":"bad input"}"#);
 }
 
+/// The proxy forwards the host's real response headers through a RESPONSE-side
+/// allowlist, so the JS side stops asserting `application/json` over every body.
+/// Duplicates survive (`Set-Cookie`-shaped reality) and order is preserved.
+#[tokio::test]
+async fn fetch_forwards_only_allowlisted_response_headers() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
+    f.host.script_fetch_with_headers(
+        200,
+        "plain",
+        vec![
+            ("content-type", "text/plain; charset=utf-8"),
+            ("set-cookie", "session=leaky"),
+            ("etag", "\"v1\""),
+            ("cache-control", "no-store"),
+            ("cache-control", "private"),
+            ("x-internal-host-note", "never crosses"),
+        ],
+    );
+
+    let outcome = f
+        .service
+        .fetch(&a, RemoteFetchCall::get("/api/tasks"))
+        .await
+        .expect("a 200 answer");
+    assert_eq!(
+        outcome.headers,
+        vec![
+            ("content-type".to_string(), "text/plain; charset=utf-8".to_string()),
+            ("etag".to_string(), "\"v1\"".to_string()),
+            ("cache-control".to_string(), "no-store".to_string()),
+            ("cache-control".to_string(), "private".to_string()),
+        ]
+    );
+}
+
+/// The synthesized descriptor answer is JSON this process just serialized, so it
+/// declares its own content type rather than inheriting one from a request that was
+/// never made against the remounted surface.
+#[tokio::test]
+async fn the_descriptor_shortcut_declares_its_own_content_type() {
+    let f = fixture();
+    let (a, _b) = two_paired_environments(&f).await;
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
+
+    let outcome = f
+        .service
+        .fetch(
+            &a,
+            RemoteFetchCall::get(crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH),
+        )
+        .await
+        .expect("the descriptor shortcut answers pre-auth");
+    assert_eq!(
+        outcome.headers,
+        vec![("content-type".to_string(), "application/json".to_string())]
+    );
+}
+
+/// C-11: the JS envelope decoder is written against THIS shape — camelCase keys and
+/// header tuples as two-element arrays, not an object (duplicates are legal).
+#[test]
+fn remote_fetch_outcome_serializes_with_camel_case_header_tuples() {
+    let json = serde_json::to_value(RemoteFetchOutcome {
+        status: 204,
+        headers: vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("etag".to_string(), "\"abc\"".to_string()),
+        ],
+        body: String::new(),
+    })
+    .expect("outcome serializes");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "status": 204,
+            "headers": [
+                ["content-type", "application/json"],
+                ["etag", "\"abc\""]
+            ],
+            "body": ""
+        })
+    );
+}
+
 /// 401/403 are the exception: they describe the transport's authority, and the
 /// supervisor keys on them (§6.5).
 #[tokio::test]
@@ -1812,6 +1904,7 @@ fn invoke_envelopes_preserve_results_errors_and_null_defaults() {
         assert_eq!(
             parse_invoke_response(RemoteHttpResponse {
                 status: 200,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
                 body: body.to_string(),
             })
             .expect("valid success response"),
@@ -1821,6 +1914,7 @@ fn invoke_envelopes_preserve_results_errors_and_null_defaults() {
 
     let error = parse_invoke_response(RemoteHttpResponse {
         status: 200,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: "not-json".to_string(),
     })
     .expect_err("an invalid success body is a version mismatch");

@@ -93,13 +93,20 @@ pub struct RemoteFetchRequest {
     pub body: Option<String>,
 }
 
-/// A host answer, uninterpreted: status plus the raw body text.
+/// A host answer, uninterpreted: status, response headers, and the raw body text.
 ///
 /// The client deliberately does NOT classify statuses — what a 403 or a 409 means is
 /// protocol policy and lives in the application layer, where the error taxonomy is.
+///
+/// `headers` is likewise UNFILTERED: which of the host's headers may cross into the
+/// webview is protocol policy, so the response-side allowlist lives beside the
+/// request-side one in `remote_environment_service`. Names are lowercased, order is
+/// preserved, and duplicates are kept — real HTTP allows repeats and collapsing them
+/// here would silently rewrite the host's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteHttpResponse {
     pub status: u16,
+    pub headers: Vec<(String, String)>,
     pub body: String,
 }
 
@@ -224,15 +231,20 @@ impl HyperRemoteHostClient {
         bearer: Option<&str>,
         body: Option<Vec<u8>>,
     ) -> Result<(StatusCode, Vec<u8>), RemoteHostClientError> {
-        self.send(
-            method,
-            url,
-            bearer,
-            &[("Content-Type".to_string(), "application/json".to_string())],
-            body,
-            self.request_timeout,
-        )
-        .await
+        // The pairing/auth surfaces are protocol endpoints this client parses itself,
+        // so their response headers are noise; only the proxied `/api/…` surface
+        // forwards them.
+        let (status, _headers, body) = self
+            .send(
+                method,
+                url,
+                bearer,
+                &[("Content-Type".to_string(), "application/json".to_string())],
+                body,
+                self.request_timeout,
+            )
+            .await?;
+        Ok((status, body))
     }
 
     async fn send(
@@ -243,7 +255,7 @@ impl HyperRemoteHostClient {
         headers: &[(String, String)],
         body: Option<Vec<u8>>,
         timeout: Duration,
-    ) -> Result<(StatusCode, Vec<u8>), RemoteHostClientError> {
+    ) -> Result<(StatusCode, Vec<(String, String)>, Vec<u8>), RemoteHostClientError> {
         let uri: hyper::Uri = url
             .parse()
             .map_err(|error| RemoteHostClientError::Unreachable(format!("invalid URL: {error}")))?;
@@ -272,6 +284,18 @@ impl HyperRemoteHostClient {
             })?
             .map_err(|error| RemoteHostClientError::Unreachable(error.to_string()))?;
         let status = response.status();
+        // Lowercased, order-preserving, duplicates kept: `HeaderMap`'s iterator yields
+        // one entry per value, which is the shape the response allowlist filters.
+        let response_headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_ascii_lowercase(),
+                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                )
+            })
+            .collect();
         let body = response
             .into_body()
             .collect()
@@ -279,7 +303,7 @@ impl HyperRemoteHostClient {
             .map_err(|error| RemoteHostClientError::Unreachable(error.to_string()))?
             .to_bytes()
             .to_vec();
-        Ok((status, body))
+        Ok((status, response_headers, body))
     }
 }
 
@@ -391,7 +415,7 @@ impl RemoteHostClient for HyperRemoteHostClient {
         let url = join_url(base_url, REMOTE_INVOKE_PATH);
         let payload = serde_json::to_vec(request)
             .map_err(|error| RemoteHostClientError::InvalidResponse(error.to_string()))?;
-        let (status, body) = self
+        let (status, headers, body) = self
             .send(
                 Method::POST,
                 &url,
@@ -404,6 +428,7 @@ impl RemoteHostClient for HyperRemoteHostClient {
         // Non-success is NOT an error here: the taxonomy mapping needs the status.
         Ok(RemoteHttpResponse {
             status: status.as_u16(),
+            headers,
             body: body_text(body),
         })
     }
@@ -418,7 +443,7 @@ impl RemoteHostClient for HyperRemoteHostClient {
         let method = Method::from_bytes(request.method.as_bytes()).map_err(|error| {
             RemoteHostClientError::InvalidResponse(format!("invalid HTTP method: {error}"))
         })?;
-        let (status, body) = self
+        let (status, headers, body) = self
             .send(
                 method,
                 &url,
@@ -430,6 +455,7 @@ impl RemoteHostClient for HyperRemoteHostClient {
             .await?;
         Ok(RemoteHttpResponse {
             status: status.as_u16(),
+            headers,
             body: body_text(body),
         })
     }
@@ -542,6 +568,7 @@ pub struct MockRemoteHostClient {
 fn default_invoke_response() -> RemoteHttpResponse {
     RemoteHttpResponse {
         status: 200,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: r#"{"ok":true,"result":null}"#.to_string(),
     }
 }
@@ -577,6 +604,7 @@ impl MockRemoteHostClient {
     pub fn script_invoke(&self, status: u16, body: impl Into<String>) {
         *self.invoke_response.lock().expect("mock invoke poisoned") = Ok(RemoteHttpResponse {
             status,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
             body: body.into(),
         });
     }
@@ -588,8 +616,27 @@ impl MockRemoteHostClient {
 
     /// Scripts the next remounted-route answer.
     pub fn script_fetch(&self, status: u16, body: impl Into<String>) {
+        self.script_fetch_with_headers(
+            status,
+            body,
+            vec![("content-type", "application/json")],
+        );
+    }
+
+    /// Scripts the next remounted-route answer together with the host's raw response
+    /// headers, so response-allowlist behaviour is testable end to end.
+    pub fn script_fetch_with_headers(
+        &self,
+        status: u16,
+        body: impl Into<String>,
+        headers: Vec<(&str, &str)>,
+    ) {
         *self.fetch_response.lock().expect("mock fetch poisoned") = Ok(RemoteHttpResponse {
             status,
+            headers: headers
+                .into_iter()
+                .map(|(name, value)| (name.to_ascii_lowercase(), value.to_string()))
+                .collect(),
             body: body.into(),
         });
     }
@@ -1031,12 +1078,25 @@ mod tests {
             .invoke(&base_url, "secret", &invoke)
             .await
             .expect("invoke response");
-        assert_eq!(
-            response,
-            RemoteHttpResponse {
-                status: 403,
-                body: "denied".to_string()
-            }
+        assert_eq!(response.status, 403);
+        assert_eq!(response.body, "denied");
+        // Real response headers, lowercased. Asserted by membership rather than by
+        // equality: this runs against a live server whose `date` header is, by design,
+        // different on every run.
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(name, value)| name == "content-type" && value.starts_with("text/plain")),
+            "expected a forwarded content-type, got {:?}",
+            response.headers
+        );
+        assert!(
+            response.headers.iter().all(|(name, _)| name
+                .chars()
+                .all(|ch| !ch.is_ascii_uppercase())),
+            "header names must be lowercased: {:?}",
+            response.headers
         );
         assert_eq!(
             seen.lock().expect("seen")[0].authorization.as_deref(),
