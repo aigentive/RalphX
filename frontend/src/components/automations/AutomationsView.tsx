@@ -1,19 +1,23 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useState } from "react";
-import { ChevronRight, Plus, Workflow } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Plus, Workflow } from "lucide-react";
 
-import type { Automation, AutomationRun } from "@/api/automations";
+import type { Automation } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
-import {
-  getAutomationRunView,
-  latestRun,
-} from "@/components/automations/automationStage";
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
-import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
+import { useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
-import { Pill, statusDotColor } from "./automationDetailShared";
+import { AutomationListGroup } from "./AutomationListGroup";
+import { AutomationListRow } from "./AutomationListRow";
+import { AutomationListToolbar } from "./AutomationListToolbar";
+import {
+  automationListFilterCounts,
+  automationListSummary,
+  filterAndGroupAutomations,
+  type AutomationListFilter,
+} from "./automationListPresentation";
 
 interface AutomationsViewProps {
   projectId: string | null;
@@ -29,60 +33,7 @@ interface AutomationsViewProps {
 }
 
 const LazyAutomationDetailView = lazy(() => preloadAutomationDetailView());
-
-const STATUS_LABELS: Record<Automation["status"], string> = {
-  draft: "Draft",
-  active: "Active",
-  paused: "Paused",
-  completed: "Completed",
-  stopped: "Stopped",
-};
-
-function parsePhaseCount(value: string | null): number {
-  if (!value?.trim()) {
-    return 0;
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed.length : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function formatGoalMetadata(automation: Automation): string {
-  const phaseCount = parsePhaseCount(automation.goalItemsJson);
-  const goalState = automation.goalPrompt.trim() ? "Goal set" : "No goal";
-  const phaseState =
-    phaseCount === 0 ? "No phases" : `${phaseCount} ${phaseCount === 1 ? "phase" : "phases"}`;
-  const firstRunState = automation.firstRunPrompt?.trim() ? "First run ready" : "No first run";
-  return `${goalState} · ${phaseState} · ${firstRunState}`;
-}
-
-function formatSecondaryLine(automation: Automation, stageLabel: string): string {
-  if (automation.status === "draft") {
-    return `Draft setup · ${formatGoalMetadata(automation)}`;
-  }
-  const phaseCount = parsePhaseCount(automation.goalItemsJson);
-  const segments = [
-    stageLabel === "Paused" || stageLabel === "Stopped" ? null : stageLabel,
-    phaseCount > 0
-      ? `${phaseCount} ${phaseCount === 1 ? "phase" : "phases"}`
-      : null,
-    automation.runMode,
-    automation.modelId,
-  ];
-  return segments.filter((segment): segment is string => Boolean(segment)).join(" · ");
-}
-
-function formatLastRun(automation: Automation, run: AutomationRun | null): string {
-  if (!run) {
-    return automation.status === "draft" ? "Not started" : "No runs yet";
-  }
-  const pr = run.prNumber ? ` · PR #${run.prNumber}` : "";
-  const view = getAutomationRunView(automation, run);
-  return `Run ${run.runIndex} · ${view.statusLabel}${pr}`;
-}
+const EMPTY_AUTOMATIONS: Automation[] = [];
 
 function AutomationsListSkeleton() {
   return (
@@ -126,134 +77,6 @@ function AutomationsListSkeleton() {
     </div>
   );
 }
-
-const AutomationRow = memo(function AutomationRow({
-  automation,
-  divided,
-  onOpenAutomation,
-}: {
-  automation: Automation;
-  divided: boolean;
-  onOpenAutomation?: (automationId: string) => void;
-}) {
-  const detail = useAutomationDetail(automation.id);
-  const runs = detail.data?.runs;
-  const run = latestRun(runs ?? []);
-  const runView = getAutomationRunView(automation, run);
-  const runsCount = runs?.length ?? 0;
-  const secondaryLine = formatSecondaryLine(automation, runView.stageLabel);
-  const showProgress =
-    automation.status !== "draft" &&
-    runsCount > 0 &&
-    automation.maxRuns > 0 &&
-    automation.maxRuns <= 200;
-  const progressPercent = Math.min(100, Math.max(0, (runsCount / Math.max(automation.maxRuns, 1)) * 100));
-  const handleOpen = useCallback(() => onOpenAutomation?.(automation.id), [automation.id, onOpenAutomation]);
-
-  return (
-    <button
-      type="button"
-      className="group flex min-h-[64px] w-full flex-wrap items-center gap-4 px-4 py-3 text-left transition-colors hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent-primary)] disabled:cursor-default disabled:hover:bg-transparent md:flex-nowrap"
-      style={{
-        ...(divided
-          ? {
-              borderTopColor: "var(--border-subtle, #2e2e36)",
-              borderTopStyle: "solid",
-              borderTopWidth: "1px",
-            }
-          : {}),
-      }}
-      disabled={!onOpenAutomation}
-      onClick={handleOpen}
-      data-testid={`automation-row-${automation.id}`}
-    >
-      <span
-        aria-hidden="true"
-        className="h-2 w-2 shrink-0 rounded-full"
-        style={{ backgroundColor: statusDotColor(automation.status) }}
-        data-testid={`automation-row-${automation.id}-status-dot`}
-      />
-      <div className="min-w-0 flex-1">
-        <div
-          className="truncate text-sm font-medium"
-          style={{
-            color: automation.name.trim()
-              ? "var(--text-primary, #f2f2f4)"
-              : "var(--text-muted, #8e8e96)",
-          }}
-        >
-          {automation.name.trim() || "Untitled automation"}
-        </div>
-        <div
-          className="mt-0.5 truncate text-xs"
-          style={{ color: "var(--text-muted, #8e8e96)" }}
-          data-testid={`automation-row-${automation.id}-metadata`}
-        >
-          {secondaryLine}
-        </div>
-      </div>
-      <div className="ml-6 flex basis-[calc(100%_-_1.5rem)] shrink-0 items-center gap-3 md:ml-0 md:basis-auto">
-        <div className="flex w-[92px] justify-end">
-          <Pill
-            label={STATUS_LABELS[automation.status]}
-            status={automation.status}
-            live={automation.status === "active" && runView.isOpen}
-          />
-        </div>
-        <div className="flex min-w-[76px] items-center justify-end gap-2">
-          {automation.status === "draft" ? (
-            <span className="text-xs" style={{ color: "var(--text-muted, #8e8e96)" }}>
-              —
-            </span>
-          ) : (
-            <>
-              <span
-                className="text-xs tabular-nums"
-                style={{ color: "var(--text-secondary, #c7c7cc)" }}
-              >
-                {runsCount}/{automation.maxRuns}
-              </span>
-              {showProgress ? (
-                <div
-                  className="h-1 w-12 overflow-hidden rounded-full"
-                  style={{ backgroundColor: "var(--bg-hover, #2a2a31)" }}
-                  aria-hidden="true"
-                  data-testid={`automation-row-${automation.id}-runs-progress`}
-                >
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      backgroundColor:
-                        automation.status === "active" && runView.isOpen
-                          ? "var(--accent-primary)"
-                          : "var(--text-subtle, #6a6a72)",
-                      width: `${progressPercent}%`,
-                    }}
-                    data-testid={`automation-row-${automation.id}-runs-progress-fill`}
-                  />
-                </div>
-              ) : null}
-            </>
-          )}
-        </div>
-        <div
-          className="hidden w-[150px] truncate text-right text-xs md:block"
-          style={{
-            color: runView.statusTone === "error"
-              ? "var(--status-error, #dd3c3c)"
-              : "var(--text-muted, #8e8e96)",
-          }}
-        >
-          {detail.isLoading ? "Loading runs…" : formatLastRun(automation, run)}
-        </div>
-        <ChevronRight
-          className="hidden h-4 w-4 text-[var(--text-subtle)] transition-colors group-hover:text-[var(--text-secondary)] md:block"
-          aria-hidden="true"
-        />
-      </div>
-    </button>
-  );
-});
 
 function EmptyAutomations({ onNewAutomation }: { onNewAutomation?: () => void }) {
   return (
@@ -340,6 +163,8 @@ export function AutomationsView({
   onOpenAutomationRun,
 }: AutomationsViewProps) {
   const [localSelectedAutomationId, setLocalSelectedAutomationId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<AutomationListFilter>("all");
+  const [searchText, setSearchText] = useState("");
   const isSelectionControlled = selectedAutomationId !== undefined;
   const activeAutomationId = isSelectionControlled
     ? selectedAutomationId
@@ -357,7 +182,12 @@ export function AutomationsView({
   const afterPaint = useAfterPaintMounted(Boolean(projectId));
   const automations = useAutomationsList(projectId, { enabled: afterPaint });
   const projectLabel = projectName ?? projectId ?? "Current project";
-  const rows = automations.data ?? [];
+  const rows = automations.data ?? EMPTY_AUTOMATIONS;
+  const filterCounts = useMemo(() => automationListFilterCounts(rows), [rows]);
+  const groupedRows = useMemo(
+    () => filterAndGroupAutomations(rows, filter, searchText),
+    [filter, rows, searchText],
+  );
   const showSkeleton = Boolean(projectId) && (!afterPaint || automations.isLoading);
   const handleOpenAutomation = useCallback((automationId: string) => {
     setSelectedAutomation(automationId);
@@ -371,6 +201,8 @@ export function AutomationsView({
     if (!isSelectionControlled) {
       setLocalSelectedAutomationId(null);
     }
+    setFilter("all");
+    setSearchText("");
   }, [isSelectionControlled, projectId]);
 
   if (activeAutomationId) {
@@ -408,7 +240,7 @@ export function AutomationsView({
             Automations
           </h1>
           <div className="mt-1 text-xs font-medium" style={{ color: "var(--text-muted)" }}>
-            {projectLabel} · {rows.length} automations
+            {automationListSummary(projectLabel, rows)}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -468,23 +300,45 @@ export function AutomationsView({
         ) : rows.length === 0 ? (
           <EmptyAutomations {...(onNewAutomation ? { onNewAutomation } : {})} />
         ) : (
-          <div
-            className="overflow-hidden rounded-lg"
-            style={{
-              backgroundColor: "var(--bg-surface, #1e1e23)",
-              borderColor: "var(--border-subtle, #2e2e36)",
-              borderStyle: "solid",
-              borderWidth: "1px",
-            }}
-            data-testid="automations-list"
-          >
-            {rows.map((automation, index) => (
-              <AutomationRow
-                key={automation.id}
-                automation={automation}
-                divided={index > 0}
-                onOpenAutomation={handleOpenAutomation}
-              />
+          <div className="space-y-5" data-testid="automations-list">
+            <AutomationListToolbar
+              activeFilter={filter}
+              counts={filterCounts}
+              searchText={searchText}
+              onFilterChange={setFilter}
+              onSearchTextChange={setSearchText}
+            />
+            {groupedRows.length === 0 ? (
+              <div
+                className="rounded-lg px-4 py-10 text-center text-sm"
+                style={{
+                  backgroundColor: "var(--bg-surface, #1e1e23)",
+                  borderColor: "var(--border-subtle, #2e2e36)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-muted, #8e8e96)",
+                }}
+                data-testid="automations-filter-empty-state"
+              >
+                No automations match this filter.
+              </div>
+            ) : groupedRows.map((group) => (
+              <AutomationListGroup
+                key={group.id}
+                title={group.label}
+                hint={group.hint}
+                count={group.automations.length}
+                testId={`automations-group-${group.id}`}
+              >
+                {group.automations.map((automation, index) => (
+                  <AutomationListRow
+                    key={automation.id}
+                    automation={automation}
+                    divided={index > 0}
+                    onOpenAutomation={handleOpenAutomation}
+                  />
+                ))}
+              </AutomationListGroup>
             ))}
           </div>
         )}

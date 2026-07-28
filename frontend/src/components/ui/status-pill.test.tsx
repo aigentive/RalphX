@@ -17,6 +17,15 @@ describe("StatusPill", () => {
     expect(screen.getByTestId("pill")).toHaveAttribute("data-tone", "accent");
   });
 
+  it("supports the additive tinted appearance without changing the default", () => {
+    const { rerender } = render(<StatusPill label="Paused" tone="warning" testId="pill" />);
+    expect(screen.getByTestId("pill")).toHaveAttribute("data-variant", "default");
+
+    rerender(<StatusPill label="Paused" tone="warning" variant="tinted" testId="pill" />);
+    expect(screen.getByTestId("pill")).toHaveAttribute("data-variant", "tinted");
+    expect(screen.getByTestId("pill").style.backgroundColor).toContain("--status-warning-muted");
+  });
+
   it("uses WKWebView-safe paint/border longhands", () => {
     render(<StatusPill label="Merged" tone="success" testId="pill" />);
     const pill = screen.getByTestId("pill");
