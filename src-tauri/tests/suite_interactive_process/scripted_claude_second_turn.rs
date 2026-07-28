@@ -74,7 +74,7 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
         )))
         .await
         .expect("persist live conversation");
-    let mut run = AgentRun::new(conversation.id.clone());
+    let mut run = AgentRun::new(conversation.id);
     run.harness = Some(AgentHarnessKind::Claude);
     run.provider_session_id = Some("scripted-claude-session".to_string());
     let run = state
@@ -149,7 +149,7 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
         )
         .await;
 
-    let stream_conversation_id = conversation.id.clone();
+    let stream_conversation_id = conversation.id;
     let stream_message_repo = Arc::clone(&state.chat_message_repo);
     let stream_timeline_repo = Arc::clone(&state.chat_timeline_repo);
     let stream_run_repo = Arc::clone(&state.agent_run_repo);
@@ -208,7 +208,7 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
             context_id,
             follow_up,
             SendMessageOptions {
-                conversation_id_override: Some(conversation.id.clone()),
+                conversation_id_override: Some(conversation.id),
                 ..Default::default()
             },
         )

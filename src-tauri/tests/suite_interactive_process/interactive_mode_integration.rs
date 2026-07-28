@@ -772,7 +772,7 @@ async fn test_codex_agent_conversation_queues_behind_active_background_agent() {
         harness: AgentHarnessKind::Codex,
         provider_session_id: "codex-running-session".to_string(),
     });
-    let conversation_id = conversation.id.clone();
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
@@ -809,7 +809,7 @@ async fn test_codex_agent_conversation_queues_behind_active_background_agent() {
             project_id.as_str(),
             "queue this Codex follow-up",
             SendMessageOptions {
-                conversation_id_override: Some(conversation_id.clone()),
+                conversation_id_override: Some(conversation_id),
                 harness_override: Some(AgentHarnessKind::Codex),
                 model_override: Some("gpt-5.5".to_string()),
                 ..Default::default()
