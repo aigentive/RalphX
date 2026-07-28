@@ -18,6 +18,7 @@ import {
   REMOTE_STREAM_FRAME_EVENT,
   parseRemoteStreamClosedEnvelope,
   parseRemoteStreamFrameEnvelope,
+  readRemoteStreamFrameEnvironmentId,
   type RemoteServerFrame,
 } from "./stream-frames";
 
@@ -55,15 +56,24 @@ export function attachRemoteStreamRelay(deps: RemoteStreamRelayDeps): () => void
   const environmentId = deps.target.environmentId();
 
   const frames: Unsubscribe = subscribeLocal(REMOTE_STREAM_FRAME_EVENT, (payload) => {
+    // Address first, decode second. A drifted frame addressed to ANOTHER environment
+    // must not tear this environment's healthy stream down — that would make every
+    // attached relay a casualty of one host's protocol violation.
+    const addressee = readRemoteStreamFrameEnvironmentId(payload);
+    if (addressee !== null && addressee !== environmentId) {
+      return; // another environment's stream shares the channel, not this bus
+    }
     const envelope = parseRemoteStreamFrameEnvelope(payload);
     if (envelope === null) {
       // A frame we cannot decode is a protocol violation, not a no-op: projecting a
-      // partially-understood frame is what the reset machinery exists to prevent.
+      // partially-understood frame is what the reset machinery exists to prevent. An
+      // envelope with no readable addressee cannot be attributed at all, so every
+      // relay surfaces it rather than silently dropping an unowned violation.
       deps.onUndecodableFrame?.(payload);
       return;
     }
     if (envelope.environmentId !== environmentId) {
-      return; // another environment's stream shares the channel, not this bus
+      return;
     }
     deps.onFrameActivity?.();
     deps.target.handleFrame(envelope.frame);

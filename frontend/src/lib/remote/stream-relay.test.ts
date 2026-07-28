@@ -113,6 +113,34 @@ describe("fail-closed decoding", () => {
     expect(onUndecodableFrame).toHaveBeenCalledTimes(2);
   });
 
+  it("never tears down this environment for ANOTHER environment's undecodable frame", () => {
+    const localBus = new MockEventBus();
+    const a = target(ENV);
+    const b = target(OTHER);
+    const aUndecodable = vi.fn();
+    const bUndecodable = vi.fn();
+    attachRemoteStreamRelay({
+      localBus,
+      target: a.stub,
+      onUndecodableFrame: aUndecodable,
+    });
+    attachRemoteStreamRelay({
+      localBus,
+      target: b.stub,
+      onUndecodableFrame: bUndecodable,
+    });
+
+    localBus.emit(REMOTE_STREAM_FRAME_EVENT, {
+      environmentId: OTHER,
+      frame: { type: "event", seq: "not-a-number", name: "task:created" },
+    });
+
+    // A's healthy socket must not be dropped by B's protocol violation.
+    expect(aUndecodable).not.toHaveBeenCalled();
+    expect(bUndecodable).toHaveBeenCalledTimes(1);
+    expect(a.frames).toEqual([]);
+  });
+
   it("drops a durable frame whose seq is not a number rather than treating it as transient", () => {
     const localBus = new MockEventBus();
     const t = target();

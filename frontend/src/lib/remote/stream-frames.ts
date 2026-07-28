@@ -204,6 +204,19 @@ export function parseRemoteServerFrame(value: unknown): RemoteServerFrame | null
   }
 }
 
+/**
+ * Reads ONLY the addressee of a relay envelope, without decoding the frame.
+ *
+ * The shared channel carries every environment's frames, so a relay must decide
+ * whose frame this is BEFORE deciding whether it decodes: an undecodable frame
+ * addressed to environment B is B's protocol violation, and letting it tear down
+ * environment A's healthy stream would defeat the isolation this layer exists for.
+ */
+export function readRemoteStreamFrameEnvironmentId(value: unknown): string | null {
+  const record = asRecord(value);
+  return record === null ? null : asString(record.environmentId);
+}
+
 /** Decodes a `remote:stream_frame` payload, rejecting anything without a usable frame. */
 export function parseRemoteStreamFrameEnvelope(
   value: unknown
