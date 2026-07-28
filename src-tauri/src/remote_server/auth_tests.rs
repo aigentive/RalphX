@@ -64,7 +64,9 @@ fn router_for(context: &RemoteAuthContext) -> Router {
     ))
 }
 
-struct UnavailableInvokeDispatcher;
+/// Shared with `listener_tests`, which needs a dispatcher but never dispatches: the listener's
+/// only use for an `AppHandle` was reaching the command registry.
+pub(super) struct UnavailableInvokeDispatcher;
 
 #[async_trait]
 impl RemoteInvokeDispatcher for UnavailableInvokeDispatcher {

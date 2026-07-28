@@ -14,7 +14,7 @@ use crate::remote_server::attachments::RemoteAttachmentContext;
 use crate::remote_server::auth::RemoteAuthContext;
 use crate::remote_server::dedup::RemoteDedupState;
 use crate::remote_server::fetch_remount::SharedHttpAppState;
-use crate::remote_server::invoke::{RemoteInvokeDispatcher, TauriRemoteInvokeDispatcher};
+use crate::remote_server::invoke::RemoteInvokeDispatcher;
 use crate::remote_server::sequencer::RemoteStreamHandle;
 use crate::remote_server::settings::RemoteExposureMode;
 use crate::remote_server::ws::{NoopLifecycleSink, SessionLifecycleSink};
@@ -66,18 +66,11 @@ pub(crate) struct RemoteRouterState {
 }
 
 impl RemoteRouterState {
-    pub(crate) fn new(
-        environment_id: impl Into<Arc<str>>,
-        auth: RemoteAuthContext,
-        app_handle: tauri::AppHandle,
-    ) -> Self {
-        Self::new_with_invoke_dispatcher(
-            environment_id,
-            auth,
-            TauriRemoteInvokeDispatcher::shared(app_handle),
-        )
-    }
-
+    /// The `AppHandle`-taking `new` is gone: `start_listener` — its only caller — now resolves
+    /// every `AppHandle`-derived input (dispatcher, attachment root, shared remount state) into
+    /// a `RemoteListenerRuntime` one frame earlier, so the listener core can be tested without a
+    /// Wry handle. Production still lands on `TauriRemoteInvokeDispatcher::shared(app_handle)`,
+    /// `AppPaths::from_app_handle` and `try_state::<Arc<SharedHttpAppState>>()` exactly as before.
     pub(crate) fn new_with_invoke_dispatcher(
         environment_id: impl Into<Arc<str>>,
         auth: RemoteAuthContext,
