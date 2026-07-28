@@ -6938,11 +6938,11 @@
     }
   ],
   "worker_task_view_allowlist": [
-    "id",
-    "project_id",
-    "title",
     "description",
+    "id",
+    "ideation_session_id",
     "internal_status",
-    "ideation_session_id"
+    "project_id",
+    "title"
   ]
 }
