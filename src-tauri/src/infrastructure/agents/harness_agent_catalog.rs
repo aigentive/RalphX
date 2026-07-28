@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::domain::services::learned_skill_adapters::{LearnedSkillBucket, LearnedSkillStage};
 use crate::infrastructure::agents::claude::canonical_short_agent_name;
 
 const CANONICAL_AGENTS_DIR: &str = "agents";
@@ -99,6 +100,10 @@ pub struct CanonicalAgentCapabilities {
     pub mcp_tools: Vec<String>,
     #[serde(default)]
     pub internal_skills: CanonicalInternalSkillsConfig,
+    #[serde(default)]
+    pub project_skill_buckets: Vec<LearnedSkillBucket>,
+    #[serde(default)]
+    pub project_skill_stages: Vec<LearnedSkillStage>,
 }
 
 impl CanonicalAgentCapabilities {
@@ -108,6 +113,12 @@ impl CanonicalAgentCapabilities {
         }
         if !self.internal_skills.is_empty() {
             base.internal_skills = self.internal_skills;
+        }
+        if !self.project_skill_buckets.is_empty() {
+            base.project_skill_buckets = self.project_skill_buckets;
+        }
+        if !self.project_skill_stages.is_empty() {
+            base.project_skill_stages = self.project_skill_stages;
         }
         base
     }

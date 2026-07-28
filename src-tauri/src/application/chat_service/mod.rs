@@ -4175,6 +4175,9 @@ impl<R: Runtime> AppChatService<R> {
             None, // effort_override: callers pre-resolve if needed
             None, // model_override: callers pre-resolve if needed
             None, // attachment_context_override
+            chat_service_context::ProjectSkillSelectionRepositories::from_app_handle(
+                self.app_handle.as_ref(),
+            ),
         )
         .await
         .map_err(ChatServiceError::SpawnFailed)?;
@@ -4362,6 +4365,9 @@ impl<R: Runtime> AppChatService<R> {
             resolved_spawn_settings,
             agent_workspace_prompt_context.as_deref(),
             attachment_context_override,
+            chat_service_context::ProjectSkillSelectionRepositories::from_app_handle(
+                self.app_handle.as_ref(),
+            ),
         )
         .await
         .map_err(|error| {

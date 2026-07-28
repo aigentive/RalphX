@@ -2,6 +2,10 @@ name: ralphx-execution-merger
 role: merger
 description: "Resolves merge conflicts that programmatic rebase+merge couldn't handle"
 capabilities:
+  project_skill_buckets:
+    - merge
+  project_skill_stages:
+    - merge
   mcp_tools:
     - report_conflict
     - report_incomplete

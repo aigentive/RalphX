@@ -1,6 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use crate::domain::{entities::ideation::VerificationRoundSnapshot, services::gap_fingerprint};
+use crate::domain::{
+    entities::{ideation::VerificationRoundSnapshot, ProjectSkill, ProjectSkillLifecycleStatus},
+    services::gap_fingerprint,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +41,9 @@ pub enum LearnedSkillStatus {
     Staged,
     Approved,
     Rejected,
+    Stale,
     Archived,
+    Retired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -67,6 +72,8 @@ pub struct LearnedSkillRecord {
     pub project_id: String,
     pub title: String,
     pub status: LearnedSkillStatus,
+    #[serde(default)]
+    pub pinned: bool,
     pub caller_surfaces: Vec<String>,
     pub stages: Vec<LearnedSkillStage>,
     pub buckets: Vec<LearnedSkillBucket>,
@@ -77,6 +84,11 @@ pub struct LearnedSkillRecord {
 }
 
 impl LearnedSkillRecord {
+    pub fn with_pinned(mut self, pinned: bool) -> Self {
+        self.pinned = pinned;
+        self
+    }
+
     pub fn with_caller_surfaces(mut self, caller_surfaces: Vec<&str>) -> Self {
         self.caller_surfaces = caller_surfaces.into_iter().map(str::to_string).collect();
         self
@@ -116,6 +128,28 @@ pub struct LearnedSkillSelectionRequest {
     pub bucket: LearnedSkillBucket,
     pub touched_paths: Vec<String>,
     pub max_skills: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LearnedSkillMultiSelectionRequest {
+    pub project_id: String,
+    pub caller_surface: String,
+    pub stages: Vec<LearnedSkillStage>,
+    pub buckets: Vec<LearnedSkillBucket>,
+    pub touched_paths: Vec<String>,
+    pub max_skills: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectSkillMappingError {
+    EmptyId,
+    EmptyProjectId,
+    EmptyTitle,
+    EmptyGuidance,
+    EmptyCallerSurface,
+    InvalidBucket(String),
+    InvalidStage(String),
+    InvalidPipelineRole,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,7 +244,24 @@ pub fn select_pre_execution_learned_skills(
     request: LearnedSkillSelectionRequest,
     skills: &[LearnedSkillRecord],
 ) -> Vec<LearnedSkillRecord> {
-    if request.max_skills == 0 {
+    select_pre_execution_learned_skills_multi(
+        LearnedSkillMultiSelectionRequest {
+            project_id: request.project_id,
+            caller_surface: request.caller_surface,
+            stages: vec![request.stage],
+            buckets: vec![request.bucket],
+            touched_paths: request.touched_paths,
+            max_skills: request.max_skills,
+        },
+        skills,
+    )
+}
+
+pub fn select_pre_execution_learned_skills_multi(
+    request: LearnedSkillMultiSelectionRequest,
+    skills: &[LearnedSkillRecord],
+) -> Vec<LearnedSkillRecord> {
+    if request.max_skills == 0 || request.stages.is_empty() || request.buckets.is_empty() {
         return Vec::new();
     }
 
@@ -219,14 +270,160 @@ pub fn select_pre_execution_learned_skills(
         .filter(|skill| skill.status == LearnedSkillStatus::Approved)
         .filter(|skill| skill.project_id == request.project_id)
         .filter(|skill| caller_surface_matches(&request.caller_surface, &skill.caller_surfaces))
-        .filter(|skill| skill.stages.contains(&request.stage))
-        .filter(|skill| skill.buckets.contains(&request.bucket))
+        .filter(|skill| {
+            request
+                .stages
+                .iter()
+                .any(|stage| skill.stages.contains(stage))
+        })
+        .filter(|skill| {
+            request
+                .buckets
+                .iter()
+                .any(|bucket| skill.buckets.contains(bucket))
+        })
         .filter(|skill| path_scope_matches(&request.touched_paths, &skill.path_scopes))
         .cloned()
         .collect::<Vec<_>>();
-    selected.sort_by(|left, right| left.id.cmp(&right.id));
+    selected.sort_by(|left, right| {
+        right
+            .pinned
+            .cmp(&left.pinned)
+            .then_with(|| {
+                bucket_rank(left, &request.buckets).cmp(&bucket_rank(right, &request.buckets))
+            })
+            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    let mut seen = HashSet::new();
+    selected.retain(|skill| seen.insert(skill.id.clone()));
     selected.truncate(request.max_skills);
     selected
+}
+
+fn bucket_rank(skill: &LearnedSkillRecord, buckets: &[LearnedSkillBucket]) -> usize {
+    buckets
+        .iter()
+        .position(|bucket| skill.buckets.contains(bucket))
+        .unwrap_or(usize::MAX)
+}
+
+pub fn project_skill_to_learned_skill_record(
+    skill: &ProjectSkill,
+    caller_surface: &str,
+) -> Result<LearnedSkillRecord, ProjectSkillMappingError> {
+    let id = nonempty(skill.id.as_str()).ok_or(ProjectSkillMappingError::EmptyId)?;
+    let project_id =
+        nonempty(skill.project_id.as_str()).ok_or(ProjectSkillMappingError::EmptyProjectId)?;
+    let title = nonempty(&skill.title).ok_or(ProjectSkillMappingError::EmptyTitle)?;
+    let compact_guidance =
+        nonempty(&skill.compact_guidance).ok_or(ProjectSkillMappingError::EmptyGuidance)?;
+    let caller_surface =
+        nonempty(caller_surface).ok_or(ProjectSkillMappingError::EmptyCallerSurface)?;
+    let bucket = parse_bucket(&skill.bucket)?;
+    let stage = parse_stage(&skill.stage)?;
+    if skill
+        .pipeline_role
+        .as_deref()
+        .is_some_and(|role| role.trim().is_empty())
+    {
+        return Err(ProjectSkillMappingError::InvalidPipelineRole);
+    }
+
+    Ok(LearnedSkillRecord {
+        id: id.to_string(),
+        project_id: project_id.to_string(),
+        title: title.to_string(),
+        status: learned_status(skill.status),
+        pinned: skill.pinned,
+        caller_surfaces: vec![caller_surface.to_string()],
+        stages: vec![stage],
+        buckets: vec![bucket],
+        path_scopes: skill.scope_paths.clone(),
+        compact_guidance: compact_guidance.to_string(),
+        predicted_effect: skill
+            .predicted_effect
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string(),
+        provenance_refs: project_skill_provenance_refs(skill),
+    })
+}
+
+fn nonempty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn parse_bucket(value: &str) -> Result<LearnedSkillBucket, ProjectSkillMappingError> {
+    match value.trim() {
+        "planning" => Ok(LearnedSkillBucket::Planning),
+        "verification" => Ok(LearnedSkillBucket::Verification),
+        "review" => Ok(LearnedSkillBucket::Review),
+        "execution" => Ok(LearnedSkillBucket::Execution),
+        "merge" => Ok(LearnedSkillBucket::Merge),
+        other => Err(ProjectSkillMappingError::InvalidBucket(other.to_string())),
+    }
+}
+
+fn parse_stage(value: &str) -> Result<LearnedSkillStage, ProjectSkillMappingError> {
+    match value.trim() {
+        "planning" => Ok(LearnedSkillStage::Planning),
+        "verification" => Ok(LearnedSkillStage::Verification),
+        "review" => Ok(LearnedSkillStage::Review),
+        "execution" => Ok(LearnedSkillStage::Execution),
+        "merge" => Ok(LearnedSkillStage::Merge),
+        other => Err(ProjectSkillMappingError::InvalidStage(other.to_string())),
+    }
+}
+
+fn learned_status(status: ProjectSkillLifecycleStatus) -> LearnedSkillStatus {
+    match status {
+        ProjectSkillLifecycleStatus::Staged => LearnedSkillStatus::Staged,
+        ProjectSkillLifecycleStatus::Approved => LearnedSkillStatus::Approved,
+        ProjectSkillLifecycleStatus::Rejected => LearnedSkillStatus::Rejected,
+        ProjectSkillLifecycleStatus::Stale => LearnedSkillStatus::Stale,
+        ProjectSkillLifecycleStatus::Archived => LearnedSkillStatus::Archived,
+        ProjectSkillLifecycleStatus::Retired => LearnedSkillStatus::Retired,
+    }
+}
+
+fn project_skill_provenance_refs(skill: &ProjectSkill) -> Vec<String> {
+    let mut refs = Vec::new();
+    collect_provenance_refs(&skill.provenance_json, None, &mut refs);
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn collect_provenance_refs(value: &serde_json::Value, key: Option<&str>, refs: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                collect_provenance_refs(value, Some(key), refs);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_provenance_refs(value, key, refs);
+            }
+        }
+        serde_json::Value::String(value)
+            if key.is_some_and(|key| {
+                key == "id"
+                    || key.ends_with("_id")
+                    || key.ends_with("_ids")
+                    || key.ends_with("_ref")
+                    || key.ends_with("_refs")
+            }) =>
+        {
+            if let Some(value) = nonempty(value) {
+                refs.push(value.to_string());
+            }
+        }
+        _ => {}
+    }
 }
 
 fn caller_surface_matches(caller_surface: &str, allowed_surfaces: &[String]) -> bool {
@@ -426,6 +623,7 @@ mod tests {
             project_id: project_id.to_string(),
             title: format!("Skill {id}"),
             status,
+            pinned: false,
             caller_surfaces: Vec::new(),
             stages: Vec::new(),
             buckets: Vec::new(),

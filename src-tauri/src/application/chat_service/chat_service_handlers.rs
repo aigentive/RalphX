@@ -2935,6 +2935,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     None,
                                     false,
                                     None,
+                                    chat_service_context::ProjectSkillSelectionRepositories::from_app_handle(
+                                        app_handle.as_ref(),
+                                    ),
                                 )
                                 .await
                             }

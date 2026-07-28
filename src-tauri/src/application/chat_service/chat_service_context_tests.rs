@@ -10,14 +10,19 @@ use crate::application::harness_runtime_registry::{
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::*;
 use crate::domain::repositories::*;
+use crate::domain::services::learned_skill_adapters::LearnedSkillBucket;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{
     agent_names, build_spawnable_interactive_command_for_test, mcp_agent_type, SpawnableCommand,
     CLAUDE_PROMPT_PERMISSION_MODE,
 };
 use crate::infrastructure::memory::{
     MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryDelegatedSessionRepository,
-    MemoryIdeationSessionRepository, MemoryProjectRepository, MemoryTaskRepository,
+    MemoryIdeationSessionRepository, MemoryProjectRepository, MemoryProjectSkillRepository,
+    MemoryProjectSkillSettingsRepository, MemoryTaskRepository,
 };
+use async_trait::async_trait;
+use chrono::Utc;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -34,6 +39,270 @@ mod claude_standalone_security;
 mod codex_standalone_security;
 #[path = "chat_service_context_tests/launch_security.rs"]
 mod launch_security;
+
+fn c1_project_skill(id: &str) -> ProjectSkill {
+    c1_project_skill_for(id, "project-1", "review", "review")
+}
+
+fn c1_project_skill_for(id: &str, project_id: &str, bucket: &str, stage: &str) -> ProjectSkill {
+    let now = Utc::now();
+    ProjectSkill {
+        id: ProjectSkillId::from_string(id),
+        project_id: ProjectId::from_string(project_id.to_string()),
+        title: format!("Skill {id}"),
+        bucket: bucket.to_string(),
+        stage: stage.to_string(),
+        status: ProjectSkillLifecycleStatus::Approved,
+        pinned: true,
+        archived: false,
+        scope_paths: Vec::new(),
+        compact_guidance: "Inspect current production entry paths.".to_string(),
+        body_markdown: "Do not trust stale review evidence.".to_string(),
+        predicted_effect: Some("Reduce repeated review misses.".to_string()),
+        provenance_json: serde_json::json!({"outcome_id": "outcome-1"}),
+        companion_of_skill_id: None,
+        content_hash: "content-hash".to_string(),
+        evidence_hash: "evidence-hash".to_string(),
+        created_by: ProjectSkillCreatedBy::Agent,
+        pipeline_role: Some("skill_distiller".to_string()),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn c1_plugin_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../plugins/app")
+        .canonicalize()
+        .expect("canonical plugin dir")
+}
+
+struct C1FailingSettingsRepository;
+
+#[async_trait]
+impl ProjectSkillSettingsRepository for C1FailingSettingsRepository {
+    async fn get_for_project(
+        &self,
+        _project_id: &ProjectId,
+    ) -> AppResult<Option<ProjectSkillSettings>> {
+        Err(AppError::Database("settings read failed".to_string()))
+    }
+
+    async fn upsert(&self, _settings: ProjectSkillSettings) -> AppResult<ProjectSkillSettings> {
+        Err(AppError::Database("unexpected settings write".to_string()))
+    }
+
+    async fn patch(
+        &self,
+        _project_id: &ProjectId,
+        _patch: ProjectSkillSettingsPatch,
+    ) -> AppResult<ProjectSkillSettings> {
+        Err(AppError::Database("unexpected settings write".to_string()))
+    }
+}
+
+struct C1FailingSkillRepository;
+
+#[async_trait]
+impl ProjectSkillRepository for C1FailingSkillRepository {
+    async fn resolve(
+        &self,
+        _command: ProjectSkillResolutionCommand,
+    ) -> AppResult<ProjectSkillResolutionResult> {
+        Err(AppError::Database("unexpected skill write".to_string()))
+    }
+
+    async fn seed_for_test(&self, _skill: ProjectSkill) -> AppResult<ProjectSkill> {
+        Err(AppError::Database("unexpected skill write".to_string()))
+    }
+
+    async fn create(&self, _skill: ProjectSkill) -> AppResult<ProjectSkill> {
+        Err(AppError::Database("unexpected skill write".to_string()))
+    }
+
+    async fn update_content(&self, _skill: ProjectSkill) -> AppResult<Option<ProjectSkill>> {
+        Err(AppError::Database("unexpected skill write".to_string()))
+    }
+
+    async fn append_version(
+        &self,
+        _version: ProjectSkillVersion,
+    ) -> AppResult<ProjectSkillVersion> {
+        Err(AppError::Database("unexpected skill write".to_string()))
+    }
+
+    async fn get_by_id(&self, _id: &ProjectSkillId) -> AppResult<Option<ProjectSkill>> {
+        Err(AppError::Database("unexpected skill read".to_string()))
+    }
+
+    async fn list_by_project(
+        &self,
+        _project_id: &ProjectId,
+        _options: ProjectSkillListOptions,
+    ) -> AppResult<Vec<ProjectSkill>> {
+        Err(AppError::Database("skill read failed".to_string()))
+    }
+
+    async fn list_versions(&self, _id: &ProjectSkillId) -> AppResult<Vec<ProjectSkillVersion>> {
+        Err(AppError::Database("unexpected skill read".to_string()))
+    }
+
+    async fn update_lifecycle_status(
+        &self,
+        _id: &ProjectSkillId,
+        _status: ProjectSkillLifecycleStatus,
+    ) -> AppResult<Option<ProjectSkill>> {
+        Err(AppError::Database("unexpected skill write".to_string()))
+    }
+
+    async fn update_pinned(
+        &self,
+        _id: &ProjectSkillId,
+        _pinned: bool,
+    ) -> AppResult<Option<ProjectSkill>> {
+        Err(AppError::Database("unexpected skill write".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn c1_selection_distinguishes_defaults_disabled_empty_and_unavailable() {
+    let settings_repo = Arc::new(MemoryProjectSkillSettingsRepository::new());
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    skill_repo
+        .seed_for_test(c1_project_skill("skill-review"))
+        .await
+        .unwrap();
+    let repositories = ProjectSkillSelectionRepositories {
+        settings_repo: settings_repo.clone(),
+        skill_repo: skill_repo.clone(),
+    };
+
+    let selected = load_pre_execution_project_skill_selection(
+        &c1_plugin_dir(),
+        "ralphx-execution-reviewer",
+        None,
+        Some("project-1"),
+        Some(&repositories),
+    )
+    .await;
+    let PreExecutionProjectSkillSelection::Selected(context) = selected else {
+        panic!("missing settings must use project defaults and select");
+    };
+    assert_eq!(context.available_skills.len(), 1);
+    assert_eq!(context.request.buckets, vec![LearnedSkillBucket::Review]);
+
+    let empty_repositories = ProjectSkillSelectionRepositories {
+        settings_repo: settings_repo.clone(),
+        skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
+    };
+    assert!(matches!(
+        load_pre_execution_project_skill_selection(
+            &c1_plugin_dir(),
+            "ralphx-execution-reviewer",
+            None,
+            Some("project-1"),
+            Some(&empty_repositories),
+        )
+        .await,
+        PreExecutionProjectSkillSelection::Selected(context)
+            if context.available_skills.is_empty()
+    ));
+
+    let mut settings =
+        ProjectSkillSettings::default_for_project(ProjectId::from_string("project-1".to_string()));
+    settings.auto_inject = false;
+    settings_repo.upsert(settings).await.unwrap();
+    assert_eq!(
+        load_pre_execution_project_skill_selection(
+            &c1_plugin_dir(),
+            "ralphx-execution-reviewer",
+            None,
+            Some("project-1"),
+            Some(&repositories),
+        )
+        .await,
+        PreExecutionProjectSkillSelection::Disabled(
+            ProjectSkillSelectionDisabledReason::DisabledBySettings
+        )
+    );
+
+    assert_eq!(
+        load_pre_execution_project_skill_selection(
+            &c1_plugin_dir(),
+            "ralphx-execution-reviewer",
+            None,
+            Some("project-1"),
+            None,
+        )
+        .await,
+        PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::RepositoriesUnavailable
+        )
+    );
+
+    let settings_failure = ProjectSkillSelectionRepositories {
+        settings_repo: Arc::new(C1FailingSettingsRepository),
+        skill_repo: Arc::new(MemoryProjectSkillRepository::new()),
+    };
+    assert_eq!(
+        load_pre_execution_project_skill_selection(
+            &c1_plugin_dir(),
+            "ralphx-execution-reviewer",
+            None,
+            Some("project-1"),
+            Some(&settings_failure),
+        )
+        .await,
+        PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::SettingsReadFailed
+        )
+    );
+
+    let skill_failure = ProjectSkillSelectionRepositories {
+        settings_repo: Arc::new(MemoryProjectSkillSettingsRepository::new()),
+        skill_repo: Arc::new(C1FailingSkillRepository),
+    };
+    assert_eq!(
+        load_pre_execution_project_skill_selection(
+            &c1_plugin_dir(),
+            "ralphx-execution-reviewer",
+            None,
+            Some("project-1"),
+            Some(&skill_failure),
+        )
+        .await,
+        PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::SkillReadFailed
+        )
+    );
+}
+
+#[tokio::test]
+async fn c1_selection_fails_closed_when_an_approved_row_cannot_be_mapped() {
+    let settings_repo = Arc::new(MemoryProjectSkillSettingsRepository::new());
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    let mut invalid = c1_project_skill("invalid");
+    invalid.bucket = "later-phase".to_string();
+    skill_repo.seed_for_test(invalid).await.unwrap();
+    let repositories = ProjectSkillSelectionRepositories {
+        settings_repo,
+        skill_repo,
+    };
+
+    assert_eq!(
+        load_pre_execution_project_skill_selection(
+            &c1_plugin_dir(),
+            "ralphx-execution-reviewer",
+            None,
+            Some("project-1"),
+            Some(&repositories),
+        )
+        .await,
+        PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::SkillMappingFailed
+        )
+    );
+}
 
 struct EnvGuard {
     key: &'static str,
@@ -558,6 +827,271 @@ fn launch_spawnable(launch_plan: &ResolvedChatHarnessLaunch) -> &SpawnableComman
     match launch_plan {
         ResolvedChatHarnessLaunch::Interactive { spawnable, .. }
         | ResolvedChatHarnessLaunch::Background { spawnable, .. } => spawnable,
+    }
+}
+
+fn c1_spawnable_prompt(spawnable: &SpawnableCommand) -> String {
+    let args = spawnable.get_args_for_test();
+    let mut material = spawnable
+        .get_stdin_prompt_for_test()
+        .unwrap_or_default()
+        .to_string();
+    if let Some(index) = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt-file")
+    {
+        material.push_str(
+            &fs::read_to_string(&args[index + 1]).expect("read generated Claude system prompt"),
+        );
+    }
+    if let Some(index) = args.iter().position(|arg| arg == "--append-system-prompt") {
+        material.push_str(&args[index + 1]);
+    }
+    material.push_str(&args.join("\n"));
+    material
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn c1_fresh_recovery_and_resume_builders_inject_for_both_harnesses() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _provider_home = EnvGuard::set_os(
+        "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+        temp.path().as_os_str(),
+    );
+    let plugin_dir = repo_plugin_dir();
+    let project_id = "project-c1-spawn";
+    let task_id = TaskId::from_string("task-c1-spawn".to_string());
+    let conversation = ChatConversation::new_task_execution(task_id.clone());
+    let conversation_id = conversation.id.as_str();
+
+    let settings_repo = Arc::new(MemoryProjectSkillSettingsRepository::new());
+    let skill_repo = Arc::new(MemoryProjectSkillRepository::new());
+    skill_repo
+        .seed_for_test(c1_project_skill_for(
+            "skill-execution",
+            project_id,
+            "execution",
+            "execution",
+        ))
+        .await
+        .unwrap();
+    let mut staged = c1_project_skill_for("skill-staged", project_id, "execution", "execution");
+    staged.status = ProjectSkillLifecycleStatus::Staged;
+    skill_repo.seed_for_test(staged).await.unwrap();
+    skill_repo
+        .seed_for_test(c1_project_skill_for(
+            "skill-review",
+            project_id,
+            "review",
+            "review",
+        ))
+        .await
+        .unwrap();
+    let project_skills = ProjectSkillSelectionRepositories {
+        settings_repo,
+        skill_repo: skill_repo.clone(),
+    };
+
+    let claude_session = "c1-claude-session";
+    let claude_session_dir = temp.path().join(".claude/projects/c1");
+    fs::create_dir_all(&claude_session_dir).unwrap();
+    write_test_file(
+        &claude_session_dir.join(format!("{claude_session}.jsonl")),
+        "{}\n",
+    );
+    let codex_session = "c1-codex-session";
+    let codex_session_dir = temp.path().join(".codex/sessions/c1");
+    fs::create_dir_all(&codex_session_dir).unwrap();
+    write_test_file(
+        &codex_session_dir.join(format!("{codex_session}.jsonl")),
+        "{}\n",
+    );
+
+    for (harness, cli_path, session_id) in [
+        (
+            AgentHarnessKind::Claude,
+            make_fake_claude_cli(&temp),
+            claude_session,
+        ),
+        (
+            AgentHarnessKind::Codex,
+            make_fake_codex_cli(&temp),
+            codex_session,
+        ),
+    ] {
+        let resolved_spawn_settings =
+            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                agent_names::AGENT_WORKER,
+                Some(project_id),
+                ChatContextType::TaskExecution,
+                Some("executing"),
+                Some(harness),
+                None,
+                None,
+            )
+            .await;
+
+        let launch = build_launch_plan_for_harness_with_spawn_guard(
+            harness,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "Execute the task.",
+            None,
+            None,
+            Some(agent_names::AGENT_WORKER),
+            None,
+            ChatContextType::TaskExecution,
+            task_id.as_str(),
+            Some(conversation.id.as_str()),
+            Some("run-c1-fresh"),
+            temp.path(),
+            Some("executing"),
+            Some(project_id),
+            &[],
+            None,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            false,
+            None,
+            &resolved_spawn_settings,
+            false,
+            None,
+            None,
+            Some(project_skills.clone()),
+        )
+        .await
+        .expect("fresh launch should build");
+        let fresh_prompt = c1_spawnable_prompt(launch_spawnable(&launch));
+        assert!(fresh_prompt.contains("skill-execution"));
+        assert!(!fresh_prompt.contains("skill-staged"));
+        assert!(!fresh_prompt.contains("skill-review"));
+
+        let retry_skill_id = format!("skill-current-{}", harness.to_string().to_ascii_lowercase());
+        skill_repo
+            .seed_for_test(c1_project_skill_for(
+                &retry_skill_id,
+                project_id,
+                "execution",
+                "execution",
+            ))
+            .await
+            .unwrap();
+        let recovery = build_command_for_harness_with_folder_refs(
+            harness,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "Recover the task.",
+            None,
+            None,
+            temp.path(),
+            Some("executing"),
+            Some(project_id),
+            &[],
+            None,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            Some(project_skills.clone()),
+        )
+        .await
+        .expect("recovery command should build");
+        let recovery_prompt = c1_spawnable_prompt(&recovery.spawnable);
+        assert!(recovery_prompt.contains("skill-execution"));
+        assert!(
+            recovery_prompt.contains(&retry_skill_id),
+            "each recovery attempt must re-read current approved skills"
+        );
+
+        let resumed = build_resume_command_for_harness_with_continuation(
+            harness,
+            &cli_path,
+            &plugin_dir,
+            ChatContextType::TaskExecution,
+            task_id.as_str(),
+            CoordinationMode::Solo,
+            &conversation_id,
+            None,
+            "Continue the task.",
+            None,
+            None,
+            Some(agent_names::AGENT_WORKER),
+            None,
+            temp.path(),
+            session_id,
+            Some(project_id),
+            &[],
+            None,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some(project_skills.clone()),
+        )
+        .await
+        .expect("resume command should build");
+        assert!(c1_spawnable_prompt(&resumed.spawnable).contains("skill-execution"));
+
+        let unavailable = build_command_for_harness_with_folder_refs(
+            harness,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "Recover without repositories.",
+            None,
+            None,
+            temp.path(),
+            Some("executing"),
+            Some(project_id),
+            &[],
+            None,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("unavailable project skills must not block spawn");
+        assert!(!c1_spawnable_prompt(&unavailable.spawnable)
+            .contains("<ralphx_learned_skill_citations>"));
     }
 }
 

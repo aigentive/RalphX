@@ -1,12 +1,18 @@
 use ralphx_lib::domain::services::learned_skill_adapters::{
     build_constraint_bundle_skill_citations, capture_plan_mode_verdict,
-    select_pre_execution_learned_skills, verification_gap_recurrence_candidates,
-    LearnedSkillBucket, LearnedSkillRecord, LearnedSkillSelectionRequest, LearnedSkillStage,
-    LearnedSkillStatus, PlanModeVerdict, PlanModeVerdictCaptureInput,
-    VerificationGapRecurrenceGate, VerificationGapSuppressionReason,
+    project_skill_to_learned_skill_record, select_pre_execution_learned_skills,
+    select_pre_execution_learned_skills_multi, verification_gap_recurrence_candidates,
+    LearnedSkillBucket, LearnedSkillMultiSelectionRequest, LearnedSkillRecord,
+    LearnedSkillSelectionRequest, LearnedSkillStage, LearnedSkillStatus, PlanModeVerdict,
+    PlanModeVerdictCaptureInput, ProjectSkillMappingError, VerificationGapRecurrenceGate,
+    VerificationGapSuppressionReason,
 };
 use ralphx_lib::domain::{
-    entities::ideation::VerificationRoundSnapshot, services::gap_fingerprint,
+    entities::{
+        ideation::VerificationRoundSnapshot, ProjectId, ProjectSkill, ProjectSkillCreatedBy,
+        ProjectSkillId, ProjectSkillLifecycleStatus,
+    },
+    services::gap_fingerprint,
 };
 use ralphx_lib::infrastructure::agents::internal_skills::{
     inject_learned_skill_citations_into_system_prompt,
@@ -145,6 +151,96 @@ fn pre_execution_selection_rejects_absolute_touched_paths_before_scope_matching(
         selected.is_empty(),
         "absolute paths must not be converted into relative scope matches"
     );
+}
+
+#[test]
+fn project_skill_mapping_is_approved_only_and_fails_closed_for_invalid_capabilities() {
+    let approved = project_skill("skill-approved", ProjectSkillLifecycleStatus::Approved);
+    let mapped =
+        project_skill_to_learned_skill_record(&approved, "ralphx-execution-reviewer").unwrap();
+    assert_eq!(mapped.status, LearnedSkillStatus::Approved);
+    assert_eq!(mapped.stages, vec![LearnedSkillStage::Review]);
+    assert_eq!(mapped.buckets, vec![LearnedSkillBucket::Review]);
+    assert!(mapped.pinned);
+
+    for status in [
+        ProjectSkillLifecycleStatus::Staged,
+        ProjectSkillLifecycleStatus::Rejected,
+        ProjectSkillLifecycleStatus::Stale,
+        ProjectSkillLifecycleStatus::Archived,
+        ProjectSkillLifecycleStatus::Retired,
+    ] {
+        let mapped =
+            project_skill_to_learned_skill_record(&project_skill("excluded", status), "reviewer")
+                .unwrap();
+        assert_ne!(mapped.status, LearnedSkillStatus::Approved);
+    }
+
+    let mut invalid = approved.clone();
+    invalid.bucket = "later-phase".to_string();
+    assert!(matches!(
+        project_skill_to_learned_skill_record(&invalid, "reviewer"),
+        Err(ProjectSkillMappingError::InvalidBucket(_))
+    ));
+    invalid.bucket = "review".to_string();
+    invalid.stage = "later-phase".to_string();
+    assert!(matches!(
+        project_skill_to_learned_skill_record(&invalid, "reviewer"),
+        Err(ProjectSkillMappingError::InvalidStage(_))
+    ));
+}
+
+#[test]
+fn multi_bucket_selection_is_deterministic_deduped_and_pinned_first() {
+    let planning = skill("skill-planning", "project-1", LearnedSkillStatus::Approved)
+        .with_caller_surfaces(vec!["ralphx-general-worker"])
+        .with_stages(vec![LearnedSkillStage::Planning])
+        .with_buckets(vec![LearnedSkillBucket::Planning]);
+    let review = skill("skill-review", "project-1", LearnedSkillStatus::Approved)
+        .with_caller_surfaces(vec!["ralphx-general-worker"])
+        .with_stages(vec![LearnedSkillStage::Review])
+        .with_buckets(vec![LearnedSkillBucket::Review]);
+    let pinned_review = skill(
+        "skill-pinned-review",
+        "project-1",
+        LearnedSkillStatus::Approved,
+    )
+    .with_caller_surfaces(vec!["ralphx-general-worker"])
+    .with_stages(vec![LearnedSkillStage::Review])
+    .with_buckets(vec![LearnedSkillBucket::Review])
+    .with_pinned(true);
+
+    let request = LearnedSkillMultiSelectionRequest {
+        project_id: "project-1".to_string(),
+        caller_surface: "ralphx-general-worker".to_string(),
+        stages: vec![LearnedSkillStage::Planning, LearnedSkillStage::Review],
+        buckets: vec![LearnedSkillBucket::Planning, LearnedSkillBucket::Review],
+        touched_paths: Vec::new(),
+        max_skills: 4,
+    };
+    let selected = select_pre_execution_learned_skills_multi(
+        request.clone(),
+        &[
+            review.clone(),
+            planning.clone(),
+            pinned_review.clone(),
+            planning.clone(),
+        ],
+    );
+    let shuffled =
+        select_pre_execution_learned_skills_multi(request, &[planning, pinned_review, review]);
+
+    let ids = |records: &[LearnedSkillRecord]| {
+        records
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(&selected),
+        vec!["skill-pinned-review", "skill-planning", "skill-review"]
+    );
+    assert_eq!(ids(&selected), ids(&shuffled));
 }
 
 #[test]
@@ -289,6 +385,7 @@ fn skill(id: &str, project_id: &str, status: LearnedSkillStatus) -> LearnedSkill
         project_id: project_id.to_string(),
         title: format!("Skill {id}"),
         status,
+        pinned: false,
         caller_surfaces: Vec::new(),
         stages: Vec::new(),
         buckets: Vec::new(),
@@ -296,6 +393,32 @@ fn skill(id: &str, project_id: &str, status: LearnedSkillStatus) -> LearnedSkill
         compact_guidance: "Keep the learned guidance compact.".to_string(),
         predicted_effect: "Reduce repeated mistakes.".to_string(),
         provenance_refs: Vec::new(),
+    }
+}
+
+fn project_skill(id: &str, status: ProjectSkillLifecycleStatus) -> ProjectSkill {
+    let now = chrono::Utc::now();
+    ProjectSkill {
+        id: ProjectSkillId::from_string(id),
+        project_id: ProjectId::from_string("project-1".to_string()),
+        title: format!("Skill {id}"),
+        bucket: "review".to_string(),
+        stage: "review".to_string(),
+        status,
+        pinned: true,
+        archived: status == ProjectSkillLifecycleStatus::Archived,
+        scope_paths: Vec::new(),
+        compact_guidance: "Keep review evidence current.".to_string(),
+        body_markdown: "Use the current diff and production entry paths.".to_string(),
+        predicted_effect: Some("Reduce repeated review misses.".to_string()),
+        provenance_json: serde_json::json!({"outcome_id": "outcome-1"}),
+        companion_of_skill_id: None,
+        content_hash: "content-hash".to_string(),
+        evidence_hash: "evidence-hash".to_string(),
+        created_by: ProjectSkillCreatedBy::Agent,
+        pipeline_role: Some("skill_distiller".to_string()),
+        created_at: now,
+        updated_at: now,
     }
 }
 

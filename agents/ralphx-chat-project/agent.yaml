@@ -2,6 +2,10 @@ name: ralphx-chat-project
 role: project_chat
 description: "General project assistant. Use for project-level questions and task suggestions."
 capabilities:
+  project_skill_buckets:
+    - planning
+  project_skill_stages:
+    - planning
   mcp_tools:
     - suggest_task
     - list_tasks
