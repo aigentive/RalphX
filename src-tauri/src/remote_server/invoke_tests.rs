@@ -1310,3 +1310,331 @@ async fn the_bulk_cancel_brake_fails_closed_without_a_host_handle() {
         "cancel_tasks_in_group degraded instead of failing closed"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Owner decision R3 — P-4 parity extended to a representative MUTATING trio.
+//
+// All four pre-existing `p4_parity_*` tables cover `Read` commands. The registered
+// Operate/AgentControl ops asserted authorization and absence-of-effect but never
+// result-vs-wire envelope parity, so a facade that reshaped a mutating result — dropped a
+// field, re-cased one, swallowed an error into a success envelope — would not have been
+// caught by P-4 at all.
+//
+// R3 resolves the scoping as: Read = exhaustive, mutating = representative + scope-suite
+// effect coverage. This is that representative table.
+//
+// The machinery a mutating parity row needs, and the reason it is not simply "call twice":
+// mutating ops are not idempotent, so each row runs over TWO independently-seeded but
+// IDENTICAL fixtures — one driven through the direct local IPC fn, one through the production
+// facade dispatch — and compares the payloads. Fields that legitimately differ between two
+// separate executions (generated ids, clock stamps) are normalized rather than asserted, and
+// every normalization is named, so the test cannot quietly normalize away a real divergence.
+// ---------------------------------------------------------------------------------------
+
+const R3_FIXTURE_PROJECT: &str = "55555555-5555-5555-5555-555555555555";
+const R3_FIXTURE_TASK: &str = "66666666-6666-6666-6666-666666666666";
+
+/// Strips exactly the fields two separate executions may legitimately disagree on.
+///
+/// Returns the removed values alongside the normalized payload so the caller can assert they
+/// were actually PRESENT — a normalizer that silently no-ops when a field disappears would
+/// hide the very regression this table exists to catch.
+fn normalize_generated_fields(mut value: Value) -> (Value, Vec<String>) {
+    // `TaskResponse` carries no `rename_all`, so the wire fields are snake_case — the facade
+    // deserializes and re-serializes exactly what the local IPC path does, which is itself part
+    // of what P-4 asserts. Listing the camelCase spellings too would silently tolerate a
+    // re-casing regression, so they are deliberately absent.
+    const GENERATED: [&str; 3] = ["id", "created_at", "updated_at"];
+    let mut seen = Vec::new();
+    if let Some(object) = value.as_object_mut() {
+        for field in GENERATED {
+            if object.remove(field).is_some() {
+                seen.push(field.to_string());
+            }
+        }
+    }
+    (value, seen)
+}
+
+/// Seeds a task with a FIXED id so both fixtures address the same row.
+async fn seed_r3_task(app: &tauri::App<tauri::test::MockRuntime>) {
+    use tauri::Manager;
+
+    let mut task = crate::domain::entities::Task::new(
+        crate::domain::entities::ProjectId::from_string(R3_FIXTURE_PROJECT.to_string()),
+        "R3 parity subject".to_string(),
+    );
+    task.id = crate::domain::entities::TaskId::from_string(R3_FIXTURE_TASK.to_string());
+    task.priority = 1;
+    app.state::<crate::application::AppState>()
+        .task_repo
+        .create(task)
+        .await
+        .expect("seeding the parity subject succeeds");
+}
+
+/// Seeds a pending permission request with a FIXED id.
+async fn seed_r3_permission(app: &tauri::App<tauri::test::MockRuntime>, request_id: &str) {
+    use tauri::Manager;
+
+    app.state::<crate::application::AppState>()
+        .permission_state
+        .register(
+            crate::application::permission_state::PendingPermissionInfo {
+                request_id: request_id.to_string(),
+                tool_name: "Bash".to_string(),
+                tool_input: json!({"command": "ls"}),
+                context: None,
+                agent_type: None,
+                task_id: None,
+                context_type: None,
+                context_id: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
+}
+
+/// P-4 parity — `create_task`.
+#[tokio::test]
+async fn p4_parity_for_the_r3_mutating_trio_create_task() {
+    use tauri::Manager;
+
+    let input = || crate::commands::task_commands::types::CreateTaskInput {
+        project_id: R3_FIXTURE_PROJECT.to_string(),
+        title: "R3 created".to_string(),
+        category: None,
+        description: Some("described".to_string()),
+        priority: Some(3),
+        steps: None,
+        ideation_session_id: None,
+        execution_plan_id: None,
+    };
+
+    let direct_app = app_with_task_state();
+    let direct = crate::commands::task_commands::mutation::create_task(
+        input(),
+        direct_app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct create succeeds");
+
+    let facade_app = app_with_task_state();
+    let outcome = registry::dispatch(
+        &facade_app.handle().clone(),
+        &[Scope::UiOperate],
+        "create_task",
+        &json!({"input": {
+            "projectId": R3_FIXTURE_PROJECT,
+            "title": "R3 created",
+            "description": "described",
+            "priority": 3,
+        }}),
+    )
+    .await
+    .expect("create_task must dispatch at ui:operate");
+
+    let DispatchOutcome::Ok(facade) = outcome else {
+        panic!("create_task returned a business error: {outcome:?}");
+    };
+
+    let (direct_norm, direct_stripped) =
+        normalize_generated_fields(registry::serialize_ok(&direct).unwrap());
+    let (facade_norm, facade_stripped) = normalize_generated_fields(facade);
+
+    // The normalizer must have had something to do, in both directions.
+    assert!(
+        direct_stripped.contains(&"id".to_string()),
+        "the created task carries no id; the normalizer is hiding a shape change"
+    );
+    assert_eq!(
+        direct_stripped, facade_stripped,
+        "the two payloads do not even agree on WHICH generated fields exist"
+    );
+    assert_eq!(
+        direct_norm, facade_norm,
+        "P-4 mutating parity mismatch for `create_task`"
+    );
+    // Non-vacuity: a normalizer bug that emptied both sides would satisfy the line above.
+    assert!(
+        direct_norm.get("title").is_some(),
+        "the normalized payload must still carry the substantive fields"
+    );
+    assert_eq!(direct_norm["title"], json!("R3 created"));
+    assert_eq!(direct_norm["priority"], json!(3));
+}
+
+/// P-4 parity — `update_task`, over identically-seeded fixtures, plus its error envelope.
+#[tokio::test]
+async fn p4_parity_for_the_r3_mutating_trio_update_task() {
+    use tauri::Manager;
+
+    let direct_app = app_with_task_state();
+    seed_r3_task(&direct_app).await;
+    let direct = crate::commands::task_commands::mutation::update_task(
+        R3_FIXTURE_TASK.to_string(),
+        crate::commands::task_commands::types::UpdateTaskInput {
+            title: None,
+            description: None,
+            category: None,
+            priority: Some(9),
+            internal_status: None,
+        },
+        direct_app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct update succeeds");
+
+    let facade_app = app_with_task_state();
+    seed_r3_task(&facade_app).await;
+    let outcome = registry::dispatch(
+        &facade_app.handle().clone(),
+        &[Scope::UiOperate],
+        "update_task",
+        &json!({"taskId": R3_FIXTURE_TASK, "input": {"priority": 9}}),
+    )
+    .await
+    .expect("update_task must dispatch at ui:operate");
+    let DispatchOutcome::Ok(facade) = outcome else {
+        panic!("update_task returned a business error: {outcome:?}");
+    };
+
+    let (direct_norm, direct_stripped) =
+        normalize_generated_fields(registry::serialize_ok(&direct).unwrap());
+    let (facade_norm, facade_stripped) = normalize_generated_fields(facade);
+    assert_eq!(direct_stripped, facade_stripped);
+    assert_eq!(
+        direct_norm, facade_norm,
+        "P-4 mutating parity mismatch for `update_task`"
+    );
+    // The mutation actually landed, so parity is over a CHANGED row, not an untouched one.
+    assert_eq!(
+        direct_norm["priority"],
+        json!(9),
+        "the seeded priority was 1; parity over an unapplied update would prove nothing"
+    );
+
+    // Error-path envelope parity (R3 names this explicitly): a command-level failure must
+    // reach the wire as a business error carrying the SAME payload, never as a facade error
+    // and never reshaped into a success envelope.
+    let missing_app = app_with_task_state();
+    let direct_error = crate::commands::task_commands::mutation::update_task(
+        "77777777-7777-7777-7777-777777777777".to_string(),
+        crate::commands::task_commands::types::UpdateTaskInput {
+            title: None,
+            description: None,
+            category: None,
+            priority: Some(9),
+            internal_status: None,
+        },
+        missing_app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect_err("updating a missing task fails");
+
+    let facade_error_app = app_with_task_state();
+    let outcome = registry::dispatch(
+        &facade_error_app.handle().clone(),
+        &[Scope::UiOperate],
+        "update_task",
+        &json!({
+            "taskId": "77777777-7777-7777-7777-777777777777",
+            "input": {"priority": 9},
+        }),
+    )
+    .await
+    .expect("a command-level failure is still a successful dispatch");
+    assert_eq!(
+        outcome,
+        DispatchOutcome::Err(registry::serialize_ok(&direct_error).unwrap()),
+        "the error envelope must match the direct call's error payload"
+    );
+}
+
+/// P-4 parity — `deny_permission_request`, the pinned op, plus its error envelope.
+#[tokio::test]
+async fn p4_parity_for_the_r3_mutating_trio_deny_permission_request() {
+    use tauri::Manager;
+
+    const REQUEST_ID: &str = "r3-permission-request";
+
+    let direct_app = app_with_task_state();
+    seed_r3_permission(&direct_app, REQUEST_ID).await;
+    let direct = crate::commands::permission_commands::resolve_permission_request(
+        direct_app.state::<crate::application::AppState>(),
+        crate::commands::permission_commands::ResolvePermissionArgs {
+            request_id: REQUEST_ID.to_string(),
+            decision: "deny".to_string(),
+            message: Some("not this time".to_string()),
+        },
+    )
+    .await
+    .expect("direct deny succeeds");
+
+    let facade_app = app_with_task_state();
+    seed_r3_permission(&facade_app, REQUEST_ID).await;
+    let outcome = registry::dispatch(
+        &facade_app.handle().clone(),
+        &[Scope::UiOperate],
+        "deny_permission_request",
+        // The client asserts the OPPOSITE decision; the server pin must win, and parity must
+        // hold against the direct DENY call rather than against an allow.
+        &json!({"args": {
+            "request_id": REQUEST_ID,
+            "decision": "allow",
+            "message": "not this time",
+        }}),
+    )
+    .await
+    .expect("deny_permission_request must dispatch at ui:operate");
+    let DispatchOutcome::Ok(facade) = outcome else {
+        panic!("deny_permission_request returned a business error: {outcome:?}");
+    };
+
+    // Fully deterministic payload — no generated field to normalize.
+    assert_eq!(
+        registry::serialize_ok(&direct).unwrap(),
+        facade,
+        "P-4 mutating parity mismatch for `deny_permission_request`"
+    );
+    assert_eq!(
+        facade["success"],
+        json!(true),
+        "parity over a failed resolution would prove nothing"
+    );
+
+    // The payload is about the request the client named, not a generic acknowledgement — a
+    // facade that resolved a DIFFERENT request would still have returned `success: true`.
+    assert_eq!(
+        facade["message"],
+        json!(format!("Permission request {REQUEST_ID} resolved")),
+    );
+
+    // Error-path envelope parity: an unknown request id.
+    let direct_missing_app = app_with_task_state();
+    let direct_error = crate::commands::permission_commands::resolve_permission_request(
+        direct_missing_app.state::<crate::application::AppState>(),
+        crate::commands::permission_commands::ResolvePermissionArgs {
+            request_id: "no-such-request".to_string(),
+            decision: "deny".to_string(),
+            message: None,
+        },
+    )
+    .await
+    .expect_err("resolving a missing request fails");
+
+    let facade_missing_app = app_with_task_state();
+    let outcome = registry::dispatch(
+        &facade_missing_app.handle().clone(),
+        &[Scope::UiOperate],
+        "deny_permission_request",
+        &json!({"args": {"request_id": "no-such-request", "decision": "deny"}}),
+    )
+    .await
+    .expect("a command-level failure is still a successful dispatch");
+    assert_eq!(
+        outcome,
+        DispatchOutcome::Err(registry::serialize_ok(&direct_error).unwrap()),
+        "the error envelope must match the direct call's error payload"
+    );
+}
