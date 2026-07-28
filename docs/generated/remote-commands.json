@@ -1509,6 +1509,102 @@
       "target": "crate::commands::question_commands::list_pending_question_gates"
     },
     {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_archived_count",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_archived_count"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_tasks_awaiting_review",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_tasks_awaiting_review"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_session_task_history_availability",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_session_task_history_availability"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_state_transitions",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_task_state_transitions"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_dependency_graph",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_task_dependency_graph"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_timeline_events",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_task_timeline_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_agent_workspace",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_task_agent_workspace"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_steps",
+      "pins": [],
+      "target": "crate::commands::task_step_commands::get_task_steps"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_step_progress",
+      "pins": [],
+      "target": "crate::commands::task_step_commands::get_step_progress"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_execution_settings",
+      "pins": [],
+      "target": "crate::commands::execution_commands::get_execution_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_global_execution_settings",
+      "pins": [],
+      "target": "crate::commands::execution_commands::get_global_execution_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_active_project",
+      "pins": [],
+      "target": "crate::commands::execution_commands::get_active_project"
+    },
+    {
       "argumentSensitive": true,
       "capabilities": [],
       "class": "operate",
@@ -2931,14 +3027,12 @@
       "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_archived_count",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "archived-task count: `task_repo.get_archived_count`, a scalar count read",
+      "registered": true
     },
     {
       "capabilities": [],
@@ -2957,54 +3051,44 @@
       "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_tasks_awaiting_review",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "review-queue read: `task_repo.list_paginated` filtered to the four review statuses; selects rows and starts no review",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_session_task_history_availability",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "session history availability: `task_repo.count_tasks` rendered as a bool plus a count",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_state_transitions",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "status-history read: `task_repo.get_status_history` mapped to a response; reads transitions already taken and requests none",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_dependency_graph",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "dependency-graph read: in-process traversal over `task_repo` rows; writes no edge and schedules nothing",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_timeline_events",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "timeline read: derives events from `task_repo` rows in process",
+      "registered": true
     },
     {
       "capabilities": [
@@ -3017,14 +3101,12 @@
       "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_steps",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "task-step read: `task_step_repo.get_by_task` mapped to responses",
+      "registered": true
     },
     {
       "capabilities": [
@@ -3047,14 +3129,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_step_progress",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "step-progress read: `task_step_repo.get_by_task` summarised in process",
+      "registered": true
     },
     {
       "capabilities": [
@@ -3867,14 +3947,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_execution_settings",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "execution-settings read: `execution_settings_repo.get_settings`; reads the quota and changes none",
+      "registered": true
     },
     {
       "capabilities": [
@@ -3897,24 +3975,20 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_active_project",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "active-project read: clones the in-memory `ActiveProjectState` id; the WRITE half (`set_active_project`) syncs the scheduler quota and stays AgentControl",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_global_execution_settings",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "global execution-settings read: `global_execution_settings_repo.get_settings`",
+      "registered": true
     },
     {
       "capabilities": [
@@ -5583,14 +5657,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_agent_workspace",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "workspace-association read: joins the task's plan-branch and agent-conversation workspace rows; resolves no CLI and touches no filesystem",
+      "registered": true
     },
     {
       "capabilities": [

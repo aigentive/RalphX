@@ -689,6 +689,139 @@ crate::remote_commands! {
     },
 
     // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 2 — census `B1`, the `task_commands` read cluster, at `ui:read`.
+    //
+    // These are reclassifications, not newly-permissive rows: each sat at `AgentControl`
+    // only because `task_commands` defaults there, and the default is conservative because
+    // the module also holds `move_task`, `unblock_task` and the execution-plan controls.
+    // The per-command audit (detectors a/b/c silent, bodies hand-traced to repository
+    // reads with propagated errors) is recorded in `capability_ledger` and pinned by the
+    // detector calibration lists.
+    // -----------------------------------------------------------------------------------
+    "get_archived_count" => crate::commands::task_commands::query::get_archived_count {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg ideation_session_id: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_tasks_awaiting_review"
+        => crate::commands::task_commands::query::get_tasks_awaiting_review {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_session_task_history_availability"
+        => crate::commands::task_commands::query::get_session_task_history_availability {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg ideation_session_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_task_state_transitions"
+        => crate::commands::task_commands::query::get_task_state_transitions {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_dependency_graph"
+        => crate::commands::task_commands::query::get_task_dependency_graph {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg include_archived: Option<bool>),
+            (arg session_id: Option<String>),
+            (arg execution_plan_id: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_task_timeline_events"
+        => crate::commands::task_commands::query::get_task_timeline_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg offset: Option<u32>),
+            (arg limit: Option<u32>),
+            (arg session_id: Option<String>),
+            (arg execution_plan_id: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_task_agent_workspace"
+        => crate::commands::task_commands::query::get_task_agent_workspace {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 2 — census `B1`, the step + execution read clusters, at `ui:read`.
+    //
+    // The execution cluster is three getters, not the module's eight: detector (c) fires on
+    // `get_execution_status` and `get_running_processes` (both resolve a process-inspection
+    // CLI), and `set_active_project` syncs the runtime scheduler quota. All three stay
+    // unregistered, pinned by `the_b1_step_and_execution_reads_are_refused_below_ui_read`.
+    // -----------------------------------------------------------------------------------
+    "get_task_steps" => crate::commands::task_step_commands::get_task_steps {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_step_progress" => crate::commands::task_step_commands::get_step_progress {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_execution_settings"
+        => crate::commands::execution_commands::get_execution_settings {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_global_execution_settings"
+        => crate::commands::execution_commands::get_global_execution_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_active_project" => crate::commands::execution_commands::get_active_project {
+        class: Read,
+        caps: [],
+        params: [(active_project_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
     // PR 1.5-A — `ui:operate`: watch + brakes + inert edits, and NOTHING that can start,
     // resume, restart, or steer an agent. This is the default pairing's entire mutating
     // surface (the "viewer with brakes" boundary, §3.3/§4.3).

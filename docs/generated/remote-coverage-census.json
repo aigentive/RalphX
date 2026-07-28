@@ -6,16 +6,16 @@
     "invokedCommands": 498,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "unclassified": 442,
-    "line": "PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 442 unclassified (baseline, → 0 in PR 3.1)."
+    "unclassified": 431,
+    "line": "PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 431 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 498,
-    "remoteRegistered": 27,
+    "remoteRegistered": 39,
     "localOnlyRows": 29,
     "ledgerRows": 540,
-    "unclassified": 442,
-    "assignedToBatches": 442,
+    "unclassified": 431,
+    "assignedToBatches": 431,
     "batches": 14
   },
   "dispositionModel": {
@@ -41,7 +41,7 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 283,
+    "registerCandidate": 272,
     "v1DeferredElevated": 26,
     "hostDeniedSpawn": 49,
     "hostDeniedClass": 84
@@ -78,7 +78,7 @@
         "Confirm the brakes in these modules stay `ui:operate` (A-14) and that no arming transition lands below the `AgentControl` floor."
       ],
       "gate": "P-17 suite green; P-17b generated scope entries exist for every new AgentControl member; C-9 dual-lens review recorded.",
-      "commandCount": 43,
+      "commandCount": 32,
       "modules": [
         "execution_commands",
         "permission_commands",
@@ -87,16 +87,14 @@
         "task_step_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 42,
+        "registerCandidate": 31,
         "hostDeniedClass": 1
       },
-      "registerCandidates": 42,
+      "registerCandidates": 31,
       "nonRegistering": 1,
       "commandsByModule": {
         "execution_commands": [
-          "get_execution_settings",
           "get_execution_status",
-          "get_global_execution_settings",
           "get_running_processes",
           "pause_execution",
           "recover_task_execution",
@@ -122,13 +120,6 @@
           "cancel_tasks_in_group",
           "cleanup_task",
           "cleanup_tasks_in_group",
-          "get_archived_count",
-          "get_session_task_history_availability",
-          "get_task_agent_workspace",
-          "get_task_dependency_graph",
-          "get_task_state_transitions",
-          "get_task_timeline_events",
-          "get_tasks_awaiting_review",
           "pause_execution_plan",
           "restore_task",
           "resume_execution_plan",
@@ -140,8 +131,6 @@
         "task_step_commands": [
           "complete_step",
           "fail_step",
-          "get_step_progress",
-          "get_task_steps",
           "reorder_task_steps",
           "skip_step",
           "start_step"
@@ -155,21 +144,10 @@
         "cleanup_tasks_in_group",
         "complete_step",
         "fail_step",
-        "get_archived_count",
-        "get_execution_settings",
         "get_execution_status",
-        "get_global_execution_settings",
         "get_pending_permissions",
         "get_pending_questions",
         "get_running_processes",
-        "get_session_task_history_availability",
-        "get_step_progress",
-        "get_task_agent_workspace",
-        "get_task_dependency_graph",
-        "get_task_state_transitions",
-        "get_task_steps",
-        "get_task_timeline_events",
-        "get_tasks_awaiting_review",
         "pause_execution",
         "pause_execution_plan",
         "recover_task_execution",
@@ -2798,17 +2776,6 @@
       "ledgerReason": "credential surface"
     },
     {
-      "command": "get_archived_count",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_artifact",
       "batch": "B7",
       "module": "artifact_commands",
@@ -3051,17 +3018,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_execution_settings",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_execution_status",
       "batch": "B1",
       "module": "execution_commands",
@@ -3181,17 +3137,6 @@
       ],
       "disposition": "hostDeniedSpawn",
       "ledgerReason": "GitHub CLI/network process authority"
-    },
-    {
-      "command": "get_global_execution_settings",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
       "command": "get_granola_integration_settings",
@@ -3799,17 +3744,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_session_task_history_availability",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_start_composer_role_default",
       "batch": "B6",
       "module": "manual_role_default_commands",
@@ -3843,31 +3777,9 @@
       "ledgerReason": "startup and log-management authority"
     },
     {
-      "command": "get_step_progress",
-      "batch": "B1",
-      "module": "task_step_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_system_buckets",
       "batch": "B7",
       "module": "artifact_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_agent_workspace",
-      "batch": "B1",
-      "module": "task_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -3912,17 +3824,6 @@
       "command": "get_task_context",
       "batch": "B7",
       "module": "task_context_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_dependency_graph",
-      "batch": "B1",
-      "module": "task_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -3997,53 +3898,9 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_task_state_transitions",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_steps",
-      "batch": "B1",
-      "module": "task_step_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_timeline_events",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_task_validation_summary",
       "batch": "B3",
       "module": "validation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_tasks_awaiting_review",
-      "batch": "B1",
-      "module": "task_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
