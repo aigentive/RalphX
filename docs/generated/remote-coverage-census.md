@@ -6,12 +6,12 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 431 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 431 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names in `frontend/src` | 498 | drift scan (AST) |
+| Invoke command names in `frontend/src` | 499 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
 | Remote-registered (`remote_commands!`) | 40 | `docs/generated/remote-commands.json` |
