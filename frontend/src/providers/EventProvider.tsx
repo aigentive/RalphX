@@ -103,6 +103,7 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
 
 interface EventProviderProps {
   children: ReactNode;
+  environmentId?: string;
 }
 
 /**
@@ -132,9 +133,15 @@ interface EventProviderProps {
  * }
  * ```
  */
-export function EventProvider({ children }: EventProviderProps) {
-  // Create event bus once based on environment (Tauri or browser mode)
-  const eventBus = useMemo(() => createEventBus(), []);
+export function EventProvider({ children, environmentId }: EventProviderProps) {
+  // Recreate the memoized bus when the environment-keyed provider subtree changes.
+  const eventBus = useMemo(
+    () =>
+      environmentId === undefined
+        ? createEventBus()
+        : createEventBus(environmentId),
+    [environmentId],
+  );
 
   // Expose event bus to window in web mode for Playwright testing
   useEffect(() => {

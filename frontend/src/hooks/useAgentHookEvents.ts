@@ -22,6 +22,8 @@ import type {
 } from "@/types/hook-event";
 import { create } from "zustand";
 
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
+
 // ============================================================================
 // Store
 // ============================================================================
@@ -70,6 +72,8 @@ export const useHookEventsStore = create<HookEventsState>((set) => ({
   clear: () =>
     set({ activeHooks: new Map(), events: [] }),
 }));
+
+registerEnvIsolatedStore({ name: "useHookEventsStore", reset: () => useHookEventsStore.setState(useHookEventsStore.getInitialState(), true) });
 
 // ============================================================================
 // Transform

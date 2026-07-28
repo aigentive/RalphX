@@ -28,6 +28,8 @@ export interface ProjectDropdownProps {
   allProjectsDescription?: string;
   placeholder?: string;
   onNewProject?: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   className?: string;
   align?: "start" | "center" | "end";
   variant?: ProjectDropdownVariant;
@@ -105,6 +107,8 @@ export function ProjectDropdown({
   allProjectsDescription = "Aggregate metrics across every project",
   placeholder = "Select Project",
   onNewProject,
+  open: controlledOpen,
+  onOpenChange,
   className,
   align = "center",
   variant = "navbar",
@@ -118,7 +122,8 @@ export function ProjectDropdown({
   projectOptionTestId = (project) => `project-option-${project.id}`,
   allProjectsTestId = "project-option-all-projects",
 }: ProjectDropdownProps) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
   const [searchQuery, setSearchQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(pageSize);
   const query = searchQuery.trim().toLowerCase();
@@ -145,7 +150,8 @@ export function ProjectDropdown({
   }, [pageSize, query, projects.length]);
 
   const handleOpenChange = (nextOpen: boolean) => {
-    setOpen(nextOpen);
+    if (controlledOpen === undefined) setInternalOpen(nextOpen);
+    onOpenChange?.(nextOpen);
     if (!nextOpen) {
       setSearchQuery("");
       setVisibleCount(pageSize);
@@ -154,7 +160,7 @@ export function ProjectDropdown({
 
   const handleSelect = (nextValue: string | null) => {
     onValueChange(nextValue);
-    setOpen(false);
+    handleOpenChange(false);
     setSearchQuery("");
     setVisibleCount(pageSize);
   };
@@ -200,7 +206,7 @@ export function ProjectDropdown({
           onKeyDown={(event) => {
             if (event.key === "ArrowDown") {
               event.preventDefault();
-              setOpen(true);
+              handleOpenChange(true);
             }
           }}
         >
@@ -312,7 +318,7 @@ export function ProjectDropdown({
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               onClick={() => {
                 onNewProject();
-                setOpen(false);
+                handleOpenChange(false);
               }}
               data-testid={newProjectTestId}
             >

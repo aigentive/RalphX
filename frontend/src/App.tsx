@@ -4,11 +4,10 @@
  */
 
 import { lazy, Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useShallow } from "zustand/react/shallow";
-import { QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { getQueryClient } from "@/lib/queryClient";
-import { EventProvider } from "@/providers/EventProvider";
+import { EnvironmentScopedProviders } from "@/providers/EnvironmentScopedProviders";
 import { NotificationCenterPanel } from "@/components/notifications/NotificationCenterPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
 import {
@@ -56,6 +55,7 @@ import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
+import { initializeEnvironmentRuntime } from "@/lib/remote/environment-runtime";
 import {
   openTaskInAgents,
   navigateToIdeationSession,
@@ -79,7 +79,6 @@ import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 import { ChatActivityVisualTestPage } from "@/test-pages/ChatActivityVisualTest";
 import { preloadAutomationsView } from "@/components/automations/preloadAutomationsView";
 
-const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
 const LazyAutomationsView = lazy(() => preloadAutomationsView());
 const LazyAgentsView = lazy(async () => {
@@ -219,6 +218,7 @@ function AgentsRouteShell() {
 }
 
 function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
+  const queryClient = useQueryClient();
   // Check for test page first (must happen before any hooks for ESLint compliance)
   const testPage = useMemo(() => getTestPage(), []);
 
@@ -1251,12 +1251,12 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
 function App({ startupStatus }: { startupStatus?: StartupStatus }) {
   const backgroundSettled = startupStatus?.backgroundComplete ?? true;
 
+  useEffect(() => initializeEnvironmentRuntime(), []);
+
   return (
-    <QueryClientProvider client={queryClient}>
-      <EventProvider>
-        <AppContent backgroundSettled={backgroundSettled} />
-      </EventProvider>
-    </QueryClientProvider>
+    <EnvironmentScopedProviders>
+      <AppContent backgroundSettled={backgroundSettled} />
+    </EnvironmentScopedProviders>
   );
 }
 

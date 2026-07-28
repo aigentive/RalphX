@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
+import { createEnvScopedStorage } from "@/lib/remote/env-scoped-storage";
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 export type AgentTerminalPlacement = "auto" | "chat" | "panel";
 export type AgentTerminalDock = "chat" | "panel";
 export type AgentTerminalCachedStatus = "closed" | "running" | "exited" | "error";
@@ -118,6 +120,7 @@ export const useAgentTerminalStore = create<
     })),
     {
       name: "ralphx-agent-terminal-ui",
+      storage: createEnvScopedStorage("ralphx-agent-terminal-ui"),
       partialize: (state) => ({
         openByConversationId: state.openByConversationId,
         heightByConversationId: state.heightByConversationId,
@@ -128,3 +131,11 @@ export const useAgentTerminalStore = create<
     }
   )
 );
+
+registerEnvIsolatedStore({
+  name: "useAgentTerminalStore",
+  reset: () => useAgentTerminalStore.setState(useAgentTerminalStore.getInitialState(), true),
+  rehydrate: () => {
+    void useAgentTerminalStore.persist.rehydrate();
+  },
+});

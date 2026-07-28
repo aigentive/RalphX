@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { IdeationSession, IdeationSessionStatus } from "@/types/ideation";
 import type { Artifact } from "@/types/artifact";
 import type { IdeationSettings } from "@/types/ideation-config";
@@ -316,6 +318,8 @@ export const useIdeationStore = create<IdeationState & IdeationActions>()(
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useIdeationStore", reset: () => useIdeationStore.setState(useIdeationStore.getInitialState(), true) });
 
 if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
   window.__ideationStore = useIdeationStore;

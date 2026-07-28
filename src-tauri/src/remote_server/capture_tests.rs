@@ -120,6 +120,33 @@ fn full_durable_channel_drops_without_blocking_the_emit_thread() {
 }
 
 #[test]
+fn full_durable_channel_still_drops_when_control_receiver_is_closed() {
+    let registrar = RecordingRegistrar::default();
+    let (feed, mut receivers) = CaptureFeed::channels(1);
+    let (_replacement, closed_control) = tokio::sync::mpsc::unbounded_channel();
+    let original_control = std::mem::replace(&mut receivers.control, closed_control);
+    drop(original_control);
+    drop(receivers.control_sender);
+    RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
+
+    registrar.emit("notification:created", r#"{"sequence":1}"#);
+    registrar.emit("notification:created", r#"{"sequence":2}"#);
+
+    assert_eq!(
+        receivers
+            .durable
+            .try_recv()
+            .expect("first event remains queued")
+            .payload,
+        r#"{"sequence":1}"#
+    );
+    assert!(
+        receivers.durable.try_recv().is_err(),
+        "overflow event is dropped"
+    );
+}
+
+#[test]
 fn disconnected_capture_channels_drop_without_panicking() {
     let registrar = RecordingRegistrar::default();
     let (feed, receivers) = CaptureFeed::channels(1);

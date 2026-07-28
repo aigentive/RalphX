@@ -8,6 +8,8 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
+
 // ============================================================================
 // Types (matching API response structure)
 // ============================================================================
@@ -167,6 +169,8 @@ export const useMethodologyStore = create<MethodologyState & MethodologyActions>
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useMethodologyStore", reset: () => useMethodologyStore.setState(useMethodologyStore.getInitialState(), true) });
 
 // ============================================================================
 // Selectors (defined outside store for memoization)

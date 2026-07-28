@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+
+import { registerEnvIsolatedStore } from "@/lib/remote/env-state-isolation";
 import type { Artifact, ArtifactBucket, ArtifactType } from "@/types/artifact";
 
 // ============================================================================
@@ -121,6 +123,8 @@ export const useArtifactStore = create<ArtifactState & ArtifactActions>()(
       }),
   }))
 );
+
+registerEnvIsolatedStore({ name: "useArtifactStore", reset: () => useArtifactStore.setState(useArtifactStore.getInitialState(), true) });
 
 // ============================================================================
 // Selectors (defined outside store for memoization)
