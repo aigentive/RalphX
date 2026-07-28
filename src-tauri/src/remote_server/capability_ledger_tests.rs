@@ -683,6 +683,11 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         "deny_permission_request",
         "list_tasks",
         "health_check",
+        // PR 3.1-b batch 1 — enumerating open gates seeds no scheduler-consumed state. The
+        // detector-(a)/(b) floors above would already fail these `Read` rows if it did;
+        // naming them keeps the audit note and the mechanism in the same place.
+        "list_pending_permission_gates",
+        "list_pending_question_gates",
     ] {
         assert!(
             !flagged.contains(command),
@@ -1396,6 +1401,12 @@ fn detector_c_floors_process_spawn_authority() {
         "list_tasks",
         "get_task",
         "search_tasks",
+        // PR 3.1-b batch 1 — the hand audit that authorized the `Read` rows for the 2.7
+        // gate reads claimed both closures are launch-sink-free. This is that claim made
+        // mechanical: if a future refactor routes gate rehydration through anything that
+        // resolves a CLI path, the registration fails here rather than shipping.
+        "list_pending_permission_gates",
+        "list_pending_question_gates",
     ] {
         assert!(
             !spawners.contains(command),
