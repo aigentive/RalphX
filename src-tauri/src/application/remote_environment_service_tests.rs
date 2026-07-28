@@ -2173,3 +2173,223 @@ async fn stream_send_uses_the_stream_guards_not_the_active_binding() {
         "background environments' stream control must not be active-env-gated"
     );
 }
+
+// ------------------------------------------------------------------------------
+// preview_remote_environment (PR 2.5): the read-only pre-pair identity probe.
+//
+// The load-bearing property is ABSENCE. Preview runs before a single-use pairing code
+// is consumed and may be re-run freely, so it must leave the registry, the Keychain,
+// and the active-environment mirror exactly as it found them.
+// ------------------------------------------------------------------------------
+
+/// A secret store that counts every call, so "preview touched no secret" is proven by
+/// call count rather than by the map happening to look unchanged.
+struct CountingSecretStore {
+    inner: MemorySecretStore,
+    calls: Arc<StdMutex<usize>>,
+}
+
+impl CountingSecretStore {
+    fn new() -> Self {
+        Self {
+            inner: MemorySecretStore::new(),
+            calls: Arc::new(StdMutex::new(0)),
+        }
+    }
+
+    fn count(&self) -> usize {
+        *self.calls.lock().expect("counter")
+    }
+
+    fn record(&self) {
+        *self.calls.lock().expect("counter") += 1;
+    }
+}
+
+#[async_trait]
+impl crate::domain::services::SecretStore for CountingSecretStore {
+    async fn put_secret(&self, key: &str, value: &str) -> Result<(), SecretStoreError> {
+        self.record();
+        self.inner.put_secret(key, value).await
+    }
+
+    async fn get_secret(&self, key: &str) -> Result<Option<String>, SecretStoreError> {
+        self.record();
+        self.inner.get_secret(key).await
+    }
+
+    async fn delete_secret(&self, key: &str) -> Result<(), SecretStoreError> {
+        self.record();
+        self.inner.delete_secret(key).await
+    }
+}
+
+#[tokio::test]
+async fn preview_returns_descriptor_identity_without_touching_anything() {
+    let repo = Arc::new(MemoryRemoteEnvironmentRepository::new());
+    let secrets = Arc::new(CountingSecretStore::new());
+    let host = Arc::new(MockRemoteHostClient::new(
+        descriptor("env-1"),
+        pair_response("env-1"),
+    ));
+    let service = RemoteEnvironmentService::new(
+        Arc::clone(&repo) as Arc<dyn crate::domain::repositories::RemoteEnvironmentRepository>,
+        Arc::clone(&secrets) as Arc<dyn crate::domain::services::SecretStore>,
+        Arc::clone(&host) as Arc<dyn crate::infrastructure::remote_host_client::RemoteHostClient>,
+        test_relay(),
+    );
+
+    let preview = service
+        .preview(HOST_URL)
+        .await
+        .expect("preview should succeed");
+
+    assert_eq!(preview.environment_id, "env-1");
+    assert_eq!(preview.app_version, "0.81.0");
+    assert_eq!(preview.platform, "macos");
+    assert_eq!(preview.protocol_version, PROTOCOL_VERSION);
+    assert_eq!(preview.min_client_protocol, PROTOCOL_VERSION);
+    assert_eq!(
+        preview.already_paired_as, None,
+        "an unknown host is not reported as already paired"
+    );
+
+    // Absence assertions — the whole point of a preview.
+    assert!(
+        repo.list().await.expect("list").is_empty(),
+        "preview must not write a registry row"
+    );
+    assert_eq!(
+        secrets.count(),
+        0,
+        "preview must never reach the secret store (P-18)"
+    );
+    assert_eq!(
+        service.active_environment_id().await,
+        LOCAL_ENVIRONMENT_ID,
+        "preview must not move the active-environment mirror"
+    );
+
+    // The only host call is the descriptor read: no pairing exchange was attempted.
+    let calls = host.recorded_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(matches!(calls[0], RecordedHostCall::Descriptor { .. }));
+}
+
+#[tokio::test]
+async fn preview_reports_the_existing_name_for_an_already_paired_host() {
+    let f = fixture();
+    f.service
+        .pair(HOST_URL, "rxp_code", "Studio Mac")
+        .await
+        .expect("seed pairing should succeed");
+    let before = f.repo.list().await.expect("list");
+
+    let preview = f
+        .service
+        .preview(HOST_URL)
+        .await
+        .expect("preview of a known host should succeed");
+
+    assert_eq!(
+        preview.already_paired_as,
+        Some("Studio Mac".to_string()),
+        "a known host identity surfaces its row name so the flow can say re-pairing UPDATES it"
+    );
+    // Re-previewing a paired host must not disturb the row it just read.
+    assert_eq!(f.repo.list().await.expect("list"), before);
+}
+
+#[tokio::test]
+async fn preview_version_skew_returns_the_same_typed_error_pair_would() {
+    let f = fixture();
+    {
+        let mut descriptor_slot = f.host.descriptor.lock().expect("mock");
+        let mut skewed = descriptor("env-1");
+        skewed.min_client_protocol = PROTOCOL_VERSION + 1;
+        *descriptor_slot = Ok(skewed);
+    }
+
+    let error = f
+        .service
+        .preview(HOST_URL)
+        .await
+        .expect_err("skew must block the preview");
+    assert!(matches!(
+        error,
+        RemoteEnvironmentError::VersionSkew {
+            host_min_client,
+            client,
+        } if host_min_client == PROTOCOL_VERSION + 1 && client == PROTOCOL_VERSION
+    ));
+    assert_eq!(
+        error.code(),
+        "REMOTE_VERSION_MISMATCH",
+        "the flow renders the service's taxonomy; it never re-derives version comparisons"
+    );
+    assert!(f.repo.list().await.expect("list").is_empty());
+}
+
+#[tokio::test]
+async fn preview_of_an_unreachable_host_is_typed_and_writes_nothing() {
+    let f = fixture_with_host(MockRemoteHostClient::unreachable());
+
+    let error = f
+        .service
+        .preview(HOST_URL)
+        .await
+        .expect_err("an unreachable host must surface as a typed error");
+    assert!(matches!(error, RemoteEnvironmentError::Unreachable(_)));
+    assert_eq!(error.code(), "REMOTE_UNREACHABLE");
+    assert!(f.repo.list().await.expect("list").is_empty());
+}
+
+#[tokio::test]
+async fn preview_rejects_unshaped_urls_before_any_network_call() {
+    let f = fixture();
+
+    for url in [
+        "file:///etc/passwd",
+        "https://host.ts.net:3849?redirect=evil",
+        "https://host.ts.net:3849#code=rxp_leak",
+        "not a url",
+    ] {
+        let error = f
+            .service
+            .preview(url)
+            .await
+            .expect_err("an unshaped URL must be rejected");
+        assert!(
+            matches!(error, RemoteEnvironmentError::InvalidUrl(_)),
+            "{url:?} must be refused as a bad URL, got {error:?}"
+        );
+    }
+    assert!(
+        f.host.recorded_calls().is_empty(),
+        "rejection happens before any network call"
+    );
+}
+
+#[tokio::test]
+async fn pairing_urls_carrying_a_query_or_fragment_are_rejected_at_the_sink() {
+    // base_url is the stem every derived URL is built from; an unshaped one would
+    // reappear glued after the pairing/ticket/descriptor paths.
+    for url in [
+        "https://host.ts.net:3849?redirect=evil",
+        "https://host.ts.net:3849/#code=rxp_leak",
+        "http://host.ts.net:3849?a=1#b",
+    ] {
+        assert!(
+            matches!(
+                validate_pairing_url(url),
+                Err(RemoteEnvironmentError::InvalidUrl(_))
+            ),
+            "{url:?} must not become a base_url"
+        );
+    }
+    // The canonical shapes still pass, including trailing-slash normalisation.
+    assert_eq!(
+        validate_pairing_url("https://host.ts.net:3849/").expect("canonical url"),
+        "https://host.ts.net:3849"
+    );
+}

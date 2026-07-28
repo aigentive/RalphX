@@ -30,7 +30,35 @@ export const remoteEnvironmentSummarySchema = z.object({
 
 export type RemoteEnvironmentSummary = z.infer<typeof remoteEnvironmentSummarySchema>;
 
+/**
+ * Pre-pair host identity (PR 2.5). Descriptor truth only — the wire descriptor carries
+ * no host display name and no project count, so neither appears here.
+ */
+export const remoteEnvironmentPreviewSchema = z.object({
+  environmentId: z.string(),
+  appVersion: z.string(),
+  platform: z.string(),
+  protocolVersion: z.number(),
+  minClientProtocol: z.number(),
+  /** The existing row's name when this host is already registered (§6.1 upsert dedup). */
+  alreadyPairedAs: z.string().nullable(),
+});
+
+export type RemoteEnvironmentPreview = z.infer<typeof remoteEnvironmentPreviewSchema>;
+
 export const remoteEnvironmentsApi = {
+  /**
+   * Read-only identity probe run before a single-use pairing code is consumed.
+   * Writes nothing on either side; safe to call again after a failure.
+   */
+  preview(url: string): Promise<RemoteEnvironmentPreview> {
+    return typedInvoke(
+      "preview_remote_environment",
+      { input: { url } },
+      remoteEnvironmentPreviewSchema
+    );
+  },
+
   /** Pairing exchange runs entirely in the Rust backend (§4.2). */
   pair(url: string, code: string, name: string): Promise<RemoteEnvironmentSummary> {
     return typedInvoke(

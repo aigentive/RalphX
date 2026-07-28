@@ -31,6 +31,30 @@ function pick(source: unknown, fields: readonly string[]): Record<string, unknow
   return Object.fromEntries(fields.filter((field) => field in record).map((field) => [field, record[field]]));
 }
 
+/**
+ * Drops every persisted slice belonging to one environment (P-27 staged removal).
+ *
+ * Called on the unpair seam. Without it, an unpaired environment's active project,
+ * ticket filters, terminal layout, and agent-session state survive in localStorage
+ * under `${storageName}:${environmentId}` forever — invisible, un-clearable from the
+ * UI, and ready to reappear if that host is ever paired again and lands on the same
+ * row id.
+ *
+ * Deliberately narrow: only the env-scoped keys of stores in the isolation inventory.
+ * The shared/global slice is left alone (it is this Mac's), the local environment is
+ * refused outright, and clearing is idempotent because staged removal can be retried
+ * by the reconciler.
+ */
+export function clearEnvScopedStorage(environmentId: string): void {
+  const storage = globalThis.localStorage;
+  if (!storage || environmentId === LOCAL_ENVIRONMENT_ID || environmentId === "") {
+    return;
+  }
+  for (const storageName of persistedSpecs.keys()) {
+    storage.removeItem(`${storageName}:${environmentId}`);
+  }
+}
+
 export function createEnvScopedStorage<S>(storageName: string): PersistStorage<S> {
   const spec = persistedSpecs.get(storageName);
   if (!spec) throw new Error(`Unknown env-scoped persisted store: ${storageName}`);
