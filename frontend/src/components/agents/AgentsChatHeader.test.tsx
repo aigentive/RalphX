@@ -500,7 +500,11 @@ describe("AgentsChatHeader", () => {
       <AgentsChatHeader
         conversation={conversation()}
         workspace={null}
-        chatFocus={{ type: "ideation", sessionId: "session-child" }}
+        chatFocus={{
+          type: "ideation",
+          conversationId: "conversation-1",
+          sessionId: "session-child",
+        }}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
@@ -555,6 +559,7 @@ describe("AgentsChatHeader", () => {
         workspace={null}
         chatFocus={{
           type: "verification",
+          conversationId: "conversation-1",
           parentSessionId: "session-parent",
           childSessionId: "verification-child",
         }}
@@ -583,6 +588,7 @@ describe("AgentsChatHeader", () => {
         workspace={null}
         chatFocus={{
           type: "verification",
+          conversationId: "conversation-1",
           parentSessionId: "session-parent",
           childSessionId: "verification-child",
         }}

@@ -4,7 +4,14 @@ import { mockAutomationsApi } from "./automations";
 
 describe("mockAutomationsApi", () => {
   it("returns deterministic list and detail fixtures", async () => {
-    await expect(mockAutomationsApi.list({ projectId: "project-1" })).resolves.toEqual([]);
+    await expect(mockAutomationsApi.list({ projectId: "project-1" })).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: "paused" }),
+        expect.objectContaining({ status: "active" }),
+        expect.objectContaining({ status: "completed" }),
+        expect.objectContaining({ status: "draft" }),
+      ]),
+    );
 
     await expect(mockAutomationsApi.get("automation-42")).resolves.toMatchObject({
       automation: {

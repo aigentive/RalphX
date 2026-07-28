@@ -199,7 +199,9 @@ describe("AutomationsView", () => {
     const row = await screen.findByTestId("automation-row-automation-1");
     expect(row).toBeInTheDocument();
     expect(within(row).getByText("Ship migration loop")).toBeInTheDocument();
-    expect(screen.getByText("Demo Project · 1 automations")).toBeInTheDocument();
+    expect(
+      screen.getByText("Demo Project · 1 automations · 1 running · 0 needs attention"),
+    ).toBeInTheDocument();
     expect(within(row).queryByText("Demo Project")).not.toBeInTheDocument();
     expect(row).toHaveTextContent("2 phases · edit · gpt-5.4");
     expect(row).not.toHaveTextContent("codex/");
@@ -232,6 +234,38 @@ describe("AutomationsView", () => {
     await userEvent.selectOptions(selector, "project-2");
 
     expect(onProjectChange).toHaveBeenCalledWith("project-2");
+  });
+
+  it("filters priority groups and searches by automation name without changing pill counts", async () => {
+    const rows = [
+      automation({ id: "paused", name: "Review alerts", status: "paused" }),
+      automation({ id: "active", name: "Release train", status: "active" }),
+      automation({ id: "completed", name: "Migration", status: "completed" }),
+      automation({ id: "draft", name: "New initiative", status: "draft" }),
+    ];
+    listAutomationsMock.mockResolvedValue(rows);
+    getAutomationMock.mockImplementation((id: string) => Promise.resolve({
+      automation: rows.find((item) => item.id === id) ?? automation({ id }),
+      runs: [],
+      usage: emptyUsage,
+    }));
+
+    renderView({ onOpenAutomation: vi.fn() });
+
+    expect(await screen.findByTestId("automations-group-attention")).toBeInTheDocument();
+    expect(screen.getByTestId("automations-group-running")).toBeInTheDocument();
+    expect(screen.getByTestId("automations-group-finished")).toBeInTheDocument();
+    expect(screen.getByTestId("automations-group-drafts")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("automations-filter-finished"));
+    expect(screen.getByTestId("automations-group-finished")).toBeInTheDocument();
+    expect(screen.queryByTestId("automations-group-running")).not.toBeInTheDocument();
+    expect(screen.getByTestId("automations-filter-all")).toHaveTextContent("4");
+
+    await userEvent.type(screen.getByTestId("automations-search"), "missing");
+    expect(screen.getByTestId("automations-filter-empty-state")).toHaveTextContent(
+      "No automations match this filter.",
+    );
   });
 
   it("paints the detail shell synchronously on row click before the detail bundle resolves", async () => {

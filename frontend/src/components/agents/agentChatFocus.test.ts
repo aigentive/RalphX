@@ -4,7 +4,9 @@ import {
   focusWorkspaceReview,
   getAgentChatFocusSwitchOptions,
   getAgentsChatFocusDisplay,
+  getConversationScopedChatFocus,
   getFocusedAutomationRunConversationId,
+  getFocusedArtifactIdeationSession,
   getFocusedChatSessionId,
   getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
@@ -12,9 +14,40 @@ import {
 
 const verificationFocus: Extract<AgentsChatFocus, { type: "verification" }> = {
   type: "verification",
+  conversationId: "conversation-1",
   parentSessionId: "session-1",
   childSessionId: "verification-1",
 };
+
+describe("conversation-scoped plan focus", () => {
+  it("rejects a stale ideation focus owned by another conversation", () => {
+    const staleFocus: AgentsChatFocus = {
+      type: "ideation",
+      conversationId: "conversation-1",
+      sessionId: "session-1",
+    };
+
+    expect(
+      getConversationScopedChatFocus(staleFocus, "conversation-2"),
+    ).toEqual({ type: "workspace" });
+    expect(
+      getFocusedArtifactIdeationSession(
+        getConversationScopedChatFocus(staleFocus, "conversation-2"),
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves the focused session owned by the visible conversation", () => {
+    expect(
+      getFocusedArtifactIdeationSession(
+        getConversationScopedChatFocus(verificationFocus, "conversation-1"),
+      ),
+    ).toEqual({
+      conversationId: "conversation-1",
+      sessionId: "session-1",
+    });
+  });
+});
 const taskRuntimeFocus: Extract<AgentsChatFocus, { type: "task_runtime" }> = {
   type: "task_runtime",
   taskId: "task-1",

@@ -471,7 +471,11 @@ describe("AgentsComposerWorkspaceChangesCard", () => {
 
   it("marks ideation and verification runtime rows as current", async () => {
     const ideation = renderCard({
-      currentFocus: { type: "ideation", sessionId: "ideation-1" },
+      currentFocus: {
+        type: "ideation",
+        conversationId: "conversation-1",
+        sessionId: "ideation-1",
+      },
       runtimeRows: [
         runtimeRow({
           id: "ideation:ideation-1",
@@ -493,6 +497,7 @@ describe("AgentsComposerWorkspaceChangesCard", () => {
     renderCard({
       currentFocus: {
         type: "verification",
+        conversationId: "conversation-1",
         parentSessionId: "parent-session-1",
         childSessionId: "child-session-1",
       },

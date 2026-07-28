@@ -9764,7 +9764,12 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
-      { focusedIdeationSessionId: "session-focused" },
+      {
+        focusedIdeationSession: {
+          conversationId: "conversation-1",
+          sessionId: "session-focused",
+        },
+      },
     );
 
     await waitFor(() =>
@@ -9773,6 +9778,28 @@ describe("AgentsArtifactPane", () => {
     expect(getIdeationSessionMock).not.toHaveBeenCalledWith(
       "session-from-workspace",
     );
+    expect(useConversationMock).toHaveBeenCalledWith("conversation-1", {
+      enabled: false,
+      pageSize: 40,
+    });
+  });
+
+  it("rejects an ideation focus owned by another conversation", () => {
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {
+        focusedIdeationSession: {
+          conversationId: "conversation-2",
+          sessionId: "session-focused",
+        },
+      },
+    );
+
+    expect(getIdeationSessionMock).not.toHaveBeenCalledWith("session-focused");
     expect(useConversationMock).toHaveBeenCalledWith("conversation-1", {
       enabled: false,
       pageSize: 40,
