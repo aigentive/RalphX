@@ -1109,11 +1109,13 @@ async fn suppressed_send_does_not_invalidate_unbound_process() {
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
     conversation.persona_id = Some(persona.id.to_string());
+    let conversation_id = conversation.id;
     state
         .chat_conversation_repo
         .create(conversation)
         .await
         .unwrap();
+    let run_id = seed_live_run_owner(&state, context_id, conversation_id).await;
     let (stdin, mut child) = create_test_stdin().await;
     let interactive_key = InteractiveProcessKey::new("project", context_id);
     state
@@ -1121,7 +1123,10 @@ async fn suppressed_send_does_not_invalidate_unbound_process() {
         .register_with_metadata(
             interactive_key.clone(),
             stdin,
-            InteractiveProcessMetadata::default(),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.clone()),
+                ..Default::default()
+            },
         )
         .await;
     let service = state
@@ -1142,6 +1147,7 @@ async fn suppressed_send_does_not_invalidate_unbound_process() {
         .await
         .expect("suppressed persona must preserve an unbound process");
     assert!(!result.was_queued);
+    assert_eq!(result.agent_run_id, run_id);
     assert!(
         state
             .interactive_process_registry
