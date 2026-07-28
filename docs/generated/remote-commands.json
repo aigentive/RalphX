@@ -181,7 +181,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/app_setup.rs:::::launch_startup_attempt",
       "file": "application/app_setup.rs",
-      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@91c4f344f9f4eb74",
+      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@a33c293f5037c924",
       "kind": "async_runtime::spawn"
     },
     {
@@ -1040,24 +1040,31 @@
     },
     {
       "authorityBearing": false,
-      "enclosingFunction": "remote_server/capture.rs:::::install_if_host_mode_configured",
-      "file": "remote_server/capture.rs",
-      "id": "remote_server/capture.rs::remote_server/capture.rs:::::install_if_host_mode_configured@30f4c73c0d21e75b",
-      "kind": "thread::spawn"
-    },
-    {
-      "authorityBearing": false,
-      "enclosingFunction": "remote_server/capture.rs:::::install_if_host_mode_configured",
-      "file": "remote_server/capture.rs",
-      "id": "remote_server/capture.rs::remote_server/capture.rs:::::install_if_host_mode_configured@30f4c73c0d21e75b~1",
-      "kind": "thread::spawn"
-    },
-    {
-      "authorityBearing": false,
       "enclosingFunction": "remote_server/mod.rs:::::start_listener",
       "file": "remote_server/mod.rs",
       "id": "remote_server/mod.rs::remote_server/mod.rs:::::start_listener@be5782b8beb913b0",
       "kind": "async_runtime::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "remote_server/retention.rs:::::spawn_pruner",
+      "file": "remote_server/retention.rs",
+      "id": "remote_server/retention.rs::remote_server/retention.rs:::::spawn_pruner@a6866fa8f9aee649",
+      "kind": "tokio::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "remote_server/sequencer.rs::RemoteSequencer::start",
+      "file": "remote_server/sequencer.rs",
+      "id": "remote_server/sequencer.rs::remote_server/sequencer.rs::RemoteSequencer::start@d4b8ecd0cec0470a",
+      "kind": "tokio::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "remote_server/sequencer.rs::RemoteSequencer::start",
+      "file": "remote_server/sequencer.rs",
+      "id": "remote_server/sequencer.rs::remote_server/sequencer.rs::RemoteSequencer::start@dbb327c115f4ccf",
+      "kind": "tokio::spawn"
     },
     {
       "authorityBearing": false,
@@ -4832,6 +4839,16 @@
         "agentControl"
       ],
       "class": "agentControl",
+      "command": "list_pending_permission_gates",
+      "module": "permission_commands",
+      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "registered": false
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "resolve_user_question",
       "module": "question_commands",
       "reason": "steering-question",
@@ -4843,6 +4860,16 @@
       ],
       "class": "agentControl",
       "command": "get_pending_questions",
+      "module": "question_commands",
+      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "registered": false
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "list_pending_question_gates",
       "module": "question_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false
