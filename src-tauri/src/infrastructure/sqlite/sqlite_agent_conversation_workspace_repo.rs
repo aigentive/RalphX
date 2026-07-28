@@ -556,6 +556,7 @@ fn row_to_workspace_review_monitor(
             .and_then(|value| u32::try_from(value).ok()),
         reviewed_head_sha: row.get("reviewed_head_sha")?,
         reviewed_diff_fingerprint: row.get("reviewed_diff_fingerprint")?,
+        reviewed_plan_context_fingerprint: row.get("reviewed_plan_context_fingerprint")?,
         selected_source_base_ref: row.get("selected_source_base_ref")?,
         selected_source_base_sha: row.get("selected_source_base_sha")?,
         selected_source_head_ref: row.get("selected_source_head_ref")?,
@@ -566,6 +567,7 @@ fn row_to_workspace_review_monitor(
         workspace_head_ref: row.get("workspace_head_ref")?,
         workspace_head_sha: row.get("workspace_head_sha")?,
         current_diff_fingerprint: row.get("current_diff_fingerprint")?,
+        current_plan_context_fingerprint: row.get("current_plan_context_fingerprint")?,
         previous_version_id: row
             .get::<_, Option<String>>("previous_version_id")?
             .map(ArtifactId::from_string),
@@ -3838,6 +3840,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             monitor.review_gate_bypassed_artifact_version.map(i64::from);
         let reviewed_head_sha = monitor.reviewed_head_sha;
         let reviewed_diff_fingerprint = monitor.reviewed_diff_fingerprint;
+        let reviewed_plan_context_fingerprint = monitor.reviewed_plan_context_fingerprint;
         let selected_source_base_ref = monitor.selected_source_base_ref;
         let selected_source_base_sha = monitor.selected_source_base_sha;
         let selected_source_head_ref = monitor.selected_source_head_ref;
@@ -3848,6 +3851,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let workspace_head_ref = monitor.workspace_head_ref;
         let workspace_head_sha = monitor.workspace_head_sha;
         let current_diff_fingerprint = monitor.current_diff_fingerprint;
+        let current_plan_context_fingerprint = monitor.current_plan_context_fingerprint;
         let previous_version_id = monitor
             .previous_version_id
             .as_ref()
@@ -3928,13 +3932,15 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_requested_changes_artifact_version,
                         review_requested_changes_artifact_updated_at,
                         review_requested_changes_previous_version_id,
+                        current_plan_context_fingerprint,
+                        reviewed_plan_context_fingerprint,
                         created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                         ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
                         ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48,
-                        ?49, ?50
+                        ?49, ?50, ?51, ?52
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
@@ -3967,6 +3973,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         workspace_head_ref = excluded.workspace_head_ref,
                         workspace_head_sha = excluded.workspace_head_sha,
                         current_diff_fingerprint = excluded.current_diff_fingerprint,
+                        current_plan_context_fingerprint = excluded.current_plan_context_fingerprint,
+                        reviewed_plan_context_fingerprint = excluded.reviewed_plan_context_fingerprint,
                         previous_version_id = COALESCE(excluded.previous_version_id, agent_workspace_review_monitors.previous_version_id),
                         review_requested_changes_previous_version_id = COALESCE(excluded.review_requested_changes_previous_version_id, agent_workspace_review_monitors.review_requested_changes_previous_version_id),
                         review_blocking_summary = excluded.review_blocking_summary,
@@ -4034,6 +4042,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_requested_changes_artifact_version,
                         review_requested_changes_artifact_updated_at,
                         review_requested_changes_previous_version_id,
+                        current_plan_context_fingerprint,
+                        reviewed_plan_context_fingerprint,
                         created_at,
                         updated_at,
                     ],
@@ -4091,6 +4101,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let requested_changes_artifact_version =
             i64::from(snapshot.requested_changes_artifact_version);
         let blocking_fingerprint = snapshot.blocking_fingerprint.clone();
+        let plan_context_fingerprint = snapshot.plan_context_fingerprint.clone();
         let attempt_id = attempt_id.to_string();
         let claimed_at = claimed_at.to_rfc3339();
         let changed = self
@@ -4099,11 +4110,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 Ok(conn.execute(
                     "UPDATE agent_workspace_review_monitors
                      SET review_fixer_status = 'routing',
-                         review_fixer_attempt_id = ?9,
+                         review_fixer_attempt_id = ?10,
                          review_fixer_run_id = NULL,
                          review_fixer_conversation_id = NULL,
                          last_error = NULL,
-                         updated_at = ?10
+                         updated_at = ?11
                      WHERE conversation_id = ?1
                        AND status = 'ready'
                        AND review_outcome = 'blocking'
@@ -4117,6 +4128,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND review_requested_changes_artifact_id = ?6
                        AND review_requested_changes_artifact_version = ?7
                        AND review_blocking_fingerprint = ?8
+                       AND current_plan_context_fingerprint IS ?9
+                       AND reviewed_plan_context_fingerprint IS ?9
                        AND (review_fixer_status IS NULL
                             OR review_fixer_status NOT IN ('routing', 'queued', 'running'))",
                     rusqlite::params![
@@ -4128,6 +4141,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         requested_changes_artifact_id,
                         requested_changes_artifact_version,
                         blocking_fingerprint,
+                        plan_context_fingerprint,
                         attempt_id,
                         claimed_at,
                     ],
@@ -4166,6 +4180,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let requested_changes_artifact_version =
             i64::from(expected_snapshot.requested_changes_artifact_version);
         let blocking_fingerprint = expected_snapshot.blocking_fingerprint.clone();
+        let plan_context_fingerprint = expected_snapshot.plan_context_fingerprint.clone();
         let updated_at = Utc::now().to_rfc3339();
         let changed = self
             .db
@@ -4187,7 +4202,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND review_artifact_version = ?11
                        AND review_requested_changes_artifact_id = ?12
                        AND review_requested_changes_artifact_version = ?13
-                       AND review_blocking_fingerprint = ?14",
+                       AND review_blocking_fingerprint = ?14
+                       AND current_plan_context_fingerprint IS ?15
+                       AND reviewed_plan_context_fingerprint IS ?15",
                     rusqlite::params![
                         conversation_id,
                         expected_attempt_id,
@@ -4203,6 +4220,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         requested_changes_artifact_id,
                         requested_changes_artifact_version,
                         blocking_fingerprint,
+                        plan_context_fingerprint,
                     ],
                 )? == 1)
             })

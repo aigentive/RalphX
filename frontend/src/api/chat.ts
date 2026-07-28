@@ -2003,6 +2003,7 @@ export interface SendAgentMessageOptions {
   codexFastMode?: boolean | null;
   runtimeOverride?: ManualRoleRuntimeSelection;
   suppressUserMessage?: boolean;
+  requireApprovedLinkedPlan?: boolean;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   teamMessageTarget?: TeamMessageTarget | null;
@@ -4689,6 +4690,9 @@ export async function sendAgentMessage(
           ? { runtimeOverride: roleRuntimeOverrideInvokeInput(options.runtimeOverride) }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
+        ...(options?.requireApprovedLinkedPlan
+          ? { requireApprovedLinkedPlan: true }
+          : {}),
         ...(options?.capabilityIntent
           ? { capabilityIntent: options.capabilityIntent }
           : options?.teamIntent

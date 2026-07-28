@@ -57,6 +57,7 @@ use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
     sync_linked_planning_session_title_from_conversation,
 };
+use crate::application::agent_plan_context::admit_linked_edit_plan_references;
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
     wake_agent_workspace_for_bridge_events_with_service_factory,
@@ -206,6 +207,9 @@ pub struct SendAgentMessageInput {
     /// Internal handoff messages should reach the runtime without rendering as user chat.
     #[serde(default)]
     pub suppress_user_message: bool,
+    /// Require the linked Edit workspace's current plan bundle to retain exact user approval.
+    #[serde(default)]
+    pub require_approved_linked_plan: bool,
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
@@ -4000,6 +4004,16 @@ pub async fn send_agent_message(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<SendAgentMessageResponse, String> {
+    send_agent_message_for_state(input, state.inner(), execution_state.inner(), app).await
+}
+
+#[doc(hidden)]
+pub async fn send_agent_message_for_state<R: Runtime + 'static>(
+    input: SendAgentMessageInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    app: tauri::AppHandle<R>,
+) -> Result<SendAgentMessageResponse, String> {
     tracing::info!(
         context_type = %input.context_type,
         context_id = %input.context_id,
@@ -4095,10 +4109,10 @@ pub async fn send_agent_message(
         .map_err(|error| error.to_string())?;
     }
 
-    let service = create_chat_service(&state, app.clone(), &execution_state);
+    let service = create_chat_service(state, app.clone(), execution_state);
 
     crate::application::validate_chat_runtime_for_context_with_override(
-        &state,
+        state,
         context_type,
         &input.context_id,
         "send_agent_message",
@@ -4117,7 +4131,7 @@ pub async fn send_agent_message(
         .filter(|model| !model.is_empty())
         .map(str::to_string);
     let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
-        &state,
+        state,
         legacy_harness_override,
         model_override,
         input.logical_effort,
@@ -4137,7 +4151,7 @@ pub async fn send_agent_message(
     if context_type == ChatContextType::Project {
         let parent_conversation_id = conversation_id_override.clone();
         if let Some(forked_conversation_id) = fork_terminal_agent_conversation_for_send(
-            state.inner(),
+            state,
             &app,
             parent_conversation_id.as_ref(),
             &input.content,
@@ -4167,7 +4181,7 @@ pub async fn send_agent_message(
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
         if context_type == ChatContextType::Project
-            && ensure_plan_workspace_planning_session_link_for_send(state.inner(), conversation_id)
+            && ensure_plan_workspace_planning_session_link_for_send(state, conversation_id)
                 .await?
         {
             let _ = app.emit(
@@ -4176,6 +4190,22 @@ pub async fn send_agent_message(
             );
         }
     }
+    let composer_artifact_references =
+        if context_type == ChatContextType::Project {
+            if let Some(conversation_id) = conversation_id_override.as_ref() {
+                admit_linked_edit_plan_references(
+                    state,
+                    conversation_id,
+                    input.composer_artifact_references,
+                    input.require_approved_linked_plan,
+                )
+                .await?
+            } else {
+                input.composer_artifact_references
+            }
+        } else {
+            input.composer_artifact_references
+        };
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
     let mut response = service
@@ -4195,7 +4225,7 @@ pub async fn send_agent_message(
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
-                composer_artifact_references: input.composer_artifact_references,
+                composer_artifact_references,
                 composer_selection_snapshot: input.composer_selection_snapshot,
                 composer_excerpt_references: input.composer_excerpt_references,
                 team_intent: input.team_intent,

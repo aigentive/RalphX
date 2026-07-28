@@ -499,6 +499,8 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
         activated.artifact_references[1].title.as_deref(),
         Some("Implementation Blueprint")
     );
+    assert_eq!(activated.artifact_references[0].kind, "plan");
+    assert_eq!(activated.artifact_references[1].kind, "plan_blueprint");
 
     let retry = activate_agent_plan_direct_implementation_for_state(
         ActivateAgentPlanDirectImplementationInput {

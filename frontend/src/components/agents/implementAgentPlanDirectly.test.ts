@@ -7,7 +7,11 @@ import {
 } from "@/api/chat";
 
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
-import { implementAgentPlanDirectly } from "./implementAgentPlanDirectly";
+import {
+  implementAgentPlanDirectly,
+  type DirectImplementationActivationSnapshot,
+} from "./implementAgentPlanDirectly";
+import { PlanContinuationCommittedError } from "./agentPlanProposalActivation";
 
 vi.mock("@/api/chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/chat")>();
@@ -37,7 +41,7 @@ const approvedArtifactReferences = [
   },
   {
     artifactId: "blueprint-1",
-    kind: "plan",
+    kind: "plan_blueprint",
     title: "Implementation Blueprint",
     sessionId: "session-1",
     version: 2,
@@ -88,6 +92,7 @@ describe("implementAgentPlanDirectly", () => {
     const queryClient = new QueryClient();
     const editWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
+    const onActivated = vi.fn();
     activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: editWorkspace,
       artifactReferences: approvedArtifactReferences,
@@ -98,6 +103,7 @@ describe("implementAgentPlanDirectly", () => {
       workspace: workspace(),
       queryClient,
       onConversationModeSwitched,
+      onActivated,
       sendOptions: {
         providerHarness: "codex",
         modelId: "gpt-5.5",
@@ -113,6 +119,10 @@ describe("implementAgentPlanDirectly", () => {
       "edit",
       editWorkspace,
     );
+    expect(onActivated).toHaveBeenCalledWith({
+      workspace: editWorkspace,
+      artifactReferences: approvedArtifactReferences,
+    });
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
       "project",
       "project-1",
@@ -124,28 +134,36 @@ describe("implementAgentPlanDirectly", () => {
         modelId: "gpt-5.5",
         logicalEffort: "high",
         codexFastMode: true,
-        composerArtifactReferences: approvedArtifactReferences,
+        requireApprovedLinkedPlan: true,
         suppressUserMessage: true,
       },
     );
     expect(sendAgentMessageMock.mock.invocationCallOrder[0]).toBeGreaterThan(
-      onConversationModeSwitched.mock.invocationCallOrder[0]!,
+      onActivated.mock.invocationCallOrder[0]!,
     );
   });
 
-  it("revalidates an already-edit retry and sends the backend-pinned pair", async () => {
+  it("revalidates a retry and resends only the first pinned pair", async () => {
     const currentWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
-    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+    const pinnedActivation: DirectImplementationActivationSnapshot = {
       workspace: currentWorkspace,
       artifactReferences: approvedArtifactReferences,
+    };
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: currentWorkspace,
+      artifactReferences: approvedArtifactReferences.map((reference) => ({
+        ...reference,
+        title: `Revalidated ${reference.title}`,
+      })),
     });
 
     await implementAgentPlanDirectly({
       projectId: "project-1",
-      workspace: currentWorkspace,
+      workspace: workspace(),
       queryClient: new QueryClient(),
       onConversationModeSwitched,
+      pinnedActivation,
     });
 
     expect(activateAgentPlanDirectImplementationMock).toHaveBeenCalledWith({
@@ -165,10 +183,48 @@ describe("implementAgentPlanDirectly", () => {
       undefined,
       expect.objectContaining({
         conversationId: "conversation-1",
-        composerArtifactReferences: approvedArtifactReferences,
+        requireApprovedLinkedPlan: true,
         suppressUserMessage: true,
       }),
     );
+    expect(
+      sendAgentMessageMock.mock.calls[0]?.[4],
+    ).not.toHaveProperty("composerArtifactReferences");
+  });
+
+  it("rejects retry activation when the approved artifact tuple changed", async () => {
+    const currentWorkspace = workspace({ mode: "edit" });
+    const pinnedActivation: DirectImplementationActivationSnapshot = {
+      workspace: currentWorkspace,
+      artifactReferences: approvedArtifactReferences,
+    };
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: currentWorkspace,
+      artifactReferences: [
+        approvedArtifactReferences[0]!,
+        {
+          ...approvedArtifactReferences[1]!,
+          artifactId: "blueprint-2",
+          version: 3,
+        },
+      ],
+    });
+
+    await expect(
+      implementAgentPlanDirectly({
+        projectId: "project-1",
+        workspace: workspace(),
+        queryClient: new QueryClient(),
+        pinnedActivation,
+      }),
+    ).rejects.toThrow("plan changed");
+
+    expect(activateAgentPlanDirectImplementationMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      sessionId: "session-1",
+      retry: true,
+    });
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
 
   it("does not project or send when activation fails", async () => {
@@ -193,6 +249,7 @@ describe("implementAgentPlanDirectly", () => {
     const queryClient = new QueryClient();
     const editWorkspace = workspace({ mode: "edit" });
     const onConversationModeSwitched = vi.fn();
+    const onActivated = vi.fn();
     const error = new Error("send failed");
     activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: editWorkspace,
@@ -206,8 +263,9 @@ describe("implementAgentPlanDirectly", () => {
         workspace: workspace(),
         queryClient,
         onConversationModeSwitched,
+        onActivated,
       }),
-    ).rejects.toBe(error);
+    ).rejects.toBeInstanceOf(PlanContinuationCommittedError);
 
     expect(queryClient.getQueryData(agentWorkspaceKeys.workspace("conversation-1")))
       .toEqual(editWorkspace);
@@ -216,5 +274,9 @@ describe("implementAgentPlanDirectly", () => {
       "edit",
       editWorkspace,
     );
+    expect(onActivated).toHaveBeenCalledWith({
+      workspace: editWorkspace,
+      artifactReferences: approvedArtifactReferences,
+    });
   });
 });

@@ -476,7 +476,7 @@ fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads
 }
 
 #[tokio::test]
-async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artifact() {
+async fn linked_workspace_plan_reference_allows_no_link_but_rejects_broken_authority() {
     let (_temp, repo, base_sha) = init_repo();
     let state = AppState::new_test();
     let project = seed_project(&state, &repo).await;
@@ -494,14 +494,18 @@ async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artif
         .is_none());
 
     workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string("missing-session"));
-    assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+    let missing_session_error = linked_workspace_plan_artifact_reference(&state, &workspace)
         .await
-        .expect("missing session should load")
-        .is_none());
+        .expect_err("a present link to a missing session must fail closed");
+    assert!(missing_session_error
+        .to_string()
+        .contains("no longer exists"));
 
     let empty_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
         .build();
     let empty_session = state
         .ideation_session_repo
@@ -518,6 +522,8 @@ async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artif
     let missing_artifact_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
         .inherited_plan_artifact_id(missing_artifact_id.clone())
         .inherited_plan_blueprint_artifact_id(ArtifactId::from_string(
             "missing-plan-blueprint-artifact",
@@ -530,18 +536,12 @@ async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artif
         .expect("missing-artifact planning session should persist");
     workspace.linked_ideation_session_id = Some(missing_artifact_session.id.clone());
 
-    let reference = linked_workspace_plan_artifact_reference(&state, &workspace)
+    let missing_artifact_error = linked_workspace_plan_artifact_reference(&state, &workspace)
         .await
-        .expect("missing artifact reference should load")
-        .expect("missing artifact id should still produce a reference");
-    assert_eq!(reference.artifact_id, missing_artifact_id.as_str());
-    assert_eq!(
-        reference.session_id.as_deref(),
-        Some(missing_artifact_session.id.as_str())
-    );
-    assert_eq!(reference.kind, "plan");
-    assert_eq!(reference.title, None);
-    assert_eq!(reference.version, None);
+        .expect_err("a linked missing plan artifact must fail closed");
+    assert!(missing_artifact_error
+        .to_string()
+        .contains("no longer exists"));
 }
 
 #[test]
@@ -1609,6 +1609,8 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
     let planning_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
         .plan_artifact_id(plan_artifact.id.clone())
         .plan_blueprint_artifact_id(blueprint_artifact.id.clone())
         .build();
@@ -1646,10 +1648,22 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
             ],
             "composer_artifact_references": [
                 {
+                    "artifactId": "stale-plan",
+                    "kind": "plan",
+                    "title": "Stale plan"
+                },
+                {
                     "artifactId": "design-artifact-1",
                     "kind": "design",
                     "title": "Design context"
-                }
+                },
+                { "artifactId": "design-artifact-2", "kind": "design" },
+                { "artifactId": "design-artifact-3", "kind": "design" },
+                { "artifactId": "design-artifact-4", "kind": "design" },
+                { "artifactId": "design-artifact-5", "kind": "design" },
+                { "artifactId": "design-artifact-6", "kind": "design" },
+                { "artifactId": "design-artifact-7", "kind": "design" },
+                { "artifactId": "design-artifact-8", "kind": "design" }
             ]
         })
         .to_string(),
@@ -1849,7 +1863,22 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
         .any(|reference| reference.provider == "clickup"
             && reference.kind == "clickup"
             && reference.id == "task-1"));
-    assert_eq!(options.composer_artifact_references.len(), 3);
+    assert_eq!(options.composer_artifact_references.len(), 8);
+    assert_eq!(
+        options.composer_artifact_references[0].artifact_id,
+        plan_artifact.id.as_str()
+    );
+    assert_eq!(
+        options.composer_artifact_references[1].artifact_id,
+        blueprint_artifact.id.as_str()
+    );
+    assert!(!options
+        .composer_artifact_references
+        .iter()
+        .any(
+            |reference| matches!(reference.kind.as_str(), "plan" | "plan_blueprint")
+                && reference.session_id.as_deref() != Some(planning_session.id.as_str())
+        ));
     assert!(options
         .composer_artifact_references
         .iter()
@@ -1884,6 +1913,14 @@ async fn start_review_runs_workspace_reviewer_child_chat_and_records_blocked_com
     .expect("review kickoff metadata should be valid json");
     assert_eq!(metadata["hidden_from_ui"], true);
     assert_eq!(metadata["source"], "workspace_review_request");
+    assert_eq!(
+        metadata["plan_context_fingerprint"].as_str(),
+        start
+            .context
+            .monitor
+            .reviewed_plan_context_fingerprint
+            .as_deref()
+    );
 
     let mut blocked_monitor = None;
     for _ in 0..100 {
@@ -4262,6 +4299,8 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
     let planning_session = IdeationSession::builder()
         .project_id(project.id.clone())
         .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
         .plan_artifact_id(plan_artifact.id.clone())
         .plan_blueprint_artifact_id(blueprint_artifact.id.clone())
         .build();
@@ -4271,6 +4310,29 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
         .await
         .expect("planning session should persist");
     workspace.linked_ideation_session_id = Some(planning_session.id.clone());
+    let mut parent_message =
+        ChatMessage::user_in_project(project.id.clone(), "Repair the reviewed implementation");
+    parent_message.conversation_id = Some(workspace.conversation_id.clone());
+    parent_message.metadata = Some(
+        serde_json::json!({
+            "composer_artifact_references": [
+                { "artifactId": "design-1", "kind": "design" },
+                { "artifactId": "design-2", "kind": "design" },
+                { "artifactId": "design-3", "kind": "design" },
+                { "artifactId": "design-4", "kind": "design" },
+                { "artifactId": "design-5", "kind": "design" },
+                { "artifactId": "design-6", "kind": "design" },
+                { "artifactId": "design-7", "kind": "design" },
+                { "artifactId": "design-8", "kind": "design" }
+            ]
+        })
+        .to_string(),
+    );
+    state
+        .chat_message_repo
+        .create(parent_message)
+        .await
+        .expect("parent goal references should persist");
 
     state
         .agent_conversation_jira_issue_repo
@@ -4307,13 +4369,27 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
         .create(review_artifact)
         .await
         .expect("review artifact should persist");
-    apply_review_artifact_to_monitor(
+    let requested_changes_artifact = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Workspace Review — Requested Changes",
+            ArtifactType::ReviewFeedback,
+            "## Step 1\n\nPreserve parent references in the repair.",
+            "ralphx-workspace-reviewer",
+        ))
+        .await
+        .expect("requested changes artifact should persist");
+    apply_review_artifact_pair_to_monitor(
         &mut monitor,
         target.scope,
         target.head_sha.clone(),
         target.diff_fingerprint.clone(),
         Some("review-run".to_string()),
         review_artifact.id.clone(),
+        1,
+        Utc::now(),
+        None,
+        requested_changes_artifact.id.clone(),
         1,
         Utc::now(),
         None,
@@ -4350,6 +4426,23 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
     assert_eq!(
         options.agent_name_override.as_deref(),
         Some(agent_names::AGENT_WORKSPACE_REPAIR)
+    );
+    assert_eq!(options.composer_artifact_references.len(), 8);
+    assert_eq!(
+        options.composer_artifact_references[0].artifact_id,
+        plan_artifact.id.as_str()
+    );
+    assert_eq!(
+        options.composer_artifact_references[1].artifact_id,
+        blueprint_artifact.id.as_str()
+    );
+    assert_eq!(
+        options.composer_artifact_references[2].artifact_id,
+        review_artifact.id.as_str()
+    );
+    assert_eq!(
+        options.composer_artifact_references[3].artifact_id,
+        requested_changes_artifact.id.as_str()
     );
     assert!(options
         .composer_integration_references
@@ -4388,6 +4481,10 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
         metadata["blocking_fingerprint"].as_str(),
         monitor.review_blocking_fingerprint.as_deref()
     );
+    assert_eq!(
+        metadata["plan_context_fingerprint"].as_str(),
+        monitor.reviewed_plan_context_fingerprint.as_deref()
+    );
 
     let sent_messages = chat_service.get_sent_messages().await;
     assert_eq!(sent_messages.len(), 1);
@@ -4397,6 +4494,48 @@ async fn blocking_repair_send_inherits_parent_associated_references_for_expansio
     assert!(sent_messages[0].contains("Review Overview content injected by RalphX"));
     assert!(sent_messages[0].contains("Preserve parent references in the repair."));
     assert!(!sent_messages[0].contains("Fetch the full Review artifact before editing"));
+
+    let replacement_plan = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Replacement parent plan",
+            ArtifactType::Specification,
+            "# Plan\n\nThis plan changed after Review.",
+            "ralphx-ideation",
+        ))
+        .await
+        .expect("replacement plan should persist");
+    let replacement_blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Replacement implementation blueprint",
+            ArtifactType::Specification,
+            "# Blueprint\n\nThis blueprint changed after Review.",
+            "ralphx-ideation",
+        ))
+        .await
+        .expect("replacement blueprint should persist");
+    let replacement_session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .session_flow(IdeationSessionFlow::Planning)
+                .source_context_type("agent_conversation")
+                .source_context_id(workspace.conversation_id.as_str())
+                .plan_artifact_id(replacement_plan.id)
+                .plan_blueprint_artifact_id(replacement_blueprint.id)
+                .build(),
+        )
+        .await
+        .expect("replacement planning session should persist");
+    workspace.linked_ideation_session_id = Some(replacement_session.id);
+    let drift_error = ensure_workspace_review_plan_context_is_current(&state, &workspace, &monitor)
+        .await
+        .expect_err("fixer send must reject a plan change after preparation");
+    assert!(drift_error
+        .to_string()
+        .contains(WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR));
 }
 
 #[test]
@@ -4443,6 +4582,67 @@ fn mark_review_artifact_current_for_target_updates_reviewed_and_current_metadata
     assert_eq!(
         monitor.selected_source_head_sha.as_deref(),
         Some("selected-head")
+    );
+}
+
+#[test]
+fn plan_context_drift_invalidates_review_currentness_and_fixer_authority() {
+    let conversation_id = ChatConversationId::from_string("plan-drift-review");
+    let project_id = ProjectId::from_string("project-plan-drift".to_string());
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("diff-current".to_string());
+    monitor.reviewed_diff_fingerprint = Some("diff-current".to_string());
+    monitor.current_plan_context_fingerprint = Some("plan-new".to_string());
+    monitor.reviewed_plan_context_fingerprint = Some("plan-reviewed".to_string());
+    monitor.review_artifact_id = Some(ArtifactId::from_string("review-overview"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("review-requested-changes"));
+    monitor.review_requested_changes_artifact_version = Some(1);
+    monitor.review_blocking_fingerprint = Some("blocking-current".to_string());
+
+    assert!(!monitor.is_current_for_target(
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        None,
+        "diff-current",
+    ));
+    assert!(AgentWorkspaceReviewFixerSnapshot::from_monitor(&monitor).is_none());
+
+    monitor.reviewed_head_sha = Some("reviewed-head".to_string());
+    monitor.workspace_head_sha = Some("reviewed-head".to_string());
+    monitor.workspace_base_sha = Some("base-head".to_string());
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-head".to_string()),
+        "ralphx/test/plan-drift".to_string(),
+        "/tmp/plan-drift".to_string(),
+    );
+    workspace.publication_pr_number = Some(483);
+    workspace.publication_pr_status = Some(MERGED_PUBLICATION_PR_STATUS.to_string());
+    let merged_target = AgentWorkspaceReviewTarget {
+        scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+        base_ref: "main".to_string(),
+        base_sha: Some("base-head".to_string()),
+        head_ref: "refs/ralphx/pr-heads/483".to_string(),
+        head_sha: Some("reviewed-head".to_string()),
+        diff_fingerprint: "merged-target".to_string(),
+        working_directory: PathBuf::from("/tmp/plan-drift"),
+        source_pull_request_number: Some(483),
+        review_packet: AgentWorkspaceReviewPacket::default(),
+    };
+    assert!(
+        !workspace_review_artifact_covers_merged_pr_target(&workspace, &monitor, &merged_target),
+        "merged-PR target equivalence must not bypass reviewed plan authority"
     );
 }
 

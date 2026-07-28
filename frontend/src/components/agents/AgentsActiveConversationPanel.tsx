@@ -164,13 +164,15 @@ import {
 import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
-  PLAN_IMPLEMENT_DIRECTLY_REQUEST,
 } from "./agentPlanModeActions";
 import {
   activateAgentPlanProposals,
   PlanContinuationCommittedError,
-  refreshTransitionedAgentWorkspace,
 } from "./agentPlanProposalActivation";
+import {
+  implementAgentPlanDirectly,
+  type DirectImplementationActivationSnapshot,
+} from "./implementAgentPlanDirectly";
 import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
 import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
 import { PRIMARY_AGENT_START_MODE_IDS } from "./agentStartModeOptions";
@@ -1968,88 +1970,54 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const handleImplementPlanDirectly = useCallback(() => {
     if (
       !planApprovalSessionId ||
+      !activeProjectId ||
       !activeWorkspace?.conversationId ||
       !canImplementPlanDirectly
     ) {
       return;
     }
-    let modeTransitionCompleted = activeWorkspace.mode === "edit";
+    let pinnedActivation: DirectImplementationActivationSnapshot | undefined;
     let committedRuntimeOverride: ManualRoleRuntimeSelection | null = null;
     void confirmImplementDirectly(async (runtimeOverride) => {
       const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
       setIsImplementingPlanDirectly(true);
       try {
-      if (!modeTransitionCompleted) {
-        const result = await chatApi.switchAgentConversationMode({
-          conversationId: activeWorkspace.conversationId,
-          mode: "edit",
-          runtimeOverride: runtimeForAttempt,
+        await implementAgentPlanDirectly({
+          projectId: activeProjectId,
+          workspace: pinnedActivation?.workspace ?? activeWorkspace,
+          queryClient,
+          onConversationModeSwitched,
+          ...(pinnedActivation ? { pinnedActivation } : {}),
+          onActivated: (snapshot) => {
+            if (!pinnedActivation) {
+              pinnedActivation = snapshot;
+              committedRuntimeOverride = { ...runtimeForAttempt };
+            }
+          },
+          sendOptions: { runtimeOverride: runtimeForAttempt },
         });
-        if (result.workspace) {
-          queryClient.setQueryData(
-            agentWorkspaceKeys.workspace(activeWorkspace.conversationId),
-            result.workspace,
+        useAgentSessionStore.getState().setRuntimeForConversation(
+          activeWorkspace.conversationId,
+          activeProjectId,
+          materializeWorkspaceRuntimeSelection(runtimeForAttempt, modelRegistry),
+        );
+        useAgentSessionStore
+          .getState()
+          .setServiceTierForConversation(
+            activeWorkspace.conversationId,
+            runtimeForAttempt.serviceTier,
+          );
+        toast.success("Implementation started");
+      } catch (err) {
+        console.error("Failed to implement plan directly:", err);
+        if (!(err instanceof PlanContinuationCommittedError)) {
+          toast.error(
+            err instanceof Error ? err.message : "Failed to start implementation",
           );
         }
-        onConversationModeSwitched(
-          activeWorkspace.conversationId,
-          "edit",
-          result.workspace ?? null,
-        );
-        void invalidateWorkspaceQueries(
-          queryClient,
-          activeWorkspace.conversationId,
-        );
-        modeTransitionCompleted = true;
-        committedRuntimeOverride = { ...runtimeForAttempt };
-      } else if (activeWorkspace.mode === "edit") {
-        onConversationModeSwitched(
-          activeWorkspace.conversationId,
-          "edit",
-          activeWorkspace,
-        );
-      }
-
-      await chatApi.sendAgentMessage(
-        "project",
-        activeProjectId!,
-        PLAN_IMPLEMENT_DIRECTLY_REQUEST,
-        undefined,
-        {
-          conversationId: activeWorkspace.conversationId,
-          runtimeOverride: runtimeForAttempt,
-          suppressUserMessage: true,
-        },
-      );
-      useAgentSessionStore.getState().setRuntimeForConversation(
-        activeWorkspace.conversationId,
-        activeProjectId,
-        materializeWorkspaceRuntimeSelection(runtimeForAttempt, modelRegistry),
-      );
-      useAgentSessionStore
-        .getState()
-        .setServiceTierForConversation(
-          activeWorkspace.conversationId,
-          runtimeForAttempt.serviceTier,
-        );
-      toast.success("Implementation started");
-      } catch (err) {
-      if (modeTransitionCompleted) {
-        await refreshTransitionedAgentWorkspace({
-          queryClient,
-          conversationId: activeWorkspace.conversationId,
-          onConversationModeSwitched,
-        });
-        const detail = err instanceof Error ? ` ${err.message}` : "";
-        throw new PlanContinuationCommittedError(
-          `Edit mode is active, but implementation launch failed. Retry will only send the implementation request; it will not switch modes again.${detail}`,
-        );
-      }
-      console.error("Failed to implement plan directly:", err);
-      toast.error(err instanceof Error ? err.message : "Failed to start implementation");
         throw err;
       } finally {
-      setIsImplementingPlanDirectly(false);
+        setIsImplementingPlanDirectly(false);
       }
     });
   }, [
