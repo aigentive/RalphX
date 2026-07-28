@@ -155,6 +155,47 @@ pub struct Closure {
     pub sink_hits: BTreeSet<SinkHit>,
 }
 
+/// Persisted state read by an authority-bearing background loop as a spawn/steer predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateSurfaceEntry {
+    pub id: &'static str,
+    pub surface: &'static str,
+    pub armed_value: &'static str,
+    pub read_by_loops: &'static [&'static str],
+    pub writer_markers: &'static [&'static str],
+}
+
+/// Detector-(b)'s mechanically matched command writers.
+pub fn spawn_triggering_writers(
+    graph: &CallGraph,
+    commands: impl IntoIterator<Item = String>,
+    surface: &[StateSurfaceEntry],
+) -> BTreeSet<String> {
+    commands
+        .into_iter()
+        .filter(|command| {
+            let tokens = &graph.closure([command.clone()]).tokens;
+            surface.iter().any(|entry| {
+                entry
+                    .writer_markers
+                    .iter()
+                    .any(|marker| tokens.contains(*marker))
+            })
+        })
+        .collect()
+}
+
+/// Derived from the read sites reached by the settled authority-bearing loop inventory.
+pub const SPAWN_TRIGGERING_STATE_SURFACE: &[StateSurfaceEntry] = &[
+    StateSurfaceEntry { id: "ready-task", surface: "tasks.internal_status", armed_value: "Ready", read_by_loops: &["application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f"], writer_markers: &["inject_task", "restart_terminal_task_to_ready"] },
+    StateSurfaceEntry { id: "pending-review-freshness", surface: "tasks.internal_status + task_status_history.entered_at + agent_runs.status", armed_value: "PendingReview with no fresh/running reviewer", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_watchdog@8c28974ee8ca859d"], writer_markers: &["re_review_task_from_escalated", "request_task_changes_from_reviewing"] },
+    StateSurfaceEntry { id: "automation-active", surface: "automations.status", armed_value: "Active", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_automation_scheduler@c034c5fc2b8fe7b8"], writer_markers: &["resume_automation_smart", "finalize_automation"] },
+    StateSurfaceEntry { id: "workspace-bridge", surface: "agent_conversation_workspaces.linked_ideation_session_id/status/mode", armed_value: "linked active plan/edit workspace", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"], writer_markers: &["activate_agent_plan_direct_implementation", "activate_agent_task_pipeline", "close_agent_workspace_pr", "commit_agent_conversation_workspace_locally", "copy_agent_conversation_plan", "import_agent_conversation_plan", "publish_agent_conversation_workspace", "reconcile_agent_conversation_workspace_publication", "resume_deferred_git_startup", "set_agent_conversation_workspace_pr_supervision", "start_agent_conversation", "start_ralphx_work_from_ticket", "switch_agent_conversation_mode", "update_agent_conversation_workspace_from_base"] },
+    StateSurfaceEntry { id: "external-event-cursor", surface: "external_events rows/cursor", armed_value: "unconsumed row", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"], writer_markers: &["insert_event"] },
+    StateSurfaceEntry { id: "workspace-auto-publish", surface: "agent_conversation_workspaces.auto_publish_enabled/publication_push_status", armed_value: "enabled and publishable/needs_agent", read_by_loops: &["commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::start_agent_workspace_auto_publish_freshness_scan@3a8d62e625ea5914"], writer_markers: &["set_agent_conversation_workspace_auto_publish_for_state"] },
+    StateSurfaceEntry { id: "workspace-auto-review", surface: "review_settings.require_workspace_review", armed_value: "true", read_by_loops: &["commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_for_workspace@a952be79d060c28f"], writer_markers: &["update_review_settings"] },
+];
+
 impl CallGraph {
     pub fn build(files: &[(String, String)]) -> Self {
         let mut graph = CallGraph::default();
@@ -424,7 +465,7 @@ impl<'a> FileVisitor<'a> {
             .cloned()
             .unwrap_or_else(|| ":".to_string());
         let name = format!("{}::{}::{}", self.file, owner, bare_name);
-        self.graph.node_mut(&name);
+        self.graph.node_mut(&name).tokens.insert(bare_name.clone());
         self.graph
             .definitions
             .entry(bare_name)

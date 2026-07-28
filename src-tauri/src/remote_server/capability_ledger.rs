@@ -37,6 +37,12 @@ pub struct AuthorityReducingExemption {
 
 const NONE: &[Capability] = &[];
 const AGENT: &[Capability] = &[Capability::AgentControl];
+const SEEDS_STATE: &[Capability] = &[Capability::SeedsSpawnTriggeringState];
+const MUTATES_CONTENT: &[Capability] = &[Capability::MutatesAgentConsumedContent];
+const AGENT_AND_CONTENT: &[Capability] = &[
+    Capability::AgentControl,
+    Capability::MutatesAgentConsumedContent,
+];
 const PROCESS: &[Capability] = &[Capability::SpawnsProcess];
 const CREDENTIALS: &[Capability] = &[Capability::TouchesCredentials];
 const PTY: &[Capability] = &[Capability::PtyControl];
@@ -236,6 +242,142 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
 
 /// Narrow decisions which differ from their module default.
 pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
+    CommandOverride {
+        command: "inject_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "detector-b: seeds internal_status=Ready consumed by the ready-task scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "resume_automation",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "detector-b: restores Active automation consumed by the automation scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "finalize_automation",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "detector-b: completes automation arming state consumed by the automation scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "create_task_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: creates worker-consumed task step",
+        ),
+    },
+    CommandOverride {
+        command: "update_task_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: updates worker-consumed task step",
+        ),
+    },
+    CommandOverride {
+        command: "create_artifact",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: creates worker-consumed artifact of any kind",
+        ),
+    },
+    CommandOverride {
+        command: "update_artifact",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: updates worker-consumed artifact of any kind",
+        ),
+    },
+    CommandOverride {
+        command: "add_artifact_relation",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: changes worker-consumed artifact relations",
+        ),
+    },
+    CommandOverride {
+        command: "update_task_proposal",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: updates worker-consumed task proposal",
+        ),
+    },
+    CommandOverride {
+        command: "approve_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "reject_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "request_changes",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "reject_fix_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed fix feedback",
+        ),
+    },
+    CommandOverride {
+        command: "approve_task_for_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review note",
+        ),
+    },
+    CommandOverride {
+        command: "request_task_changes_for_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "request_task_changes_from_reviewing",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "move_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-a plus content-surface: restart note is worker-consumed",
+        ),
+    },
     // Audited read-only registrations plus the two Wry-monomorphic reads which cannot yet be
     // registered through `remote_commands!` (facade runtime genericity; deferred to PR 3.1).
     CommandOverride {

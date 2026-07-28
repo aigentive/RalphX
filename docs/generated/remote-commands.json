@@ -1,5 +1,257 @@
 {
-  "agent_consumed_content_surface": [],
+  "agent_consumed_content_surface": {
+    "reads": [
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
+        "reads": "agent_tasks",
+        "tool": "get_agent_task"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "get_artifact"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "get_artifact_version"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "memory_entries",
+        "tool": "get_memories_for_paths"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "memory_entries",
+        "tool": "get_memory"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "project_analysis",
+        "tool": "get_project_analysis"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "get_related_artifacts"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "review_notes/task_issues",
+        "tool": "get_review_notes"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
+        "reads": "task_steps",
+        "tool": "get_step_context"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker"
+        ],
+        "reads": "task_steps",
+        "tool": "get_sub_steps"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "worker TaskContext/prompt projection",
+        "tool": "get_task_context"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "task/worktree diff",
+        "tool": "get_task_diff"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "task/worktree diff",
+        "tool": "get_task_diff_stat"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "review_notes/task_issues",
+        "tool": "get_task_issues"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "task_steps",
+        "tool": "get_task_steps"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "validation_runs",
+        "tool": "get_task_validation_summary"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
+        "reads": "agent_tasks",
+        "tool": "list_agent_tasks"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "memory_entries",
+        "tool": "search_memories"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "search_project_artifacts"
+      }
+    ],
+    "writers": [
+      {
+        "surface": "tauri-command",
+        "writer": "create_task_step",
+        "writes": "task_steps"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "update_task_step",
+        "writes": "task_steps"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "create_artifact",
+        "writes": "artifacts (any kind)"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "update_artifact",
+        "writes": "artifacts (any kind)"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "add_artifact_relation",
+        "writes": "artifact_relations"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "update_task_proposal",
+        "writes": "task proposals"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "approve_review",
+        "writes": "review feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "reject_review",
+        "writes": "review feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "request_changes",
+        "writes": "review feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "reject_fix_task",
+        "writes": "review notes/fix feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "approve_task_for_review",
+        "writes": "review notes"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "request_task_changes_for_review",
+        "writes": "review notes/feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "request_task_changes_from_reviewing",
+        "writes": "review notes/feedback"
+      },
+      {
+        "conditional": "note",
+        "surface": "tauri-command",
+        "writer": "move_task",
+        "writes": "task restart note"
+      },
+      {
+        "conditional": "title,description — discharged by update_task_authz",
+        "surface": "tauri-command",
+        "writer": "update_task",
+        "writes": "task title/description"
+      },
+      {
+        "surface": "http-handler",
+        "writer": "add_task_note",
+        "writes": "task.description"
+      }
+    ]
+  },
   "agent_control_floor": [
     "remote_fetch",
     "complete_atlassian_oauth_local_callback",
@@ -11,6 +263,7 @@
     "refresh_agent_conversation_jira_issue",
     "assign_agent_conversation_jira_issue_to_me",
     "resume_automation",
+    "finalize_automation",
     "resume_automation_run",
     "create_persona_draft",
     "update_persona_draft",
@@ -18,6 +271,7 @@
     "assign_agent_conversation_linear_issue",
     "refresh_agent_conversation_linear_issue",
     "answer_user_question",
+    "inject_task",
     "move_task",
     "unblock_task",
     "resume_tasks_in_group",
@@ -41,6 +295,7 @@
     "request_task_changes_for_review",
     "request_task_changes_from_reviewing",
     "re_review_task_from_escalated",
+    "update_review_settings",
     "resume_execution",
     "restart_task",
     "recover_task_execution",
@@ -1134,9 +1389,9 @@
     }
   ],
   "coverage": {
-    "agentConsumedContent": "pending",
+    "agentConsumedContent": "complete",
     "detectorA": "complete",
-    "detectorB": "pending"
+    "detectorB": "complete"
   },
   "declared_memberships": [
     {
@@ -1825,22 +2080,22 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "resume_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-b: restores Active automation consumed by the automation scheduler",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "finalize_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-b: completes automation arming state consumed by the automation scheduler",
       "registered": false
     },
     {
@@ -2161,22 +2416,23 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "inject_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-b: seeds internal_status=Ready consumed by the ready-task scheduler",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "move_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-a plus content-surface: restart note is worker-consumed",
       "registered": false
     },
     {
@@ -2419,12 +2675,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "create_task_step",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: creates worker-consumed task step",
       "registered": false
     },
     {
@@ -2439,12 +2695,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_task_step",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: updates worker-consumed task step",
       "registered": false
     },
     {
@@ -2989,32 +3245,32 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "approve_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "request_changes",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "reject_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
@@ -3029,12 +3285,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "reject_fix_task",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed fix feedback",
       "registered": false
     },
     {
@@ -3049,32 +3305,32 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "approve_task_for_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review note",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "request_task_changes_for_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "request_task_changes_from_reviewing",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
@@ -3719,12 +3975,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_task_proposal",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: updates worker-consumed task proposal",
       "registered": false
     },
     {
@@ -4629,22 +4885,22 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "create_artifact",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: creates worker-consumed artifact of any kind",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_artifact",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: updates worker-consumed artifact of any kind",
       "registered": false
     },
     {
@@ -4729,12 +4985,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "add_artifact_relation",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: changes worker-consumed artifact relations",
       "registered": false
     },
     {
@@ -6519,7 +6775,109 @@
     }
   ],
   "schemaVersion": 1,
-  "spawn_triggering_state_surface": [],
+  "spawn_triggering_state_surface": [
+    {
+      "armedValue": "Ready",
+      "id": "ready-task",
+      "readByLoops": [
+        "application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f"
+      ],
+      "surface": "tasks.internal_status",
+      "writers": [
+        "inject_task",
+        "move_task",
+        "restart_task"
+      ]
+    },
+    {
+      "armedValue": "PendingReview with no fresh/running reviewer",
+      "id": "pending-review-freshness",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_watchdog@8c28974ee8ca859d"
+      ],
+      "surface": "tasks.internal_status + task_status_history.entered_at + agent_runs.status",
+      "writers": [
+        "re_review_task_from_escalated",
+        "request_task_changes_from_reviewing"
+      ]
+    },
+    {
+      "armedValue": "Active",
+      "id": "automation-active",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_automation_scheduler@c034c5fc2b8fe7b8"
+      ],
+      "surface": "automations.status",
+      "writers": [
+        "finalize_automation",
+        "resume_automation"
+      ]
+    },
+    {
+      "armedValue": "linked active plan/edit workspace",
+      "id": "workspace-bridge",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"
+      ],
+      "surface": "agent_conversation_workspaces.linked_ideation_session_id/status/mode",
+      "writers": [
+        "activate_agent_plan_direct_implementation",
+        "activate_agent_task_pipeline",
+        "close_agent_workspace_pr",
+        "commit_agent_conversation_workspace_locally",
+        "copy_agent_conversation_plan",
+        "import_agent_conversation_plan",
+        "publish_agent_conversation_workspace",
+        "reconcile_agent_conversation_workspace_publication",
+        "resume_deferred_git_startup",
+        "set_agent_conversation_workspace_pr_supervision",
+        "start_agent_conversation",
+        "start_ralphx_work_from_ticket",
+        "start_research",
+        "switch_agent_conversation_mode",
+        "update_agent_conversation_workspace_from_base"
+      ]
+    },
+    {
+      "armedValue": "unconsumed row",
+      "id": "external-event-cursor",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"
+      ],
+      "surface": "external_events rows/cursor",
+      "writers": [
+        "create_cross_project_session",
+        "create_ideation_session",
+        "import_ideation_session",
+        "move_task",
+        "restart_task",
+        "resume_deferred_git_startup",
+        "set_tasks_feature_enabled"
+      ]
+    },
+    {
+      "armedValue": "enabled and publishable/needs_agent",
+      "id": "workspace-auto-publish",
+      "readByLoops": [
+        "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::start_agent_workspace_auto_publish_freshness_scan@3a8d62e625ea5914"
+      ],
+      "surface": "agent_conversation_workspaces.auto_publish_enabled/publication_push_status",
+      "writers": [
+        "set_agent_conversation_workspace_auto_publish"
+      ]
+    },
+    {
+      "armedValue": "true",
+      "id": "workspace-auto-review",
+      "readByLoops": [
+        "commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_for_workspace@a952be79d060c28f"
+      ],
+      "surface": "review_settings.require_workspace_review",
+      "writers": [
+        "update_review_settings"
+      ]
+    }
+  ],
   "worker_task_view_allowlist": [
     "id",
     "project_id",
