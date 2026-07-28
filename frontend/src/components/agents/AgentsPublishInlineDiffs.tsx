@@ -1487,7 +1487,12 @@ export function AgentsPublishInlineDiffs({
     return undefined;
   }, [annotationScrollAttempt, diffByPath, pendingAnnotationScrollPath, visibleRange]);
 
-  if (isReviewWalkthroughOpen) {
+  // The walkthrough reads its hunks from `diffByPath`/`activeDiffQueries`, which
+  // are empty in conflicted mode (conflicts use `conflictDiffQueries`). Today the
+  // annotation gates already keep findings empty there, but keeping the surface
+  // itself out of conflicted mode means a future gate change cannot produce a
+  // walkthrough whose hunks never load and whose retry silently does nothing.
+  if (isReviewWalkthroughOpen && !isConflictedMode) {
     return (
       <div
         ref={inlineDiffsRootRef}

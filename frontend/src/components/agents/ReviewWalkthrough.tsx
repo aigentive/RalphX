@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 import {
   DIFF_ANNOTATION_LEVEL_LEGEND,
   annotationLevelColor,
+  isBlockingAnnotationLevel,
 } from "@/components/diff/diffRenderHelpers";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { DiffHunk } from "@/api/diff";
@@ -81,8 +82,8 @@ export function ReviewWalkthrough({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      // Bare J/K only — never swallow Cmd+J, Ctrl+K and friends.
-      if (event.metaKey || event.ctrlKey || event.altKey) {
+      // Bare J/K only — never swallow Cmd+J, Ctrl+K, Shift+J and friends.
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
         return;
       }
       const target = event.target;
@@ -106,12 +107,26 @@ export function ReviewWalkthrough({
 
   const reviewedCount = reviewedIds.size;
   const blockingCount = findings.filter((finding) =>
-    ["failure", "error", "critical", "high"].includes(finding.level.toLowerCase()),
+    isBlockingAnnotationLevel(finding.level),
   ).length;
 
   if (findings.length === 0) {
+    // The finding set can empty out while the walkthrough is open (annotation
+    // refresh, mode change). Without an exit control that leaves the user
+    // stranded on this screen with no route back to the changes list.
     return (
       <section data-testid="publish-review-walkthrough" className="p-3">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            data-testid="publish-review-walkthrough-exit"
+            onClick={onExit}
+            className="text-xs font-medium hover:underline"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            ← Back to all changes
+          </button>
+        </div>
         <div
           className="rounded-md p-4 text-sm"
           style={{
@@ -192,6 +207,7 @@ export function ReviewWalkthrough({
             </button>
             <button
               type="button"
+              data-testid="publish-review-walkthrough-done-exit"
               onClick={onExit}
               className="rounded px-2.5 py-1.5 text-xs font-medium"
               style={{
@@ -199,7 +215,7 @@ export function ReviewWalkthrough({
                 borderColor: "var(--accent-primary)",
                 borderStyle: "solid",
                 borderWidth: "1px",
-                color: "#ffffff",
+                color: "var(--text-on-accent)",
               }}
             >
               ← Back to all changes

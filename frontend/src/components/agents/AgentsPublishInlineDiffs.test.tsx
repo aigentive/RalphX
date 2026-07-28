@@ -1480,6 +1480,47 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
     });
 
+    it("never strands the user in the walkthrough when its findings stop applying", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[makeHunkAnnotation("src/Foo.tsx")]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("publish-review-walkthrough-enter"));
+      expect(screen.getByTestId("publish-review-walkthrough")).toBeInTheDocument();
+
+      // An annotation refresh empties the finding set out from under the open
+      // walkthrough; it must return to the changes list rather than strand the
+      // user on a findings-less surface.
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[]}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("publish-review-walkthrough"),
+        ).not.toBeInTheDocument(),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
+    });
+
     it("fetches only the current finding's file while walking through findings", async () => {
       const user = userEvent.setup();
       const changes = [

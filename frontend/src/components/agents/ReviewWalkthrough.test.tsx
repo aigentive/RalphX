@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { DIFF_ANNOTATION_LEVEL_LEGEND } from "@/components/diff/diffRenderHelpers";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReviewWalkthrough, type ReviewWalkthroughFinding } from "./ReviewWalkthrough";
 
@@ -125,6 +126,46 @@ describe("ReviewWalkthrough", () => {
     );
   });
 
+  it("paints the accent-filled completion action with the on-accent text token", async () => {
+    const user = userEvent.setup();
+    renderWalkthrough();
+
+    await user.click(screen.getByTestId("publish-review-walkthrough-next"));
+    await user.click(screen.getByTestId("publish-review-walkthrough-next"));
+
+    expect(screen.getByTestId("publish-review-walkthrough-done-exit")).toHaveStyle({
+      backgroundColor: "var(--accent-primary)",
+      color: "var(--text-on-accent)",
+    });
+  });
+
+  it("counts blocking findings from the shared legend rather than a private level list", async () => {
+    const user = userEvent.setup();
+    const blockingLevels = DIFF_ANNOTATION_LEVEL_LEGEND[0]!.levels.split(", ");
+    const levels = [...blockingLevels, "warning", "notice"];
+    const levelFindings = levels.map((level, index) => ({
+      ...findings[0]!,
+      id: `workspace:level-${index}`,
+      hunk: undefined,
+      hunkStatus: "unavailable" as const,
+      level,
+    }));
+
+    render(
+      <TooltipProvider>
+        <ReviewWalkthrough findings={levelFindings} onExit={vi.fn()} />
+      </TooltipProvider>,
+    );
+
+    for (let step = 0; step < levels.length; step += 1) {
+      await user.click(screen.getByTestId("publish-review-walkthrough-next"));
+    }
+
+    expect(screen.getByTestId("publish-review-walkthrough-done")).toHaveTextContent(
+      `${blockingLevels.length} blocking findings`,
+    );
+  });
+
   it("steps back from the completion screen to the last finding without losing reviewed marks", async () => {
     const user = userEvent.setup();
     renderWalkthrough();
@@ -154,6 +195,22 @@ describe("ReviewWalkthrough", () => {
     expect(onExit).toHaveBeenCalledOnce();
   });
 
+  it("keeps an exit route when the finding set empties out mid-walkthrough", async () => {
+    const user = userEvent.setup();
+    const onExit = vi.fn();
+    render(
+      <TooltipProvider>
+        <ReviewWalkthrough findings={[]} onExit={onExit} />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByTestId("publish-review-walkthrough")).toHaveTextContent(
+      "No review findings are available",
+    );
+    await user.click(screen.getByTestId("publish-review-walkthrough-exit"));
+    expect(onExit).toHaveBeenCalledOnce();
+  });
+
   it("does not swallow modified J/K shortcuts such as Cmd+J and Ctrl+K", async () => {
     const user = userEvent.setup();
     renderWalkthrough();
@@ -170,6 +227,22 @@ describe("ReviewWalkthrough", () => {
     );
 
     await user.keyboard("{Alt>}j{/Alt}");
+    expect(screen.getByTestId("publish-review-walkthrough-position")).toHaveTextContent(
+      "Finding 2 of 2",
+    );
+  });
+
+  it("ignores shifted J/K so Shift-modified shortcuts stay available to the page", async () => {
+    const user = userEvent.setup();
+    renderWalkthrough();
+
+    await user.keyboard("{Shift>}J{/Shift}");
+    expect(screen.getByTestId("publish-review-walkthrough-position")).toHaveTextContent(
+      "Finding 1 of 2",
+    );
+
+    await user.click(screen.getByTestId("publish-review-walkthrough-dot-1"));
+    await user.keyboard("{Shift>}K{/Shift}");
     expect(screen.getByTestId("publish-review-walkthrough-position")).toHaveTextContent(
       "Finding 2 of 2",
     );

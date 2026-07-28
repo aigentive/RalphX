@@ -25,10 +25,21 @@ export interface DiffAnnotationLegendItem {
   description: string;
 }
 
+/**
+ * The single source of truth for which annotation levels block shipping. The
+ * legend renders it and `isBlockingAnnotationLevel` classifies against it, so
+ * callers never restate the list and drift from what the legend shows.
+ */
+const BLOCKING_ANNOTATION_LEVELS = ["failure", "error", "critical", "high"];
+
+export function isBlockingAnnotationLevel(level: string): boolean {
+  return BLOCKING_ANNOTATION_LEVELS.includes(level.toLowerCase());
+}
+
 export const DIFF_ANNOTATION_LEVEL_LEGEND: DiffAnnotationLegendItem[] = [
   {
     label: "Blocking",
-    levels: "failure, error, critical, high",
+    levels: BLOCKING_ANNOTATION_LEVELS.join(", "),
     color: "var(--status-error)",
     description: "Needs attention before this change should ship.",
   },
@@ -39,8 +50,11 @@ export const DIFF_ANNOTATION_LEVEL_LEGEND: DiffAnnotationLegendItem[] = [
     description: "Worth reviewing, but not always a hard blocker.",
   },
   {
+    // `info` is what the workspace reviewer emits for purely descriptive hunks
+    // (agents/ralphx-workspace-reviewer/shared/prompt.md), so it belongs here
+    // rather than falling through to the louder unclassified accent.
     label: "Notice",
-    levels: "low, notice",
+    levels: "low, notice, info",
     color: "var(--status-info)",
     description: "Context or low-risk reviewer guidance.",
   },
@@ -117,6 +131,7 @@ export function annotationLevelColor(level: string): string {
       return "var(--status-warning)";
     case "low":
     case "notice":
+    case "info":
       return "var(--status-info)";
     default:
       return "var(--accent-primary)";
