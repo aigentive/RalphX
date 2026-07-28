@@ -418,3 +418,45 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     local_backend("remote:session_connected"),
     local_backend("remote:session_closed"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn class_permits_enforces_representative_capability_boundaries() {
+        assert!(!class_permits(
+            RiskClass::Read,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(class_permits(
+            RiskClass::PathScoped,
+            &[Capability::WritesArbitraryPath]
+        ));
+        assert!(!class_permits(
+            RiskClass::PathScoped,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(class_permits(
+            RiskClass::AgentControl,
+            &[Capability::AgentControl]
+        ));
+        assert!(!class_permits(
+            RiskClass::AgentControl,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(class_permits(
+            RiskClass::Elevated,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(!class_permits(RiskClass::Denied, &[]));
+    }
+
+    #[test]
+    fn event_classification_find_returns_known_events_only() {
+        let classification =
+            EventClassification::find("task:created").expect("known event should resolve");
+        assert_eq!(classification.delivery, EventDelivery::Durable);
+        assert!(EventClassification::find("nonexistent:name").is_none());
+    }
+}

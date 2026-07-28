@@ -317,3 +317,94 @@ fn effective_remote_port_falls_back_to_the_configured_port_without_an_override()
     );
     assert_eq!(effective_remote_port(4321), 4321);
 }
+
+#[tokio::test]
+async fn malformed_persisted_exposure_mode_is_rejected() {
+    let db = SqliteTestDb::new("remote-host-settings-invalid-exposure-mode");
+    db.with_connection(|conn| {
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("test should permit seeding a restored malformed row");
+        conn.execute(
+            "INSERT INTO remote_host_settings
+                (id, enabled, exposure_mode, port, environment_id)
+             VALUES (1, 0, 'public_internet', 3849, ?1)",
+            [Uuid::new_v4().to_string()],
+        )
+        .expect("malformed settings row should be seeded");
+    });
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+
+    let error = store
+        .get()
+        .await
+        .expect_err("an unknown exposure mode must be rejected");
+
+    assert!(matches!(error, crate::error::AppError::Database(message) if
+        message.contains("invalid remote host exposure mode")));
+}
+
+#[tokio::test]
+async fn zero_persisted_port_is_rejected_even_for_a_restored_database() {
+    let db = SqliteTestDb::new("remote-host-settings-zero-port");
+    db.with_connection(|conn| {
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("test should permit seeding a restored malformed row");
+        conn.execute(
+            "INSERT INTO remote_host_settings
+                (id, enabled, exposure_mode, port, environment_id)
+             VALUES (1, 0, 'serve', 0, ?1)",
+            [Uuid::new_v4().to_string()],
+        )
+        .expect("malformed settings row should be seeded");
+    });
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+
+    let error = store
+        .get()
+        .await
+        .expect_err("port zero must never reach the bind sink");
+
+    assert!(matches!(error, crate::error::AppError::Database(message) if
+        message.contains("invalid remote host settings port: 0")));
+}
+
+#[tokio::test]
+async fn malformed_persisted_environment_id_is_rejected() {
+    let db = SqliteTestDb::new("remote-host-settings-invalid-environment-id");
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO remote_host_settings
+                (id, enabled, exposure_mode, port, environment_id)
+             VALUES (1, 0, 'serve', 3849, 'not-a-uuid')",
+            [],
+        )
+        .expect("malformed settings row should be seeded");
+    });
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+
+    let error = store
+        .get()
+        .await
+        .expect_err("an invalid host identity must be rejected");
+
+    assert!(matches!(error, crate::error::AppError::Database(message) if
+        message.contains("invalid remote host environment id")));
+}
+
+#[tokio::test]
+async fn sqlite_read_errors_are_mapped_to_database_errors() {
+    let db = SqliteTestDb::new("remote-host-settings-read-error");
+    db.with_connection(|conn| {
+        conn.execute("DROP TABLE remote_host_settings", [])
+            .expect("test should remove the settings table");
+    });
+    let store = RemoteHostSettingsStore::from_db(DbConnection::from_shared(db.shared_conn()));
+
+    let error = store
+        .get()
+        .await
+        .expect_err("sqlite read failures must be surfaced");
+
+    assert!(matches!(error, crate::error::AppError::Database(message) if
+        message.contains("no such table")));
+}
