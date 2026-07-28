@@ -78,6 +78,16 @@ export type RemoteClientFrame =
   | { readonly type: "cursorAck"; readonly seq: number }
   | { readonly type: "heartbeatAck"; readonly t: number };
 
+/**
+ * The relay channel names, mirroring `remote_event_relay.rs`. FIXED, never formatted per
+ * environment: a dynamic `AppHandle::emit` name is unresolvable to the P-6 emit scanner
+ * (which fails the build rather than skipping it), and the protocol crate's
+ * classification table is a literal-name allowlist. Both are classified Local-only, so a
+ * client's own relay can never be captured and fanned back out.
+ */
+export const REMOTE_STREAM_FRAME_EVENT = "remote:stream_frame";
+export const REMOTE_STREAM_CLOSED_EVENT = "remote:stream_closed";
+
 /** Payload of the fixed `remote:stream_frame` relay event. */
 export interface RemoteStreamFrameEnvelope {
   readonly environmentId: string;
