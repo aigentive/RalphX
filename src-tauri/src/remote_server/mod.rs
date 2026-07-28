@@ -67,8 +67,9 @@ use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::domain::repositories::RemoteSessionRepository;
 use crate::error::AppError;
-use crate::infrastructure::sqlite::SqliteRemoteEventLogRepository;
+use crate::infrastructure::sqlite::{SqliteRemoteAccessRepository, SqliteRemoteEventLogRepository};
 use crate::infrastructure::tailscale::{
     RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
@@ -621,6 +622,50 @@ pub(crate) async fn auto_start_if_enabled(
     start_listener(handle, store, provider, tailscale)
         .await
         .map(Some)
+}
+
+/// Closes `remote_sessions` rows that a previous process left open.
+///
+/// The graceful paths close their own rows (`SessionGuard` on socket close, `stop_listener` on
+/// disable). A crash, force quit, or power loss closes nothing, and every one of those rows keeps
+/// showing up in the pane's "connections currently open against this Mac" list forever — the owner
+/// can only clear them one disconnect at a time. Startup is the one moment where the classification
+/// is unambiguous: no socket has been admitted yet in this process, so every open row belongs to a
+/// dead one. Live completion and startup recovery therefore terminalise the same way.
+pub(crate) async fn close_orphaned_remote_sessions_from_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<crate::AppState>() else {
+        tracing::warn!("AppState is unavailable; skipping remote session reconciliation");
+        return;
+    };
+    let store = RemoteHostSettingsStore::from_db(state.db.clone());
+    // Same `get()` gate as capture installation: an unconfigured host has no sessions to reconcile,
+    // and a read must never mint the row that defines "configured".
+    match store.get().await {
+        Ok(Some(_)) => {}
+        Ok(None) => return,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "Reading remote host settings failed; skipping remote session reconciliation"
+            );
+            return;
+        }
+    }
+
+    let sessions = SqliteRemoteAccessRepository::from_db(state.db.clone());
+    match sessions
+        .close_all(&crate::remote_server::auth::now_timestamp())
+        .await
+    {
+        Ok(0) => {}
+        Ok(closed) => tracing::info!(
+            closed,
+            "Closed remote session rows left open by a previous process"
+        ),
+        Err(error) => {
+            tracing::error!(%error, "Closing remote session rows from a previous process failed")
+        }
+    }
 }
 
 /// Installs the capture bank + durable sequencer + pruner when host mode is **configured**.
