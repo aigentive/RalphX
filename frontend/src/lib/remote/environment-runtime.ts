@@ -48,7 +48,15 @@ interface RuntimeEntry {
   entry: EnvironmentEntry;
   supervisor: ConnectionSupervisor;
   socketLive: boolean;
-  bus: NetworkEventBus | null;
+  /**
+   * The environment's ONE bus instance, from the app-lifetime bus registry.
+   *
+   * `EventProvider` memoizes the bus on `environmentId` alone, so rebuilding it for a
+   * same-id reactivation (a flag toggle, a re-activate) would leave the whole mounted
+   * tree subscribed to an orphaned instance while the badge still read Connected.
+   * Identity is therefore stable per environment; only the relay wiring is swapped.
+   */
+  bus: NetworkEventBus;
   detachRelay: (() => void) | null;
   relayKind: "full" | "health" | null;
 }
@@ -217,9 +225,18 @@ export function initializeEnvironmentRuntime(): () => void {
     runtime.relayKind = "health";
   };
 
-  const buildActiveBus = (runtime: RuntimeEntry): void => {
-    detachRelay(runtime);
-    const environmentId = runtime.entry.id;
+  /**
+   * The app-lifetime bus registry: exactly ONE `NetworkEventBus` per environment id,
+   * outliving deactivation, flag toggles, and runtime reconciliation. Only a removed
+   * registry row forgets its bus.
+   */
+  const buses = new Map<string, NetworkEventBus>();
+
+  const projectionBus = (environmentId: string): NetworkEventBus => {
+    const existing = buses.get(environmentId);
+    if (existing !== undefined) {
+      return existing;
+    }
     const bus = new NetworkEventBus({
       environmentId,
       localBus,
@@ -239,6 +256,11 @@ export function initializeEnvironmentRuntime(): () => void {
         void getQueryClient(environmentId).invalidateQueries();
       },
       onRestartRequired: (cause) => {
+        // Resolved at call time, never captured: the bus outlives any single runtime.
+        const runtime = runtimes.get(environmentId);
+        if (runtime === undefined) {
+          return;
+        }
         // `revoked` / `host_disabled` are the host WITHDRAWING the session. Routing
         // them to `streamLost` would redial the 16 s ladder forever against a host
         // that already refused this device, instead of showing the re-pair state.
@@ -251,10 +273,19 @@ export function initializeEnvironmentRuntime(): () => void {
         runtime.supervisor.streamLost();
       },
     });
-    runtime.bus = bus;
+    buses.set(environmentId, bus);
+    return bus;
+  };
+
+  /** Points the environment's stable bus at the live relay and starts projecting. */
+  const attachProjectionRelay = (runtime: RuntimeEntry): void => {
+    detachRelay(runtime);
+    // Whatever the host did while this bus was not projecting is unobserved, so the
+    // next attempt must cold-hydrate rather than resume a cursor it stopped honouring.
+    runtime.bus.abandonStream();
     runtime.detachRelay = attachRemoteStreamRelay({
       localBus,
-      target: bus,
+      target: runtime.bus,
       onFrameActivity: () => runtime.supervisor.noteFrameActivity(),
       onStreamClosed: () => streamClosed(runtime),
       onUndecodableFrame: () => runtime.supervisor.streamLost(),
@@ -329,7 +360,7 @@ export function initializeEnvironmentRuntime(): () => void {
         if (useEnvironmentStore.getState().activeEnvironmentId !== environmentId) {
           return;
         }
-        await runtime.bus?.beginStream(outcome);
+        await runtime.bus.beginStream(outcome);
       },
       hasLiveSocket: () => runtime.socketLive,
       onStateChange: (state) => {
@@ -340,7 +371,7 @@ export function initializeEnvironmentRuntime(): () => void {
       entry,
       supervisor,
       socketLive: false,
-      bus: null,
+      bus: projectionBus(environmentId),
       detachRelay: null,
       relayKind: null,
     };
@@ -351,7 +382,8 @@ export function initializeEnvironmentRuntime(): () => void {
     const previous = runtimes.get(activeEnvironmentId);
     const demoted = previous !== undefined && previous.entry.id !== environmentId;
     if (demoted) {
-      previous.bus = null;
+      // The instance survives — React holds it — but it stops projecting.
+      previous.bus.abandonStream();
       attachHealthRelay(previous);
     }
     activeEnvironmentId = environmentId;
@@ -370,8 +402,8 @@ export function initializeEnvironmentRuntime(): () => void {
     if (runtime === undefined) {
       return;
     }
-    buildActiveBus(runtime);
-    // A fresh supervisor attempt pairs the fresh bus with the next hello H barrier.
+    attachProjectionRelay(runtime);
+    // A fresh supervisor attempt pairs the reset bus with the next hello H barrier.
     runtime.supervisor.stop();
     runtime.supervisor.start();
   };
@@ -380,7 +412,7 @@ export function initializeEnvironmentRuntime(): () => void {
     for (const [environmentId, runtime] of runtimes) {
       runtime.supervisor.stop();
       detachRelay(runtime);
-      runtime.bus = null;
+      runtime.bus.abandonStream();
       confirmedScopes.delete(environmentId);
     }
     runtimes.clear();
@@ -397,7 +429,10 @@ export function initializeEnvironmentRuntime(): () => void {
       if (!wanted.has(environmentId)) {
         runtime.supervisor.stop();
         detachRelay(runtime);
+        runtime.bus.abandonStream();
         runtimes.delete(environmentId);
+        // The registry row is gone, so this environment's bus identity may go too.
+        buses.delete(environmentId);
         confirmedScopes.delete(environmentId);
         removeQueryClient(environmentId);
       }
@@ -411,7 +446,7 @@ export function initializeEnvironmentRuntime(): () => void {
       const runtime = createRuntime(entry);
       runtimes.set(entry.id, runtime);
       if (entry.id === state.activeEnvironmentId) {
-        buildActiveBus(runtime);
+        attachProjectionRelay(runtime);
       } else {
         attachHealthRelay(runtime);
       }
@@ -420,11 +455,13 @@ export function initializeEnvironmentRuntime(): () => void {
   };
 
   registerRemoteEventBusFactory((environmentId, fallbackLocalBus) => {
+    // `relayKind`, not bus existence: the bus is permanent, so what decides whether a
+    // consumer gets the real projector is whether it is currently wired to the relay.
     const runtime = runtimes.get(environmentId);
     return enabled &&
       environmentId === activeEnvironmentId &&
-      runtime?.bus !== null &&
-      runtime?.bus !== undefined
+      runtime !== undefined &&
+      runtime.relayKind === "full"
       ? runtime.bus
       : detachedBus(environmentId, fallbackLocalBus);
   });

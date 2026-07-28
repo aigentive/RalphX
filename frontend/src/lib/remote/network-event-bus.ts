@@ -336,6 +336,20 @@ export class NetworkEventBus implements EventBus {
     }
   }
 
+  /**
+   * This bus stopped being its environment's projector (deactivation, flag toggle,
+   * teardown). The INSTANCE survives — React memoizes it by environment id — but its
+   * stream state must not: whatever the host does while nobody projects, the next
+   * activation has to cold-hydrate rather than resume a cursor it stopped honouring.
+   */
+  abandonStream(): void {
+    this.discardCursor();
+    this.phase = "idle";
+    this.buffer = [];
+    this.generation += 1;
+    this.settleReplay(new Error("stream abandoned: this bus is no longer projecting"));
+  }
+
   /** The socket ended. The supervisor owns the redial; the bus only invalidates state. */
   handleStreamClosed(): void {
     if (this.phase === "hydrating") {

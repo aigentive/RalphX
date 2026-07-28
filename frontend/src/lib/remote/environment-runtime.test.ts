@@ -290,6 +290,31 @@ describe("environment runtime composition", () => {
     );
   });
 
+  it("keeps one bus identity per environment across reactivation", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const first = createEventBus("env-b");
+
+    // EventProvider memoizes the bus on environmentId alone, so a same-id
+    // reactivation that rebuilt the bus would orphan every mounted subscriber.
+    setFlag(false);
+    setFlag(true);
+    expect(createEventBus("env-b")).toBe(first);
+
+    useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    expect(createEventBus("env-b")).toBe(first);
+
+    // A removed registry row does forget its bus.
+    useEnvironmentStore.getState().setEnvironments([]);
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    expect(createEventBus("env-b")).not.toBe(first);
+  });
+
   it("never paints a background environment as connected (P-25)", async () => {
     const { initializeEnvironmentRuntime } = await import("./environment-runtime");
     useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
