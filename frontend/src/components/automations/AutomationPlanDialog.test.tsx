@@ -108,6 +108,22 @@ describe("AutomationPlanDialog", () => {
     expect(useArtifactMock).toHaveBeenCalledWith("artifact-plan-1");
   });
 
+  it("supports a context-specific heading without changing the default", () => {
+    render(
+      <AutomationPlanDialog
+        planArtifactId={null}
+        heading="Automation spec"
+        title="Linked specification"
+        open
+        onOpenChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("Automation spec")).toBeInTheDocument();
+    expect(screen.queryByText("Run plan")).not.toBeInTheDocument();
+    expect(screen.getByText("Linked specification")).toBeInTheDocument();
+  });
+
   it("shows a loading skeleton while the artifact fetch is in flight", () => {
     useArtifactMock.mockReturnValue({
       data: null,
