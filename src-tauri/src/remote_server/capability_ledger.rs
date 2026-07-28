@@ -197,6 +197,10 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("qa_commands"),
     agent_default("question_commands"),
     agent_default("release_notes_commands"),
+    // The module is spawn-free by construction (no AppHandle, no ExecutionState, no
+    // ChatService), but the default stays conservative: a future member must earn a
+    // narrower row rather than inherit one.
+    agent_default("remote_chat_commands"),
     elevated_default(
         "remote_device_commands",
         HOST,
@@ -275,6 +279,21 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::AgentControl,
             SEEDS_STATE,
             "detector-b: completes automation arming state consumed by the automation scheduler",
+        ),
+    },
+    // Reviewed rather than inherited. The module default would already say AgentControl,
+    // but it would say it for the wrong reason ("may steer or arm autonomous work"), and
+    // this command does neither: it writes transcript content a live agent will read.
+    CommandOverride {
+        command: "send_remote_chat_message",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: queues a role-pinned user turn for a run that is already live; \
+             detector-silent on (a), (b) and (c) — it arms no scheduler, resolves no CLI path, \
+             and refuses when no live run would drain the row, so a message can never be \
+             persisted as sent yet delivered to nobody. The role is pinned to \"user\" at \
+             dispatch, so a remote client cannot forge an orchestrator speaker label",
         ),
     },
     CommandOverride {
@@ -889,6 +908,11 @@ pub const CONDITIONAL_CAPABILITIES: &[ConditionalCapability] = &[ConditionalCapa
 pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     ("approve_permission_request", "authorizes-live-tool-call"),
     ("resolve_user_question", "steering-question"),
+    // Declared, precisely BECAUSE the detectors are silent on it. The P-17b negative
+    // suite is generated from detector output, so a spawn-free command that steers a
+    // live agent would otherwise never be proved unreachable from a default pairing —
+    // the one class of member the generator cannot find by itself.
+    ("send_remote_chat_message", "steers-live-agent-turn"),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.

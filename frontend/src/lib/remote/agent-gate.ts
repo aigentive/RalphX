@@ -83,8 +83,12 @@ export const REMOTE_UNAVAILABLE_HINT =
  * signal, and several affordances are legitimately unavailable today.
  */
 export const AGENT_GATED_AFFORDANCES = {
-  agentComposerSend: "send_agent_message",
-  chatSend: "send_agent_message",
+  // Both send affordances resolve through the spawn-free facade command, NOT
+  // `send_agent_message`. That command reaches a process-launch sink and stays
+  // unregistered by ruling, so pointing the gate at it would render chat send
+  // permanently `unavailable` on every paired device.
+  agentComposerSend: "send_remote_chat_message",
+  chatSend: "send_remote_chat_message",
   startConversation: "start_agent_conversation",
   permissionApprove: "approve_permission_request",
   questionAnswer: "answer_user_question",
