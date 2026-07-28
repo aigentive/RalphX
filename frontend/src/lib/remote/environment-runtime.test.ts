@@ -330,6 +330,28 @@ describe("environment runtime composition", () => {
     expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("health_only");
   });
 
+  it("re-hydrates the target cache on every activation, local included", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+
+    const local = vi
+      .spyOn(getQueryClient(LOCAL_ENVIRONMENT_ID), "invalidateQueries")
+      .mockResolvedValue();
+    const remote = vi
+      .spyOn(getQueryClient("env-b"), "invalidateQueries")
+      .mockResolvedValue();
+
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    expect(remote).toHaveBeenCalled();
+
+    // Local has no supervisor to cold-hydrate it, so without an explicit sweep the
+    // retained cache stays fresh for 5 minutes over whatever changed meanwhile.
+    useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    expect(local).toHaveBeenCalled();
+  });
+
   it("uses pairing scopes in background without a session fetch and records them", async () => {
     const { getConfirmedScopes, initializeEnvironmentRuntime } = await import(
       "./environment-runtime"

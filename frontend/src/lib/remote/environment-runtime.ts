@@ -355,6 +355,12 @@ export function initializeEnvironmentRuntime(): () => void {
       attachHealthRelay(previous);
     }
     activeEnvironmentId = environmentId;
+    // Persistence never substitutes for the cold hydrate on reactivation. The target
+    // environment's QueryClient is RETAINED across switches, so without this every
+    // remounted query is inside its 5-minute staleTime and the board renders minutes
+    // -old data as current — for `local` (which has no supervisor to re-hydrate it)
+    // and for any remote environment whose supervisor is parked in backoff/blocked.
+    void getQueryClient(environmentId).invalidateQueries();
     if (demoted) {
       // The demoted environment stops projecting the instant it loses the bus, so its
       // badge must stop claiming a live stream even though its FSM state is unchanged.
