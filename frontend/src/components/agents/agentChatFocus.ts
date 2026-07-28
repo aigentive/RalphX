@@ -14,8 +14,13 @@ export type AgentsChatFocus =
       conversationId: string;
       runtimeHint?: AgentRuntimeSelection;
     }
-  | { type: "ideation"; sessionId: string }
-  | { type: "verification"; parentSessionId: string; childSessionId: string }
+  | { type: "ideation"; conversationId: string; sessionId: string }
+  | {
+      type: "verification";
+      conversationId: string;
+      parentSessionId: string;
+      childSessionId: string;
+    }
   | { type: "task_runtime"; taskId: string; contextType: AgentTaskRuntimeContextType }
   | {
       type: "automation_run";
@@ -179,14 +184,38 @@ export function latestVerificationChildSessionData(
   };
 }
 
-export function getFocusedArtifactIdeationSessionId(
+export interface FocusedArtifactIdeationSession {
+  conversationId: string;
+  sessionId: string;
+}
+
+export function getConversationScopedChatFocus(
   chatFocus: AgentsChatFocus,
-): string | null {
+  conversationId: string | null,
+): AgentsChatFocus {
+  if (
+    (chatFocus.type === "ideation" || chatFocus.type === "verification") &&
+    chatFocus.conversationId !== conversationId
+  ) {
+    return { type: "workspace" };
+  }
+  return chatFocus;
+}
+
+export function getFocusedArtifactIdeationSession(
+  chatFocus: AgentsChatFocus,
+): FocusedArtifactIdeationSession | null {
   if (chatFocus.type === "ideation") {
-    return chatFocus.sessionId;
+    return {
+      conversationId: chatFocus.conversationId,
+      sessionId: chatFocus.sessionId,
+    };
   }
   if (chatFocus.type === "verification") {
-    return chatFocus.parentSessionId;
+    return {
+      conversationId: chatFocus.conversationId,
+      sessionId: chatFocus.parentSessionId,
+    };
   }
   return null;
 }
