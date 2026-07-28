@@ -76,4 +76,38 @@ impl TeamWorkspaceReservation {
             && self.attempt_number == attempt
             && self.released_at.is_none()
     }
+    /// Whether this reservation's writable surface or resource locks collide
+    /// with another reservation. Path collisions include prefix containment
+    /// (`a/b` conflicts with `a/b/c`).
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        let mine = self
+            .writable_paths
+            .iter()
+            .chain(self.generated_outputs.iter());
+        for path in mine {
+            let theirs = other
+                .writable_paths
+                .iter()
+                .chain(other.generated_outputs.iter());
+            for current in theirs {
+                if team_paths_overlap(path, current) {
+                    return true;
+                }
+            }
+        }
+        self.resource_locks
+            .iter()
+            .any(|lock| other.resource_locks.contains(lock))
+    }
+}
+
+/// True when one normalized relative path equals or contains the other.
+pub fn team_paths_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|rest| rest.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|rest| rest.starts_with('/'))
 }

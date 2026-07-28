@@ -165,7 +165,8 @@ pub use team_wake_batch::{
     TeamWakeBatch, TeamWakeBatchId, TeamWakeBatchStatus, TeamWakeRecipientKind,
 };
 pub use team_workspace_reservation::{
-    normalize_team_writable_path, TeamWorkspaceReservation, TeamWorkspaceReservationId,
+    normalize_team_writable_path, team_paths_overlap, TeamWorkspaceReservation,
+    TeamWorkspaceReservationId,
 };
 pub use api_key::{
     ApiKey, AuditLogEntry, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX,
