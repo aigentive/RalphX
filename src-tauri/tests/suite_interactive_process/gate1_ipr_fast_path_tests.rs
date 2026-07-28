@@ -5,29 +5,24 @@
 // should write to the existing process's stdin, reuse the existing conversation,
 // and return the same conversation_id — NOT spawn a new process.
 //
-// These tests verify the component contracts that Gate 1 relies on:
-// - InteractiveProcessRegistry: has_process, write_message, remove
-// - ChatConversationRepository: get_active_for_context (reuse, not create)
-// - ExecutionState: claim_interactive_slot + increment_running (burst prevention)
-// - RunningAgentRegistry: try_register (Gate 2 dedup)
-//
-// The actual app chat runtime send_message path requires a Tauri Runtime, so these
-// tests simulate the Gate 1 logic step-by-step using the real components, matching
-// the pattern used by interactive_mode_integration.rs and team_nudge_running_count_tests.rs.
+// These tests exercise the production AppChatService::send_message path with a
+// live stdin observer, alongside focused component-contract coverage.
 
 use chrono::Utc;
+use ralphx_events::RecordingEventSink;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
-use ralphx_lib::application::chat_service::{ChatService, SendMessageOptions};
+use ralphx_lib::application::chat_service::{ChatService, ChatServiceError, SendMessageOptions};
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
+use ralphx_lib::domain::agents::ProviderSessionRef;
 use ralphx_lib::domain::entities::{
     AgentRun, ChatContextType, ChatConversation, Persona, PersonaId, PersonaStatus, Project,
     ProjectId, TaskId,
@@ -36,9 +31,13 @@ use ralphx_lib::domain::repositories::ChatConversationRepository;
 use ralphx_lib::domain::services::running_agent_registry::{
     MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
 };
+use ralphx_lib::domain::services::QueueKey;
 use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
 
 use crate::support::erroring_persona_repository::ErroringPersonaRepository;
+use crate::support::failing_chat_message_repository::{
+    FailingChatMessageRepository, CHAT_MESSAGE_CREATE_FAILURE,
+};
 
 fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
     Persona {
@@ -122,6 +121,89 @@ fn configure_runtime_plugin_dirs_for_gate1_persona_test() -> (
         );
 
     (runtime_plugin_guard, generated_plugin_root)
+}
+
+async fn setup_live_project_continuation(
+    state: &AppState,
+    context_id: &str,
+    completed_runtime: Option<(&str, &str)>,
+) -> (
+    tempfile::TempDir,
+    ralphx_lib::domain::entities::ChatConversationId,
+    String,
+    InteractiveProcessKey,
+    tokio::process::Child,
+) {
+    let project_dir = seed_project_context(state, context_id).await;
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    if completed_runtime.is_some() {
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: ralphx_lib::domain::agents::AgentHarnessKind::Claude,
+            provider_session_id: "gate1-provider-session".to_string(),
+        });
+    }
+    let conversation_id = conversation.id;
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist agent conversation");
+
+    if let Some((logical_model, effective_model_id)) = completed_runtime {
+        let mut completed_run = AgentRun::new(conversation_id);
+        completed_run.complete();
+        completed_run.harness = Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude);
+        completed_run.provider_session_id = Some("gate1-provider-session".to_string());
+        completed_run.logical_model = Some(logical_model.to_string());
+        completed_run.effective_model_id = Some(effective_model_id.to_string());
+        state
+            .agent_run_repo
+            .create(completed_run)
+            .await
+            .expect("persist completed continuation runtime");
+    }
+
+    let run = AgentRun::new(conversation_id);
+    let run_id = run.id.as_str().to_string();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("persist live run");
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn Claude stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", conversation_id.as_str());
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("observer stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.clone()),
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", conversation_id.as_str()),
+            0,
+            conversation_id.as_str().to_string(),
+            run_id.clone(),
+            None,
+            None,
+        )
+        .await;
+
+    (project_dir, conversation_id, run_id, interactive_key, child)
 }
 
 // ============================================================================
@@ -1039,122 +1121,315 @@ async fn suppressed_send_does_not_invalidate_unbound_process() {
     let _ = child.kill().await;
 }
 
-/// When IPR has a registered interactive process for a TaskExecution context,
-/// the Gate 1 fast-path should:
-/// 1. Detect the process via has_process
-/// 2. Write the message to stdin via write_message
-/// 3. Retrieve the EXISTING conversation via get_active_for_context
-/// 4. Return the same conversation_id (not create a new one)
-/// 5. NOT attempt Gate 2 (try_register) or Gate 3 (spawn)
+/// An agent-conversation follow-up with the composer-provided conversation and
+/// model ids must continue through the registered Claude stdin. In particular,
+/// a first turn has neither a completed run nor provider_session_ref yet, so an
+/// unavailable continuation runtime must not be mistaken for a model switch.
 #[tokio::test]
-async fn test_gate1_hit_writes_stdin_and_reuses_existing_conversation() {
-    // --- Setup: simulate a running interactive process ---
-    let ipr = Arc::new(InteractiveProcessRegistry::new());
-    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
-    let execution_state = Arc::new(ExecutionState::new());
-    let running_agent_registry = MemoryRunningAgentRegistry::new();
+async fn gate1_project_agent_conversation_delivers_exact_stream_json_to_live_claude() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-agent-conversation";
+    let (_project_dir, conversation_id, run_id, interactive_key, mut child) =
+        setup_live_project_continuation(&state, context_id, None).await;
 
-    let context_type_str = "task_execution";
-    let context_id = "task-gate1-test-1";
-    let task_id = TaskId::from_string(context_id.to_string());
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+    let exact_user_text = "continue the existing Claude conversation immediately";
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            exact_user_text,
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("sonnet".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("live Claude continuation must use Gate 1");
 
-    // 1. Create and persist the existing conversation (as if Gate 3 spawned earlier)
-    let existing_conv = ChatConversation::new_task_execution(task_id);
-    let existing_conv_id = existing_conv.id;
-    conversation_repo.create(existing_conv).await.unwrap();
+    assert!(
+        !result.was_queued,
+        "an IPR continuation must never show a queue"
+    );
+    assert!(result.queued_message_id.is_none());
+    assert_eq!(result.conversation_id, conversation_id.as_str());
+    assert_eq!(result.agent_run_id, run_id);
+    assert!(
+        state
+            .queued_message_repo
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str()
+            ))
+            .await
+            .expect("read durable queue")
+            .is_empty(),
+        "a successful Gate-1 send must not leave a durable queue row"
+    );
 
-    // 2. Register the process in IPR (simulating a prior spawn)
-    let (stdin, _child) = create_test_stdin().await;
-    let ipr_key = InteractiveProcessKey::new(context_type_str, context_id);
-    ipr.register(ipr_key.clone(), stdin).await;
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = String::new();
+    child
+        .stdout
+        .take()
+        .expect("observer stdout")
+        .read_to_string(&mut observed)
+        .await
+        .expect("read stream-json stdin");
+    let _ = child.wait().await;
+    let envelope: serde_json::Value = serde_json::from_str(observed.trim())
+        .expect("Gate 1 must write one well-formed stream-json envelope");
+    assert_eq!(envelope["type"], "user");
+    assert_eq!(envelope["message"]["role"], "user");
+    assert!(
+        envelope["message"]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains(exact_user_text)),
+        "the live process must receive the exact user content"
+    );
+}
 
-    // 3. Register in running agent registry (normal state after spawn)
-    let agent_key = RunningAgentKey {
-        context_type: context_type_str.to_string(),
-        context_id: context_id.to_string(),
-    };
-    running_agent_registry
-        .register(
-            agent_key.clone(),
-            12345,
-            existing_conv_id.as_str().to_string(),
-            "run-1".to_string(),
-            None,
-            None,
+#[tokio::test]
+async fn gate1_ownerless_process_fails_before_stdin_or_message_side_effects() {
+    let events = RecordingEventSink::new();
+    let mut state = AppState::new_test();
+    state.events = Arc::new(events.clone());
+    let context_id = "project-gate1-ownerless";
+    let (_project_dir, conversation_id, _run_id, interactive_key, mut original_child) =
+        setup_live_project_continuation(&state, context_id, None).await;
+
+    let mut ownerless_child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn ownerless stdin observer");
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            ownerless_child.stdin.take().expect("ownerless stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: None,
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                ..Default::default()
+            },
         )
         .await;
 
-    // 4. Simulate the process having completed a turn (idle between turns)
-    let slot_key = format!("{}/{}", context_type_str, context_id);
-    execution_state.increment_running();
-    execution_state.decrement_and_mark_idle(&slot_key);
-    assert_eq!(
-        execution_state.running_count(),
-        0,
-        "Precondition: lead is idle"
-    );
-
-    // --- Simulate Gate 1 logic (mirrors mod.rs lines 574-695) ---
-
-    // Step A: Check IPR for existing interactive process
-    let has_ipr_entry = ipr.has_process(&ipr_key).await;
-    assert!(
-        has_ipr_entry,
-        "Gate 1: IPR must report process exists for registered context"
-    );
-
-    // Step B: Build and write message to stdin
-    let test_message = "Execute the task implementation";
-    // In production: build_initial_prompt + format_stream_json_input
-    // Here we just verify the write succeeds
-    let write_result = ipr.write_message(&ipr_key, test_message).await;
-    assert!(
-        write_result.is_ok(),
-        "Gate 1: write_message must succeed for registered process"
-    );
-
-    // Step C: Claim interactive slot + increment running (burst prevention)
-    if execution_state.claim_interactive_slot(&slot_key) {
-        execution_state.increment_running();
-    }
-    assert_eq!(
-        execution_state.running_count(),
-        1,
-        "Gate 1: running_count must be 1 after successful claim+increment"
-    );
-
-    // Step D: Use EXISTING conversation (get_active_for_context, NOT get_or_create)
-    let retrieved_conv = conversation_repo
-        .get_active_for_context(ChatContextType::TaskExecution, context_id)
+    let error = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "must not be assigned a fabricated run",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("sonnet".to_string()),
+                ..Default::default()
+            },
+        )
         .await
-        .unwrap();
+        .expect_err("an ownerless IPR entry must fail closed");
 
     assert!(
-        retrieved_conv.is_some(),
-        "Gate 1: get_active_for_context must find the existing conversation"
+        error.to_string().contains("no authoritative run owner"),
+        "owner failure must be explicit: {error}"
     );
-    let retrieved_conv = retrieved_conv.unwrap();
-    assert_eq!(
-        retrieved_conv.id, existing_conv_id,
-        "Gate 1: must return the SAME conversation_id (not create a new one)"
+    assert!(
+        state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("read conversation messages")
+            .is_empty(),
+        "owner rejection must happen before user-message persistence"
     );
-    assert_eq!(
-        retrieved_conv.context_type,
-        ChatContextType::TaskExecution,
-        "Gate 1: conversation context_type must match"
-    );
-    assert_eq!(
-        retrieved_conv.context_id, context_id,
-        "Gate 1: conversation context_id must match"
+    assert!(
+        events.events().is_empty(),
+        "owner rejection must not emit message_created or run_started"
     );
 
-    // Step E: Verify Gate 2 was NOT reached (running agent registry not touched)
-    // The process was already registered, so try_register would fail if called.
-    // Since Gate 1 succeeded, Gate 2 should never be reached.
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    ownerless_child
+        .stdout
+        .take()
+        .expect("ownerless stdout")
+        .read_to_end(&mut observed)
+        .await
+        .expect("read ownerless stdout");
+    let _ = ownerless_child.wait().await;
     assert!(
-        running_agent_registry.is_running(&agent_key).await,
-        "Gate 1 hit: running agent registry entry should be untouched"
+        observed.is_empty(),
+        "owner rejection must happen before any stdin write"
     );
+    let _ = original_child.kill().await;
+}
+
+#[tokio::test]
+async fn gate1_message_persistence_failure_returns_error_without_success_side_effects() {
+    let events = RecordingEventSink::new();
+    let mut state = AppState::new_test();
+    state.events = Arc::new(events.clone());
+    let context_id = "project-gate1-message-persistence-failure";
+    let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
+        setup_live_project_continuation(&state, context_id, None).await;
+    state.chat_message_repo = Arc::new(FailingChatMessageRepository::new());
+
+    let error = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "deliver stdin before persistence fails",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("sonnet".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("a Gate-1 message persistence failure must not return SendResult success");
+
+    assert!(
+        matches!(
+            error,
+            ChatServiceError::RepositoryError(ref message)
+                if message.contains(CHAT_MESSAGE_CREATE_FAILURE)
+        ),
+        "Gate 1 must return the typed repository error: {error}"
+    );
+    assert!(
+        state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("read failed-message repository")
+            .is_empty(),
+        "a failed user-message create must leave no message row"
+    );
+    assert_eq!(
+        state
+            .chat_timeline_repo
+            .count_by_conversation(&conversation_id)
+            .await
+            .expect("count timeline rows"),
+        0,
+        "a failed user-message create must not create a timeline row"
+    );
+    assert!(
+        !events.events().iter().any(|event| {
+            matches!(
+                event.event.as_str(),
+                "agent:message_created" | "agent:run_started"
+            )
+        }),
+        "a failed user-message create must not emit Gate-1 success events"
+    );
+
+    // Gate 1 intentionally writes the live continuation before persistence. That stdin
+    // delivery is unavoidable once the live process accepts the turn; only later success
+    // effects (message/timeline rows and success events) must be withheld on failure.
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = String::new();
+    child
+        .stdout
+        .take()
+        .expect("stdin observer stdout")
+        .read_to_string(&mut observed)
+        .await
+        .expect("read delivered Gate-1 stdin");
+    let _ = child.wait().await;
+    let stdin_line = observed.trim();
+    assert_eq!(
+        stdin_line.lines().count(),
+        1,
+        "Gate 1 must send one stdin line"
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_str(stdin_line).expect("Gate 1 must deliver stream-json stdin");
+    assert_eq!(envelope["type"], "user");
+    assert!(
+        envelope["message"]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("deliver stdin before persistence fails")),
+        "Gate 1 must deliver the failed-persistence turn to the live stdin"
+    );
+}
+
+#[tokio::test]
+async fn gate1_model_alias_matches_effective_claude_identity() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-alias-model";
+    let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
+        setup_live_project_continuation(&state, context_id, Some(("sonnet", "claude-sonnet-4-6")))
+            .await;
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "same model through an effective id",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("sonnet".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a model alias must preserve the live Claude continuation");
+
+    assert!(!result.was_queued);
+    assert!(result.queued_message_id.is_none());
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn gate1_genuine_model_change_queues_behind_the_live_claude_run() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-different-model";
+    let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
+        setup_live_project_continuation(&state, context_id, Some(("sonnet", "claude-sonnet-4-6")))
+            .await;
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "switch to a different model",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("opus".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a live provider switch must use the existing queue contract");
+
+    assert!(result.was_queued);
+    assert!(result.queued_message_id.is_some());
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.kill().await;
 }
 
 // ============================================================================

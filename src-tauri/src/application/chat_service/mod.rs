@@ -502,18 +502,6 @@ fn runtime_context_id_for_send(
     context_id.to_string()
 }
 
-fn interactive_continuation_run_id(active_agent: Option<&RunningAgentInfo>) -> String {
-    active_agent
-        .and_then(|info| {
-            if info.agent_run_id.is_empty() {
-                None
-            } else {
-                Some(info.agent_run_id.clone())
-            }
-        })
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-}
-
 /// Returns true for context types that consume execution slots (running count).
 /// TaskExecution, Review, Merge, and Ideation are tracked against max_concurrent.
 #[doc(hidden)]
@@ -5408,10 +5396,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?,
                     None => None,
                 };
-                provider_switch_requires_fresh_session = continuation_runtime
-                    .as_ref()
-                    .and_then(continuation_runtime::ContinuationRuntime::effective_model)
-                    .is_none_or(|current_model| current_model != requested_model);
+                provider_switch_requires_fresh_session = match continuation_runtime {
+                    Some(runtime) => match runtime.compare_model_identity(requested_model) {
+                        continuation_runtime::ModelIdentityComparison::Changed => true,
+                        continuation_runtime::ModelIdentityComparison::Same
+                        | continuation_runtime::ModelIdentityComparison::Unknown => false,
+                    },
+                    None => false,
+                };
             }
         }
         let resolved_persona = if let Some(conversation) = existing_conv.as_ref() {
@@ -5584,6 +5576,20 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: skipped existing interactive process for fresh provider session"
             );
         }
+        let mut interactive_owner = None;
+        if has_ipr_entry
+            && !force_new_provider_session
+            && !persona_switch_requires_process_invalidation
+        {
+            interactive_owner = ipr_ref.capture_owner(&interactive_key).await;
+            if interactive_owner.is_none() {
+                return Err(ChatServiceError::CommunicationFailed(format!(
+                    "interactive process for {context_type}/{runtime_context_id} has no authoritative run owner"
+                )));
+            }
+            interactive_process_metadata =
+                interactive_owner.as_ref().map(|owner| owner.metadata.clone());
+        }
         if has_ipr_entry
             && !force_new_provider_session
             && !persona_switch_requires_process_invalidation
@@ -5673,9 +5679,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             let stream_json_msg =
                 crate::infrastructure::agents::claude::format_stream_json_input(&stdin_prompt);
 
+            let interactive_owner = interactive_owner
+                .as_ref()
+                .expect("Gate 1 requires an authoritative interactive owner");
             match self
                 .ipr()
-                .write_message(&interactive_key, &stream_json_msg)
+                .write_message_if_owner(
+                    &interactive_key,
+                    interactive_owner.token,
+                    &interactive_owner.agent_run_id,
+                    &stream_json_msg,
+                )
                 .await
             {
                 Ok(()) => {
@@ -5702,13 +5716,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     if let Some(user_msg) = pending_user_message {
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        if self
-                            .chat_message_repo
+                        self.chat_message_repo
                             .create(user_msg.clone())
                             .await
-                            .is_ok()
-                            && !hide_user_message
-                        {
+                            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+                        if !hide_user_message {
                             chat_service_streaming::persist_message_text_timeline_item(
                                 &self.chat_timeline_repo,
                                 &user_msg,
@@ -5785,30 +5797,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     // Emit run_started so frontend shows activity spinner. Reuse the
                     // live process run id so later turn_completed/run_completed events
                     // still pass frontend stale-run guards.
-                    let active_agent = self
-                        .running_agent_registry
-                        .get(&RunningAgentKey::new(
-                            context_type.to_string(),
-                            &runtime_context_id,
-                        ))
-                        .await;
-                    let interactive_run_id = interactive_continuation_run_id(active_agent.as_ref());
-                    if let Err(error) = self
+                    let interactive_run_id = interactive_owner.agent_run_id.clone();
+                    self
                         .agent_run_repo
                         .update_status(
                             &AgentRunId::from_string(&interactive_run_id),
                             AgentRunStatus::Running,
                         )
                         .await
-                    {
-                        tracing::warn!(
-                            %context_type,
-                            context_id,
-                            agent_run_id = %interactive_run_id,
-                            error = %error,
-                            "Failed to mark interactive continuation run active"
-                        );
-                    }
+                        .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
                             &conversation,
@@ -8116,7 +8113,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 #[cfg(test)]
 mod stale_registry_gate_tests {
     use super::{
-        claude_launches_paused, interactive_continuation_run_id, log_send_message_spawn_prep_phase,
+        claude_launches_paused, log_send_message_spawn_prep_phase,
         registry_entry_blocks_send_because_run_inactive, registry_entry_blocks_send_but_is_stale,
         runtime_context_id_for_send, AgentRunStatus, ChatContextType, ChatConversationId,
         RegistryCleanupCaller, RunningAgentInfo,
@@ -8174,26 +8171,6 @@ mod stale_registry_gate_tests {
             ),
             "session-1"
         );
-    }
-
-    #[test]
-    fn interactive_continuation_reuses_registered_process_run_id() {
-        let info = registry_info(0, chrono::Utc::now());
-
-        assert_eq!(
-            interactive_continuation_run_id(Some(&info)),
-            "run-1",
-            "interactive stdin continuations must correlate with process terminal events"
-        );
-    }
-
-    #[test]
-    fn interactive_continuation_falls_back_when_registry_run_id_missing() {
-        let mut info = registry_info(0, chrono::Utc::now());
-        info.agent_run_id.clear();
-
-        assert!(!interactive_continuation_run_id(Some(&info)).is_empty());
-        assert!(!interactive_continuation_run_id(None).is_empty());
     }
 
     #[test]

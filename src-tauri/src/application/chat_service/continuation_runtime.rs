@@ -27,6 +27,13 @@ pub(super) struct RuntimeOverridePresence {
     pub sandbox_mode: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ModelIdentityComparison {
+    Same,
+    Changed,
+    Unknown,
+}
+
 impl ContinuationRuntime {
     fn from_run(run: AgentRun, harness: AgentHarnessKind, provider_session_id: &str) -> Self {
         Self {
@@ -45,6 +52,31 @@ impl ContinuationRuntime {
         self.effective_model_id
             .as_deref()
             .or(self.logical_model.as_deref())
+    }
+
+    pub(super) fn compare_model_identity(&self, requested_model: &str) -> ModelIdentityComparison {
+        let requested_model = normalize_model_identity(requested_model);
+        let known_models = [
+            self.logical_model.as_deref(),
+            self.effective_model_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|model| !model.trim().is_empty())
+        .collect::<Vec<_>>();
+
+        if known_models.is_empty() {
+            return ModelIdentityComparison::Unknown;
+        }
+
+        if known_models
+            .into_iter()
+            .any(|model| normalize_model_identity(model) == requested_model)
+        {
+            ModelIdentityComparison::Same
+        } else {
+            ModelIdentityComparison::Changed
+        }
     }
 
     pub(super) fn apply_defaults(
@@ -82,6 +114,10 @@ impl ContinuationRuntime {
             resolved.sandbox_mode = self.sandbox_mode.clone();
         }
     }
+}
+
+fn normalize_model_identity(model: &str) -> String {
+    model.trim().to_ascii_lowercase()
 }
 
 pub(super) async fn resolve_for_conversation(
