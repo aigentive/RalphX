@@ -19,6 +19,7 @@ const { supervisors } = vi.hoisted(() => ({
       refreshScopes: () => Promise<readonly string[]>;
       applyScopes: (scopes: readonly string[]) => void;
       openStream: () => Promise<unknown>;
+      onStateChange: (state: string) => void;
       beginStream: (outcome: {
         environmentId: string;
         hostEnvironmentId: string;
@@ -34,6 +35,7 @@ const { supervisors } = vi.hoisted(() => ({
     networks: boolean[];
     streamLosses: number;
     authorityWithdrawals: string[];
+    setState: (state: string) => void;
   }>,
 }));
 
@@ -51,12 +53,20 @@ vi.mock("./supervisor", async (importOriginal) => {
         networks: [],
         streamLosses: 0,
         authorityWithdrawals: [],
+        setState: (state: string) => {
+          this.state = state;
+        },
       };
       supervisors.push(this.record);
     }
 
+    state: string = "idle";
+
     start(): void {
       this.record.starts += 1;
+    }
+    currentState(): string {
+      return this.state;
     }
     stop(): void {
       this.record.stops += 1;
@@ -278,6 +288,46 @@ describe("environment runtime composition", () => {
       { refetchType: "all" },
       { throwOnError: true }
     );
+  });
+
+  it("never paints a background environment as connected (P-25)", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const forEnvironment = (id: string) =>
+      supervisors.filter((item) => item.deps.environmentId === id).at(-1)!;
+    const b = forEnvironment("env-b");
+    const c = forEnvironment("env-c");
+
+    // env-c never sends `subscribe` and never projects: its attempt is a probe on a
+    // socket nobody reads, so it must not wear the connected dot.
+    c.setState("connected");
+    c.deps.onStateChange("connected");
+    b.setState("connected");
+    b.deps.onStateChange("connected");
+
+    expect(useEnvironmentStore.getState().connectionStates["env-c"]).toBe("health_only");
+    expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("connected");
+  });
+
+  it("demotes the outgoing environment's badge when the active one changes", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const b = supervisors.filter((item) => item.deps.environmentId === "env-b").at(-1)!;
+    b.setState("connected");
+    b.deps.onStateChange("connected");
+    expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("connected");
+
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-c" });
+
+    // env-b lost its bus, so it stops projecting the instant the switch lands.
+    expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("health_only");
   });
 
   it("uses pairing scopes in background without a session fetch and records them", async () => {

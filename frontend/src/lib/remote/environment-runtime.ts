@@ -35,6 +35,7 @@ import {
   ConnectionSupervisor,
   type EnvironmentDescriptorView,
 } from "./supervisor";
+import type { SupervisorState } from "./supervisor-transition-table";
 import { toRemoteTransportError } from "./transport-errors";
 
 const CLIENT_PROTOCOL_VERSION = 1;
@@ -152,6 +153,29 @@ export function initializeEnvironmentRuntime(): () => void {
   const runtimes = new Map<string, RuntimeEntry>();
   let enabled = useUiStore.getState().featureFlags.remoteEnvironments;
   let activeEnvironmentId = useEnvironmentStore.getState().activeEnvironmentId;
+
+  /**
+   * The single writer of `connectionStates`, and the one place the P-25 "never a probe
+   * alone" rule is enforced for BACKGROUND environments.
+   *
+   * A non-active environment completes descriptor + socket + hello + probe, but its
+   * `beginStream` is a no-op: no `subscribe` frame is ever sent and nothing is
+   * projected (full background projection is a v1 non-goal). Painting that green would
+   * assert a stream liveness that does not exist, so it presents as `health_only`.
+   */
+  const publishConnectionState = (
+    environmentId: string,
+    state: SupervisorState
+  ): void => {
+    useEnvironmentStore
+      .getState()
+      .setConnectionState(
+        environmentId,
+        state === "connected" && environmentId !== activeEnvironmentId
+          ? "health_only"
+          : state
+      );
+  };
 
   const detachRelay = (runtime: RuntimeEntry): void => {
     runtime.detachRelay?.();
@@ -309,7 +333,7 @@ export function initializeEnvironmentRuntime(): () => void {
       },
       hasLiveSocket: () => runtime.socketLive,
       onStateChange: (state) => {
-        useEnvironmentStore.getState().setConnectionState(environmentId, state);
+        publishConnectionState(environmentId, state);
       },
     });
     runtime = {
@@ -325,11 +349,17 @@ export function initializeEnvironmentRuntime(): () => void {
 
   const activate = (environmentId: string): void => {
     const previous = runtimes.get(activeEnvironmentId);
-    if (previous !== undefined && previous.entry.id !== environmentId) {
+    const demoted = previous !== undefined && previous.entry.id !== environmentId;
+    if (demoted) {
       previous.bus = null;
       attachHealthRelay(previous);
     }
     activeEnvironmentId = environmentId;
+    if (demoted) {
+      // The demoted environment stops projecting the instant it loses the bus, so its
+      // badge must stop claiming a live stream even though its FSM state is unchanged.
+      publishConnectionState(previous.entry.id, previous.supervisor.currentState());
+    }
     const runtime = runtimes.get(environmentId);
     if (runtime === undefined) {
       return;

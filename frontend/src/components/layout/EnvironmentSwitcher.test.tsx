@@ -29,6 +29,7 @@ const ALL_STATES: EnvironmentConnectionState[] = [
   "offline",
   "blocked",
   "suspended",
+  "health_only",
 ];
 
 function remote(id: string, name: string): RemoteEnvironmentSummary {
@@ -102,7 +103,7 @@ describe("EnvironmentSwitcher", () => {
     expect(screen.queryByRole("button", { name: "Switch environment" })).not.toBeInTheDocument();
   });
 
-  it("exports one typed dot description for all seven supervisor states and local", async () => {
+  it("exports one typed dot description for every presented state and local", async () => {
     seed(ALL_STATES);
     renderSwitcher();
     await openSwitcher();
