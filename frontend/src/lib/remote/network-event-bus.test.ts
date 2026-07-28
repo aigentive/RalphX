@@ -364,7 +364,8 @@ describe("warm resume", () => {
     h.sent.length = 0;
     h.hydrate.mockClear();
 
-    await h.bus.beginStream(hello({ maxSeq: 110 }));
+    const resumed = h.bus.beginStream(hello({ maxSeq: 110 }));
+    await Promise.resolve();
 
     expect(h.sent[0]).toEqual({
       type: "subscribe",
@@ -372,6 +373,52 @@ describe("warm resume", () => {
       streamEpoch: "epoch-1",
     });
     expect(h.hydrate).not.toHaveBeenCalled();
+
+    h.bus.handleFrame({ type: "replayDone", throughSeq: 110 });
+    await expect(resumed).resolves.toBeUndefined();
+  });
+
+  it("does NOT resolve the warm path until replayDone lands", async () => {
+    // Resolving early would let the supervisor probe and declare `connected` over a
+    // half-replayed stream — the same false success as trusting a bare probe.
+    const h = await connectedAt(103);
+    h.bus.handleStreamClosed();
+
+    let settled = false;
+    const resumed = h.bus.beginStream(hello({ maxSeq: 110 })).then(() => {
+      settled = true;
+    });
+    for (let tick = 0; tick < 10; tick += 1) {
+      await Promise.resolve();
+    }
+    expect(settled).toBe(false);
+
+    h.bus.handleFrame({ type: "replayDone", throughSeq: 110 });
+    await resumed;
+    expect(settled).toBe(true);
+  });
+
+  it("fails the warm path when the socket dies mid-replay", async () => {
+    const h = await connectedAt(103);
+    h.bus.handleStreamClosed();
+
+    const resumed = h.bus.beginStream(hello({ maxSeq: 110 }));
+    await Promise.resolve();
+    h.bus.handleStreamClosed();
+
+    await expect(resumed).rejects.toThrow(/replay/);
+  });
+
+  it("fails the warm path when a reset lands mid-replay", async () => {
+    const h = await connectedAt(103);
+    h.bus.handleStreamClosed();
+
+    const resumed = h.bus.beginStream(hello({ maxSeq: 110 }));
+    await Promise.resolve();
+    h.bus.handleFrame({ type: "reset", reason: "cursor_pruned" });
+
+    await expect(resumed).rejects.toThrow(/restarted/);
+    expect(h.bus.cursor().valid).toBe(false);
   });
 
   it("cold-hydrates when the epoch rolled", async () => {
@@ -511,9 +558,12 @@ describe("P-24b/c: the reconnect sweep", () => {
     h.sweep.mockClear();
 
     h.bus.handleStreamClosed();
-    await h.bus.beginStream(hello({ maxSeq: 110 }));
+    const resumed = h.bus.beginStream(hello({ maxSeq: 110 }));
+    await Promise.resolve();
     expect(h.sweep).not.toHaveBeenCalled(); // not until replay completes
+
     h.bus.handleFrame({ type: "replayDone", throughSeq: 110 });
+    await resumed;
 
     expect(h.sweep).toHaveBeenCalledTimes(1);
   });
@@ -537,8 +587,10 @@ describe("P-24b/c: the reconnect sweep", () => {
     h.bus.handleStreamClosed();
     h.sweep.mockClear();
 
-    await h.bus.beginStream(hello({ maxSeq: 101 }));
+    const resumed = h.bus.beginStream(hello({ maxSeq: 101 }));
+    await Promise.resolve();
     h.bus.handleFrame({ type: "replayDone", throughSeq: 101 });
+    await resumed;
 
     expect(h.sweep).toHaveBeenCalledTimes(1);
   });

@@ -46,7 +46,6 @@
 
 import type { EventBus, EventHandler, Unsubscribe } from "../event-bus";
 import {
-  isAuthorityResetReason,
   type RemoteClientFrame,
   type RemoteConnectOutcome,
   type RemoteResetReason,
@@ -155,6 +154,12 @@ export class NetworkEventBus implements EventBus {
   private buffer: BufferedFrame[] = [];
   /** Guards against a late hydration settling into a connection that already restarted. */
   private generation = 0;
+  /** The warm path's completion gate, settled by `replayDone` or torn down by a restart. */
+  private pendingReplay: {
+    readonly resolve: () => void;
+    readonly reject: (error: Error) => void;
+    readonly generation: number;
+  } | null = null;
 
   constructor(deps: NetworkEventBusDeps) {
     this.deps = deps;
@@ -252,12 +257,19 @@ export class NetworkEventBus implements EventBus {
 
     if (warm) {
       this.phase = "replaying";
+      // The warm path is NOT complete when `subscribe` goes out — it completes when the
+      // host says `replayDone`. Resolving early would let the supervisor probe (and
+      // declare `connected`) over a half-replayed stream, which is the same false
+      // success as trusting a bare probe.
+      const replayed = new Promise<void>((resolve, reject) => {
+        this.pendingReplay = { resolve, reject, generation };
+      });
       await this.deps.sendFrame({
         type: "subscribe",
         afterSeq: this.lastSeq,
         streamEpoch: outcome.streamEpoch,
       });
-      // `replayDone` completes the warm path; see handleFrame.
+      await replayed;
       return;
     }
 
@@ -311,7 +323,7 @@ export class NetworkEventBus implements EventBus {
       case "heartbeat":
         // Liveness only. The lease floor moves on cursorAck, so piggyback the ack here
         // (§3.4 lease lifecycle: first ack after buffered apply, then heartbeat cadence).
-        void this.sendCursorAck();
+        this.ackOnHeartbeat();
         return;
       case "error":
         this.requestRestart({ kind: "protocol_error", detail: frame.code });
@@ -324,6 +336,10 @@ export class NetworkEventBus implements EventBus {
     this.phase = "idle";
     this.buffer = [];
     this.generation += 1;
+    // The cursor SURVIVES a plain socket close: everything through `lastSeq` really was
+    // committed, so the next attempt may warm-resume. Only a reset, an epoch roll, or an
+    // uncommitted projection invalidates it.
+    this.settleReplay(new Error("stream closed before replay completed"));
   }
 
   // =========================================================================
@@ -445,17 +461,18 @@ export class NetworkEventBus implements EventBus {
       return;
     }
     this.goLive();
+    this.settleReplay();
   }
 
+  /**
+   * Any reason invalidates the cursor and forces a cold hydrate on the next attempt.
+   *
+   * `revoked` and `host_disabled` mean the host WITHDREW the session rather than losing
+   * our place in it; the reason travels to the supervisor in the restart cause so it can
+   * park in `blocked` instead of redialling. Classifying that is the supervisor's job —
+   * the bus's job is to stop trusting the stream, which is identical for every reason.
+   */
   private handleReset(reason: RemoteResetReason): void {
-    // Any reason invalidates the cursor: the next attempt must cold-hydrate.
-    this.discardCursor();
-    if (isAuthorityResetReason(reason)) {
-      // revoked / host_disabled: the host withdrew the session rather than losing our
-      // cursor. Still a restart request — the supervisor decides whether to block.
-      this.requestRestart({ kind: "reset", reason });
-      return;
-    }
     this.requestRestart({ kind: "reset", reason });
   }
 
@@ -477,8 +494,18 @@ export class NetworkEventBus implements EventBus {
       return;
     }
     const seq = this.lastSeq;
-    this.lastAckedSeq = seq;
     await this.deps.sendFrame({ type: "cursorAck", seq });
+    // Advanced only AFTER the write succeeded. Marking it acked on a failed write would
+    // pin the host's retention lease below where we claim to be, and the next heartbeat
+    // would decline to retry the ack.
+    this.lastAckedSeq = seq;
+  }
+
+  /** Heartbeat-driven ack: fire and forget, but never as an unhandled rejection. */
+  private ackOnHeartbeat(): void {
+    void this.sendCursorAck().catch((error: unknown) => {
+      console.warn(`[NetworkEventBus] cursorAck failed; will retry next heartbeat`, error);
+    });
   }
 
   private requestRestart(cause: StreamRestartCause): void {
@@ -486,7 +513,26 @@ export class NetworkEventBus implements EventBus {
     this.phase = "idle";
     this.buffer = [];
     this.generation += 1;
+    this.settleReplay(new Error(`stream restarted: ${cause.kind}`));
     this.deps.onRestartRequired(cause);
+  }
+
+  /**
+   * Settles the warm path's completion gate. Rejecting on teardown is what stops a warm
+   * `beginStream` from hanging until the supervisor's 15 s budget expires when the socket
+   * dies mid-replay — the attempt fails immediately and honestly instead.
+   */
+  private settleReplay(error?: Error): void {
+    const pending = this.pendingReplay;
+    if (pending === null) {
+      return;
+    }
+    this.pendingReplay = null;
+    if (error === undefined) {
+      pending.resolve();
+      return;
+    }
+    pending.reject(error);
   }
 
   private discardCursor(): void {
