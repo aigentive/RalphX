@@ -115,8 +115,10 @@ fn the_status_reads_never_configure_host_mode() {
             .nth(1)
             .unwrap_or_else(|| panic!("{command} should exist"));
         let end = body.find("\n}\n").expect("the command body should end");
+        // Match the call form `.get_or_create()` so the guard catches real reads while ignoring
+        // the explanatory comment inside `list_remote_advertised_endpoints` that names the method.
         assert!(
-            !body[..end].contains("get_or_create()"),
+            !body[..end].contains(".get_or_create()"),
             "{command} must read with get(), not mint the settings row"
         );
     }
