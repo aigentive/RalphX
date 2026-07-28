@@ -165,6 +165,54 @@ pub fn serialize_ok<T: serde::Serialize>(value: T) -> Result<Value, RemoteInvoke
 /// * (e) `Channel`/request-body params are rejected structurally at macro-expansion time;
 /// * (f) `Ok(T)` serialises byte-identically to Tauri IPC;
 /// * (g) `Err(E)` maps to `{ ok: false, error }`.
+///
+/// A legal class/capability pair compiles through the complete registration shape:
+///
+/// ```
+/// async fn legal_target() {}
+///
+/// ralphx_lib::remote_commands! {
+///     "legal_fixture" => legal_target {
+///         class: Elevated,
+///         caps: [ConfiguresFutureProcessAuthority],
+///         params: [],
+///         call: async,
+///         result: infallible,
+///     },
+/// }
+/// ```
+///
+/// The macro-emitted const assertion rejects capabilities unavailable to the declared class:
+///
+/// ```compile_fail
+/// async fn capability_mismatch_target() {}
+///
+/// ralphx_lib::remote_commands! {
+///     "capability_mismatch_fixture" => capability_mismatch_target {
+///         class: Operate,
+///         caps: [ConfiguresFutureProcessAuthority],
+///         params: [],
+///         call: async,
+///         result: infallible,
+///     },
+/// }
+/// ```
+///
+/// `Denied` is unregistrable even with an empty capability set:
+///
+/// ```compile_fail
+/// async fn denied_target() {}
+///
+/// ralphx_lib::remote_commands! {
+///     "denied_fixture" => denied_target {
+///         class: Denied,
+///         caps: [],
+///         params: [],
+///         call: async,
+///         result: infallible,
+///     },
+/// }
+/// ```
 #[macro_export]
 macro_rules! remote_commands {
     (

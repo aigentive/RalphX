@@ -1882,7 +1882,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_atlassian_integration_settings",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1892,7 +1892,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_atlassian_integration_settings",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1902,7 +1902,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "build_atlassian_oauth_authorization_url",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1912,7 +1912,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "start_atlassian_oauth_local_callback",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1922,7 +1922,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "complete_atlassian_oauth_local_callback",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1932,7 +1932,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "exchange_atlassian_oauth_code",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1942,7 +1942,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_atlassian_integration",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1952,7 +1952,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "disconnect_atlassian_integration",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1962,7 +1962,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "search_atlassian_resources",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1972,7 +1972,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "resolve_atlassian_resource_urls",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1982,7 +1982,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1992,7 +1992,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -2002,7 +2002,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "refresh_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -2012,7 +2012,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_jira_issue_to_me",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -2022,7 +2022,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -2172,7 +2172,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_automation_run",
       "module": "automation_commands",
       "reason": "deletes a durable entity",
@@ -2192,7 +2192,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_automation",
       "module": "automation_commands",
       "reason": "deletes a durable entity",
@@ -2322,7 +2322,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_persona_draft",
       "module": "persona_commands",
       "reason": "deletes a durable entity",
@@ -2332,7 +2332,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2342,7 +2342,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2352,7 +2352,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "refresh_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2362,7 +2362,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2477,10 +2477,10 @@
       "capabilities": [
         "agentControl"
       ],
-      "class": "agentControl",
+      "class": "denied",
       "command": "cleanup_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "destructive task cleanup",
       "registered": false
     },
     {
@@ -2837,10 +2837,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_git_branches",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "spawns git over project-controlled state",
       "registered": false
     },
     {
@@ -2887,10 +2887,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_custom_analysis",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "executes the canonical deferred shell-authority shape",
       "registered": false
     },
     {
@@ -2917,30 +2917,30 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "switch_git_origin_to_ssh",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "changes repository origin authentication",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "setup_gh_git_auth",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "configures git credential authority",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "login_gh_with_browser",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "starts interactive GitHub authentication",
       "registered": false
     },
     {
@@ -3057,7 +3057,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_custom_agent_model",
       "module": "agent_model_commands",
       "reason": "deletes a durable entity",
@@ -3677,10 +3677,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "build_agent_issue_report",
       "module": "agent_issue_report_commands",
-      "reason": "report construction may spawn diagnostics",
+      "reason": "spawns diagnostic report tooling",
       "registered": false
     },
     {
@@ -3987,7 +3987,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_task_proposal",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
@@ -4177,7 +4177,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_chat_message",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
@@ -4187,7 +4187,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_session_messages",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
@@ -4377,7 +4377,7 @@
       "capabilities": [
         "configuresFutureProcessAuthority"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_provider_settings",
       "module": "harness_provider_commands",
       "reason": "configures future provider process authority",
@@ -4387,7 +4387,7 @@
       "capabilities": [
         "configuresFutureProcessAuthority"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_agent_provider_settings",
       "module": "harness_provider_commands",
       "reason": "configures future provider process authority",
@@ -4467,7 +4467,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_managed_provider_cli_status",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
@@ -4477,7 +4477,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "install_or_update_managed_provider_cli",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
@@ -4487,7 +4487,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "auto_update_managed_provider_clis",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
@@ -4637,7 +4637,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_linear_integration_settings",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4647,7 +4647,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_linear_webhook_config",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4657,7 +4657,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_linear_integration_settings",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4667,7 +4667,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_linear_webhook_signing_secret",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4677,7 +4677,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "search_linear_issues",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4687,7 +4687,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_linear_integration",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4697,7 +4697,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "disconnect_linear_integration",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4707,7 +4707,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_clickup_integration_settings",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4717,7 +4717,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_clickup_integration_settings",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4727,7 +4727,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_clickup_integration",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4737,7 +4737,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "disconnect_clickup_integration",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4747,7 +4747,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_clickup_workspaces",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4757,7 +4757,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "search_clickup_tasks",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4767,7 +4767,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4777,7 +4777,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4787,7 +4787,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4797,7 +4797,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4807,7 +4807,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_granola_note_detail",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4817,7 +4817,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_granola_notes",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4827,7 +4827,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "refresh_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4837,7 +4837,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4847,7 +4847,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -5117,7 +5117,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "seed_test_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
@@ -5127,7 +5127,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "seed_visual_audit_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
@@ -5137,7 +5137,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_test_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
@@ -5347,7 +5347,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_queued_agent_message",
       "module": "unified_chat_commands",
       "reason": "deletes a durable entity",
@@ -5547,10 +5547,10 @@
       "capabilities": [
         "agentControl"
       ],
-      "class": "agentControl",
+      "class": "denied",
       "command": "publish_agent_conversation_workspace",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "publishes an agent conversation workspace",
       "registered": false
     },
     {
@@ -5707,7 +5707,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "open_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5717,7 +5717,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "write_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5727,7 +5727,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "resize_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5737,7 +5737,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5747,7 +5747,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "restart_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5757,7 +5757,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "close_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5767,7 +5767,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "upload_chat_attachment",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5777,7 +5777,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "link_attachments_to_message",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5787,7 +5787,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_conversation_attachments",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5797,7 +5797,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_message_attachments",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5807,7 +5807,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_chat_attachment",
       "module": "chat_attachment_commands",
       "reason": "deletes a durable entity",
@@ -5897,20 +5897,20 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_task_file_changes",
       "module": "diff_commands",
-      "reason": "diff getters may spawn git",
+      "reason": "spawns git for task file changes",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_file_diff",
       "module": "diff_commands",
-      "reason": "diff getters may spawn git",
+      "reason": "spawns git for an arbitrary file diff",
       "registered": false
     },
     {
@@ -6207,10 +6207,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "resolve_merge_conflict",
       "module": "git_commands",
-      "reason": "git process and worktree authority",
+      "reason": "destructive merge-conflict resolution",
       "registered": false
     },
     {
@@ -6227,20 +6227,20 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "cleanup_task_branch",
       "module": "git_commands",
-      "reason": "git process and worktree authority",
+      "reason": "destructive task branch cleanup",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "change_project_git_mode",
       "module": "git_commands",
-      "reason": "git process and worktree authority",
+      "reason": "changes project git authority",
       "registered": false
     },
     {
@@ -6407,7 +6407,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_api_keys",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6417,7 +6417,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "create_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6427,7 +6427,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "revoke_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6437,7 +6437,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "rotate_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6447,7 +6447,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_api_key_projects",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6457,7 +6457,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_api_key_permissions",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6467,7 +6467,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_api_key_audit_log",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6487,10 +6487,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_codex_cli_diagnostics",
       "module": "diagnostic_commands",
-      "reason": "diagnostics may spawn provider CLIs",
+      "reason": "spawns the Codex CLI for diagnostics",
       "registered": false
     },
     {
@@ -6717,7 +6717,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_workspace_open_targets",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
@@ -6727,7 +6727,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "open_agent_conversation_workspace",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
@@ -6737,7 +6737,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "open_agent_conversation_workspace_path",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
@@ -6747,7 +6747,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_external_mcp_config",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
@@ -6757,7 +6757,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_external_mcp_readiness",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
@@ -6767,7 +6767,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_external_mcp_config",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",

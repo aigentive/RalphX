@@ -4,7 +4,7 @@ use ralphx_remote_protocol::{class_permits, Capability, RiskClass};
 
 use super::authority_audit::{
     closure_is_arming, load_production_sources, parse_registered_commands, repo_root,
-    spawn_triggering_writers, CallGraph, SPAWN_TRIGGERING_STATE_SURFACE,
+    spawn_triggering_writers, CallGraph, StateSurfaceEntry, SPAWN_TRIGGERING_STATE_SURFACE,
 };
 use super::capability_ledger::{
     policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, DECLARED_MEMBERSHIPS,
@@ -366,10 +366,17 @@ fn capability_ledger_is_exhaustive_and_internally_consistent() {
         let row = policy_for(&command, &module).unwrap_or_else(|| {
             panic!("classify this command: `{command}` (unknown module `{module}`)")
         });
-        assert!(
-            class_permits(row.class, row.capabilities),
-            "ledger class/capability mismatch for `{command}`"
-        );
+        if row.class == RiskClass::Denied {
+            assert!(
+                find_spec(&command).is_none(),
+                "Denied ledger row `{command}` must not be registered"
+            );
+        } else {
+            assert!(
+                class_permits(row.class, row.capabilities),
+                "ledger class/capability mismatch for `{command}`"
+            );
+        }
     }
 
     let defaults = MODULE_DEFAULTS
@@ -401,7 +408,10 @@ fn detector_a_is_a_floor_for_agent_control() {
             floor.insert(command.clone());
             let row = policy_for(&command, &module).expect("census is ledgered");
             assert!(
-                matches!(row.class, RiskClass::AgentControl | RiskClass::Elevated),
+                matches!(
+                    row.class,
+                    RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
+                ),
                 "detector (a) classifies `{command}` as authority-bearing; ledger must be AgentControl or stronger"
             );
         }
@@ -453,10 +463,187 @@ fn detector_b_is_calibrated_and_floor_enforced() {
     for command in &flagged {
         let row = policy_for(command, &modules[command]).expect("writer is ledgered");
         assert!(
-            matches!(row.class, RiskClass::AgentControl | RiskClass::Elevated),
+            matches!(
+                row.class,
+                RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
+            ),
             "detector (b) writer {command} fell below AgentControl"
         );
     }
+}
+
+#[test]
+fn detector_b_proof_classes_are_flagged_and_in_the_floor() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+    let manifest = generated_manifest();
+    let floor = manifest["agent_control_floor"]
+        .as_array()
+        .expect("generated floor is an array")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let modules = rows.into_iter().collect::<BTreeMap<_, _>>();
+
+    // Detector-(a)-alone spawn-free status varies per command as the production call graph
+    // evolves. The invariant here is detector-(b) classification, floor membership, and
+    // AgentControl-or-stronger ledgering regardless of detector-(a). inject_task and
+    // finalize_automation also prove detector-(b) catches genuinely spawn-free commands that
+    // detector-(a) misses; resume_automation and the auto-publish bridge writer independently
+    // carry detector-(a) authority, which is a stronger outcome, not a gap.
+    for command in [
+        "inject_task",
+        "finalize_automation",
+        "resume_automation",
+        "set_agent_conversation_workspace_auto_publish",
+    ] {
+        assert!(
+            detector_b.contains(command),
+            "detector (b) missed proof-class writer {command}"
+        );
+        assert!(
+            floor.contains(command),
+            "generated AgentControl floor missed {command}"
+        );
+        let row = policy_for(command, &modules[command]).expect("proof-class writer is ledgered");
+        assert!(
+            matches!(
+                row.class,
+                RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
+            ),
+            "proof-class writer {command} fell below AgentControl"
+        );
+    }
+
+    for command in ["inject_task", "finalize_automation"] {
+        assert!(
+            !closure_is_arming(&graph.closure([command.to_string()])),
+            "{command} must demonstrate detector (b), not detector (a)"
+        );
+    }
+
+    // automation_commands.rs:313 reaches startup_background.rs:366 through reopen redrive, so
+    // resume_automation has real detector-(a) send_message authority as well as detector-(b).
+    assert!(
+        closure_is_arming(&graph.closure(["resume_automation".to_string()])),
+        "resume_automation must retain its stronger detector-(a) classification"
+    );
+    // unified_chat_commands/mod.rs:5277 returns through agent_workspace_response_for_state;
+    // its :1038 recovery scheduling reaches pr_merge_poller.rs:2616 send_message authority.
+    assert!(
+        closure_is_arming(
+            &graph.closure(["set_agent_conversation_workspace_auto_publish".to_string(),])
+        ),
+        "auto-publish must retain its stronger detector-(a) classification"
+    );
+
+    for command in [
+        "pause_task",
+        "block_task",
+        "stop_task",
+        "pause_tasks_in_group",
+        "deny_permission_request",
+        "list_tasks",
+        "get_task",
+        "search_tasks",
+        "health_check",
+    ] {
+        assert!(
+            !closure_is_arming(&graph.closure([command.to_string()])),
+            "brake/read {command} was falsely flagged by detector (a)"
+        );
+        assert!(
+            !detector_b.contains(command),
+            "brake/read {command} was falsely flagged by detector (b)"
+        );
+    }
+}
+
+#[test]
+fn synthetic_unregistered_authority_loop_requires_a_surface_tie_and_stales_manifest() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/generated/remote-commands.json"))
+            .expect("checked-in manifest parses");
+    let manifest_loop_ids = manifest["background_loop_inventory"]
+        .as_array()
+        .expect("background loop inventory is an array")
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut sources = load_production_sources();
+    sources.push((
+        "synthetic/unregistered_interval.rs".to_string(),
+        r#"
+            fn synthetic_unregistered_interval() {
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(duration());
+                    loop {
+                        interval.tick().await;
+                        read_synthetic_armed_state();
+                        send_message();
+                    }
+                });
+            }
+            fn synthetic_writer() {
+                write_synthetic_armed_state();
+            }
+        "#
+        .to_string(),
+    ));
+    let graph = CallGraph::build(&sources);
+    let synthetic_root = graph
+        .loop_roots
+        .iter()
+        .find(|root| root.file == "synthetic/unregistered_interval.rs")
+        .expect("synthetic interval loop is discovered");
+    assert!(
+        closure_is_arming(&graph.loop_closure(synthetic_root)),
+        "synthetic send_message loop is authority-bearing"
+    );
+    assert!(
+        !manifest_loop_ids.contains(synthetic_root.id.as_str()),
+        "an unregistered production loop must make the checked-in inventory stale"
+    );
+
+    let leaked_id: &'static str = Box::leak(synthetic_root.id.clone().into_boxed_str());
+    let read_by_loops: &'static [&'static str] = Box::leak(Box::new([leaked_id]));
+    let synthetic_surface = StateSurfaceEntry {
+        id: "synthetic-armed-state",
+        surface: "synthetic.armed_state",
+        armed_value: "true",
+        read_by_loops,
+        writer_markers: &["write_synthetic_armed_state"],
+    };
+    let without_surface = spawn_triggering_writers(
+        &graph,
+        ["synthetic_writer".to_string()],
+        SPAWN_TRIGGERING_STATE_SURFACE,
+    );
+    assert!(
+        !without_surface.contains("synthetic_writer"),
+        "an omitted read-site surface leaves its writer orphaned"
+    );
+    let with_surface = spawn_triggering_writers(
+        &graph,
+        ["synthetic_writer".to_string()],
+        std::slice::from_ref(&synthetic_surface),
+    );
+    assert!(
+        synthetic_surface
+            .read_by_loops
+            .contains(&synthetic_root.id.as_str()),
+        "synthetic surface must tie its read site to the discovered loop"
+    );
+    assert!(
+        with_surface.contains("synthetic_writer"),
+        "adding the required surface tie must classify its arming writer"
+    );
 }
 
 #[test]
@@ -552,7 +739,7 @@ fn content_surface_rows_cannot_evaporate_and_reads_are_not_writers() {
 }
 
 #[test]
-fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
+fn extended_deny_surface_is_denied_and_not_remotely_registrable() {
     let denied_modules = BTreeSet::from([
         "agent_terminal_commands",
         "api_key_commands",
@@ -576,6 +763,8 @@ fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
         "change_project_git_mode",
         "resolve_merge_conflict",
         "cleanup_task_branch",
+        "cleanup_task",
+        "publish_agent_conversation_workspace",
         "get_task_file_changes",
         "get_file_diff",
         "get_codex_cli_diagnostics",
@@ -588,9 +777,10 @@ fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
             || command.starts_with("delete_");
         if named {
             let row = policy_for(&command, &module).expect("deny entry is ledgered");
-            assert!(
-                !matches!(row.class, RiskClass::Read | RiskClass::Operate),
-                "P-17c deny surface `{module}::{command}` is remotely registrable below elevated authority"
+            assert_eq!(
+                row.class,
+                RiskClass::Denied,
+                "P-17c deny surface `{module}::{command}` must be Denied"
             );
             assert!(
                 find_spec(&command).is_none(),

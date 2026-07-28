@@ -85,6 +85,17 @@ const fn elevated_default(
     }
 }
 
+const fn denied_default(
+    module: &'static str,
+    capabilities: &'static [Capability],
+    reason: &'static str,
+) -> ModuleDefault {
+    ModuleDefault {
+        module,
+        policy: policy(RiskClass::Denied, capabilities, reason),
+    }
+}
+
 /// Every module in the live registry must have exactly one default here.
 pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("root"),
@@ -99,21 +110,21 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("agent_plan_commands"),
     agent_default("agent_profile_commands"),
     agent_default("agent_sidebar_commands"),
-    elevated_default("agent_terminal_commands", PTY, "terminal PTY control"),
-    elevated_default("api_key_commands", CREDENTIALS, "credential surface"),
+    denied_default("agent_terminal_commands", PTY, "terminal PTY control"),
+    denied_default("api_key_commands", CREDENTIALS, "credential surface"),
     agent_default("artifact_commands"),
-    elevated_default(
+    denied_default(
         "atlassian_commands",
         CREDENTIALS,
         "integration credential surface",
     ),
     agent_default("automation_commands"),
-    elevated_default(
+    denied_default(
         "chat_attachment_commands",
         PATH,
         "attachment filesystem surface",
     ),
-    elevated_default(
+    denied_default(
         "clickup_commands",
         CREDENTIALS,
         "integration credential surface",
@@ -127,7 +138,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     ),
     elevated_default("diff_commands", PROCESS, "diff getters may spawn git"),
     agent_default("execution_commands"),
-    elevated_default(
+    denied_default(
         "external_mcp_commands",
         CREDENTIALS,
         "external MCP credential surface",
@@ -142,19 +153,19 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
         PROCESS,
         "GitHub CLI/network process authority",
     ),
-    elevated_default(
+    denied_default(
         "granola_commands",
         CREDENTIALS,
         "integration credential surface",
     ),
-    elevated_default(
+    denied_default(
         "harness_provider_commands",
         FUTURE_PROCESS,
         "configures future provider process authority",
     ),
     agent_default("health"),
     agent_default("ideation_commands"),
-    elevated_default(
+    denied_default(
         "linear_commands",
         CREDENTIALS,
         "integration credential surface",
@@ -178,7 +189,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
         PROCESS,
         "project git/gh and deferred shell authority",
     ),
-    elevated_default(
+    denied_default(
         "provider_cli_management_commands",
         PROCESS,
         "provider CLI installer surface",
@@ -217,7 +228,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("task_commands"),
     agent_default("task_context_commands"),
     agent_default("task_step_commands"),
-    elevated_default(
+    denied_default(
         "test_data_commands",
         DELETE,
         "test-data mutation is never remotely operable",
@@ -232,7 +243,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("update_channel_commands"),
     agent_default("validation_commands"),
     agent_default("workflow_commands"),
-    elevated_default(
+    denied_default(
         "workspace_open_commands",
         PROCESS,
         "opens workspace in an external process",
@@ -376,6 +387,110 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::AgentControl,
             AGENT_AND_CONTENT,
             "detector-a plus content-surface: restart note is worker-consumed",
+        ),
+    },
+    CommandOverride {
+        command: "switch_git_origin_to_ssh",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "changes repository origin authentication",
+        ),
+    },
+    CommandOverride {
+        command: "setup_gh_git_auth",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "configures git credential authority",
+        ),
+    },
+    CommandOverride {
+        command: "login_gh_with_browser",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "starts interactive GitHub authentication",
+        ),
+    },
+    CommandOverride {
+        command: "update_custom_analysis",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "executes the canonical deferred shell-authority shape",
+        ),
+    },
+    CommandOverride {
+        command: "change_project_git_mode",
+        policy: policy(RiskClass::Denied, PROCESS, "changes project git authority"),
+    },
+    CommandOverride {
+        command: "get_git_branches",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns git over project-controlled state",
+        ),
+    },
+    CommandOverride {
+        command: "resolve_merge_conflict",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "destructive merge-conflict resolution",
+        ),
+    },
+    CommandOverride {
+        command: "cleanup_task_branch",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "destructive task branch cleanup",
+        ),
+    },
+    CommandOverride {
+        command: "cleanup_task",
+        policy: policy(RiskClass::Denied, AGENT, "destructive task cleanup"),
+    },
+    CommandOverride {
+        command: "publish_agent_conversation_workspace",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "publishes an agent conversation workspace",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_file_changes",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns git for task file changes",
+        ),
+    },
+    CommandOverride {
+        command: "get_file_diff",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns git for an arbitrary file diff",
+        ),
+    },
+    CommandOverride {
+        command: "get_codex_cli_diagnostics",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns the Codex CLI for diagnostics",
+        ),
+    },
+    CommandOverride {
+        command: "build_agent_issue_report",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns diagnostic report tooling",
         ),
     },
     // Audited read-only registrations plus the two Wry-monomorphic reads which cannot yet be
@@ -555,7 +670,7 @@ pub fn policy_for(command: &str, module: &str) -> Option<LedgerPolicy> {
     }
     if command.starts_with("delete_") {
         return Some(policy(
-            RiskClass::Elevated,
+            RiskClass::Denied,
             DELETE,
             "deletes a durable entity",
         ));
