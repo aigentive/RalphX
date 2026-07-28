@@ -29,6 +29,7 @@ const activateAgentPlanDirectImplementationMock = vi.mocked(
   chatApi.activateAgentPlanDirectImplementation,
 );
 const sendAgentMessageMock = vi.mocked(chatApi.sendAgentMessage);
+const planContextFingerprint = "plan-context-fingerprint-1";
 
 const approvedArtifactReferences = [
   {
@@ -96,6 +97,7 @@ describe("implementAgentPlanDirectly", () => {
     activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: editWorkspace,
       artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
     });
 
     await implementAgentPlanDirectly({
@@ -122,6 +124,7 @@ describe("implementAgentPlanDirectly", () => {
     expect(onActivated).toHaveBeenCalledWith({
       workspace: editWorkspace,
       artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
     });
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
       "project",
@@ -135,6 +138,7 @@ describe("implementAgentPlanDirectly", () => {
         logicalEffort: "high",
         codexFastMode: true,
         requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: planContextFingerprint,
         suppressUserMessage: true,
       },
     );
@@ -149,6 +153,7 @@ describe("implementAgentPlanDirectly", () => {
     const pinnedActivation: DirectImplementationActivationSnapshot = {
       workspace: currentWorkspace,
       artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
     };
     activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: currentWorkspace,
@@ -156,6 +161,7 @@ describe("implementAgentPlanDirectly", () => {
         ...reference,
         title: `Revalidated ${reference.title}`,
       })),
+      planContextFingerprint,
     });
 
     await implementAgentPlanDirectly({
@@ -184,6 +190,7 @@ describe("implementAgentPlanDirectly", () => {
       expect.objectContaining({
         conversationId: "conversation-1",
         requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: planContextFingerprint,
         suppressUserMessage: true,
       }),
     );
@@ -197,6 +204,7 @@ describe("implementAgentPlanDirectly", () => {
     const pinnedActivation: DirectImplementationActivationSnapshot = {
       workspace: currentWorkspace,
       artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
     };
     activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: currentWorkspace,
@@ -208,6 +216,7 @@ describe("implementAgentPlanDirectly", () => {
           version: 3,
         },
       ],
+      planContextFingerprint: "plan-context-fingerprint-2",
     });
 
     await expect(
@@ -254,6 +263,7 @@ describe("implementAgentPlanDirectly", () => {
     activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: editWorkspace,
       artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
     });
     sendAgentMessageMock.mockRejectedValue(error);
 
@@ -277,6 +287,7 @@ describe("implementAgentPlanDirectly", () => {
     expect(onActivated).toHaveBeenCalledWith({
       workspace: editWorkspace,
       artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
     });
   });
 });

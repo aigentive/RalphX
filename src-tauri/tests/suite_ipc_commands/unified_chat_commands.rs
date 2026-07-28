@@ -2646,6 +2646,8 @@ fn persona_agent_run_status_response_serializes_attribution_without_body() {
 
 #[cfg(test)]
 mod ipc_contract {
+    use sha2::{Digest, Sha256};
+
     use ralphx_lib::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
     };
@@ -4027,6 +4029,7 @@ mod ipc_contract {
             runtime_override: None,
             suppress_user_message: false,
             require_approved_linked_plan: false,
+            expected_linked_plan_fingerprint: None,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
@@ -4036,6 +4039,21 @@ mod ipc_contract {
             team_message_target: None,
             attachment_ids: Vec::new(),
         }
+    }
+
+    fn plan_to_edit_fingerprint(fix: &PlanToEditSendFixture) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ralphx-linked-workspace-plan-v1\n");
+        hasher.update(fix.session_id.as_str().as_bytes());
+        hasher.update(b"\noverview\n");
+        hasher.update(fix.overview_id.as_str().as_bytes());
+        hasher.update(b"\n1");
+        if let Some(blueprint_id) = fix.blueprint_id.as_ref() {
+            hasher.update(b"\nblueprint\n");
+            hasher.update(blueprint_id.as_str().as_bytes());
+            hasher.update(b"\n1");
+        }
+        format!("{:x}", hasher.finalize())
     }
 
     #[tokio::test]
@@ -4144,6 +4162,7 @@ mod ipc_contract {
         let mut input = plan_to_edit_send_input(&fix);
         input.suppress_user_message = true;
         input.require_approved_linked_plan = true;
+        input.expected_linked_plan_fingerprint = Some(plan_to_edit_fingerprint(&fix));
         let response = send_agent_message_for_state(
             input,
             fix.app.state::<AppState>().inner(),

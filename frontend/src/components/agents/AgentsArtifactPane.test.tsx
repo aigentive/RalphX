@@ -2068,6 +2068,7 @@ describe("AgentsArtifactPane", () => {
           status: "approved",
         },
       ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     activateAgentTaskPipelineMock.mockResolvedValue(
       workspace({
@@ -9031,6 +9032,7 @@ describe("AgentsArtifactPane", () => {
           conversationId: "conversation-1",
           runtimeOverride: approvedPlanRuntime,
           requireApprovedLinkedPlan: true,
+          expectedLinkedPlanFingerprint: "plan-context-fingerprint-1",
           suppressUserMessage: true,
         },
       ),

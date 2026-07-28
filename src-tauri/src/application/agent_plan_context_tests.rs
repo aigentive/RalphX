@@ -1,5 +1,6 @@
 use super::agent_plan_context::{
-    admit_linked_edit_plan_references, plan_reference_status, PlanApprovalLookup,
+    admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
+    plan_reference_status, PlanApprovalLookup,
 };
 use crate::application::AppState;
 use crate::domain::entities::ideation::{PLAN_CONTRACT_V1, PLAN_CONTRACT_V2};
@@ -132,22 +133,37 @@ fn plan_reference_status_prefers_accepted_then_approved_then_draft() {
 }
 
 #[tokio::test]
-async fn linked_edit_v2_bundle_replaces_source_plan_and_reserves_reference_slots() {
+async fn linked_edit_v2_bundle_replaces_stale_linked_plan_but_preserves_attached_plan() {
     let fix = plan_context_fixture("v2-merge", PLAN_CONTRACT_V2).await;
-    let mut references = vec![ComposerArtifactReference {
-        artifact_id: "source-plan".to_string(),
-        kind: "plan".to_string(),
-        title: Some("Source Plan".to_string()),
-        session_id: Some("source-session".to_string()),
-        version: Some(7),
-        status: Some("approved".to_string()),
-    }];
+    let mut references = vec![
+        ComposerArtifactReference {
+            artifact_id: "stale-linked-plan".to_string(),
+            kind: "plan".to_string(),
+            title: Some("Stale linked plan".to_string()),
+            session_id: Some(fix.session.id.as_str().to_string()),
+            version: Some(1),
+            status: Some("draft".to_string()),
+        },
+        ComposerArtifactReference {
+            artifact_id: "attached-plan".to_string(),
+            kind: "plan".to_string(),
+            title: Some("Deliberately attached comparison plan".to_string()),
+            session_id: Some("attached-session".to_string()),
+            version: Some(7),
+            status: Some("approved".to_string()),
+        },
+    ];
     references.extend((1..=8).map(|index| unrelated_reference(&format!("review-{index}"))));
 
-    let admitted =
-        admit_linked_edit_plan_references(&fix.state, &fix.conversation_id, references, false)
-            .await
-            .expect("linked v2 bundle should be admitted");
+    let admitted = admit_linked_edit_plan_references(
+        &fix.state,
+        &fix.conversation_id,
+        references,
+        false,
+        None,
+    )
+    .await
+    .expect("linked v2 bundle should be admitted");
 
     assert_eq!(admitted.len(), 8);
     assert_eq!(admitted[0].artifact_id, fix.overview.id.as_str());
@@ -165,12 +181,12 @@ async fn linked_edit_v2_bundle_replaces_source_plan_and_reserves_reference_slots
         admitted[1].session_id.as_deref(),
         Some(fix.session.id.as_str())
     );
-    assert!(admitted.iter().all(|reference| {
-        reference.artifact_id != "source-plan"
-            && reference.session_id.as_deref() != Some("source-session")
-    }));
-    assert_eq!(admitted[2].artifact_id, "review-1");
-    assert_eq!(admitted[7].artifact_id, "review-6");
+    assert!(admitted
+        .iter()
+        .all(|reference| reference.artifact_id != "stale-linked-plan"));
+    assert_eq!(admitted[2].artifact_id, "attached-plan");
+    assert_eq!(admitted[3].artifact_id, "review-1");
+    assert_eq!(admitted[7].artifact_id, "review-5");
 }
 
 #[tokio::test]
@@ -182,6 +198,7 @@ async fn linked_edit_legacy_v1_bundle_projects_overview_only() {
         &fix.conversation_id,
         vec![unrelated_reference("review-1")],
         false,
+        None,
     )
     .await
     .expect("legacy v1 plan should remain supported");
@@ -210,10 +227,15 @@ async fn linked_edit_incomplete_v2_bundle_fails_closed() {
         .await
         .expect("fixture should become incomplete v2");
 
-    let error =
-        admit_linked_edit_plan_references(&fix.state, &fix.conversation_id, Vec::new(), false)
-            .await
-            .expect_err("incomplete v2 must fail before send admission");
+    let error = admit_linked_edit_plan_references(
+        &fix.state,
+        &fix.conversation_id,
+        Vec::new(),
+        false,
+        None,
+    )
+    .await
+    .expect_err("incomplete v2 must fail before send admission");
 
     assert!(error.contains("implementation blueprint"));
 }
@@ -236,17 +258,89 @@ async fn linked_edit_rejects_session_owned_by_another_conversation() {
         .await
         .expect("fixture should point at another conversation");
 
-    let error =
-        admit_linked_edit_plan_references(&fix.state, &fix.conversation_id, Vec::new(), false)
-            .await
-            .expect_err("cross-conversation plan context must fail closed");
+    let error = admit_linked_edit_plan_references(
+        &fix.state,
+        &fix.conversation_id,
+        Vec::new(),
+        false,
+        None,
+    )
+    .await
+    .expect_err("cross-conversation plan context must fail closed");
 
     assert!(error.contains("different Agent conversation"));
 }
 
 #[tokio::test]
+async fn stale_or_cross_owned_planning_link_is_not_reused_for_plan_recovery() {
+    let archived = plan_context_fixture("archived-recovery", PLAN_CONTRACT_V2).await;
+    let session_id = archived.session.id.as_str().to_string();
+    archived
+        .state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET status = 'archived', archived_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1",
+                [session_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("fixture session should archive");
+    let archived_workspace = archived
+        .state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&archived.conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert!(
+        !linked_workspace_planning_session_is_reusable(&archived.state, &archived_workspace)
+            .await
+            .expect("archived session lookup should succeed")
+    );
+
+    let cross_owned = plan_context_fixture("cross-owned-recovery", PLAN_CONTRACT_V2).await;
+    let session_id = cross_owned.session.id.as_str().to_string();
+    cross_owned
+        .state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET source_context_id = 'conversation-other'
+                 WHERE id = ?1",
+                [session_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("fixture session should become cross-owned");
+    let cross_owned_workspace = cross_owned
+        .state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&cross_owned.conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert!(!linked_workspace_planning_session_is_reusable(
+        &cross_owned.state,
+        &cross_owned_workspace,
+    )
+    .await
+    .expect("cross-owned session lookup should succeed"));
+}
+
+#[tokio::test]
 async fn direct_implementation_policy_rejects_when_current_bundle_lacks_exact_approval() {
     let fix = plan_context_fixture("stale-activation", PLAN_CONTRACT_V2).await;
+    let activation_fingerprint = super::agent_plan_context::plan_bundle_fingerprint(
+        &fix.session.id,
+        &fix.overview,
+        fix.blueprint.as_ref(),
+    );
     let session_id = fix.session.id.clone();
     let overview_id = fix.overview.id.as_str().to_string();
     fix.state
@@ -302,11 +396,43 @@ async fn direct_implementation_policy_rejects_when_current_bundle_lacks_exact_ap
         .await
         .expect("current plan should revise after activation");
 
-    let error =
-        admit_linked_edit_plan_references(&fix.state, &fix.conversation_id, Vec::new(), true)
-            .await
-            .expect_err("direct implementation must require the current exact approval");
+    let error = admit_linked_edit_plan_references(
+        &fix.state,
+        &fix.conversation_id,
+        Vec::new(),
+        true,
+        Some(&activation_fingerprint),
+    )
+    .await
+    .expect_err("direct implementation must require the current exact approval");
 
+    assert!(error.contains("changed after direct implementation activation"));
+
+    let session_id = fix.session.id.clone();
+    let revised_overview_id = revised_overview.id.as_str().to_string();
+    fix.state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                session_id,
+                Some(&revised_overview_id),
+                crate::domain::repositories::PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .expect("revised current pair should be re-approved");
+
+    let error = admit_linked_edit_plan_references(
+        &fix.state,
+        &fix.conversation_id,
+        Vec::new(),
+        true,
+        Some(&activation_fingerprint),
+    )
+    .await
+    .expect_err("re-approval must not make an older activation receipt valid");
     assert!(error.contains("changed after direct implementation activation"));
 }
 
@@ -329,10 +455,19 @@ async fn direct_implementation_policy_injects_backend_owned_approved_bundle() {
         .await
         .expect("current pair should be approved");
 
-    let admitted =
-        admit_linked_edit_plan_references(&fix.state, &fix.conversation_id, Vec::new(), true)
-            .await
-            .expect("backend-owned approved bundle should be admitted");
+    let admitted = admit_linked_edit_plan_references(
+        &fix.state,
+        &fix.conversation_id,
+        Vec::new(),
+        true,
+        Some(&super::agent_plan_context::plan_bundle_fingerprint(
+            &fix.session.id,
+            &fix.overview,
+            fix.blueprint.as_ref(),
+        )),
+    )
+    .await
+    .expect("backend-owned approved bundle should be admitted");
 
     assert_eq!(admitted.len(), 2);
     assert_eq!(admitted[0].artifact_id, fix.overview.id.as_str());

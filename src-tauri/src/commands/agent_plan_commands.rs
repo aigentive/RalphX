@@ -3,7 +3,7 @@ use tauri::State;
 
 pub(crate) use crate::application::agent_task_pipeline_service::validate_complete_task_pipeline_proposal_selection;
 use crate::application::{
-    agent_plan_context::plan_bundle_composer_references,
+    agent_plan_context::{plan_bundle_composer_references, plan_bundle_fingerprint},
     agent_task_pipeline_service::{
         activate_agent_task_pipeline as activate_agent_task_pipeline_service,
         validate_direct_implementation_authority_sync, validate_supervised_task_pipeline,
@@ -71,6 +71,7 @@ pub struct ActivateAgentPlanDirectImplementationInput {
 pub struct ActivateAgentPlanDirectImplementationResponse {
     pub workspace: AgentConversationWorkspaceResponse,
     pub artifact_references: Vec<ComposerArtifactReference>,
+    pub plan_context_fingerprint: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,9 +349,15 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
         approved_bundle.blueprint.as_ref(),
         "approved",
     );
+    let plan_context_fingerprint = plan_bundle_fingerprint(
+        &response_session_id,
+        &approved_bundle.overview,
+        approved_bundle.blueprint.as_ref(),
+    );
     Ok(ActivateAgentPlanDirectImplementationResponse {
         workspace,
         artifact_references,
+        plan_context_fingerprint,
     })
 }
 

@@ -3061,6 +3061,7 @@ describe("chat api", () => {
     await sendAgentMessage("project", "p1", "Implement the plan", undefined, {
       conversationId: "c1",
       requireApprovedLinkedPlan: true,
+      expectedLinkedPlanFingerprint: "activation-fingerprint-1",
       suppressUserMessage: true,
     });
 
@@ -3071,6 +3072,7 @@ describe("chat api", () => {
         content: "Implement the plan",
         conversationId: "c1",
         requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: "activation-fingerprint-1",
         suppressUserMessage: true,
       },
     });

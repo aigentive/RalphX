@@ -1298,6 +1298,7 @@ describe("AgentsActiveConversationPanel", () => {
           status: "approved",
         },
       ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     getAgentConversationWorkspaceMock.mockResolvedValue({
       ...workspace(),
@@ -4442,6 +4443,7 @@ describe("AgentsActiveConversationPanel", () => {
           status: "approved",
         },
       ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     const onConversationModeSwitched = vi.fn();
 
@@ -4484,6 +4486,7 @@ describe("AgentsActiveConversationPanel", () => {
         conversationId: "conversation-1",
         runtimeOverride: approvedPlanRuntime,
         requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: "plan-context-fingerprint-1",
         suppressUserMessage: true,
       }),
     );
@@ -4527,6 +4530,7 @@ describe("AgentsActiveConversationPanel", () => {
           status: "approved",
         },
       ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     getAgentConversationWorkspaceMock.mockResolvedValue(transitionedWorkspace);
     sendAgentMessageMock.mockRejectedValueOnce(new Error("provider unavailable"));

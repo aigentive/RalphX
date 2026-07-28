@@ -57,7 +57,9 @@ use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
     sync_linked_planning_session_title_from_conversation,
 };
-use crate::application::agent_plan_context::admit_linked_edit_plan_references;
+use crate::application::agent_plan_context::{
+    admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
+};
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
     wake_agent_workspace_for_bridge_events_with_service_factory,
@@ -210,6 +212,9 @@ pub struct SendAgentMessageInput {
     /// Require the linked Edit workspace's current plan bundle to retain exact user approval.
     #[serde(default)]
     pub require_approved_linked_plan: bool,
+    /// Opaque backend activation receipt that pins a direct implementation send to one plan pair.
+    #[serde(default)]
+    pub expected_linked_plan_fingerprint: Option<String>,
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
@@ -637,26 +642,6 @@ async fn resolve_agent_conversation_workspace_mode_lock(
     Ok(AgentConversationWorkspaceModeLock::unlocked())
 }
 
-async fn linked_ideation_session_is_planning(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> Result<bool, String> {
-    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
-        return Ok(false);
-    };
-
-    let Some(session) = state
-        .ideation_session_repo
-        .get_by_id(session_id)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(false);
-    };
-
-    Ok(session.session_flow == IdeationSessionFlow::Planning)
-}
-
 async fn ensure_plan_workspace_planning_session_link(
     state: &AppState,
     project: &Project,
@@ -666,7 +651,7 @@ async fn ensure_plan_workspace_planning_session_link(
         return Ok(false);
     }
 
-    if linked_ideation_session_is_planning(state, workspace).await? {
+    if linked_workspace_planning_session_is_reusable(state, workspace).await? {
         return Ok(false);
     }
 
@@ -3737,7 +3722,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                 AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
             ) && workspace.linked_plan_branch_id.is_none()
             {
-                linked_ideation_session_is_planning(state, &workspace).await?
+                linked_workspace_planning_session_is_reusable(state, &workspace).await?
             } else {
                 false
             };
@@ -4198,6 +4183,7 @@ pub async fn send_agent_message_for_state<R: Runtime + 'static>(
                     conversation_id,
                     input.composer_artifact_references,
                     input.require_approved_linked_plan,
+                    input.expected_linked_plan_fingerprint.as_deref(),
                 )
                 .await?
             } else {

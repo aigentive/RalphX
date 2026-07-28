@@ -96,21 +96,29 @@ impl LinkedWorkspacePlanSnapshot {
     }
 
     pub(crate) fn fingerprint(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(b"ralphx-linked-workspace-plan-v1\n");
-        hasher.update(self.session.id.as_str().as_bytes());
-        hasher.update(b"\noverview\n");
-        hasher.update(self.overview.id.as_str().as_bytes());
-        hasher.update(b"\n");
-        hasher.update(self.overview.metadata.version.to_string().as_bytes());
-        if let Some(blueprint) = self.blueprint.as_ref() {
-            hasher.update(b"\nblueprint\n");
-            hasher.update(blueprint.id.as_str().as_bytes());
-            hasher.update(b"\n");
-            hasher.update(blueprint.metadata.version.to_string().as_bytes());
-        }
-        format!("{:x}", hasher.finalize())
+        plan_bundle_fingerprint(&self.session.id, &self.overview, self.blueprint.as_ref())
     }
+}
+
+pub(crate) fn plan_bundle_fingerprint(
+    session_id: &IdeationSessionId,
+    overview: &Artifact,
+    blueprint: Option<&Artifact>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ralphx-linked-workspace-plan-v1\n");
+    hasher.update(session_id.as_str().as_bytes());
+    hasher.update(b"\noverview\n");
+    hasher.update(overview.id.as_str().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(overview.metadata.version.to_string().as_bytes());
+    if let Some(blueprint) = blueprint {
+        hasher.update(b"\nblueprint\n");
+        hasher.update(blueprint.id.as_str().as_bytes());
+        hasher.update(b"\n");
+        hasher.update(blueprint.metadata.version.to_string().as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 pub(crate) async fn admit_linked_edit_plan_references(
@@ -118,6 +126,7 @@ pub(crate) async fn admit_linked_edit_plan_references(
     conversation_id: &ChatConversationId,
     references: Vec<ComposerArtifactReference>,
     require_approved_plan: bool,
+    expected_plan_fingerprint: Option<&str>,
 ) -> Result<Vec<ComposerArtifactReference>, String> {
     let Some(context) = load_linked_edit_plan_context(state, conversation_id).await? else {
         if require_approved_plan {
@@ -134,6 +143,21 @@ pub(crate) async fn admit_linked_edit_plan_references(
             "The plan changed after direct implementation activation. Return to Plan mode, review the current bundle, and approve it again."
                 .to_string(),
         );
+    }
+    if require_approved_plan {
+        let expected_plan_fingerprint = expected_plan_fingerprint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "Direct implementation is missing its backend activation receipt. Activate the current plan again before retrying."
+                    .to_string()
+            })?;
+        if context.fingerprint() != expected_plan_fingerprint {
+            return Err(
+                "The approved plan changed after direct implementation activation. Return to Plan mode, review the current bundle, and approve it again."
+                    .to_string(),
+            );
+        }
     }
     let authoritative = context.composer_references();
     Ok(merge_authoritative_plan_references(
@@ -173,7 +197,7 @@ pub(crate) async fn load_linked_workspace_plan_snapshot(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| {
-            "The linked planning session no longer exists. Return to Plan mode and refresh the plan."
+            "The linked planning session no longer exists. Switch this workspace to Plan mode; RalphX will create a fresh planning session."
                 .to_string()
         })?;
     if session.project_id != workspace.project_id {
@@ -188,7 +212,7 @@ pub(crate) async fn load_linked_workspace_plan_snapshot(
         || session.archived_at.is_some()
     {
         return Err(
-            "The linked planning session is not an active Agent plan. Return to Plan mode and refresh the plan."
+            "The linked planning session is no longer reusable. Switch this workspace to Plan mode; RalphX will replace the stale link with a fresh planning session."
                 .to_string(),
         );
     }
@@ -232,6 +256,47 @@ pub(crate) async fn load_linked_workspace_plan_snapshot(
             .as_ref()
             .is_some_and(|approval| approval.approved_by == PlanApprovalActor::User.as_str()),
     }))
+}
+
+pub(crate) async fn linked_workspace_planning_session_is_reusable(
+    state: &AppState,
+    workspace: &crate::domain::entities::AgentConversationWorkspace,
+) -> Result<bool, String> {
+    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return Ok(false);
+    };
+    let Some(session) = state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(false);
+    };
+    if session.project_id != workspace.project_id
+        || session.session_flow != IdeationSessionFlow::Planning
+        || session.session_purpose == SessionPurpose::Verification
+        || session.status == IdeationSessionStatus::Archived
+        || session.archived_at.is_some()
+    {
+        return Ok(false);
+    }
+
+    match (
+        session.source_context_type.as_deref(),
+        session.source_context_id.as_deref(),
+    ) {
+        (Some("agent_conversation"), Some(source_conversation_id)) => {
+            Ok(source_conversation_id == workspace.conversation_id.as_str())
+        }
+        (None, None) => Ok(state
+            .agent_conversation_workspace_repo
+            .get_by_linked_ideation_session_id(&session.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some_and(|owner| owner.conversation_id == workspace.conversation_id)),
+        _ => Ok(false),
+    }
 }
 
 async fn validate_session_conversation_ownership(
@@ -305,13 +370,26 @@ pub(crate) fn merge_authoritative_plan_references(
     authoritative: Vec<ComposerArtifactReference>,
     references: Vec<ComposerArtifactReference>,
 ) -> Vec<ComposerArtifactReference> {
+    let authoritative_artifact_ids = authoritative
+        .iter()
+        .map(|reference| reference.artifact_id.clone())
+        .collect::<BTreeSet<_>>();
+    let authoritative_session_ids = authoritative
+        .iter()
+        .filter_map(|reference| reference.session_id.clone())
+        .collect::<BTreeSet<_>>();
     let mut seen = BTreeSet::new();
     let mut merged = Vec::with_capacity(MAX_ARTIFACT_REFERENCES);
-    for reference in authoritative.into_iter().chain(
-        references
-            .into_iter()
-            .filter(|reference| !is_plan_reference(reference)),
-    ) {
+    for reference in authoritative
+        .into_iter()
+        .chain(references.into_iter().filter(|reference| {
+            !plan_reference_is_replaced_by_authoritative_bundle(
+                reference,
+                &authoritative_artifact_ids,
+                &authoritative_session_ids,
+            )
+        }))
+    {
         if seen.insert(reference.artifact_id.clone()) {
             merged.push(reference);
         }
@@ -320,6 +398,19 @@ pub(crate) fn merge_authoritative_plan_references(
         }
     }
     merged
+}
+
+fn plan_reference_is_replaced_by_authoritative_bundle(
+    reference: &ComposerArtifactReference,
+    authoritative_artifact_ids: &BTreeSet<String>,
+    authoritative_session_ids: &BTreeSet<String>,
+) -> bool {
+    is_plan_reference(reference)
+        && (authoritative_artifact_ids.contains(reference.artifact_id.as_str())
+            || reference
+                .session_id
+                .as_deref()
+                .is_none_or(|session_id| authoritative_session_ids.contains(session_id)))
 }
 
 fn plan_composer_reference(

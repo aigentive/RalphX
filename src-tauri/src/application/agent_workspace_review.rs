@@ -1807,17 +1807,6 @@ where
         .and_then(|value| serde_json::from_value::<Vec<T>>(value).ok())
 }
 
-#[cfg(test)]
-async fn linked_workspace_plan_artifact_reference(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> AppResult<Option<ComposerArtifactReference>> {
-    Ok(load_linked_workspace_plan_snapshot(state, workspace)
-        .await
-        .map_err(AppError::Validation)?
-        .and_then(|snapshot| snapshot.composer_references().into_iter().next()))
-}
-
 fn workspace_review_resolved_artifact_context(
     reference: &ComposerArtifactReference,
     artifact: &Artifact,
@@ -2392,20 +2381,47 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
     .await?;
     let mut monitor = load_or_create_monitor(state, workspace).await?;
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
-    let current_plan_context_fingerprint = load_linked_workspace_plan_snapshot(state, workspace)
-        .await
-        .map_err(AppError::Validation)?
-        .map(|snapshot| snapshot.fingerprint());
-    apply_current_plan_context_to_monitor(
-        &mut monitor,
-        current_plan_context_fingerprint.as_deref(),
-    );
     ensure_workspace_review_run_is_active(
         &monitor,
         created_by_run_id.as_deref(),
         "workspace Review completion",
     )?;
     monitor.last_run_id = created_by_run_id.or(monitor.last_run_id);
+    let current_plan_context_fingerprint =
+        match load_linked_workspace_plan_snapshot(state, workspace).await {
+            Ok(snapshot) => snapshot.map(|snapshot| snapshot.fingerprint()),
+            Err(error) => {
+                apply_current_plan_context_to_monitor(&mut monitor, None);
+                monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+                monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+                monitor.last_error = Some(format!(
+                    "Workspace Review could not validate its linked plan: {error}"
+                ));
+                clear_review_blocking_state(&mut monitor);
+                apply_review_gate_to_monitor(&mut monitor, target.as_ref());
+                return state
+                    .agent_conversation_workspace_repo
+                    .upsert_workspace_review_monitor(monitor)
+                    .await;
+            }
+        };
+    let plan_context_changed =
+        monitor.reviewed_plan_context_fingerprint != current_plan_context_fingerprint;
+    apply_current_plan_context_to_monitor(
+        &mut monitor,
+        current_plan_context_fingerprint.as_deref(),
+    );
+    if plan_context_changed {
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.last_error = Some(WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR.to_string());
+        clear_review_blocking_state(&mut monitor);
+        apply_review_gate_to_monitor(&mut monitor, target.as_ref());
+        return state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await;
+    }
     let parsed_outcome = normalized_outcome
         .as_deref()
         .and_then(|value| AgentWorkspaceReviewOutcome::from_str(value).ok())

@@ -23,6 +23,7 @@ type DirectImplementationSendOptions = Omit<
   SendAgentMessageOptions,
   | "composerArtifactReferences"
   | "conversationId"
+  | "expectedLinkedPlanFingerprint"
   | "requireApprovedLinkedPlan"
   | "suppressUserMessage"
 >;
@@ -44,6 +45,7 @@ interface ImplementAgentPlanDirectlyParams {
 export interface DirectImplementationActivationSnapshot {
   workspace: AgentConversationWorkspace;
   artifactReferences: ComposerArtifactReference[];
+  planContextFingerprint: string;
 }
 
 export async function implementAgentPlanDirectly({
@@ -103,6 +105,7 @@ export async function implementAgentPlanDirectly({
         conversationId,
         ...sendOptions,
         requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: committed.planContextFingerprint,
         suppressUserMessage: true,
       },
     );
@@ -124,6 +127,7 @@ function cloneActivationSnapshot(
     artifactReferences: activation.artifactReferences.map((reference) => ({
       ...reference,
     })),
+    planContextFingerprint: activation.planContextFingerprint,
   };
 }
 
@@ -138,6 +142,7 @@ function sameActivationSnapshot(
     current.workspace.mode !== "edit" ||
     pinned.workspace.linkedIdeationSessionId !==
       current.workspace.linkedIdeationSessionId ||
+    pinned.planContextFingerprint !== current.planContextFingerprint ||
     pinned.artifactReferences.length !== current.artifactReferences.length
   ) {
     return false;

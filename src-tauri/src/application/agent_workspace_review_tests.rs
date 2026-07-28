@@ -11,7 +11,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
     ArtifactType, ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, ProjectId,
+    TaskId,
 };
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::domain::review::ReviewSettings;
@@ -488,13 +489,13 @@ async fn linked_workspace_plan_reference_allows_no_link_but_rejects_broken_autho
         Some(base_sha),
     );
 
-    assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+    assert!(load_linked_workspace_plan_snapshot(&state, &workspace)
         .await
         .expect("missing link should load")
         .is_none());
 
     workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string("missing-session"));
-    let missing_session_error = linked_workspace_plan_artifact_reference(&state, &workspace)
+    let missing_session_error = load_linked_workspace_plan_snapshot(&state, &workspace)
         .await
         .expect_err("a present link to a missing session must fail closed");
     assert!(missing_session_error
@@ -513,7 +514,7 @@ async fn linked_workspace_plan_reference_allows_no_link_but_rejects_broken_autho
         .await
         .expect("empty planning session should persist");
     workspace.linked_ideation_session_id = Some(empty_session.id.clone());
-    assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+    assert!(load_linked_workspace_plan_snapshot(&state, &workspace)
         .await
         .expect("empty session should load")
         .is_none());
@@ -536,7 +537,7 @@ async fn linked_workspace_plan_reference_allows_no_link_but_rejects_broken_autho
         .expect("missing-artifact planning session should persist");
     workspace.linked_ideation_session_id = Some(missing_artifact_session.id.clone());
 
-    let missing_artifact_error = linked_workspace_plan_artifact_reference(&state, &workspace)
+    let missing_artifact_error = load_linked_workspace_plan_snapshot(&state, &workspace)
         .await
         .expect_err("a linked missing plan artifact must fail closed");
     assert!(missing_artifact_error
@@ -4644,6 +4645,112 @@ fn plan_context_drift_invalidates_review_currentness_and_fixer_authority() {
         !workspace_review_artifact_covers_merged_pr_target(&workspace, &monitor, &merged_target),
         "merged-PR target equivalence must not bypass reviewed plan authority"
     );
+}
+
+#[tokio::test]
+async fn complete_review_settles_failed_when_linked_plan_becomes_unusable() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let overview = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Review plan",
+            ArtifactType::Specification,
+            "# Review plan",
+            "planner",
+        ))
+        .await
+        .expect("overview should persist");
+    let blueprint = state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Review blueprint",
+            ArtifactType::Specification,
+            "# Review blueprint",
+            "planner",
+        ))
+        .await
+        .expect("blueprint should persist");
+    let session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .session_flow(IdeationSessionFlow::Planning)
+                .source_context_type("agent_conversation")
+                .source_context_id(workspace.conversation_id.as_str())
+                .plan_artifact_id(overview.id)
+                .plan_blueprint_artifact_id(blueprint.id)
+                .build(),
+        )
+        .await
+        .expect("planning session should persist");
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("review context should load");
+    let target = context.target.expect("review target should exist");
+    let mut monitor = context.monitor;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some("review-plan-link-run".to_string()),
+        ArtifactId::from_string("review-plan-link-artifact"),
+        1,
+        Utc::now(),
+        None,
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("reviewing monitor should persist");
+    state
+        .ideation_session_repo
+        .update_status(&session.id, IdeationSessionStatus::Archived)
+        .await
+        .expect("linked planning session should archive");
+
+    let completed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("passed".to_string()),
+        Some("No blocking findings".to_string()),
+        None,
+        Some("review-plan-link-run".to_string()),
+    )
+    .await
+    .expect("broken plan authority should settle the Review instead of stranding it");
+
+    assert_eq!(completed.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        completed.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        completed.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
+    assert!(completed
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("fresh planning session")));
 }
 
 #[tokio::test]
