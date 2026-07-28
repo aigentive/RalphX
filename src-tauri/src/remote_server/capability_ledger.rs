@@ -26,6 +26,15 @@ pub struct CommandOverride {
     pub policy: LedgerPolicy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthorityReducingExemption {
+    pub subject: &'static str,
+    pub kind: &'static str,
+    pub direction: &'static str,
+    pub scope: &'static str,
+    pub rationale: &'static str,
+}
+
 const NONE: &[Capability] = &[];
 const AGENT: &[Capability] = &[Capability::AgentControl];
 const PROCESS: &[Capability] = &[Capability::SpawnsProcess];
@@ -234,14 +243,6 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(RiskClass::Read, NONE, "pure health read"),
     },
     CommandOverride {
-        command: "list_projects",
-        policy: policy(RiskClass::Read, NONE, "project read"),
-    },
-    CommandOverride {
-        command: "get_project",
-        policy: policy(RiskClass::Read, NONE, "project read"),
-    },
-    CommandOverride {
         command: "list_tasks",
         policy: policy(RiskClass::Read, NONE, "task read"),
     },
@@ -322,6 +323,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "authority-restoring transition",
         ),
     },
+    CommandOverride {
+        command: "reanalyze_project",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "spawns the project-analyzer agent",
+        ),
+    },
     // Declared memberships not inferable from transition/process sinks.
     CommandOverride {
         command: "resolve_permission_request",
@@ -337,12 +346,56 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     },
 ];
 
-pub const AUTHORITY_REDUCING_EXEMPTIONS: &[&str] = &[
-    "pause_task",
-    "block_task",
-    "stop_task",
-    "pause_tasks_in_group",
-    "deny_permission_request",
+pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
+    AuthorityReducingExemption {
+        subject: "pause_task",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Paused",
+    },
+    AuthorityReducingExemption {
+        subject: "block_task",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Blocked",
+    },
+    AuthorityReducingExemption {
+        subject: "stop_task",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Stopped",
+    },
+    AuthorityReducingExemption {
+        subject: "pause_tasks_in_group",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Paused",
+    },
+    AuthorityReducingExemption {
+        subject: "deny_permission_request",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "denies a live tool call",
+    },
+    AuthorityReducingExemption {
+        subject: "Cancelled",
+        kind: "transition-target",
+        direction: "authority-reducing",
+        scope: "transition-target",
+        rationale: "domain/state_machine/transition_handler/mod.rs on_exit stops pollers for Cancelled; on_enter_states/mod.rs has no Cancelled entry action",
+    },
+    AuthorityReducingExemption {
+        subject: "Archived",
+        kind: "transition-target",
+        direction: "authority-reducing",
+        scope: "transition-target",
+        rationale: "domain/state_machine/transition_handler/on_enter_states/mod.rs has no Archived entry action and application reconciliation does not scan Archived tasks",
+    },
 ];
 
 pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[

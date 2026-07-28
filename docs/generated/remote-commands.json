@@ -26,6 +26,8 @@
     "stop_execution_plan",
     "resume_task",
     "retry_branch_update",
+    "create_project",
+    "reanalyze_project",
     "resume_deferred_git_startup",
     "update_github_pr_enabled",
     "copy_agent_conversation_plan",
@@ -108,23 +110,52 @@
   "authority_reducing_exemptions": [
     {
       "command": "pause_task",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Paused",
       "scope": "ui:operate"
     },
     {
       "command": "block_task",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Blocked",
       "scope": "ui:operate"
     },
     {
       "command": "stop_task",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Stopped",
       "scope": "ui:operate"
     },
     {
       "command": "pause_tasks_in_group",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Paused",
       "scope": "ui:operate"
     },
     {
       "command": "deny_permission_request",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "denies a live tool call",
       "scope": "ui:operate"
+    },
+    {
+      "direction": "authority-reducing",
+      "kind": "transition-target",
+      "rationale": "domain/state_machine/transition_handler/mod.rs on_exit stops pollers for Cancelled; on_enter_states/mod.rs has no Cancelled entry action",
+      "scope": "transition-target",
+      "target": "Cancelled"
+    },
+    {
+      "direction": "authority-reducing",
+      "kind": "transition-target",
+      "rationale": "domain/state_machine/transition_handler/on_enter_states/mod.rs has no Archived entry action and application reconciliation does not scan Archived tasks",
+      "scope": "transition-target",
+      "target": "Archived"
     }
   ],
   "background_loop_inventory": [
@@ -281,6 +312,20 @@
       "file": "application/chat_service/launch_reservation.rs",
       "id": "application/chat_service/launch_reservation.rs::application/chat_service/launch_reservation.rs::LaunchReservationGuard::new@eb4d1acdcacd6079",
       "kind": "tokio::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "application/desktop_notification.rs:::::send_actionable",
+      "file": "application/desktop_notification.rs",
+      "id": "application/desktop_notification.rs::application/desktop_notification.rs:::::send_actionable@460f4228198e486d",
+      "kind": "method::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "application/harness_runtime_registry.rs:::::probe_standard_harnesses_with",
+      "file": "application/harness_runtime_registry.rs",
+      "id": "application/harness_runtime_registry.rs::application/harness_runtime_registry.rs:::::probe_standard_harnesses_with@59d10e2433c6a7d0",
+      "kind": "method::spawn"
     },
     {
       "authorityBearing": false,
@@ -771,6 +816,13 @@
       "file": "commands/unified_chat_commands/mod.rs",
       "id": "commands/unified_chat_commands/mod.rs::commands/unified_chat_commands/mod.rs:::::spawn_deferred_agent_workspace_repair_message@33cef224af17ad49",
       "kind": "async_runtime::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "commands/workspace_open_commands/mod.rs:::::warm_workspace_open_target_cache",
+      "file": "commands/workspace_open_commands/mod.rs",
+      "id": "commands/workspace_open_commands/mod.rs::commands/workspace_open_commands/mod.rs:::::warm_workspace_open_target_cache@57e0acfe73eecbdc",
+      "kind": "method::spawn"
     },
     {
       "authorityBearing": false,
@@ -2456,20 +2508,24 @@
       "registered": false
     },
     {
-      "capabilities": [],
-      "class": "read",
+      "capabilities": [
+        "spawnsProcess"
+      ],
+      "class": "elevated",
       "command": "list_projects",
       "module": "project_commands",
-      "reason": "project read",
-      "registered": true
+      "reason": "project git/gh and deferred shell authority",
+      "registered": false
     },
     {
-      "capabilities": [],
-      "class": "read",
+      "capabilities": [
+        "spawnsProcess"
+      ],
+      "class": "elevated",
       "command": "get_project",
       "module": "project_commands",
-      "reason": "project read",
-      "registered": true
+      "reason": "project git/gh and deferred shell authority",
+      "registered": false
     },
     {
       "capabilities": [
@@ -2563,12 +2619,12 @@
     },
     {
       "capabilities": [
-        "spawnsProcess"
+        "agentControl"
       ],
-      "class": "elevated",
+      "class": "agentControl",
       "command": "reanalyze_project",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "spawns the project-analyzer agent",
       "registered": false
     },
     {

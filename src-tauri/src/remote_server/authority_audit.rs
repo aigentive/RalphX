@@ -68,6 +68,11 @@ pub const STEER_SINKS: &[&str] = &["send_message", "send_stdin_message", "write_
 /// renamed field or a trait object still trips it.
 pub const AGENT_SPAWN_SINK: &str = "<agent-spawner::spawn>";
 
+/// Fixed project-analyzer process entry point. This is intentionally an exact free-function
+/// name match: reaching it means the command starts an agent process, while unrelated process
+/// helpers remain outside detector (a).
+pub const AGENT_PROCESS_SPAWN_SINKS: &[&str] = &["spawn_project_analyzer"];
+
 /// `InternalStatus` targets that ARM or re-enter scheduling → classify.
 pub const ARMING_TRANSITION_TARGETS: &[&str] = &[
     "Ready",
@@ -77,23 +82,19 @@ pub const ARMING_TRANSITION_TARGETS: &[&str] = &[
     "QaTesting",
     "QaPrep",
     "PendingReview",
+    "Failed",
 ];
 
 /// `InternalStatus` targets that only halt/park → authority-reducing, exempt.
-pub const HALTING_TRANSITION_TARGETS: &[&str] = &[
-    "Paused",
-    "Blocked",
-    "Stopped",
-    "Failed",
-    "Cancelled",
-    "Archived",
-];
+pub const HALTING_TRANSITION_TARGETS: &[&str] =
+    &["Paused", "Blocked", "Stopped", "Cancelled", "Archived"];
 
 fn all_cut_sinks() -> BTreeSet<&'static str> {
     TRANSITION_SINKS
         .iter()
         .chain(SCHEDULER_SINKS.iter())
         .chain(STEER_SINKS.iter())
+        .chain(AGENT_PROCESS_SPAWN_SINKS.iter())
         .copied()
         .collect()
 }
@@ -161,8 +162,9 @@ impl CallGraph {
             .iter()
             .find(|(path, _)| path == "commands/registry.rs")
             .map(|(_, source)| {
-                parse_registered_command_names(source)
+                parse_registered_commands(source)
                     .into_iter()
+                    .map(|(command, _)| command)
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
@@ -599,7 +601,7 @@ fn is_background_spawn_path(path: &syn::Path) -> Option<&'static str> {
 
 /// `.spawn("worker", id)` / `.spawn_background("qa-prep", id)` — an `AgentSpawner` call
 /// recognised by shape (string-literal agent type first) rather than by receiver name.
-fn is_agent_spawn_method(
+pub(super) fn is_agent_spawn_method(
     method: &str,
     args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
 ) -> bool {
@@ -613,6 +615,27 @@ fn is_agent_spawn_method(
             ..
         }))
     )
+}
+
+/// Runtime-handle spawn methods whose first argument is executable code. Requiring a closure
+/// or async block makes this mutually exclusive with the string-literal-first AgentSpawner
+/// shape.
+pub(super) fn is_method_background_spawn(
+    method: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> bool {
+    matches!(method, "spawn" | "spawn_blocking")
+        && matches!(
+            args.first(),
+            Some(syn::Expr::Closure(_) | syn::Expr::Async(_))
+        )
+}
+
+fn is_method_listener(
+    method: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> bool {
+    method == "listen" && args.iter().any(|arg| matches!(arg, syn::Expr::Closure(_)))
 }
 
 fn internal_status_targets(
@@ -792,6 +815,10 @@ impl<'ast, 'a> Visit<'ast> for FileVisitor<'a> {
         self.record_token(name.clone());
         if name == "listen_any" || name == "listen_global" {
             self.record_loop_root("listen_any", &node.args);
+        } else if is_method_background_spawn(&name, &node.args) {
+            self.record_loop_root(&format!("method::{name}"), &node.args);
+        } else if is_method_listener(&name, &node.args) {
+            self.record_loop_root("listen", &node.args);
         }
         if all_cut_sinks().contains(name.as_str()) {
             let targets = transition_targets(&name, &node.args);
@@ -912,32 +939,71 @@ fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
 pub fn registered_command_names() -> Vec<String> {
     let source = std::fs::read_to_string(crate_src_root().join("commands/registry.rs"))
         .expect("commands/registry.rs must be readable");
-    parse_registered_command_names(&source)
+    parse_registered_commands(&source)
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect()
 }
 
-pub fn parse_registered_command_names(source: &str) -> Vec<String> {
+pub fn parse_registered_commands(source: &str) -> Vec<(String, String)> {
+    const MARKER: &str = "tauri::generate_handler![";
     let start = source
-        .find("tauri::generate_handler![")
+        .find(MARKER)
         .expect("registry.rs must contain generate_handler!");
-    let body = &source[start..];
-    let mut names = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with("#[") {
-            continue;
-        }
-        if line.starts_with(']') {
-            break;
-        }
-        let line = line.trim_start_matches("tauri::generate_handler![").trim();
-        let candidate = line.trim_end_matches(',').trim();
-        if candidate.is_empty() {
-            continue;
-        }
-        let leaf = candidate.rsplit("::").next().unwrap_or(candidate);
-        if leaf.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !leaf.is_empty() {
-            names.push(leaf.to_string());
-        }
-    }
-    names
+    let body = &source[start + MARKER.len()..];
+    let uncommented = body
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut bracket_depth = 1usize;
+    let end = uncommented
+        .char_indices()
+        .find_map(|(index, ch)| match ch {
+            '[' => {
+                bracket_depth += 1;
+                None
+            }
+            ']' => {
+                bracket_depth -= 1;
+                (bracket_depth == 0).then_some(index)
+            }
+            _ => None,
+        })
+        .expect("generate_handler! body must have a closing bracket");
+
+    uncommented[..end]
+        .split(',')
+        .filter_map(|raw_segment| {
+            let mut segment = raw_segment.trim();
+            while segment.starts_with("#[") {
+                let attribute_end = segment.find(']').unwrap_or_else(|| {
+                    panic!("malformed command census segment `{segment}`: unterminated attribute")
+                });
+                segment = segment[attribute_end + 1..].trim();
+            }
+            if segment.is_empty() {
+                return None;
+            }
+            let parts = segment.split("::").collect::<Vec<_>>();
+            let valid_ident = |part: &&str| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+                    && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+            };
+            if parts.is_empty() || !parts.iter().all(valid_ident) {
+                panic!("malformed command census segment `{segment}`");
+            }
+            let (command, module) = match parts.as_slice() {
+                [command] => ((*command).to_string(), "root".to_string()),
+                ["commands", module, .., command] => {
+                    ((*command).to_string(), (*module).to_string())
+                }
+                _ => panic!("malformed command census segment `{segment}`"),
+            };
+            Some((command, module))
+        })
+        .collect()
 }

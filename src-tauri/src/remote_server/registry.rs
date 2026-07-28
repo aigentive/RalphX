@@ -419,8 +419,9 @@ pub fn update_task_authz(args: &Value) -> Scope {
 
 // PR 1.3 registers the `Read` class only. Every entry below was individually checked against
 // the capability ledger: none spawns a process, and none is one of the "getter that shells out"
-// commands (`get_git_branches`, `get_task_file_changes`/`get_file_diff`,
-// `get_codex_cli_diagnostics`, `build_agent_issue_report`) which are NOT `Read`. Mutating
+// commands (`list_projects`/`get_project`, `get_git_branches`,
+// `get_task_file_changes`/`get_file_diff`, `get_codex_cli_diagnostics`,
+// `build_agent_issue_report`) which are NOT `Read`. Mutating
 // classes land in PR 1.5 (`ui:agent` suite) and PR 3.1 (full coverage).
 crate::remote_commands! {
     "health_check" => crate::commands::health::health_check {
@@ -429,20 +430,6 @@ crate::remote_commands! {
         params: [],
         call: sync,
         result: infallible,
-    },
-    "list_projects" => crate::commands::project_commands::list_projects {
-        class: Read,
-        caps: [],
-        params: [(app_state)],
-        call: async,
-        result: fallible,
-    },
-    "get_project" => crate::commands::project_commands::get_project {
-        class: Read,
-        caps: [],
-        params: [(arg id: String), (app_state)],
-        call: async,
-        result: fallible,
     },
     "list_tasks" => crate::commands::task_commands::query::list_tasks {
         class: Read,

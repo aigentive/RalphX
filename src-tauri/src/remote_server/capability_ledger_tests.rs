@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ralphx_remote_protocol::{class_permits, Capability, RiskClass};
 
 use super::authority_audit::{
-    closure_is_arming, load_production_sources, parse_registered_command_names, CallGraph,
+    closure_is_arming, load_production_sources, parse_registered_commands, CallGraph,
 };
 use super::capability_ledger::{
     policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, DECLARED_MEMBERSHIPS,
@@ -16,24 +16,7 @@ fn registry_source() -> &'static str {
 }
 
 fn census() -> Vec<(String, String)> {
-    let names = parse_registered_command_names(registry_source());
-    let mut modules = Vec::new();
-    let start = registry_source()
-        .find("tauri::generate_handler![")
-        .expect("registry has generate_handler");
-    for line in registry_source()[start..].lines() {
-        let candidate = line.trim().trim_end_matches(',');
-        if candidate.starts_with(']') {
-            break;
-        }
-        if candidate == "greet" {
-            modules.push("root".to_string());
-        } else if let Some(path) = candidate.strip_prefix("commands::") {
-            modules.push(path.split("::").next().expect("command module").to_string());
-        }
-    }
-    assert_eq!(names.len(), modules.len(), "registry census parser drifted");
-    names.into_iter().zip(modules).collect()
+    parse_registered_commands(registry_source())
 }
 
 fn generated_manifest() -> serde_json::Value {
@@ -75,7 +58,20 @@ fn generated_manifest() -> serde_json::Value {
         .collect::<Vec<_>>();
     let authority_reducing_exemptions = AUTHORITY_REDUCING_EXEMPTIONS
         .iter()
-        .map(|command| serde_json::json!({ "command": command, "scope": "ui:operate" }))
+        .map(|exemption| {
+            let mut row = serde_json::json!({
+                "kind": exemption.kind,
+                "direction": exemption.direction,
+                "scope": exemption.scope,
+                "rationale": exemption.rationale,
+            });
+            row[if exemption.kind == "command" {
+                "command"
+            } else {
+                "target"
+            }] = serde_json::json!(exemption.subject);
+            row
+        })
         .collect::<Vec<_>>();
     let declared_memberships = DECLARED_MEMBERSHIPS
         .iter()
@@ -176,8 +172,10 @@ fn capability_ledger_is_exhaustive_and_internally_consistent() {
 #[test]
 fn detector_a_is_a_floor_for_agent_control() {
     let graph = CallGraph::build(&load_production_sources());
+    let mut floor = BTreeSet::new();
     for (command, module) in census() {
         if closure_is_arming(&graph.closure([command.clone()])) {
+            floor.insert(command.clone());
             let row = policy_for(&command, &module).expect("census is ledgered");
             assert!(
                 matches!(row.class, RiskClass::AgentControl | RiskClass::Elevated),
@@ -185,6 +183,13 @@ fn detector_a_is_a_floor_for_agent_control() {
             );
         }
     }
+    assert!(
+        floor.contains("reanalyze_project"),
+        "project-analyzer spawn sink must mechanically place reanalyze_project in detector (a)"
+    );
+    let row = policy_for("reanalyze_project", "project_commands").unwrap();
+    assert_eq!(row.class, RiskClass::AgentControl);
+    assert_eq!(row.capabilities, &[Capability::AgentControl]);
 }
 
 #[test]
@@ -210,7 +215,6 @@ fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
         "login_gh_with_browser",
         "update_custom_analysis",
         "change_project_git_mode",
-        "reanalyze_project",
         "resolve_merge_conflict",
         "cleanup_task_branch",
         "get_task_file_changes",
@@ -240,14 +244,26 @@ fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
 #[test]
 fn exemptions_and_declared_memberships_are_exact() {
     let rows = census().into_iter().collect::<BTreeMap<_, _>>();
-    for command in AUTHORITY_REDUCING_EXEMPTIONS
+    for exemption in AUTHORITY_REDUCING_EXEMPTIONS
         .iter()
-        .filter(|command| **command != "deny_permission_request")
+        .filter(|entry| entry.kind == "command" && entry.subject != "deny_permission_request")
     {
-        let module = rows.get(*command).expect("exemption command exists");
+        let command = exemption.subject;
+        let module = rows.get(command).expect("exemption command exists");
         assert_eq!(
             policy_for(command, module).unwrap().class,
             RiskClass::Operate
+        );
+    }
+    for target in ["Cancelled", "Archived"] {
+        let exemption = AUTHORITY_REDUCING_EXEMPTIONS
+            .iter()
+            .find(|entry| entry.kind == "transition-target" && entry.subject == target)
+            .unwrap_or_else(|| panic!("missing transition-target exemption for {target}"));
+        assert_eq!(exemption.direction, "authority-reducing");
+        assert!(
+            exemption.rationale.contains(".rs"),
+            "{target} rationale must carry file-anchored evidence"
         );
     }
     assert_eq!(
@@ -260,6 +276,19 @@ fn exemptions_and_declared_memberships_are_exact() {
     let question = policy_for("resolve_user_question", "question_commands").unwrap();
     assert_eq!(question.class, RiskClass::AgentControl);
     assert_eq!(question.reason, DECLARED_MEMBERSHIPS[1].1);
+}
+
+#[test]
+fn spawning_project_getters_are_elevated_and_not_registered() {
+    for command in ["list_projects", "get_project"] {
+        let row = policy_for(command, "project_commands").unwrap();
+        assert_eq!(row.class, RiskClass::Elevated);
+        assert_eq!(row.capabilities, &[Capability::SpawnsProcess]);
+        assert!(
+            find_spec(command).is_none(),
+            "{command} must not remain on the Read registry"
+        );
+    }
 }
 
 #[test]
