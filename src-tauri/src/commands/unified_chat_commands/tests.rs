@@ -3775,6 +3775,19 @@ async fn setup_linked_plan_publish_command_state(
         .await
         .expect("project should be persisted");
     state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .id(session_id.clone())
+                .project_id(project.id.clone())
+                .session_flow(IdeationSessionFlow::Planning)
+                .source_context_type("agent_conversation")
+                .source_context_id(conversation_id.as_str())
+                .build(),
+        )
+        .await
+        .expect("planning session should be persisted");
+    state
         .execution_plan_repo
         .create(execution_plan)
         .await
