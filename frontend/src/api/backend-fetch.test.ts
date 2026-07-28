@@ -60,6 +60,19 @@ describe("path derivation", () => {
     expect(() => backendApiPath("https://evil.example/x")).toThrow(/Invalid/);
     expect(() => backendApiPath("//evil.example/x")).toThrow(/Invalid/);
     expect(() => backendApiPath("../internal/keys")).toThrow(/traversal/);
+    expect(() => backendApiPath("diff?path=../../etc/passwd")).not.toThrow();
+    expect(() => backendApiPath("../diff?path=fine")).toThrow(/traversal/);
+  });
+
+  // Call sites hand the query to the SAME argument (`endpoint?params`), and query values are
+  // caller data: a workspace file named `notes..md` is not traversal. Rejecting it would break a
+  // local fetch that worked before the transport migration — the parity the seam guarantees.
+  it("leaves the query string intact instead of validating it as a path", () => {
+    const params = new URLSearchParams({ path: "notes..md", ref_kind: "head" });
+
+    expect(backendApiPath(`agent-workspaces/c1/file-diff-page?${params}`)).toBe(
+      `/api/agent-workspaces/c1/file-diff-page?${params}`
+    );
   });
 });
 

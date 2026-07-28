@@ -827,12 +827,18 @@ fn validate_remote_fetch_path(path: &str) -> Result<String, RemoteEnvironmentErr
             "protocol-relative path is not addressable on the paired host: {path}"
         )));
     }
-    if trimmed.contains("://") {
+    // Shape guards apply to the PATH half only, exactly as the local transport's
+    // `backendApiPath` splits it. Query VALUES are caller data — workspace file paths, commit
+    // shas — that legitimately contain dots and colons; rejecting them here would make a file
+    // named `notes..md` fetchable locally and not remotely, which is the parity the transport
+    // exists to guarantee. A query cannot escape the mounted path either way.
+    let path_part = trimmed.split('?').next().unwrap_or(trimmed);
+    if path_part.contains("://") {
         return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
             "absolute URL is not a host path: {path}"
         )));
     }
-    if trimmed.contains("..") {
+    if path_part.contains("..") {
         return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
             "path traversal is not permitted: {path}"
         )));
