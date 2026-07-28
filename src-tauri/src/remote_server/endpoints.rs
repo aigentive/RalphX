@@ -11,7 +11,7 @@ use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
 use serde::Serialize;
 
 use crate::remote_server::auth::RemoteAuthContext;
-use crate::remote_server::invoke::{RemoteInvokeDispatcher, TauriRemoteInvokeDispatcher};
+use crate::remote_server::invoke::RemoteInvokeDispatcher;
 use crate::remote_server::sequencer::RemoteStreamHandle;
 use crate::remote_server::settings::RemoteExposureMode;
 use crate::remote_server::ws::{NoopLifecycleSink, SessionLifecycleSink};
@@ -41,18 +41,9 @@ pub(crate) struct RemoteRouterState {
 }
 
 impl RemoteRouterState {
-    pub(crate) fn new(
-        environment_id: impl Into<Arc<str>>,
-        auth: RemoteAuthContext,
-        app_handle: tauri::AppHandle,
-    ) -> Self {
-        Self::new_with_invoke_dispatcher(
-            environment_id,
-            auth,
-            TauriRemoteInvokeDispatcher::shared(app_handle),
-        )
-    }
-
+    /// The `AppHandle`-taking `new` is gone: `start_listener` — its only caller — now resolves
+    /// the dispatcher itself so the listener core can be tested without a Wry handle. Production
+    /// still lands on `TauriRemoteInvokeDispatcher::shared(app_handle)`, one frame earlier.
     pub(crate) fn new_with_invoke_dispatcher(
         environment_id: impl Into<Arc<str>>,
         auth: RemoteAuthContext,

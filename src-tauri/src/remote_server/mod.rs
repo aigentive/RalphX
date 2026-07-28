@@ -90,6 +90,7 @@ use crate::remote_server::auth_endpoints::{
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
 };
+use crate::remote_server::invoke::{RemoteInvokeDispatcher, TauriRemoteInvokeDispatcher};
 use crate::remote_server::retention::RetentionLeaseRegistry;
 use crate::remote_server::session_registry::RemoteSessionRegistry;
 use crate::remote_server::settings::{
@@ -420,6 +421,32 @@ pub(crate) async fn start_listener(
     provider: &dyn TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<SocketAddr, RemoteListenerError> {
+    start_listener_with_dispatcher(
+        TauriRemoteInvokeDispatcher::shared(app_handle.clone()),
+        handle,
+        store,
+        provider,
+        tailscale,
+    )
+    .await
+}
+
+/// Listener core, parameterised over the command dispatcher.
+///
+/// The only thing the listener ever wanted from the `AppHandle` was a way to reach the Tauri
+/// command registry, which [`RemoteRouterState`] already abstracts behind
+/// [`RemoteInvokeDispatcher`]. Taking the dispatcher directly means the bind/persist/serve
+/// ordering can be tested without constructing a Wry `AppHandle` — which panics off the main
+/// thread on macOS (`On macOS, EventLoop must be created on the main thread!`) and made all of
+/// `listener_tests` permanently red. Production keeps the `AppHandle` wrapper above, so the
+/// resolution path and its fail-closed behaviour are byte-for-byte what they were.
+pub(crate) async fn start_listener_with_dispatcher(
+    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+    handle: &RemoteListenerHandle,
+    store: &RemoteHostSettingsStore,
+    provider: &dyn TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
+) -> Result<SocketAddr, RemoteListenerError> {
     let mut active = handle.active.lock().await;
     if let Some(listener) = active.as_ref() {
         return Ok(listener.bind_address);
@@ -506,11 +533,14 @@ pub(crate) async fn start_listener(
     let (stopped_tx, stopped) = oneshot::channel();
     let auth =
         RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
-    let mut state =
-        RemoteRouterState::new(settings.environment_id.as_str(), auth, app_handle.clone())
-            // Installed at app setup, not here: the listener toggle governs network exposure only, so
-            // a restart of the listener must not restart the stream (P-15, P-23).
-            .with_stream(handle.stream());
+    let mut state = RemoteRouterState::new_with_invoke_dispatcher(
+        settings.environment_id.as_str(),
+        auth,
+        invoke_dispatcher,
+    )
+    // Installed at app setup, not here: the listener toggle governs network exposure only, so
+    // a restart of the listener must not restart the stream (P-15, P-23).
+    .with_stream(handle.stream());
     if let Some(sink) = handle.lifecycle_sink() {
         state = state.with_lifecycle_sink(sink);
     }
@@ -594,6 +624,26 @@ pub(crate) async fn apply_exposure_mode(
     tailscale: &dyn TailscaleCommandRunner,
     exposure_mode: RemoteExposureMode,
 ) -> Result<RemoteHostSettings, RemoteListenerError> {
+    apply_exposure_mode_with_dispatcher(
+        TauriRemoteInvokeDispatcher::shared(app_handle.clone()),
+        handle,
+        store,
+        provider,
+        tailscale,
+        exposure_mode,
+    )
+    .await
+}
+
+/// See [`start_listener_with_dispatcher`] for why the core is parameterised over the dispatcher.
+pub(crate) async fn apply_exposure_mode_with_dispatcher(
+    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+    handle: &RemoteListenerHandle,
+    store: &RemoteHostSettingsStore,
+    provider: &dyn TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
+    exposure_mode: RemoteExposureMode,
+) -> Result<RemoteHostSettings, RemoteListenerError> {
     let was_running = handle.is_running().await;
     if was_running {
         stop_listener(handle, store, tailscale).await?;
@@ -604,7 +654,9 @@ pub(crate) async fn apply_exposure_mode(
         return Ok(settings);
     }
 
-    match start_listener(app_handle, handle, store, provider, tailscale).await {
+    match start_listener_with_dispatcher(invoke_dispatcher, handle, store, provider, tailscale)
+        .await
+    {
         Ok(_) => Ok(store.get_or_create().await?),
         Err(error) => {
             tracing::error!(
@@ -625,6 +677,24 @@ pub(crate) async fn auto_start_if_enabled(
     provider: &dyn TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<Option<SocketAddr>, RemoteListenerError> {
+    auto_start_if_enabled_with_dispatcher(
+        TauriRemoteInvokeDispatcher::shared(app_handle.clone()),
+        handle,
+        store,
+        provider,
+        tailscale,
+    )
+    .await
+}
+
+/// See [`start_listener_with_dispatcher`] for why the core is parameterised over the dispatcher.
+pub(crate) async fn auto_start_if_enabled_with_dispatcher(
+    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+    handle: &RemoteListenerHandle,
+    store: &RemoteHostSettingsStore,
+    provider: &dyn TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
+) -> Result<Option<SocketAddr>, RemoteListenerError> {
     let Some(settings) = store.get().await? else {
         tracing::debug!("Remote host settings are absent; remote listener stays off");
         return Ok(None);
@@ -633,7 +703,7 @@ pub(crate) async fn auto_start_if_enabled(
         tracing::debug!("Remote host mode is disabled; remote listener stays off");
         return Ok(None);
     }
-    start_listener(app_handle, handle, store, provider, tailscale)
+    start_listener_with_dispatcher(invoke_dispatcher, handle, store, provider, tailscale)
         .await
         .map(Some)
 }

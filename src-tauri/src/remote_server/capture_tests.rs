@@ -160,6 +160,91 @@ fn disconnected_capture_channels_drop_without_panicking() {
     assert_eq!(registrar.count("agent:chunk"), 1);
 }
 
+/// `TauriRegistrar` and `RemoteEventCapture::install` were the two uncovered seams in this file:
+/// the coverage round could not reach them because the only handle available was a Wry one, and
+/// building it off the main thread panics on macOS. `MockRuntime` has no `EventLoop`, so the real
+/// production install path (`install` → `TauriRegistrar::listen` → `listen_any`) runs here.
+#[cfg(feature = "test-utils")]
+mod tauri_registrar {
+    use super::*;
+    use tauri::Emitter;
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build")
+    }
+
+    #[test]
+    fn install_registers_real_tauri_listeners_and_routes_emitted_payloads() {
+        let app = mock_app();
+        let (feed, mut receivers) = CaptureFeed::channels(16);
+        RemoteEventCapture::install(app.handle().clone(), feed);
+
+        app.emit("notification:created", serde_json::json!({"id": "n-1"}))
+            .expect("durable event should emit");
+        app.emit("agent:chunk", serde_json::json!({"text": "hi"}))
+            .expect("transient event should emit");
+
+        let durable = receivers
+            .durable
+            .try_recv()
+            .expect("durable event reaches the durable channel");
+        assert_eq!(durable.name, "notification:created");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&durable.payload).unwrap(),
+            serde_json::json!({"id": "n-1"})
+        );
+
+        let transient = receivers
+            .transient
+            .try_recv()
+            .expect("transient event reaches the transient channel");
+        assert_eq!(transient.name, "agent:chunk");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&transient.payload).unwrap(),
+            serde_json::json!({"text": "hi"})
+        );
+    }
+
+    /// The delivery filter is part of `install`, not of the registrar: a Local-only backend row
+    /// must not reach a capture channel even when Tauri really emits it.
+    #[test]
+    fn install_leaves_local_only_events_uncaptured() {
+        let app = mock_app();
+        let (feed, mut receivers) = CaptureFeed::channels(16);
+        RemoteEventCapture::install(app.handle().clone(), feed);
+
+        app.emit("ralphx://check-for-updates", serde_json::json!({}))
+            .expect("local-only event should emit");
+
+        assert!(receivers.durable.try_recv().is_err());
+        assert!(receivers.transient.try_recv().is_err());
+    }
+
+    /// `TauriRegistrar` is `Clone` so the install loop can hand a handle to every classified row;
+    /// a clone must register against the same app, not a detached one.
+    #[test]
+    fn cloned_registrar_registers_against_the_same_app() {
+        let app = mock_app();
+        let (feed, mut receivers) = CaptureFeed::channels(16);
+        let registrar = super::super::TauriRegistrar(app.handle().clone());
+        RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
+
+        app.emit("notification:created", serde_json::json!({"id": "clone"}))
+            .expect("event should emit");
+
+        assert_eq!(
+            receivers
+                .durable
+                .try_recv()
+                .expect("cloned registrar registered a live listener")
+                .name,
+            "notification:created"
+        );
+    }
+}
+
 #[test]
 fn table_has_no_duplicate_names() {
     let mut names = std::collections::HashSet::new();

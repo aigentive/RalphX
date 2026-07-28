@@ -18,10 +18,10 @@ use super::settings::{
     REMOTE_PORT_ENV,
 };
 use super::{
-    allowed_app_origins, apply_exposure_mode as apply_exposure_mode_with_app,
-    authenticated_remote_routes, auto_start_if_enabled as auto_start_if_enabled_with_app,
-    remote_router, start_listener as start_listener_with_app, stop_listener, RemoteListenerError,
-    RemoteListenerHandle, DESCRIPTOR_PATH, HEALTH_PATH, PAIR_PATH, PRE_AUTH_ALLOWLIST,
+    allowed_app_origins, apply_exposure_mode_with_dispatcher, authenticated_remote_routes,
+    auto_start_if_enabled_with_dispatcher, remote_router, start_listener_with_dispatcher,
+    stop_listener, RemoteListenerError, RemoteListenerHandle, DESCRIPTOR_PATH, HEALTH_PATH,
+    PAIR_PATH, PRE_AUTH_ALLOWLIST,
 };
 use crate::infrastructure::sqlite::DbConnection;
 use crate::infrastructure::tailscale::{TailscaleCommandRunner, TailscaleServeError};
@@ -32,12 +32,12 @@ use crate::utils::backend_endpoint::{
 
 const TEST_APP_ORIGIN: &str = "tauri://localhost";
 
-fn test_app_handle() -> tauri::AppHandle {
-    tauri::Builder::default()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .expect("test Wry app should build")
-        .handle()
-        .clone()
+/// The listener under test never dispatches a command, so the auth-test dispatcher fake is the
+/// whole seam it needs. Building a real Wry `AppHandle` here used to panic with
+/// `On macOS, EventLoop must be created on the main thread!`, which failed every test in this
+/// file before the `*_with_dispatcher` split.
+fn test_invoke_dispatcher() -> Arc<dyn super::invoke::RemoteInvokeDispatcher> {
+    Arc::new(super::auth_tests::UnavailableInvokeDispatcher)
 }
 
 async fn start_listener(
@@ -46,7 +46,8 @@ async fn start_listener(
     provider: &dyn super::settings::TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<SocketAddr, RemoteListenerError> {
-    start_listener_with_app(&test_app_handle(), handle, store, provider, tailscale).await
+    start_listener_with_dispatcher(test_invoke_dispatcher(), handle, store, provider, tailscale)
+        .await
 }
 
 async fn auto_start_if_enabled(
@@ -55,7 +56,14 @@ async fn auto_start_if_enabled(
     provider: &dyn super::settings::TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<Option<SocketAddr>, RemoteListenerError> {
-    auto_start_if_enabled_with_app(&test_app_handle(), handle, store, provider, tailscale).await
+    auto_start_if_enabled_with_dispatcher(
+        test_invoke_dispatcher(),
+        handle,
+        store,
+        provider,
+        tailscale,
+    )
+    .await
 }
 
 async fn apply_exposure_mode(
@@ -65,8 +73,8 @@ async fn apply_exposure_mode(
     tailscale: &dyn TailscaleCommandRunner,
     exposure_mode: RemoteExposureMode,
 ) -> Result<super::settings::RemoteHostSettings, RemoteListenerError> {
-    apply_exposure_mode_with_app(
-        &test_app_handle(),
+    apply_exposure_mode_with_dispatcher(
+        test_invoke_dispatcher(),
         handle,
         store,
         provider,
@@ -144,10 +152,10 @@ async fn response_body(response: axum::response::Response) -> Value {
 }
 
 fn descriptor_state() -> RemoteRouterState {
-    RemoteRouterState::new(
+    RemoteRouterState::new_with_invoke_dispatcher(
         "11111111-2222-3333-4444-555555555555",
         super::auth_tests::in_memory_auth_context(),
-        test_app_handle(),
+        test_invoke_dispatcher(),
     )
 }
 
