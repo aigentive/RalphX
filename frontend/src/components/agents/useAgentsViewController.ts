@@ -827,6 +827,10 @@ export function useAgentsViewController({
   });
   const latestVerificationChildSessionId =
     latestVerificationChildQuery.data?.latestChildSessionId ?? null;
+  const conversationScopedLastVerificationFocus =
+    lastVerificationFocus?.conversationId === selectedConversationId
+      ? lastVerificationFocus
+      : null;
   useEffect(() => {
     if (
       !selectedConversationId ||
@@ -837,7 +841,10 @@ export function useAgentsViewController({
     }
     if (!latestVerificationChildSessionId) {
       setLastVerificationFocus((current) =>
-        current?.parentSessionId === knownFocusIdeationSessionId ? null : current,
+        current?.conversationId === selectedConversationId &&
+        current.parentSessionId === knownFocusIdeationSessionId
+          ? null
+          : current,
       );
       return;
     }
@@ -848,7 +855,8 @@ export function useAgentsViewController({
       childSessionId: latestVerificationChildSessionId,
     };
     setLastVerificationFocus((current) =>
-      current?.parentSessionId === nextFocus.parentSessionId &&
+      current?.conversationId === nextFocus.conversationId &&
+      current.parentSessionId === nextFocus.parentSessionId &&
       current.childSessionId === nextFocus.childSessionId
         ? current
         : nextFocus,
@@ -861,12 +869,13 @@ export function useAgentsViewController({
   ]);
   const focusSwitcherIdeationSessionId =
     knownFocusIdeationSessionId ??
-    lastVerificationFocus?.parentSessionId ??
+    conversationScopedLastVerificationFocus?.parentSessionId ??
     null;
   const verificationFocusTarget =
-    lastVerificationFocus &&
-    lastVerificationFocus.parentSessionId === focusSwitcherIdeationSessionId
-      ? lastVerificationFocus
+    conversationScopedLastVerificationFocus &&
+    conversationScopedLastVerificationFocus.parentSessionId ===
+      focusSwitcherIdeationSessionId
+      ? conversationScopedLastVerificationFocus
       : null;
   const taskRuntimeFocusTarget =
     chatFocus.type === "task_runtime" ? chatFocus : null;
