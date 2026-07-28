@@ -14,6 +14,7 @@ import { requestAutomationRunOpen } from "@/components/automations/automationRun
 import { getAutomationConversationTabPolicy } from "@/components/automations/automationConversationTabPolicy";
 import { chatKeys, useConversationSummary } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useManualRoleDefaults } from "@/hooks/useManualRoleDefaults";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
@@ -74,7 +75,6 @@ import {
   hasOpenAgentConversationIssues,
   useAgentConversationIssues,
 } from "./agentConversationIssueQueries";
-import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
@@ -202,6 +202,7 @@ export function useAgentsViewController({
   onCreateProject,
   onOpenAutomation,
 }: UseAgentsViewControllerParams) {
+  const { data: featureFlags } = useFeatureFlags();
   const queryClient = useQueryClient();
   const eventBus = useEventBus();
   const [chatFocus, setChatFocus] = useState<AgentsChatFocus>({ type: "workspace" });
@@ -779,25 +780,27 @@ export function useAgentsViewController({
   const shouldShowWorkspaceReviewTab = Boolean(
     workspaceReviewContext?.shouldShowTab || workspaceReviewArtifactId,
   );
-  const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
+  const availableArtifactTabsWithReview = useMemo<AgentArtifactTab[]>(() => {
     const tabs =
       activeConversation?.contextType === "project" &&
       hasActiveConversationIssues &&
       !availableArtifactTabs.includes("issues")
-        ? (["issues", ...availableArtifactTabs] as IdeationArtifactTab[])
+        ? (["issues", ...availableArtifactTabs] as AgentArtifactTab[])
         : availableArtifactTabs;
-    if (!shouldShowPrReviewTab) {
-      return tabs.filter((tab) => tab !== "review");
-    }
-    if (tabs.includes("review")) {
-      return tabs;
-    }
-    return [...tabs, "review"];
+    const withReview: AgentArtifactTab[] = shouldShowPrReviewTab
+      ? (tabs.includes("review") ? [...tabs] : [...tabs, "review"])
+      : tabs.filter((tab) => tab !== "review");
+    return activeConversation?.coordinationMode === "rx_native_team" &&
+      featureFlags.agentConversationTeam
+      ? [...withReview.filter((tab) => tab !== "team"), "team"]
+      : withReview.filter((tab) => tab !== "team");
   }, [
     activeConversation?.contextType,
+    activeConversation?.coordinationMode,
     availableArtifactTabs,
     hasActiveConversationIssues,
     shouldShowPrReviewTab,
+    featureFlags.agentConversationTeam,
   ]);
   const hasAutomationArtifact =
     activeConversation?.agentMode === "automation" &&

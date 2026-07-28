@@ -33,6 +33,8 @@ import type { ContextType } from "@/types/chat-conversation";
 import type { AgentRunCompletedPayload } from "@/types/events";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { ChatMessageResponse } from "@/api/chat";
+import { ManagedTeamMemberSchema } from "@/api/managed-team";
+import { reconcileManagedTeamEvent } from "@/hooks/useManagedTeam";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "@/api/diff";
 import type { ContentBlockItem } from "@/components/Chat/MessageItem";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
@@ -358,6 +360,45 @@ type AgentMessageCreatedPayload = {
   render_ready?: RenderReadyMessageCreatedPayload | null;
 };
 
+type TeamMemberEventPayload = {
+  conversation_id?: unknown;
+  conversationId?: unknown;
+  parent_run_id?: unknown;
+  parentRunId?: unknown;
+  run_id?: unknown;
+  sequence?: unknown;
+  seq?: unknown;
+  member?: unknown;
+};
+
+function reconcileTeamMemberEvent(
+  queryClient: ReturnType<typeof useQueryClient>,
+  activeConversationId: string | null,
+  activeAgentRunId: string | null | undefined,
+  payload: TeamMemberEventPayload,
+) {
+  const conversationId = payload.conversation_id ?? payload.conversationId;
+  if (typeof conversationId !== "string") return;
+  const rawParentRunId =
+    payload.parent_run_id ?? payload.parentRunId ?? payload.run_id;
+  const parentRunId =
+    typeof rawParentRunId === "string" ? rawParentRunId : null;
+  const rawSequence = payload.sequence ?? payload.seq;
+  const sequence = typeof rawSequence === "number" ? rawSequence : null;
+  const parsedMember =
+    payload.member == null
+      ? null
+      : ManagedTeamMemberSchema.safeParse(payload.member);
+  if (parsedMember && !parsedMember.success) return;
+
+  reconcileManagedTeamEvent(queryClient, activeConversationId, activeAgentRunId, {
+    conversationId,
+    parentRunId,
+    sequence,
+    member: parsedMember?.data ?? null,
+  });
+}
+
 function contentBlockFromToolCall(toolCall: ToolCall): ContentBlockItem {
   return {
     type: "tool_use",
@@ -642,6 +683,26 @@ export function useChatEvents({
       setStreamingContentBlocks(() => blocks);
       setStreamingTasks(() => reconciliation.tasks);
     };
+
+    // Team state is server state. This hook is the single realtime writer for
+    // its query cache; status consumers only read the cache. Member events are
+    // independently guarded by conversation, parent run, generation, and seq.
+    for (const eventName of [
+      "team:member_updated",
+      "team:member_status",
+      "team:roster_updated",
+    ] as const) {
+      unsubscribes.push(
+        bus.subscribe<TeamMemberEventPayload>(eventName, (payload) => {
+          reconcileTeamMemberEvent(
+            queryClient,
+            activeConversationId,
+            activeAgentRunId,
+            payload,
+          );
+        }),
+      );
+    }
 
     // ── agent:tool_call ──────────────────────────────────────────────
     // Handles tool call accumulation for streaming display.

@@ -55,6 +55,7 @@ import {
   type CapabilityIntent,
   type SendAgentMessageResult,
   type TeamIntent,
+  type TeamMessageTarget,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import type { MessageFolderReference } from "./MessageReferences.parse";
@@ -157,6 +158,7 @@ type PersonaRetryAttempt = {
         excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
+        teamMessageTarget?: TeamMessageTarget | null;
       }
     | undefined;
 };
@@ -284,6 +286,7 @@ export interface IntegratedChatComposerRenderProps {
       excerptReferences?: ComposerExcerptReference[];
       capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
+      teamMessageTarget?: TeamMessageTarget | null;
     },
   ) => Promise<void>;
   onStop: () => Promise<void>;
@@ -1098,6 +1101,7 @@ export function IntegratedChatPanel({
         excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
+        teamMessageTarget?: TeamMessageTarget | null;
       },
     ) => {
       personaRetryAttemptRef.current = { message, options };

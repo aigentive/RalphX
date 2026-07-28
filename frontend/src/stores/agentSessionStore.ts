@@ -39,6 +39,7 @@ export type AgentArtifactTab =
   | "plan"
   | "verification"
   | "tasks"
+  | "team"
   | "pr"
   | "jira"
   | "linear"
@@ -50,6 +51,7 @@ export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
   "plan",
   "verification",
   "tasks",
+  "team",
   "automation",
   "persona",
   "pr",

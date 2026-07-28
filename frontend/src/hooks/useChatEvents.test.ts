@@ -31,7 +31,21 @@ const mockInvalidateQueries = vi.fn();
 const mockUpsertFinalizedMessageIntoConversationCache = vi.fn();
 const mockUpsertRenderReadyMessageIntoConversationCache = vi.fn();
 let mockQueryData: { messages: Array<{ id: string }> } | undefined = undefined;
-const mockGetQueryData = vi.fn(() => mockQueryData);
+const managedTeamCache = new Map<string, unknown>();
+const cacheKey = (key: unknown) => JSON.stringify(key);
+const mockGetQueryData = vi.fn((key?: unknown) =>
+  Array.isArray(key) && key[0] === "managed-team"
+    ? managedTeamCache.get(cacheKey(key))
+    : mockQueryData,
+);
+const mockSetQueryData = vi.fn((key: unknown, value: unknown) => {
+  const previous = managedTeamCache.get(cacheKey(key));
+  const next = typeof value === "function"
+    ? (value as (current: unknown) => unknown)(previous)
+    : value;
+  managedTeamCache.set(cacheKey(key), next);
+  return next;
+});
 const cacheSubscribers: Array<(event: { type: string; query: { queryKey: unknown[] } }) => void> = [];
 function fireCacheEvent(event: { type: string; query: { queryKey: unknown[] } }) {
   for (const fn of cacheSubscribers) fn(event);
@@ -60,6 +74,7 @@ vi.mock("@tanstack/react-query", () => ({
     invalidateQueries: mockInvalidateQueries,
     cancelQueries: mockCancelQueries,
     getQueryData: mockGetQueryData,
+    setQueryData: mockSetQueryData,
     getQueryCache: () => ({
       subscribe: (fn: (event: { type: string; query: { queryKey: unknown[] } }) => void) => {
         cacheSubscribers.push(fn);
@@ -106,6 +121,7 @@ vi.mock("@/lib/chat-context-registry", () => ({
 // ============================================================================
 
 import { useChatEvents } from "./useChatEvents";
+import { managedTeamKeys } from "./useManagedTeam";
 import { useChatStore } from "@/stores/chatStore";
 
 // ============================================================================
@@ -188,6 +204,8 @@ describe("useChatEvents", () => {
     mockUpsertRenderReadyMessageIntoConversationCache.mockReturnValue(false);
     mockCancelQueries.mockClear();
     mockGetQueryData.mockClear();
+    mockSetQueryData.mockClear();
+    managedTeamCache.clear();
     mockQueryData = undefined;
     cacheSubscribers.length = 0;
     useChatStore.setState({
@@ -206,6 +224,79 @@ describe("useChatEvents", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("patches only current Team member events and rejects stale sequence updates", () => {
+    const statusKey = managedTeamKeys.status(CONV_ID);
+    mockSetQueryData(statusKey, {
+      session: { id: "team-1" },
+      members: [
+        {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "idle",
+          generation: 2,
+        },
+      ],
+    });
+    renderAndClear(makeProps({ activeAgentRunId: "run-current" }));
+
+    act(() => {
+      fireEvent("team:member_updated", {
+        conversation_id: CONV_ID,
+        parent_run_id: "run-current",
+        sequence: 7,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "working",
+          generation: 3,
+        },
+      });
+      fireEvent("team:member_updated", {
+        conversation_id: CONV_ID,
+        parent_run_id: "run-current",
+        sequence: 6,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "failed",
+          generation: 4,
+        },
+      });
+      fireEvent("team:member_updated", {
+        conversation_id: "another-conversation",
+        parent_run_id: "run-current",
+        sequence: 8,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "failed",
+          generation: 4,
+        },
+      });
+    });
+
+    expect(
+      (managedTeamCache.get(cacheKey(statusKey)) as { members: Array<{ status: string }> })
+        .members[0]?.status,
+    ).toBe("working");
   });
 
   it("rejects delegated lifecycle events from a stale parent run", () => {
