@@ -457,14 +457,15 @@ pub(crate) async fn enforce_auth_endpoint_rate_limit(
         return next.run(request).await;
     }
     let retry_after_secs = decision.retry_after_secs().unwrap_or(1);
-    state
-        .auth()
-        .record_audit(
-            None,
-            RemoteAuditAction::RateLimited,
-            Some(&request_detail(&request)),
-        )
-        .await;
+    // Deliberately no audit row: this rejection carries no identity, and a flood that trips
+    // the bucket would otherwise append one durable row per refused request — letting refused
+    // traffic out-write accepted traffic. Attributable rate limiting (per device, per pairing
+    // code) still audits, because it is bounded by the identity it names.
+    tracing::warn!(
+        detail = %request_detail(&request),
+        retry_after_secs,
+        "Remote auth endpoint refused a request over the pre-auth flood ceiling"
+    );
     RemoteAuthRejection::RateLimited { retry_after_secs }.into_response()
 }
 
@@ -496,12 +497,20 @@ pub(crate) async fn authenticate_remote_request(
     let detail = request_detail(&request);
     let peer_key = auth_endpoint_key(auth.exposure_mode, peer_address(&request));
 
-    let device = match extract_bearer(request.headers()) {
-        Ok(token) => match auth.resolve_device(&token).await {
-            Ok(device) => device,
-            Err(rejection) => return reject(&auth, rejection, None, &detail, &peer_key).await,
-        },
-        Err(rejection) => return reject(&auth, rejection, None, &detail, &peer_key).await,
+    let raw_token = match extract_bearer(request.headers()) {
+        Ok(token) => token,
+        // No token was presented, so there is no identity to punish: rate limiting alone
+        // governs this path (a lockout would have to land on a shared key).
+        Err(rejection) => return reject(&auth, rejection, None, &detail, None, &peer_key).await,
+    };
+    // The failure identity is the presented token, never the shared pre-auth key: a bad
+    // bearer must not be able to lock out pairing or ws-ticket minting for other devices.
+    let token_key = RemoteRateLimitKey::bearer_token(hash_key(&raw_token));
+    let device = match auth.resolve_device(&raw_token).await {
+        Ok(device) => device,
+        Err(rejection) => {
+            return reject(&auth, rejection, None, &detail, Some(&token_key), &peer_key).await
+        }
     };
 
     let device_key = RemoteRateLimitKey::device(&device.id);
@@ -511,6 +520,7 @@ pub(crate) async fn authenticate_remote_request(
             RemoteAuthRejection::RateLimited { retry_after_secs },
             Some(&device.id),
             &detail,
+            None,
             &peer_key,
         )
         .await;
@@ -521,6 +531,7 @@ pub(crate) async fn authenticate_remote_request(
             RemoteAuthRejection::TooManyConcurrentRequests,
             Some(&device.id),
             &detail,
+            None,
             &peer_key,
         )
         .await;
@@ -546,7 +557,7 @@ pub(crate) async fn authenticate_remote_request(
     {
         tracing::warn!(%error, device_id = %device.id, "Updating remote device last_seen_at failed");
     }
-    auth.limiter.record_success(&peer_key);
+    auth.limiter.record_success(&token_key);
 
     request
         .extensions_mut()
@@ -554,19 +565,35 @@ pub(crate) async fn authenticate_remote_request(
     next.run(request).await
 }
 
+/// Refuses a request, optionally charging the failure to `failure_key`.
+///
+/// `failure_key` is `None` whenever no attributable credential was presented (absent or
+/// malformed bearer, rate limiting). It is never the pre-auth key: charging the lockout
+/// there would let one peer deny pairing and ws-ticket minting for every device (§4.4, P-8).
+/// `peer_key` is used only as a coarse bucket, to bound how fast an unauthenticated flood can
+/// append to the audit log.
 async fn reject(
     auth: &RemoteAuthContext,
     rejection: RemoteAuthRejection,
     device_id: Option<&RemoteDeviceId>,
     detail: &str,
+    failure_key: Option<&RemoteRateLimitKey>,
     peer_key: &RemoteRateLimitKey,
 ) -> Response {
     if rejection.counts_as_auth_failure() {
-        auth.limiter.record_failure(peer_key);
+        if let Some(failure_key) = failure_key {
+            auth.limiter.record_failure(failure_key);
+        }
     }
-    let audit_detail = format!("{detail} — {rejection}");
-    auth.record_audit(device_id, rejection.audit_action(), Some(&audit_detail))
-        .await;
+    // Authenticated rejections always leave a trail. Unauthenticated ones are the only path a
+    // flooder can drive without limit, and every audit row is a durable write, so they spend
+    // the coarse pre-auth bucket: past the ceiling the request is still refused, it just stops
+    // appending a row per attempt.
+    if device_id.is_some() || auth.limiter.check(peer_key).is_allowed() {
+        let audit_detail = format!("{detail} — {rejection}");
+        auth.record_audit(device_id, rejection.audit_action(), Some(&audit_detail))
+            .await;
+    }
     tracing::debug!(%rejection, detail, "Remote request refused");
     rejection.into_response()
 }

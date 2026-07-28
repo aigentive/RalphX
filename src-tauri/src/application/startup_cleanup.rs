@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use crate::domain::repositories::ValidationRunRepository;
+use crate::domain::repositories::{RemoteAuditLogRepository, ValidationRunRepository};
 use crate::AppState;
 
 pub(crate) async fn run_startup_cleanup(app_state: &AppState) {
@@ -51,6 +51,10 @@ pub(crate) async fn run_startup_cleanup(app_state: &AppState) {
         });
     }
 
+    // Remote audit log retention: the :3849 middleware appends a row per auth decision, so
+    // without a ceiling the table grows for the life of the install.
+    prune_remote_audit_log_on_startup(app_state).await;
+
     // All spawned processes are Tauri children — app restart means they are dead.
     let process_repo = Arc::clone(&app_state.process_repo);
     match process_repo.fail_all_active("app_restart").await {
@@ -80,6 +84,29 @@ async fn mark_orphaned_validation_runs_on_startup(
             error = %e,
             "Failed to mark orphaned running validation runs as error on startup"
         ),
+    }
+}
+
+/// Retention for `remote_audit_log` (§5.5).
+///
+/// The remote listener writes an audit row per auth decision on the request path, and reads
+/// are already capped at 1000 rows, so the only thing that bounds the table is this sweep.
+/// Failure is logged, never fatal: a missing sweep costs disk, not correctness.
+async fn prune_remote_audit_log_on_startup(app_state: &AppState) {
+    const REMOTE_AUDIT_RETENTION_DAYS: i64 = 30;
+    let cutoff = crate::remote_server::auth::remote_timestamp(
+        chrono::Utc::now() - chrono::Duration::days(REMOTE_AUDIT_RETENTION_DAYS),
+    );
+    let repo =
+        crate::infrastructure::sqlite::SqliteRemoteAccessRepository::from_db(app_state.db.clone());
+    match RemoteAuditLogRepository::prune_before(&repo, &cutoff).await {
+        Ok(0) => {}
+        Ok(pruned) => info!(
+            count = pruned,
+            days = REMOTE_AUDIT_RETENTION_DAYS,
+            "Pruned expired remote audit log rows on startup"
+        ),
+        Err(error) => warn!(error = %error, "Failed to prune the remote audit log on startup"),
     }
 }
 

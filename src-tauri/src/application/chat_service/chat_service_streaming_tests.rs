@@ -1232,6 +1232,109 @@ async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
 }
 
 #[tokio::test]
+async fn claude_text_only_in_flight_stream_persists_timeline_snapshot_before_finalization() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Still working through the timeline."}]},"session_id":"sess-text-only"}"#,
+    )
+    .await;
+    let cancellation_token = CancellationToken::new();
+    let stream_task = tokio::spawn({
+        let chat_message_repo = state.chat_message_repo.clone();
+        let chat_timeline_repo = state.chat_timeline_repo.clone();
+        let cancellation_token = cancellation_token.clone();
+        let conversation_id = conversation_id.clone();
+        let context_id = context_id.clone();
+        let pre_assistant_id = pre_assistant_id.clone();
+
+        async move {
+            process_stream_background::<MockRuntime>(
+                child,
+                AgentHarnessKind::Claude,
+                ChatContextType::Ideation,
+                context_id.as_str(),
+                &conversation_id,
+                None,
+                None,
+                None,
+                Some(chat_message_repo),
+                Some(chat_timeline_repo),
+                Some(pre_assistant_id),
+                None,
+                cancellation_token,
+                StreamingStateCache::new(),
+                None,
+                None,
+                Some("stream-run-id".to_string()),
+                None,
+                None,
+                false,
+                false,
+                None,
+                None,
+                None,
+            )
+            .await
+        }
+    });
+
+    let streaming_item = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let page = state
+                .chat_timeline_repo
+                .get_page(&conversation_id, 20, None)
+                .await
+                .expect("load streaming timeline page");
+            if let Some(item) = page.items.into_iter().find(|item| {
+                item.message_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == pre_assistant_id)
+            }) {
+                return item;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("text-only stream must persist before it finalizes");
+
+    assert_eq!(streaming_item.status, ChatTimelineItemStatus::Streaming);
+    assert_eq!(streaming_item.block_index, 0);
+    assert_eq!(
+        streaming_item.text.as_deref(),
+        Some("Still working through the timeline.")
+    );
+    assert!(
+        streaming_item.finalized_at.is_none(),
+        "the in-flight snapshot must remain streaming until the turn reaches its terminal path"
+    );
+
+    cancellation_token.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), stream_task)
+        .await
+        .expect("cancelled text-only stream should stop promptly")
+        .expect("stream task should not panic");
+    assert!(matches!(result, Err(StreamError::Cancelled { .. })));
+}
+
+#[tokio::test]
 async fn claude_multi_turn_stream_persists_combined_usage_to_canonical_run() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
@@ -1416,6 +1519,88 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .items
         .iter()
         .all(|item| item.finalized_at.is_some()));
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_preserves_streaming_block_order_and_kind_when_finalized() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-streaming-finalized-parity".to_string());
+    let blocks = vec![
+        ContentBlockItem::Text {
+            text: "Inspecting the persisted transcript.".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-read".to_string()),
+            name: "Read".to_string(),
+            arguments: serde_json::json!("src/application/chat_service.rs"),
+            result: Some(serde_json::json!("contents")),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "The timeline snapshot is the shared seam.".to_string(),
+        },
+    ];
+
+    let streaming_items = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+    let streaming_projection = streaming_items
+        .iter()
+        .map(|item| {
+            (
+                item.block_index,
+                item.kind,
+                item.text.clone(),
+                item.tool_call_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
+
+    let finalized = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 20, None)
+        .await
+        .expect("load finalized timeline page");
+    let finalized_projection = finalized
+        .items
+        .iter()
+        .map(|item| {
+            (
+                item.block_index,
+                item.kind,
+                item.text.clone(),
+                item.tool_call_id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        finalized_projection, streaming_projection,
+        "finalization must retain every block rendered while streaming with its original order and kind"
+    );
+    assert!(
+        finalized
+            .items
+            .iter()
+            .all(|item| item.status == ChatTimelineItemStatus::Finalized && item.finalized_at.is_some()),
+        "finalization may change lifecycle metadata but must not alter the durable rendered projection"
+    );
 }
 
 #[tokio::test]

@@ -11,7 +11,7 @@ use crate::remote_server::settings::{
 };
 use crate::remote_server::{
     apply_exposure_mode, remote_listener_handle, start_listener, stop_listener,
-    RemoteListenerHandle,
+    RemoteListenerHandle, RemoteServeDegradedKind,
 };
 use crate::AppState;
 
@@ -26,10 +26,16 @@ pub struct RemoteListenerStatus {
     /// from this field, or a dev-parity host will advertise a port nothing listens on.
     pub port: u16,
     pub environment_id: String,
+    /// Whether this process holds a bound listener. Like `serve_active`, a start-time fact:
+    /// it is not a liveness probe of the socket or of `tailscaled`.
     pub running: bool,
     pub bind_address: Option<String>,
+    /// Serve state as of the last start (see `RemoteServeStatus`) — never re-probed.
     pub serve_active: bool,
     pub serve_degraded_reason: Option<String>,
+    /// Machine-readable degradation cause; branch on this, never on the reason prose
+    /// (rule 5).
+    pub serve_degraded_kind: Option<RemoteServeDegradedKind>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +63,7 @@ async fn listener_status(
         bind_address: bind_address.map(|address| address.to_string()),
         serve_active: serve.active,
         serve_degraded_reason: serve.degraded_reason,
+        serve_degraded_kind: serve.degraded_kind,
     }
 }
 

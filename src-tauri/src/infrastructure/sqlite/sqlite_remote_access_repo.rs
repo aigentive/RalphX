@@ -359,6 +359,21 @@ impl RemotePairingCodeRepository for SqliteRemoteAccessRepository {
                 )
                 .map_err(|error| AppError::Database(error.to_string()))?;
 
+                // Same transaction as the mint: a pairing that commits always leaves a trail,
+                // and an audit failure rolls the device back instead of stranding an active
+                // credential whose token was never delivered.
+                conn.execute(
+                    "INSERT INTO remote_audit_log (device_id, action, detail, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        redemption.device_id.as_str(),
+                        RemoteAuditAction::PairingSucceeded.as_db_value(),
+                        redemption.audit_detail,
+                        redemption.now,
+                    ],
+                )
+                .map_err(|error| AppError::Database(error.to_string()))?;
+
                 let device =
                     read_device(conn, redemption.device_id.as_str())?.ok_or_else(|| {
                         AppError::Database(
@@ -666,6 +681,23 @@ impl RemoteAuditLogRepository for SqliteRemoteAccessRepository {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| AppError::Database(error.to_string()))?;
                 Ok(rows)
+            })
+            .await
+    }
+
+    async fn prune_before(&self, cutoff: &str) -> AppResult<usize> {
+        let cutoff = cutoff.to_string();
+        self.db
+            .run(move |conn| {
+                // Lexicographic comparison is chronological here: every timestamp this crate
+                // writes is fixed-width RFC3339 UTC.
+                let affected = conn
+                    .execute(
+                        "DELETE FROM remote_audit_log WHERE created_at < ?1",
+                        rusqlite::params![cutoff],
+                    )
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                Ok(affected)
             })
             .await
     }

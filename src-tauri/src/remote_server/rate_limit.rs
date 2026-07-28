@@ -10,6 +10,11 @@
 //! the *presented pairing code* (so two devices redeeming different codes lock out
 //! independently), and post-auth limiting keys on `device_id`. Only direct-tailnet mode,
 //! where the source really is the peer's `100.x` address, keys on the peer.
+//!
+//! **Lockouts never ride on the global key.** The `Global` bucket is shared by every peer, so
+//! a punitive lockout stored there would deny pairing and ws-ticket minting host-wide. Auth
+//! failures on the authenticated routes therefore accrue on the *presented token hash*
+//! ([`RemoteRateLimitKey::BearerToken`]), never on `Global` (§4.4, P-8).
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -45,10 +50,22 @@ pub(crate) const REMOTE_RATE_LIMIT_DEFAULTS: RemoteRateLimitParams = RemoteRateL
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum RemoteRateLimitKey {
     /// Coarse flood ceiling shared by all pre-auth callers under Serve.
+    ///
+    /// **Bucket only.** Nothing may ever `record_failure` on this key: the pre-auth
+    /// middleware consults it for every `/remote/v1/auth/*` request, so a lockout parked
+    /// here would let one peer block pairing and ws-ticket minting for every device — the
+    /// exact cross-device denial §4.4 keys the lockout on identity to prevent (P-8).
     Global,
     /// The SHA-256 of a presented pairing code — the identity that carries the lockout, so
     /// one peer's brute force cannot lock out a different device's pairing attempt.
     PairingCode(String),
+    /// The SHA-256 of a presented **bearer token**: the post-auth failure identity.
+    ///
+    /// Separate namespace from [`Self::Global`] on purpose. Bearer rejections on the
+    /// authenticated routes accrue here, so a garbage-bearer flood cannot spill its lockout
+    /// onto the pre-auth endpoints. Guessing throughput stays bounded by the pre-auth
+    /// bucket, not by this key.
+    BearerToken(String),
     /// A paired device, post-auth.
     Device(String),
     /// A real tailnet peer address; direct-tailnet exposure only.
@@ -62,6 +79,10 @@ impl RemoteRateLimitKey {
 
     pub(crate) fn pairing_code(code_hash: impl Into<String>) -> Self {
         Self::PairingCode(code_hash.into())
+    }
+
+    pub(crate) fn bearer_token(token_hash: impl Into<String>) -> Self {
+        Self::BearerToken(token_hash.into())
     }
 }
 
@@ -119,6 +140,10 @@ struct BucketState {
 struct FailureState {
     failure_count: u32,
     locked_until: Option<Instant>,
+    /// When the streak last grew. Kept so pruning can retain a *sub-lockout* streak: an
+    /// attacker minting fresh identities must not be able to overflow the map and wipe the
+    /// 4-failures-so-far state it is about to trip.
+    last_failure_at: Option<Instant>,
 }
 
 /// RAII guard for a device's HTTP concurrency slot.
@@ -208,6 +233,10 @@ impl RemoteRateLimiter {
     }
 
     pub(crate) fn record_failure_at(&self, key: &RemoteRateLimitKey, now: Instant) {
+        debug_assert!(
+            !matches!(key, RemoteRateLimitKey::Global),
+            "the pre-auth Global key is a bucket only; a lockout here denies every device"
+        );
         self.prune_idle_identities(now);
         let mut state = self.failures.entry(key.clone()).or_default();
         // Clear an expired lockout first so a stale one does not compound.
@@ -215,6 +244,7 @@ impl RemoteRateLimiter {
             *state = FailureState::default();
         }
         state.failure_count = state.failure_count.saturating_add(1);
+        state.last_failure_at = Some(now);
         if state.failure_count >= self.params.auth_failures_before_lockout {
             state.locked_until = Some(now + self.params.lockout);
         }
@@ -261,13 +291,21 @@ impl RemoteRateLimiter {
         })
     }
 
-    /// Bounds memory by dropping identities that hold no live lockout and no drained
-    /// bucket. An identity currently locked out or still short of tokens is always kept, so
-    /// pruning can never hand a flooder a fresh budget.
+    /// Bounds memory by dropping identities that hold no live lockout, no recent failure,
+    /// and no drained bucket. An identity currently locked out, mid-streak within the
+    /// lockout window, or still short of tokens is always kept, so pruning can never hand a
+    /// flooder a fresh budget.
     fn prune_idle_identities(&self, now: Instant) {
         if self.failures.len() > IDENTITY_MAP_SOFT_CAP {
-            self.failures
-                .retain(|_, state| state.locked_until.is_some_and(|until| now < until));
+            let lockout = self.params.lockout;
+            self.failures.retain(|_, state| {
+                state.locked_until.is_some_and(|until| now < until)
+                    // A sub-lockout streak is live state too: dropping it would reset the
+                    // flooder's own budget, which is what the cap must never do.
+                    || state
+                        .last_failure_at
+                        .is_some_and(|at| now.saturating_duration_since(at) < lockout)
+            });
         }
         if self.buckets.len() > IDENTITY_MAP_SOFT_CAP {
             let capacity = self.params.requests_per_second;

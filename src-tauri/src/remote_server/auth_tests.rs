@@ -24,8 +24,8 @@ use super::endpoints::RemoteRouterState;
 use super::session_registry::{RemoteSessionAdmission, RemoteSessionRegistry};
 use super::settings::RemoteExposureMode;
 use super::{
-    authenticated_remote_routes, DESCRIPTOR_PATH, HEALTH_PATH, PAIR_PATH, SESSION_PATH,
-    WS_TICKET_PATH,
+    authenticated_remote_routes, DESCRIPTOR_PATH, HEALTH_PATH, PAIR_PATH, REVOKE_PATH,
+    SESSION_PATH, WS_TICKET_PATH,
 };
 use crate::domain::entities::{
     RemoteAuditEntry, RemoteDevice, RemoteDeviceId, RemotePairingCode, RemotePairingCodeId,
@@ -969,6 +969,187 @@ async fn deleting_without_a_session_id_closes_every_session_on_the_callers_devic
         bystander_kill.try_recv(),
         None,
         "another device's session must survive"
+    );
+}
+
+/// P-8, the path the per-code independence test does not reach: bearer failures arrive on the
+/// AUTHENTICATED routes, and under Serve every caller looks like loopback. If those failures
+/// were charged to the shared pre-auth key, five garbage bearers on `/remote/v1/session` would
+/// lock every device out of pairing and ws-ticket minting for 30 s.
+#[tokio::test]
+async fn bad_bearers_on_an_authenticated_route_never_lock_out_pairing() {
+    let context = in_memory_auth_context();
+
+    for attempt in 0..8 {
+        let response = router_for(&context)
+            .oneshot(get_with_bearer(
+                SESSION_PATH,
+                Some(&format!("rxd_live_garbageguess{attempt:015}")),
+            ))
+            .await
+            .expect("bad-bearer request should complete");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "attempt {attempt} should be an ordinary refusal, not a lockout"
+        );
+    }
+
+    let code = mint_pairing_code(&context, RemoteScopeSet::default_pairing_grant()).await;
+    let paired = router_for(&context)
+        .oneshot(post_json(
+            PAIR_PATH,
+            None,
+            json!({"pairingCode": code, "deviceName": "owner phone"}),
+        ))
+        .await
+        .expect("pair request should complete");
+
+    assert_eq!(
+        paired.status(),
+        StatusCode::OK,
+        "a hostile peer's bearer guesses must not deny pairing to other devices"
+    );
+}
+
+/// The same isolation in the other direction: repeated failures on ONE token must not deny a
+/// different, valid device.
+#[tokio::test]
+async fn a_locked_out_bearer_does_not_lock_out_a_paired_device() {
+    let context = in_memory_auth_context();
+    let (token, _) = pair_device(&context, "laptop").await;
+    for _ in 0..6 {
+        router_for(&context)
+            .oneshot(get_with_bearer(
+                SESSION_PATH,
+                Some("rxd_live_thesamewrongguessrepeated"),
+            ))
+            .await
+            .expect("bad-bearer request should complete");
+    }
+
+    let response = router_for(&context)
+        .oneshot(get_with_bearer(SESSION_PATH, Some(&token)))
+        .await
+        .expect("authenticated request should complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------------------
+// Self-revocation (§6.1 removal ordering / P-27)
+// ---------------------------------------------------------------------------------------
+
+/// The client's staged remove/re-pair machines call this route; without it their "host revoke"
+/// step hits the router fallback and the device row stays live forever.
+#[tokio::test]
+async fn a_device_can_revoke_its_own_token_and_is_refused_afterwards() {
+    let context = in_memory_auth_context();
+    let (token, device_id) = pair_device(&context, "laptop").await;
+    let (bystander_token, _) = pair_device(&context, "phone").await;
+
+    let revoked = router_for(&context)
+        .oneshot(post_json(REVOKE_PATH, Some(&token), json!({})))
+        .await
+        .expect("self-revoke should complete");
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(revoked).await["deviceId"],
+        json!(device_id.to_string())
+    );
+
+    let replayed = router_for(&context)
+        .oneshot(get_with_bearer(SESSION_PATH, Some(&token)))
+        .await
+        .expect("post-revoke request should complete");
+    let bystander = router_for(&context)
+        .oneshot(get_with_bearer(SESSION_PATH, Some(&bystander_token)))
+        .await
+        .expect("bystander request should complete");
+    let stored = context
+        .devices
+        .get(&device_id)
+        .await
+        .expect("device should read")
+        .expect("device row should survive revocation");
+
+    assert_eq!(replayed.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        bystander.status(),
+        StatusCode::OK,
+        "self-revocation is self-scoped: no device may revoke another"
+    );
+    assert!(stored.revoked_at.is_some());
+    assert!(audit_actions(&context)
+        .await
+        .contains(&"device_revoked".to_string()));
+}
+
+/// Self-revocation must reach the live-session registry, not just the row (§4.4).
+#[tokio::test]
+async fn self_revocation_tears_down_the_devices_live_sessions() {
+    let context = in_memory_auth_context();
+    let (token, device_id) = pair_device(&context, "laptop").await;
+    let session_id = RemoteSessionId::new();
+    let RemoteSessionAdmission::Admitted(mut kill) =
+        context.registry.register(&device_id, &session_id)
+    else {
+        panic!("a fresh session should be admitted");
+    };
+
+    router_for(&context)
+        .oneshot(post_json(REVOKE_PATH, Some(&token), json!({})))
+        .await
+        .expect("self-revoke should complete");
+
+    assert_eq!(kill.try_recv(), Some(ResetReason::Revoked));
+}
+
+/// C-11 parity: the two hand-written pairing DTOs (host `PairRequest`/`PairResponse` and
+/// client `PairWire*`) must survive a real round trip through each other, so a rename on one
+/// side fails here instead of at runtime.
+#[test]
+fn the_pair_wire_shapes_round_trip_between_host_and_client() {
+    use crate::infrastructure::remote_host_client::{PairWireRequest, PairWireResponse};
+    use crate::remote_server::auth_endpoints::{PairRequest, PairResponse};
+
+    let client_request = PairWireRequest {
+        pairing_code: "rxp_0123456789abcdefghijklmnopqrstuv".to_string(),
+        device_name: "RalphX Desktop 0.81.0".to_string(),
+        client_version: "0.81.0".to_string(),
+        requested_scopes: vec![Scope::UiRead, Scope::UiOperate],
+    };
+    let host_request: PairRequest =
+        serde_json::from_value(serde_json::to_value(&client_request).expect("client serializes"))
+            .expect("the host must parse what the client sends");
+
+    let host_response = PairResponse {
+        device_token: "rxd_live_secret".to_string(),
+        device_id: "device-1".to_string(),
+        scopes: vec![Scope::UiRead],
+        environment_id: TEST_ENVIRONMENT_ID.to_string(),
+        protocol_version: ralphx_remote_protocol::PROTOCOL_VERSION,
+    };
+    let client_response: PairWireResponse =
+        serde_json::from_value(serde_json::to_value(&host_response).expect("host serializes"))
+            .expect("the client must parse what the host answers");
+
+    assert_eq!(host_request.pairing_code, client_request.pairing_code);
+    assert_eq!(host_request.device_name, client_request.device_name);
+    assert_eq!(
+        host_request.client_version.as_deref(),
+        Some(client_request.client_version.as_str()),
+        "the host audits clientVersion; the client must actually send it"
+    );
+    assert_eq!(
+        host_request.requested_scopes,
+        Some(client_request.requested_scopes)
+    );
+    assert_eq!(client_response.device_token, host_response.device_token);
+    assert_eq!(client_response.environment_id, host_response.environment_id);
+    assert_eq!(
+        client_response.protocol_version,
+        Some(host_response.protocol_version)
     );
 }
 

@@ -21,6 +21,7 @@ use super::{
     persona_resolve_flags_for_conversation, team_intent_for_persisted_coordination_mode,
     ChatService, SendMessageOptions,
 };
+use crate::application::conversation_reference_inheritance::collect_conversation_inherited_integration_references;
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
@@ -1954,6 +1955,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.granola_integration_service)
             });
+            let clickup_integration_service = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.clickup_integration_service)
+            });
             let agent_conversation_jira_issue_repo = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.agent_conversation_jira_issue_repo)
@@ -2017,21 +2022,44 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 } else {
                     None
                 };
-            let merged_jira_references =
-                crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
-                    assigned_jira_issue.as_ref(),
-                    &queued_msg.composer_integration_references,
-                );
-            let merged_linear_references =
-                crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
-                    assigned_linear_issue.as_ref(),
-                    &merged_jira_references,
-                );
-            let merged_integration_references =
-                crate::application::agent_conversation_granola_note::merge_assigned_granola_reference(
-                    assigned_granola_note.as_ref(),
-                    &merged_linear_references,
-                );
+            let inherited_integration_references =
+                match collect_conversation_inherited_integration_references(
+                    chat_message_repo.as_ref(),
+                    &conversation_id,
+                )
+                .await
+                {
+                    Ok(references) => references,
+                    Err(error) => {
+                        let error = error.to_string();
+                        tracing::error!(
+                            conversation_id = %conversation_id.as_str(),
+                            queued_message_id = %queued_msg.id,
+                            error = %error,
+                            "[QUEUE] Failed to load inherited integration references"
+                        );
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            app_handle.as_ref(),
+                            &queued_run_id,
+                            &error,
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+            let merged_integration_references = super::merge_conversation_integration_references(
+                &inherited_integration_references.references,
+                &queued_msg.composer_integration_references,
+                assigned_jira_issue.as_ref(),
+                assigned_linear_issue.as_ref(),
+                assigned_granola_note.as_ref(),
+            );
+            log_skipped_integration_references(
+                &inherited_integration_references.skipped_references,
+            );
 
             let runtime_content =
                 super::chat_service_composer_references::expand_project_references_for_prompt(
@@ -2045,6 +2073,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 atlassian_integration_service,
                 linear_integration_service,
                 granola_integration_service,
+                clickup_integration_service,
             )
             .await;
             log_skipped_integration_references(&integration_expansion.skipped_references);

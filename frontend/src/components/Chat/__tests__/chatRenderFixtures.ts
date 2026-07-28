@@ -82,6 +82,36 @@ export function makeContentToolUse(
   };
 }
 
+/** Build the canonical content-block form of an in-flight or finalized Edit. */
+export function makeEditContentToolUse(
+  id: string,
+  {
+    filePath,
+    oldContent,
+    oldString,
+    newString,
+  }: {
+    filePath: string;
+    oldContent: string;
+    oldString: string;
+    newString: string;
+  },
+): ContentBlockItem {
+  return makeContentToolUse("Edit", {
+    id,
+    arguments: {
+      file_path: filePath,
+      old_string: oldString,
+      new_string: newString,
+    },
+    diffContext: {
+      filePath,
+      oldContent,
+      oldFileExists: true,
+    },
+  });
+}
+
 export function makeMessageAttachment(
   overrides: Partial<MessageAttachment> = {},
 ): MessageAttachment {

@@ -144,9 +144,22 @@ pub async fn generate_remote_pairing_code(
         })
         .await
         .map_err(|error| error.to_string())?;
-    context
+    // A pairing code is an access grant, so `record_audit`'s contract applies: a grant whose
+    // decision left no trail is refused. The code is cancelled first so the failure does not
+    // leave a live, redeemable, unaudited code behind.
+    if !context
         .record_audit(None, RemoteAuditAction::PairingCodeCreated, None)
-        .await;
+        .await
+    {
+        if let Err(error) = context
+            .pairing_codes
+            .cancel(&stored.id, &now_timestamp())
+            .await
+        {
+            tracing::error!(%error, "Cancelling an unaudited pairing code failed");
+        }
+        return Err("The pairing code could not be recorded in the audit log.".to_string());
+    }
 
     Ok(MintedRemotePairingCode {
         id: stored.id.to_string(),
@@ -241,6 +254,14 @@ pub async fn set_remote_device_agent_control(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "This remote device no longer exists.".to_string())?;
+    // `set_scopes` silently updates zero rows for a revoked device (`revoked_at IS NULL`
+    // guard), which would let this command audit a grant that never happened. Refuse
+    // explicitly instead.
+    if device.revoked_at.is_some() {
+        return Err(
+            "This remote device is revoked; re-pair it to change agent control.".to_string(),
+        );
+    }
 
     let scopes = if input.enabled {
         device.scopes.with(Scope::UiAgent)
@@ -268,6 +289,11 @@ pub async fn set_remote_device_agent_control(
 
     // Narrowing is the only direction that needs teardown: a session admitted while agent
     // control was on must not keep running under the old grant.
+    //
+    // `Revoked` here is the closest member of the pinned v1 reset vocabulary; the DEVICE is
+    // still paired and its token still valid. PR 1.4/2.3 must therefore treat `reset(revoked)`
+    // as advisory: reconnect and re-run `GET /remote/v1/session` (P-28) before entering the
+    // terminal credentials-blocked state — only an introspection 401 proves the token died.
     if !input.enabled {
         let torn_down = context
             .tear_down_device_sessions(&device_id, ResetReason::Revoked)

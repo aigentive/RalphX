@@ -93,6 +93,9 @@ pub mod builder_attachment_materializer;
 pub mod conversation_folder_reference_service;
 #[cfg(test)]
 mod conversation_folder_reference_service_tests;
+pub(crate) mod conversation_reference_inheritance;
+#[cfg(test)]
+mod conversation_reference_inheritance_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -457,6 +460,8 @@ mod ideation_harness_availability_tests;
 mod ideation_workspace_tests;
 #[cfg(test)]
 mod integration_reference_expansion_tests;
+#[cfg(test)]
+mod integration_reference_expansion_edge_tests;
 #[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]

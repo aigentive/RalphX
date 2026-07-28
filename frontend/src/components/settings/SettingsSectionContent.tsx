@@ -44,6 +44,11 @@ const LazyExternalMcpSettingsPanel = lazy(() =>
     default: module.ExternalMcpSettingsPanel,
   })),
 );
+const LazyRemoteAccessSection = lazy(() =>
+  import("./remote-access/RemoteAccessSection").then((module) => ({
+    default: module.RemoteAccessSection,
+  })),
+);
 const LazyAtlassianIntegrationSettingsPanel = lazy(() =>
   import("./AtlassianIntegrationSettingsPanel").then((module) => ({
     default: module.AtlassianIntegrationSettingsPanel,
@@ -182,6 +187,7 @@ export function SettingsSectionContent({
       {section === "granola" && <LazyGranolaIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
+      {section === "remote-access" && <LazyRemoteAccessSection />}
       {section === "mcp" && <LazyMcpSettingsSection />}
       {section === "updates" && <LazyUpdatesSettingsSection />}
       {section === "accessibility" && <LazyAccessibilitySection />}
