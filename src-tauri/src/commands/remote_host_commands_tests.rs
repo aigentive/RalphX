@@ -99,6 +99,67 @@ async fn populated_endpoint_serializes_with_the_frontend_field_names_and_kind_ca
     );
 }
 
+/// §3.4: "if host mode was never configured, capture is not installed — no cost". Configured IS
+/// the settings row, so the pane's mount reads must never mint it — otherwise merely OPENING
+/// Settings → Remote Access buys capture, the sequencer, the pruner, and durable event persistence
+/// on every subsequent boot.
+#[test]
+fn the_status_reads_never_configure_host_mode() {
+    let source = include_str!("remote_host_commands.rs");
+    for command in [
+        "pub async fn get_remote_listener_status",
+        "pub async fn list_remote_advertised_endpoints",
+    ] {
+        let body = source
+            .split(command)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{command} should exist"));
+        let end = body.find("\n}\n").expect("the command body should end");
+        assert!(
+            !body[..end].contains("get_or_create()"),
+            "{command} must read with get(), not mint the settings row"
+        );
+    }
+}
+
+#[test]
+fn an_unconfigured_host_reports_a_disabled_status_instead_of_configuring_itself() {
+    let status = super::unconfigured_status();
+
+    assert!(!status.enabled);
+    assert!(!status.running);
+    assert!(status.bind_address.is_none());
+    assert!(!status.serve_active);
+    assert!(status.serve_degraded_kind.is_none());
+    assert!(status.environment_id.is_empty());
+    assert_eq!(
+        status.port,
+        crate::remote_server::settings::DEFAULT_REMOTE_PORT
+    );
+}
+
+/// P-23 inside the configuring process. Capture + the sequencer install at app setup only when the
+/// settings row ALREADY exists, so a first-ever enable would otherwise leave the stream absent for
+/// the whole process: every WS subscribe 503s and nothing is captured until the app restarts.
+#[test]
+fn enabling_the_listener_also_installs_the_event_stream() {
+    let source = include_str!("remote_host_commands.rs");
+    let body = source
+        .split("pub async fn start_remote_listener")
+        .nth(1)
+        .expect("the start command should exist");
+    let end = body.find("\n}\n").expect("the command body should end");
+    let body = &body[..end];
+    let start = body.find("start_listener(").expect("listener start");
+    let install = body
+        .find("install_remote_stream_from_handle(")
+        .expect("the enable path must install the event stream");
+    assert!(
+        start < install,
+        "the settings row is minted by start_listener; the install is gated on it existing"
+    );
+}
+
 #[tokio::test]
 async fn listener_status_reports_not_running_for_a_fresh_handle() {
     let handle = crate::remote_server::RemoteListenerHandle::new();
