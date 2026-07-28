@@ -204,6 +204,7 @@ pub use chat_service_types::{
     AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
     AgentToolCallPayload, AgentToolCallPreviewFields, ChatConversationWithMessages,
     ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
+    MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -501,18 +502,6 @@ fn runtime_context_id_for_send(
     }
 
     context_id.to_string()
-}
-
-fn interactive_continuation_run_id(active_agent: Option<&RunningAgentInfo>) -> String {
-    active_agent
-        .and_then(|info| {
-            if info.agent_run_id.is_empty() {
-                None
-            } else {
-                Some(info.agent_run_id.clone())
-            }
-        })
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
 /// Returns true for context types that consume execution slots (running count).
@@ -5316,10 +5305,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?,
                     None => None,
                 };
-                provider_switch_requires_fresh_session = continuation_runtime
-                    .as_ref()
-                    .and_then(continuation_runtime::ContinuationRuntime::effective_model)
-                    .is_none_or(|current_model| current_model != requested_model);
+                provider_switch_requires_fresh_session = match continuation_runtime {
+                    Some(runtime) => match runtime.compare_model_identity(requested_model) {
+                        continuation_runtime::ModelIdentityComparison::Changed => true,
+                        continuation_runtime::ModelIdentityComparison::Same
+                        | continuation_runtime::ModelIdentityComparison::Unknown => false,
+                    },
+                    None => false,
+                };
             }
         }
         let resolved_persona = if let Some(conversation) = existing_conv.as_ref() {
@@ -5492,6 +5485,33 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: skipped existing interactive process for fresh provider session"
             );
         }
+        let mut interactive_owner = None;
+        if has_ipr_entry
+            && !force_new_provider_session
+            && !persona_switch_requires_process_invalidation
+        {
+            interactive_owner = ipr_ref.capture_owner(&interactive_key).await;
+            match interactive_owner.as_ref() {
+                Some(owner) => {
+                    interactive_process_metadata = Some(owner.metadata.clone());
+                }
+                None => {
+                    // Fail closed on WRITING into a process we may not own, but not on
+                    // DECIDING whether to reuse one: a concurrent retirement between
+                    // has_process() and capture_owner() must degrade into a clean
+                    // respawn instead of surfacing a send error to the user.
+                    tracing::warn!(
+                        %context_type,
+                        context_id,
+                        runtime_context_id = %runtime_context_id,
+                        "chat_service.send_message: interactive process has no authoritative \
+                         run owner, falling through to new spawn"
+                    );
+                    has_ipr_entry = false;
+                    interactive_process_metadata = None;
+                }
+            }
+        }
         if has_ipr_entry
             && !force_new_provider_session
             && !persona_switch_requires_process_invalidation
@@ -5581,9 +5601,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             let stream_json_msg =
                 crate::infrastructure::agents::claude::format_stream_json_input(&stdin_prompt);
 
+            let interactive_owner = interactive_owner
+                .as_ref()
+                .expect("Gate 1 requires an authoritative interactive owner");
             match self
                 .ipr()
-                .write_message(&interactive_key, &stream_json_msg)
+                .write_message_if_owner(
+                    &interactive_key,
+                    interactive_owner.token,
+                    &interactive_owner.agent_run_id,
+                    &stream_json_msg,
+                )
                 .await
             {
                 Ok(()) => {
@@ -5606,122 +5634,118 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     let hide_user_message =
                         message_metadata_hidden_from_ui(persisted_metadata.as_deref());
 
-                    // Store user message for conversation history
-                    if let Some(user_msg) = pending_user_message {
-                        let user_msg_id = user_msg.id.as_str().to_string();
-                        let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        if self
-                            .chat_message_repo
-                            .create(user_msg.clone())
-                            .await
-                            .is_ok()
-                            && !hide_user_message
-                        {
-                            chat_service_streaming::persist_message_text_timeline_item(
-                                &self.chat_timeline_repo,
-                                &user_msg,
-                            )
-                            .await;
-                        }
-                        self.link_turn_attachments(&turn_attachments, &user_msg_id)
-                            .await?;
-
-                        if !hide_user_message {
-                            if context_type == ChatContextType::Ideation {
-                                let _ = self
-                                    .ideation_session_repo
-                                    .touch_updated_at(context_id)
-                                    .await;
-                            }
-                            self.auto_assign_primary_jira_issue_from_turn(
-                                context_type,
-                                context_id,
-                                &conversation.id,
-                                None,
-                                &options.composer_integration_references,
-                                &user_msg_id,
-                                user_msg.created_at,
-                            )
-                            .await;
-                            self.auto_assign_primary_linear_issue_from_turn(
-                                context_type,
-                                context_id,
-                                &conversation.id,
-                                None,
-                                &options.composer_integration_references,
-                                &user_msg_id,
-                                user_msg.created_at,
-                            )
-                            .await;
-                            self.auto_assign_primary_granola_note_from_turn(
-                                context_type,
-                                context_id,
-                                &conversation.id,
-                                None,
-                                &options.composer_integration_references,
-                                &user_msg_id,
-                                user_msg.created_at,
-                            )
-                            .await;
-
-                            // Emit message_created event for frontend
-                            self.emit_event(
-                                "agent:message_created",
-                                AgentMessageCreatedPayload {
-                                    message_id: user_msg_id,
-                                    conversation_id: conversation.id.as_str().to_string(),
-                                    context_type: context_type.to_string(),
-                                    context_id: context_id.to_string(),
-                                    role: "user".to_string(),
-                                    content: message.to_string(),
-                                    created_at: Some(user_msg_created_at),
-                                    metadata: persisted_metadata.clone(),
-                                    render_ready: None,
-                                },
-                            );
-                        }
-                    } else {
-                        self.persist_hidden_resume_in_place_marker(
-                            context_type,
-                            context_id,
-                            conversation.id,
-                            options.metadata.as_deref(),
-                        )
-                        .await?;
-                    }
-
-                    // Emit run_started so frontend shows activity spinner. Reuse the
-                    // live process run id so later turn_completed/run_completed events
-                    // still pass frontend stale-run guards.
-                    let active_agent = self
-                        .running_agent_registry
-                        .get(&RunningAgentKey::new(
-                            context_type.to_string(),
-                            &runtime_context_id,
-                        ))
-                        .await;
-                    let interactive_run_id = interactive_continuation_run_id(active_agent.as_ref());
-                    if let Err(error) = self
-                        .agent_run_repo
-                        .update_status(
-                            &AgentRunId::from_string(&interactive_run_id),
-                            AgentRunStatus::Running,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            %context_type,
-                            context_id,
-                            agent_run_id = %interactive_run_id,
-                            error = %error,
-                            "Failed to mark interactive continuation run active"
-                        );
-                    }
+                    // The live process already accepted this turn. Reuse its run id so
+                    // later turn_completed/run_completed events still pass the frontend
+                    // stale-run guards.
+                    let interactive_run_id = interactive_owner.agent_run_id.clone();
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
                             &conversation,
                             interactive_process_metadata.as_ref(),
                         );
+
+                    // Persistence runs AFTER delivery, so a repository failure here can
+                    // never mean "nothing was sent". Collect the outcome instead of
+                    // propagating it, so run authority is still emitted below.
+                    let delivered_turn_persisted: Result<(), ChatServiceError> = async {
+                        // Store user message for conversation history
+                        if let Some(user_msg) = pending_user_message {
+                            let user_msg_id = user_msg.id.as_str().to_string();
+                            let user_msg_created_at = user_msg.created_at.to_rfc3339();
+                            self.chat_message_repo
+                                .create(user_msg.clone())
+                                .await
+                                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+                            if !hide_user_message {
+                                chat_service_streaming::persist_message_text_timeline_item(
+                                    &self.chat_timeline_repo,
+                                    &user_msg,
+                                )
+                                .await;
+                            }
+                            self.link_turn_attachments(&turn_attachments, &user_msg_id)
+                                .await?;
+
+                            if !hide_user_message {
+                                if context_type == ChatContextType::Ideation {
+                                    let _ = self
+                                        .ideation_session_repo
+                                        .touch_updated_at(context_id)
+                                        .await;
+                                }
+                                self.auto_assign_primary_jira_issue_from_turn(
+                                    context_type,
+                                    context_id,
+                                    &conversation.id,
+                                    None,
+                                    &options.composer_integration_references,
+                                    &user_msg_id,
+                                    user_msg.created_at,
+                                )
+                                .await;
+                                self.auto_assign_primary_linear_issue_from_turn(
+                                    context_type,
+                                    context_id,
+                                    &conversation.id,
+                                    None,
+                                    &options.composer_integration_references,
+                                    &user_msg_id,
+                                    user_msg.created_at,
+                                )
+                                .await;
+                                self.auto_assign_primary_granola_note_from_turn(
+                                    context_type,
+                                    context_id,
+                                    &conversation.id,
+                                    None,
+                                    &options.composer_integration_references,
+                                    &user_msg_id,
+                                    user_msg.created_at,
+                                )
+                                .await;
+
+                                // Emit message_created event for frontend
+                                self.emit_event(
+                                    "agent:message_created",
+                                    AgentMessageCreatedPayload {
+                                        message_id: user_msg_id,
+                                        conversation_id: conversation.id.as_str().to_string(),
+                                        context_type: context_type.to_string(),
+                                        context_id: context_id.to_string(),
+                                        role: "user".to_string(),
+                                        content: message.to_string(),
+                                        created_at: Some(user_msg_created_at),
+                                        metadata: persisted_metadata.clone(),
+                                        render_ready: None,
+                                    },
+                                );
+                            }
+                        } else {
+                            self.persist_hidden_resume_in_place_marker(
+                                context_type,
+                                context_id,
+                                conversation.id,
+                                options.metadata.as_deref(),
+                            )
+                            .await?;
+                        }
+
+                        self.agent_run_repo
+                            .update_status(
+                                &AgentRunId::from_string(&interactive_run_id),
+                                AgentRunStatus::Running,
+                            )
+                            .await
+                            .map_err(|error| {
+                                ChatServiceError::RepositoryError(error.to_string())
+                            })?;
+                        Ok(())
+                    }
+                    .await;
+
+                    // Emit run_started on BOTH paths so the frontend shows activity and
+                    // accepts the streamed response. The process is answering this turn
+                    // whether or not the transcript row survived.
                     self.emit_event(
                         "agent:run_started",
                         AgentRunStartedPayload::with_provider_session(
@@ -5737,6 +5761,23 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             provider_session_id,
                         ),
                     );
+
+                    if let Err(error) = delivered_turn_persisted {
+                        tracing::error!(
+                            %context_type,
+                            context_id,
+                            runtime_context_id = %runtime_context_id,
+                            agent_run_id = %interactive_run_id,
+                            %error,
+                            "chat_service.send_message: interactive turn delivered to the \
+                             live process but not persisted"
+                        );
+                        // The execution slot stays claimed on purpose: the process is
+                        // running this turn and TurnComplete owns the decrement.
+                        return Err(ChatServiceError::MessageDeliveredNotPersisted(format!(
+                            "{MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX} {error}]"
+                        )));
+                    }
 
                     return Ok(SendResult {
                         conversation_id: conversation.id.as_str().to_string(),
@@ -8024,7 +8065,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 #[cfg(test)]
 mod stale_registry_gate_tests {
     use super::{
-        claude_launches_paused, interactive_continuation_run_id, log_send_message_spawn_prep_phase,
+        claude_launches_paused, log_send_message_spawn_prep_phase,
         registry_entry_blocks_send_because_run_inactive, registry_entry_blocks_send_but_is_stale,
         runtime_context_id_for_send, AgentRunStatus, ChatContextType, ChatConversationId,
         RegistryCleanupCaller, RunningAgentInfo,
@@ -8082,26 +8123,6 @@ mod stale_registry_gate_tests {
             ),
             "session-1"
         );
-    }
-
-    #[test]
-    fn interactive_continuation_reuses_registered_process_run_id() {
-        let info = registry_info(0, chrono::Utc::now());
-
-        assert_eq!(
-            interactive_continuation_run_id(Some(&info)),
-            "run-1",
-            "interactive stdin continuations must correlate with process terminal events"
-        );
-    }
-
-    #[test]
-    fn interactive_continuation_falls_back_when_registry_run_id_missing() {
-        let mut info = registry_info(0, chrono::Utc::now());
-        info.agent_run_id.clear();
-
-        assert!(!interactive_continuation_run_id(Some(&info)).is_empty());
-        assert!(!interactive_continuation_run_id(None).is_empty());
     }
 
     #[test]
@@ -8914,12 +8935,19 @@ mod agent_workspace_send_tests {
         let state = AppState::new_test();
         let context_id = "task-interactive-run-id";
         let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
-        let conversation_id = conversation.id.as_str().to_string();
+        let conversation_id = conversation.id;
+        let run = AgentRun::new(conversation_id);
+        let run_id = run.id.as_str().to_string();
         state
             .chat_conversation_repo
             .create(conversation)
             .await
             .expect("conversation should persist");
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("active run should persist");
 
         let mut child = tokio::process::Command::new("cat")
             .stdin(std::process::Stdio::piped())
@@ -8931,15 +8959,22 @@ mod agent_workspace_send_tests {
         let interactive_key = InteractiveProcessKey::new("task", context_id);
         state
             .interactive_process_registry
-            .register(interactive_key.clone(), stdin)
+            .register_with_metadata(
+                interactive_key.clone(),
+                stdin,
+                InteractiveProcessMetadata {
+                    agent_run_id: Some(run_id.clone()),
+                    ..Default::default()
+                },
+            )
             .await;
         state
             .running_agent_registry
             .register(
                 RunningAgentKey::new("task", context_id),
                 0,
-                conversation_id.clone(),
-                "run-original-process".to_string(),
+                conversation_id.as_str().to_string(),
+                run_id.clone(),
                 None,
                 None,
             )
@@ -8963,9 +8998,9 @@ mod agent_workspace_send_tests {
             .await;
         let _ = child.kill().await;
 
-        assert_eq!(result.conversation_id, conversation_id);
+        assert_eq!(result.conversation_id, conversation_id.as_str());
         assert_eq!(
-            result.agent_run_id, "run-original-process",
+            result.agent_run_id, run_id,
             "Gate 1 sends must not invent a run id that terminal events cannot match"
         );
     }

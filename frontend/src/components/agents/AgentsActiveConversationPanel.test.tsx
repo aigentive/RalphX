@@ -2919,6 +2919,31 @@ describe("AgentsActiveConversationPanel", () => {
     expect(panel).toHaveAttribute("data-send-logical-effort", "xhigh");
   });
 
+  it("sends the active agent conversation id and current model through the composer contract", () => {
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        id: "agent-conversation-codex-1",
+        providerHarness: "codex",
+        logicalModel: "gpt-5.5",
+        logicalEffort: "xhigh",
+      },
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      selectedConversationId: "agent-conversation-codex-1",
+    });
+
+    const composerContract = screen.getByTestId("integrated-chat-panel");
+    expect(composerContract).toHaveAttribute(
+      "data-send-conversation-id",
+      "agent-conversation-codex-1",
+    );
+    expect(composerContract).toHaveAttribute("data-send-model-id", "gpt-5.5");
+  });
+
   it.each([
     {
       mode: "chat",
