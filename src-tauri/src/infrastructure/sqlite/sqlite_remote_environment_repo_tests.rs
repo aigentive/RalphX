@@ -14,6 +14,18 @@ fn setup_repo() -> (SqliteTestDb, SqliteRemoteEnvironmentRepository) {
     (db, repo)
 }
 
+fn corrupt_column(db: &SqliteTestDb, id: &RemoteEnvironmentId, column: &str, value: i64) {
+    db.with_connection(|conn| {
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("test should permit a restored malformed row");
+        conn.execute(
+            &format!("UPDATE remote_environments SET {column} = ?1 WHERE id = ?2"),
+            rusqlite::params![value, id.as_str()],
+        )
+        .expect("test row should be corrupted");
+    });
+}
+
 fn pairing(environment_id: &str, url: &str) -> UpsertPairedEnvironment {
     UpsertPairedEnvironment {
         environment_id: environment_id.to_string(),
@@ -229,4 +241,69 @@ async fn touch_last_connected_updates_only_the_timestamp() {
         Some("2026-07-27T19:15:00+00:00")
     );
     assert_eq!(read.status, RemoteEnvironmentStatus::PendingAdd);
+}
+
+#[tokio::test]
+async fn malformed_status_and_protocol_version_fail_closed() {
+    let (status_db, status_repo) = setup_repo();
+    let status_env = status_repo
+        .upsert_paired(pairing("env-invalid-status", "https://status.invalid"))
+        .await
+        .expect("insert should succeed");
+    status_db.with_connection(|conn| {
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("test should permit a restored malformed row");
+        conn.execute(
+            "UPDATE remote_environments SET status = 'half_paired' WHERE id = ?1",
+            [status_env.id.as_str()],
+        )
+        .expect("status should be corrupted");
+    });
+
+    let status_error = status_repo
+        .get(&status_env.id)
+        .await
+        .expect_err("unknown persisted status must be rejected");
+    assert!(
+        matches!(status_error, crate::error::AppError::Database(message) if
+        message.contains("invalid remote environment status"))
+    );
+
+    let (protocol_db, protocol_repo) = setup_repo();
+    let protocol_env = protocol_repo
+        .upsert_paired(pairing("env-invalid-protocol", "https://protocol.invalid"))
+        .await
+        .expect("insert should succeed");
+    corrupt_column(&protocol_db, &protocol_env.id, "protocol_version", -1);
+
+    let protocol_error = protocol_repo
+        .get(&protocol_env.id)
+        .await
+        .expect_err("negative protocol versions must be rejected");
+    assert!(
+        matches!(protocol_error, crate::error::AppError::Database(message) if
+        message.contains("invalid remote environment protocol version"))
+    );
+}
+
+#[tokio::test]
+async fn constructor_and_lookup_error_mapping_are_covered() {
+    let db = SqliteTestDb::new("sqlite-remote-environment-new");
+    let repo = SqliteRemoteEnvironmentRepository::new(db.new_connection());
+    assert!(repo
+        .get_by_environment_id("missing")
+        .await
+        .expect("missing identity lookup should succeed")
+        .is_none());
+
+    db.with_connection(|conn| {
+        conn.execute("DROP TABLE remote_environments", [])
+            .expect("test should remove the repository table");
+    });
+    let error = repo
+        .get_by_environment_id("missing")
+        .await
+        .expect_err("sqlite lookup failures must be surfaced");
+    assert!(matches!(error, crate::error::AppError::Database(message) if
+        message.contains("no such table")));
 }

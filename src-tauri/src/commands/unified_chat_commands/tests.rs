@@ -81,17 +81,17 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunStatus, AgentWorkspacePrMetadataDecision, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId, AutomationId,
-    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
-    ChatTimelineItemStatus, CoordinationMode, DelegatedSession, ExecutionPlan, ExecutionPlanId,
-    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus,
-    Project, ProjectId, SessionPurpose, Task, TaskId, TeamIntent,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunStatus, AgentWorkspacePrMetadataDecision, AgentWorkspacePublicationMetadataState,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    ArtifactId, AutomationId, AutomationRunId, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+    ChatTimelineItemKind, ChatTimelineItemStatus, CoordinationMode, DelegatedSession,
+    ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task, TaskId,
+    TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -243,6 +243,44 @@ fn local_commit_ipc_response_serializes_camel_case_contract_fields() {
     assert_eq!(value["attemptToken"], "attempt-1");
     assert!(value.get("branch").is_none());
     assert!(value.get("currentHeadSha").is_none());
+}
+
+#[test]
+fn workspace_publication_receipt_serializes_for_frontend_consumers() {
+    let conversation_id =
+        ChatConversationId::from_string("receipt-contract-conversation".to_string());
+    let project_id = ProjectId::from_string("receipt-contract-project".to_string());
+    let mut workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+    workspace.publication_metadata_attempt_id = Some("metadata-attempt-1".to_string());
+    workspace.publication_metadata_phase =
+        Some(crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Reconciling);
+    workspace.publication_metadata_state = Some(AgentWorkspacePublicationMetadataState::Unknown);
+
+    let workspace_value = serde_json::to_value(AgentConversationWorkspaceResponse::from(workspace))
+        .expect("workspace response should serialize");
+
+    assert_eq!(
+        workspace_value["publication_metadata_attempt_id"],
+        "metadata-attempt-1"
+    );
+    assert_eq!(workspace_value["publication_metadata_phase"], "reconciling");
+    assert_eq!(workspace_value["publication_metadata_state"], "unknown");
+
+    let mut event = AgentConversationWorkspacePublicationEvent::new(
+        conversation_id,
+        "metadata_reconciling",
+        "active",
+        "Verifying linked PR metadata",
+        None,
+    );
+    event.attempt_id = Some("metadata-attempt-1".to_string());
+
+    let event_value = serde_json::to_value(
+        super::AgentConversationWorkspacePublicationEventResponse::from(event),
+    )
+    .expect("publication event response should serialize");
+
+    assert_eq!(event_value["attempt_id"], "metadata-attempt-1");
 }
 
 #[tokio::test]
@@ -1203,6 +1241,9 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         publication_pr_url: None,
         publication_pr_status: None,
         publication_push_status: None,
+        publication_metadata_attempt_id: None,
+        publication_metadata_phase: None,
+        publication_metadata_state: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,
@@ -1272,6 +1313,9 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
         publication_pr_status: Some("open".to_string()),
         publication_push_status: Some("needs_agent".to_string()),
+        publication_metadata_attempt_id: None,
+        publication_metadata_phase: None,
+        publication_metadata_state: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,
@@ -6136,6 +6180,59 @@ async fn publish_workspace_stops_before_push_when_pr_description_fails() {
 }
 
 #[tokio::test]
+async fn publish_workspace_retains_failure_settlement_when_new_pr_creation_fails() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("new-pr-create-fails", true, None, github).await;
+    enable_github_pr_publishing(&state, &conversation_id).await;
+    github.queue_find_pr_by_head_branch(Ok(None));
+    github.state().create_draft_pr_result =
+        Some(Err(AppError::Infrastructure("create failed".to_string())));
+    write_publishable_workspace_change(&state, &conversation_id).await;
+    let client = Arc::new(SubmittingPrDescriptionClient::new(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+    ));
+    client
+        .queue_decision(
+            AgentWorkspacePrMetadataDecision::patch(
+                Some("New PR".to_string()),
+                Some("## Summary\n\nNew PR body".to_string()),
+            )
+            .unwrap(),
+        )
+        .await;
+    let state = state.with_agent_client(client);
+
+    let error = publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    .expect_err("new PR creation failure must settle the receipt-free publish attempt");
+
+    assert!(error.contains("create failed"));
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    assert!(stored.publication_metadata_attempt_id.is_none());
+    assert!(publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "failed" && event.status == "failed"));
+    let github_state = github.state();
+    assert_eq!(github_state.push_branch_calls, 1);
+    assert_eq!(github_state.create_draft_pr_calls, 1);
+    assert_eq!(github_state.patch_pr_metadata_calls, 0);
+}
+
+#[tokio::test]
 async fn publish_workspace_updates_authoritative_existing_pr_metadata_after_push() {
     let github = Arc::new(MockGithubService::new());
     let (_temp, state, conversation_id, github) =
@@ -6219,16 +6316,191 @@ async fn publish_workspace_updates_authoritative_existing_pr_metadata_after_push
         .list_publication_events(&conversation_id)
         .await
         .expect("publication events should load");
+    let receipt = stored
+        .publication_metadata_attempt_id
+        .as_deref()
+        .expect("receipt settlement should retain the attempt identity");
     assert!(events.iter().any(|event| {
-        event.step == "pushed"
+        event.step == "metadata_settled"
             && event.status == "succeeded"
-            && event.summary == "Agent branch pushed"
+            && event.attempt_id.as_deref() == Some(receipt)
     }));
-    assert!(events.iter().any(|event| {
-        event.step == "published"
-            && event.status == "succeeded"
-            && event.summary == "Draft pull request is ready"
-    }));
+    assert!(!events.iter().any(|event| event.step == "pushed"));
+}
+
+#[tokio::test]
+async fn publish_workspace_reconciles_ambiguous_existing_metadata_patch_after_readback() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("metadata-ambiguous-applied", true, Some(470), github).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    for (title, body) in [
+        ("Before", "Existing body"),
+        ("Before", "Existing body"),
+        ("ambiguous title", "Existing body"),
+    ] {
+        github.queue_pr_detail(Ok(authoritative_pr_detail(
+            470,
+            workspace.branch_name.clone(),
+            title,
+            body,
+        )));
+    }
+    github.queue_patch_pr_metadata_result(Err(AppError::Infrastructure("timeout".to_string())));
+    write_publishable_workspace_change(&state, &conversation_id).await;
+    let client = Arc::new(SubmittingPrDescriptionClient::new(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+    ));
+    client
+        .queue_decision(AgentWorkspacePrMetadataDecision::Patch {
+            title: Some("ambiguous title".to_string()),
+            body_markdown: None,
+        })
+        .await;
+    let state = state.with_agent_client(client);
+
+    publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    .expect("applied readback must reconcile ambiguous metadata mutation");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
+
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.patch_pr_metadata_calls, 1);
+        assert_eq!(github_state.fetch_pr_detail_calls, 3);
+    }
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(stored.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(
+        stored.publication_metadata_state,
+        Some(AgentWorkspacePublicationMetadataState::Reconciled)
+    );
+    assert!(!publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "description_failed"));
+}
+
+#[tokio::test]
+async fn publish_workspace_keeps_receipt_truthful_for_unapplied_conflicted_and_unreadable_metadata()
+{
+    for (suffix, readback, expected_state, expected_push_status) in [
+        (
+            "metadata-not-applied",
+            Some(("Before", "Existing body")),
+            AgentWorkspacePublicationMetadataState::NotApplied,
+            "description_failed",
+        ),
+        (
+            "metadata-conflicted",
+            Some(("other editor title", "Existing body")),
+            AgentWorkspacePublicationMetadataState::Conflicted,
+            "description_failed",
+        ),
+        (
+            "metadata-unknown",
+            None,
+            AgentWorkspacePublicationMetadataState::Unknown,
+            "pushing",
+        ),
+    ] {
+        let github = Arc::new(MockGithubService::new());
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state(suffix, true, Some(471), github).await;
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        for _ in 0..2 {
+            github.queue_pr_detail(Ok(authoritative_pr_detail(
+                471,
+                workspace.branch_name.clone(),
+                "Before",
+                "Existing body",
+            )));
+        }
+        match readback {
+            Some((title, body)) => github.queue_pr_detail(Ok(authoritative_pr_detail(
+                471,
+                workspace.branch_name.clone(),
+                title,
+                body,
+            ))),
+            None => {
+                github.queue_pr_detail(Err(AppError::Infrastructure("readback failed".to_string())))
+            }
+        }
+        github.queue_patch_pr_metadata_result(Err(AppError::Infrastructure("timeout".to_string())));
+        write_publishable_workspace_change(&state, &conversation_id).await;
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        client
+            .queue_decision(AgentWorkspacePrMetadataDecision::Patch {
+                title: Some("new title".to_string()),
+                body_markdown: None,
+            })
+            .await;
+        let state = state.with_agent_client(client);
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &Arc::new(ExecutionState::new()),
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err(
+            "non-applied or unreadable metadata settlement must not report publish success",
+        );
+
+        assert!(error.contains(if readback.is_none() {
+            "unknown"
+        } else {
+            "metadata"
+        }));
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.publication_metadata_state, Some(expected_state));
+        assert_eq!(
+            stored.publication_push_status.as_deref(),
+            Some(expected_push_status)
+        );
+        let events = publication_events_for(&state, &conversation_id).await;
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "published" && event.status == "succeeded"));
+        if readback.is_none() {
+            assert!(!events
+                .iter()
+                .any(|event| event.step == "description_failed"));
+        }
+    }
 }
 
 #[tokio::test]
@@ -6736,10 +7008,22 @@ async fn publish_workspace_redrafts_once_when_existing_pr_authority_drifts() {
         assert_eq!(github_state.update_pr_details_calls, 0);
     }
     assert_eq!(client.spawned_count().await, 2);
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let attempt_id = stored
+        .publication_metadata_attempt_id
+        .as_deref()
+        .expect("refreshed receipt should retain its attempt identity");
     assert!(publication_events_for(&state, &conversation_id)
         .await
         .iter()
-        .any(|event| { event.step == "published" && event.status == "succeeded" }));
+        .any(|event| {
+            event.step == "metadata_refreshed" && event.attempt_id.as_deref() == Some(attempt_id)
+        }));
 }
 
 #[tokio::test]
@@ -6837,8 +7121,14 @@ async fn publish_workspace_fails_after_push_when_existing_pr_drifts_twice_or_fin
             stored.publication_push_status.as_deref(),
             Some("description_failed")
         );
-        assert!(!publication_events_for(&state, &conversation_id)
-            .await
+        let events = publication_events_for(&state, &conversation_id).await;
+        assert!(stored.publication_metadata_attempt_id.is_some());
+        assert!(events.iter().any(|event| {
+            event.step == "metadata_settled"
+                && event.status == "skipped"
+                && event.attempt_id == stored.publication_metadata_attempt_id
+        }));
+        assert!(!events
             .iter()
             .any(|event| { event.step == "published" && event.status == "succeeded" }));
     }
@@ -6909,7 +7199,7 @@ async fn publish_workspace_recovers_duplicate_pr_with_a_redrafted_existing_patch
         let github_state = github.state();
         assert_eq!(github_state.push_branch_calls, 1);
         assert_eq!(github_state.create_draft_pr_calls, 1);
-        assert_eq!(github_state.find_pr_by_head_branch_calls, 3);
+        assert_eq!(github_state.find_pr_by_head_branch_calls, 2);
         assert_eq!(github_state.fetch_pr_detail_calls, 2);
         assert_eq!(github_state.patch_pr_metadata_calls, 1);
         assert_eq!(

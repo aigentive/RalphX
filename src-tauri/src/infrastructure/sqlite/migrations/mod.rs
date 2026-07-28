@@ -551,6 +551,9 @@ mod v20260724141500_workspace_review_requested_changes_tests;
 mod v20260724222347_agent_task_assignment_planned_run_identity;
 #[cfg(test)]
 mod v20260724222347_agent_task_assignment_planned_run_identity_tests;
+mod v20260727115037_agent_workspace_publication_metadata_receipts;
+#[cfg(test)]
+mod v20260727115037_agent_workspace_publication_metadata_receipts_tests;
 mod v20260727161131_remote_host_settings;
 #[cfg(test)]
 mod v20260727161131_remote_host_settings_tests;
@@ -560,6 +563,9 @@ mod v20260727180000_remote_auth_tests;
 mod v20260727191500_remote_environments;
 #[cfg(test)]
 mod v20260727191500_remote_environments_tests;
+mod v20260727213000_remote_event_log;
+#[cfg(test)]
+mod v20260727213000_remote_event_log_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -654,7 +660,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260727191500;
+pub const SCHEMA_VERSION: i64 = 20260727213000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1786,6 +1792,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260724222347_agent_task_assignment_planned_run_identity::migrate,
     },
     Migration {
+        version: 20260727115037,
+        name: "agent_workspace_publication_metadata_receipts",
+        migrate: v20260727115037_agent_workspace_publication_metadata_receipts::migrate,
+    },
+    Migration {
         version: 20260727161131,
         name: "remote_host_settings",
         migrate: v20260727161131_remote_host_settings::migrate,
@@ -1799,6 +1810,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260727191500,
         name: "remote_environments",
         migrate: v20260727191500_remote_environments::migrate,
+    },
+    Migration {
+        version: 20260727213000,
+        name: "remote_event_log",
+        migrate: v20260727213000_remote_event_log::migrate,
     },
 ];
 

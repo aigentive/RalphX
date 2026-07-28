@@ -80,6 +80,31 @@ fn disabling_the_listener_tears_down_every_device() {
 }
 
 #[test]
+fn killing_one_session_is_precise_idempotent_and_cleans_the_device_entry() {
+    let registry = RemoteSessionRegistry::new();
+    let device = RemoteDeviceId::from_string("device-1");
+    let unknown_device = RemoteDeviceId::from_string("device-unknown");
+    let first_id = RemoteSessionId::from_string("session-1");
+    let second_id = RemoteSessionId::from_string("session-2");
+    let unknown_session = RemoteSessionId::from_string("session-unknown");
+    let mut first = admit(&registry, &device, &first_id);
+    let mut second = admit(&registry, &device, &second_id);
+
+    assert!(!registry.kill_session(&unknown_device, &unknown_session, ResetReason::Revoked));
+    assert!(!registry.kill_session(&device, &unknown_session, ResetReason::Revoked));
+    assert!(registry.kill_session(&device, &first_id, ResetReason::Revoked));
+    assert_eq!(first.try_recv(), Some(ResetReason::Revoked));
+    assert_eq!(second.try_recv(), None);
+    assert_eq!(registry.live_sessions(&device), vec![second_id.clone()]);
+
+    assert!(registry.kill_session(&device, &second_id, ResetReason::HostDisabled));
+    assert_eq!(second.try_recv(), Some(ResetReason::HostDisabled));
+    assert_eq!(registry.device_session_count(&device), 0);
+    assert_eq!(registry.live_session_count(), 0);
+    assert!(!registry.kill_session(&device, &second_id, ResetReason::HostDisabled));
+}
+
+#[test]
 fn a_second_teardown_of_the_same_device_signals_nothing() {
     let registry = RemoteSessionRegistry::new();
     let device = RemoteDeviceId::from_string("device-1");

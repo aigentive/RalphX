@@ -562,5 +562,17 @@
     "delivery": "localOnly",
     "origin": "backend",
     "excludedFromV1": false
+  },
+  {
+    "name": "remote:session_connected",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "remote:session_closed",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
   }
 ]

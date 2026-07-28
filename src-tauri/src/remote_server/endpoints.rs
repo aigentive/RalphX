@@ -11,7 +11,9 @@ use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
 use serde::Serialize;
 
 use crate::remote_server::auth::RemoteAuthContext;
+use crate::remote_server::sequencer::RemoteStreamHandle;
 use crate::remote_server::settings::RemoteExposureMode;
+use crate::remote_server::ws::{NoopLifecycleSink, SessionLifecycleSink};
 
 /// Oldest client protocol this host will negotiate with.
 ///
@@ -28,6 +30,13 @@ pub(crate) struct RemoteRouterState {
     environment_id: Arc<str>,
     auth: Arc<RemoteAuthContext>,
     app_handle: tauri::AppHandle,
+    /// The durable stream, installed at app setup when host mode is configured (P-23).
+    ///
+    /// `Option` because the listener and the stream have independent lifetimes by design: the
+    /// listener toggle governs network exposure only. A router without a stream still serves every
+    /// HTTP route and refuses only the WS upgrade, explicitly.
+    stream: Option<RemoteStreamHandle>,
+    lifecycle: Arc<dyn SessionLifecycleSink>,
 }
 
 impl RemoteRouterState {
@@ -40,7 +49,19 @@ impl RemoteRouterState {
             environment_id: environment_id.into(),
             auth: Arc::new(auth),
             app_handle,
+            stream: None,
+            lifecycle: Arc::new(NoopLifecycleSink),
         }
+    }
+
+    pub(crate) fn with_stream(mut self, stream: Option<RemoteStreamHandle>) -> Self {
+        self.stream = stream;
+        self
+    }
+
+    pub(crate) fn with_lifecycle_sink(mut self, lifecycle: Arc<dyn SessionLifecycleSink>) -> Self {
+        self.lifecycle = lifecycle;
+        self
     }
 
     pub(crate) fn environment_id(&self) -> &str {
@@ -53,6 +74,14 @@ impl RemoteRouterState {
 
     pub(crate) fn app_handle(&self) -> &tauri::AppHandle {
         &self.app_handle
+    }
+
+    pub(crate) fn stream(&self) -> Option<&RemoteStreamHandle> {
+        self.stream.as_ref()
+    }
+
+    pub(crate) fn lifecycle(&self) -> Arc<dyn SessionLifecycleSink> {
+        Arc::clone(&self.lifecycle)
     }
 }
 

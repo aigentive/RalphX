@@ -1,7 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use crate::application::agent_workspace_pr_description::ExistingPrMetadataSnapshot;
+use crate::application::agent_workspace_pr_metadata_reconciliation::AgentWorkspacePrMetadataReconciliationService;
 use crate::application::agent_workspace_publish_recovery::{
+    recover_pending_agent_workspace_pr_metadata_receipts_for_state,
     recover_stale_agent_workspace_publish_repairs,
     recover_stale_agent_workspace_publish_repairs_for_state,
     recover_stale_agent_workspace_publish_repairs_on_startup,
@@ -14,6 +18,7 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_transient_publish_statuses, StalePublishRepairRecoveryOutcome,
     STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
+    STALE_TRANSIENT_STATUS_STALE_SECS,
 };
 use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -23,13 +28,16 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunActionKind,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId,
-    IdeationAnalysisBaseRefKind, ProjectId,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
+use crate::domain::services::github_service::{GithubServiceTrait, PrDetail, PrStatus};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
 };
+use crate::tests::mock_github_service::MockGithubService;
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 fn conversation_id(suffix: u8) -> ChatConversationId {
     ChatConversationId::from_string(format!("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb{suffix:02}"))
@@ -59,6 +67,144 @@ fn needs_agent_workspace(conversation_id: ChatConversationId) -> AgentConversati
     workspace.pr_auto_merge_current = Some(true);
     workspace.pr_supervision_status = Some("fixing".to_string());
     workspace
+}
+
+fn metadata_recovery_pr_detail(title: &str, body: Option<&str>) -> PrDetail {
+    PrDetail {
+        number: 684,
+        title: title.to_string(),
+        body: body.map(str::to_string),
+        author: Some("ralphx".to_string()),
+        created_at: None,
+        url: Some("https://github.com/owner/repo/pull/684".to_string()),
+        state: PrStatus::Open,
+        is_draft: false,
+        head_ref_name: "ralphx/test/publish-recovery".to_string(),
+        base_ref_name: "main".to_string(),
+    }
+}
+
+async fn prepare_metadata_recovery_receipt(
+    state: &mut AppState,
+    conversation_id: ChatConversationId,
+) -> (tempfile::TempDir, Arc<MockGithubService>) {
+    let temp = tempfile::tempdir().expect("metadata recovery tempdir");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = validate_absolute_non_root_path(
+        &temp.path().join("worktrees"),
+        "metadata recovery test worktree parent",
+    )
+    .expect("validate metadata recovery worktree parent");
+    let mut project = Project::new(
+        "metadata-recovery".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.id = project_id();
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("resolve metadata recovery workspace");
+    assert!(workspace_path.starts_with(&worktree_parent));
+    // codeql[rust/path-injection]
+    std::fs::create_dir_all(workspace_path.join(".git"))
+        .expect("create validated worktree fixture");
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project");
+    let mut workspace = needs_agent_workspace(conversation_id);
+    workspace.publication_push_status = Some("describing".to_string());
+    workspace.worktree_path = workspace_path.to_string_lossy().to_string();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed metadata workspace");
+
+    let mut conversation = ChatConversation::new_project(project_id());
+    conversation.id = conversation_id;
+    conversation.title = Some("Metadata recovery".to_string());
+    let snapshot = ExistingPrMetadataSnapshot::from_detail(metadata_recovery_pr_detail(
+        "Before title",
+        Some("## Before"),
+    ));
+    let github = Arc::new(MockGithubService::new());
+    let github_service: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(Arc::clone(&github_service));
+    let service = AgentWorkspacePrMetadataReconciliationService::new(
+        &state.agent_conversation_workspace_repo,
+        &github_service,
+    );
+    service
+        .prepare(
+            &conversation,
+            &snapshot,
+            &crate::domain::entities::AgentWorkspacePrMetadataDecision::patch(
+                Some("Updated title".to_string()),
+                None,
+            )
+            .expect("metadata patch"),
+        )
+        .await
+        .expect("prepare metadata receipt");
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load prepared metadata workspace")
+        .expect("prepared metadata workspace");
+    assert_eq!(
+        workspace.publication_push_status.as_deref(),
+        Some("pushing"),
+        "receipt recovery fixture must preserve the production prepare state"
+    );
+    (temp, github)
+}
+
+async fn mark_metadata_receipt_mutating(state: &AppState, conversation_id: &ChatConversationId) {
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("prepared receipt");
+    assert!(state
+        .agent_conversation_workspace_repo
+        .compare_and_set_publication_metadata_receipt_with_events(
+            conversation_id,
+            &receipt.attempt_id,
+            crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Prepared,
+            crate::domain::entities::AgentWorkspacePublicationMetadataState::NotAttempted,
+            crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Mutating,
+            crate::domain::entities::AgentWorkspacePublicationMetadataState::Unknown,
+            None,
+            Vec::new(),
+        )
+        .await
+        .expect("mark mutating"));
+}
+
+async fn mark_metadata_receipt_reconciling(state: &AppState, conversation_id: &ChatConversationId) {
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("mutating receipt");
+    assert!(state
+        .agent_conversation_workspace_repo
+        .compare_and_set_publication_metadata_receipt_with_events(
+            conversation_id,
+            &receipt.attempt_id,
+            crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Mutating,
+            crate::domain::entities::AgentWorkspacePublicationMetadataState::Unknown,
+            crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Reconciling,
+            crate::domain::entities::AgentWorkspacePublicationMetadataState::Unknown,
+            None,
+            Vec::new(),
+        )
+        .await
+        .expect("mark reconciling"));
 }
 
 fn review_target() -> AgentWorkspaceReviewTarget {
@@ -147,6 +293,365 @@ async fn startup_recovery_wrappers_finish_on_empty_repositories() {
     )
     .await;
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&AppState::new_test()).await;
+}
+
+#[tokio::test]
+async fn startup_metadata_recovery_settles_prepared_without_a_github_read_or_patch() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(40);
+    let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+            .await
+            .expect("recover prepared receipt"),
+        1
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(&conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("settled receipt");
+    assert_eq!(
+        receipt.phase,
+        crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Settled
+    );
+    assert_eq!(
+        receipt.state,
+        crate::domain::entities::AgentWorkspacePublicationMetadataState::NotAttempted
+    );
+}
+
+#[tokio::test]
+async fn periodic_metadata_recovery_does_not_preempt_a_fresh_prepared_receipt() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(49);
+    let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(
+            &state,
+            STALE_TRANSIENT_STATUS_STALE_SECS,
+        )
+        .await
+        .expect("skip fresh prepared receipt"),
+        0
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(&conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("prepared receipt");
+    assert_eq!(
+        receipt.phase,
+        crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Prepared
+    );
+    assert_eq!(
+        receipt.state,
+        crate::domain::entities::AgentWorkspacePublicationMetadataState::NotAttempted
+    );
+}
+
+#[tokio::test]
+async fn startup_metadata_recovery_classifies_mutating_receipts_with_one_read_and_no_patch() {
+    for (suffix, title, body, expected_state) in [
+        (
+            41,
+            "Updated title",
+            Some("## Before"),
+            crate::domain::entities::AgentWorkspacePublicationMetadataState::Reconciled,
+        ),
+        (
+            42,
+            "Before title",
+            Some("## Before"),
+            crate::domain::entities::AgentWorkspacePublicationMetadataState::NotApplied,
+        ),
+        (
+            43,
+            "A third title",
+            Some("## A third body"),
+            crate::domain::entities::AgentWorkspacePublicationMetadataState::Conflicted,
+        ),
+    ] {
+        let mut state = AppState::new_test();
+        let conversation_id = conversation_id(suffix);
+        let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+        mark_metadata_receipt_mutating(&state, &conversation_id).await;
+        github.queue_pr_detail(Ok(metadata_recovery_pr_detail(title, body)));
+
+        assert_eq!(
+            recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+                .await
+                .expect("recover mutating receipt"),
+            1
+        );
+        assert_eq!(github.state().fetch_pr_detail_calls, 1);
+        assert_eq!(github.state().patch_pr_metadata_calls, 0);
+        let receipt = state
+            .agent_conversation_workspace_repo
+            .get_publication_metadata_receipt(&conversation_id)
+            .await
+            .expect("load receipt")
+            .expect("settled receipt");
+        assert_eq!(
+            receipt.phase,
+            crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Settled
+        );
+        assert_eq!(receipt.state, expected_state);
+    }
+}
+
+#[tokio::test]
+async fn mutating_metadata_recovery_rejects_an_invalid_recorded_worktree_before_readback() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(47);
+    let (temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+    mark_metadata_receipt_mutating(&state, &conversation_id).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    workspace.worktree_path = temp
+        .path()
+        .join("untrusted-worktree")
+        .to_string_lossy()
+        .to_string();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("store invalid recorded path");
+    github.queue_pr_detail(Ok(metadata_recovery_pr_detail(
+        "Updated title",
+        Some("## Before"),
+    )));
+
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+            .await
+            .expect("invalid path fails closed"),
+        0
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(&conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("pending receipt");
+    assert_eq!(
+        receipt.phase,
+        crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Mutating
+    );
+}
+
+#[tokio::test]
+async fn unreadable_metadata_receipt_readback_remains_nonterminal_and_generic_stale_recovery_skips_it(
+) {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(44);
+    let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+    mark_metadata_receipt_mutating(&state, &conversation_id).await;
+    github.will_fail_pr_detail("unavailable");
+
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+            .await
+            .expect("recover unreadable receipt"),
+        0
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 1);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    let events_before_stale_recovery = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list events");
+    assert_eq!(
+        recover_stale_transient_publish_statuses(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            0,
+        )
+        .await
+        .expect("generic stale recovery"),
+        0
+    );
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(&conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("pending receipt");
+    assert_eq!(
+        receipt.phase,
+        crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Reconciling
+    );
+    assert_eq!(
+        receipt.state,
+        crate::domain::entities::AgentWorkspacePublicationMetadataState::Unknown
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list events"),
+        events_before_stale_recovery,
+        "generic stale recovery must not add an event over an unfinished receipt"
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists")
+            .publication_push_status
+            .as_deref(),
+        Some("pushing"),
+        "generic stale recovery must not downgrade an unfinished receipt"
+    );
+}
+
+#[tokio::test]
+async fn generic_stale_recovery_recovers_transient_status_after_receipt_settles() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(48);
+    let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+            .await
+            .expect("settle prepared receipt"),
+        1
+    );
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &conversation_id,
+            Some(684),
+            Some("https://github.com/owner/repo/pull/684"),
+            Some("open"),
+            Some("describing"),
+        )
+        .await
+        .expect("restore inconsistent transient projection");
+    let events_before = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load events");
+
+    assert_eq!(
+        recover_stale_transient_publish_statuses(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            0,
+        )
+        .await
+        .expect("generic stale recovery"),
+        1
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    let events_after = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load events");
+    assert_eq!(events_after.len(), events_before.len() + 1);
+    assert!(events_after.iter().any(|event| {
+        event.step == STALE_TRANSIENT_RECOVERED_STEP
+            && event.classification.as_deref() == Some(STALE_TRANSIENT_CLASSIFICATION)
+    }));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists")
+            .publication_push_status
+            .as_deref(),
+        Some("failed")
+    );
+}
+
+#[tokio::test]
+async fn reconciling_metadata_receipt_reads_once_and_never_repeats_a_patch() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(46);
+    let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+    mark_metadata_receipt_mutating(&state, &conversation_id).await;
+    mark_metadata_receipt_reconciling(&state, &conversation_id).await;
+    github.queue_pr_detail(Ok(metadata_recovery_pr_detail(
+        "Before title",
+        Some("## Before"),
+    )));
+
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+            .await
+            .expect("recover reconciling receipt"),
+        1
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 1);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    let receipt = state
+        .agent_conversation_workspace_repo
+        .get_publication_metadata_receipt(&conversation_id)
+        .await
+        .expect("load receipt")
+        .expect("settled receipt");
+    assert_eq!(
+        receipt.phase,
+        crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Settled
+    );
+    assert_eq!(
+        receipt.state,
+        crate::domain::entities::AgentWorkspacePublicationMetadataState::NotApplied
+    );
+}
+
+#[tokio::test]
+async fn repeated_metadata_recovery_is_idempotent_after_terminal_settlement() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(45);
+    let (_temp, github) = prepare_metadata_recovery_receipt(&mut state, conversation_id).await;
+
+    recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+        .await
+        .expect("initial recovery");
+    let events_after_initial_recovery = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list events");
+    assert_eq!(
+        recover_pending_agent_workspace_pr_metadata_receipts_for_state(&state, 0)
+            .await
+            .expect("repeated recovery"),
+        0
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+    assert_eq!(github.state().patch_pr_metadata_calls, 0);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list events"),
+        events_after_initial_recovery,
+        "terminal receipt recovery must not duplicate events"
+    );
 }
 
 #[tokio::test]
@@ -1013,7 +1518,7 @@ mod extracted_inline_tests {
     }
 
     #[tokio::test]
-    async fn recovers_all_four_stale_transient_statuses() {
+    async fn recovers_all_stale_transient_statuses_including_pushing() {
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
 
         for (id, status) in [
@@ -1021,6 +1526,7 @@ mod extracted_inline_tests {
             ("cccccccc-cccc-cccc-cccc-cccccccccc02", "checking"),
             ("cccccccc-cccc-cccc-cccc-cccccccccc03", "committing"),
             ("cccccccc-cccc-cccc-cccc-cccccccccc04", "describing"),
+            ("cccccccc-cccc-cccc-cccc-cccccccccc05", "pushing"),
         ] {
             let conv_id = ChatConversationId::from_string(id.to_string());
             let workspace = transient_workspace(conv_id, status);
@@ -1038,6 +1544,6 @@ mod extracted_inline_tests {
         .await
         .expect("recover transient statuses");
 
-        assert_eq!(recovered, 4);
+        assert_eq!(recovered, 5);
     }
 }

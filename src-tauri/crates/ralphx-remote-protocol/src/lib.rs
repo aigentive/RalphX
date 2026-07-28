@@ -410,4 +410,53 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     local_backend("ralphx://check-for-updates"),
     local_backend("ralphx://show-release-notes"),
     local_backend("gh-auth:login_prompt"),
+    // PR 1.4 (§5.5): WS session lifecycle, emitted by the host when a remote client's socket
+    // opens and closes. **Local-only is a security property, not housekeeping** — forwarding
+    // these would let every paired device watch every other device connect and disconnect. The
+    // host's own Remote Access pane consumes them (PR 1.7); the capture bank drops Local-only
+    // rows structurally, so they can never reach the sequencer or `remote_event_log`.
+    local_backend("remote:session_connected"),
+    local_backend("remote:session_closed"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn class_permits_enforces_representative_capability_boundaries() {
+        assert!(!class_permits(
+            RiskClass::Read,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(class_permits(
+            RiskClass::PathScoped,
+            &[Capability::WritesArbitraryPath]
+        ));
+        assert!(!class_permits(
+            RiskClass::PathScoped,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(class_permits(
+            RiskClass::AgentControl,
+            &[Capability::AgentControl]
+        ));
+        assert!(!class_permits(
+            RiskClass::AgentControl,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(class_permits(
+            RiskClass::Elevated,
+            &[Capability::SpawnsProcess]
+        ));
+        assert!(!class_permits(RiskClass::Denied, &[]));
+    }
+
+    #[test]
+    fn event_classification_find_returns_known_events_only() {
+        let classification =
+            EventClassification::find("task:created").expect("known event should resolve");
+        assert_eq!(classification.delivery, EventDelivery::Durable);
+        assert!(EventClassification::find("nonexistent:name").is_none());
+    }
+}

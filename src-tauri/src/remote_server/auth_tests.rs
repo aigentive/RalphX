@@ -15,10 +15,10 @@ use tower::ServiceExt;
 
 use super::auth::{
     device_token_prefix, expiry_timestamp, generate_device_token, generate_pairing_code,
-    generate_ws_ticket, now_timestamp, strip_trust_headers, RemoteAuthContext, RemoteAuthRejection,
-    PAIRING_CODE_TTL_SECS, RALPHX_HEADER_NAMESPACE, REMOTE_DEVICE_TOKEN_PREFIX,
-    REMOTE_PAIRING_CODE_PREFIX, REMOTE_WS_TICKET_PREFIX, STRIPPED_TRUST_HEADERS,
-    WS_TICKET_TTL_SECS,
+    generate_ws_ticket, now_timestamp, scope_label, strip_trust_headers, RemoteAuthContext,
+    RemoteAuthRejection, PAIRING_CODE_TTL_SECS, RALPHX_HEADER_NAMESPACE,
+    REMOTE_DEVICE_TOKEN_PREFIX, REMOTE_PAIRING_CODE_PREFIX, REMOTE_WS_TICKET_PREFIX,
+    STRIPPED_TRUST_HEADERS, WS_TICKET_TTL_SECS,
 };
 use super::endpoints::RemoteRouterState;
 use super::session_registry::{RemoteSessionAdmission, RemoteSessionRegistry};
@@ -28,12 +28,13 @@ use super::{
     SESSION_PATH, WS_TICKET_PATH,
 };
 use crate::domain::entities::{
-    RemoteAuditEntry, RemoteDevice, RemoteDeviceId, RemotePairingCode, RemotePairingCodeId,
-    RemoteScopeSet, RemoteSession, RemoteSessionId,
+    RemoteAuditAction, RemoteAuditEntry, RemoteDevice, RemoteDeviceId, RemotePairingCode,
+    RemotePairingCodeId, RemoteScopeSet, RemoteSession, RemoteSessionId,
 };
 use crate::domain::repositories::{
-    RemoteDeviceLookup, RemoteDeviceRepository, RemotePairingCodeRepository, RemotePairingOutcome,
-    RemotePairingRedemption, RemoteWsTicketOutcome,
+    RemoteAuditLogRepository, RemoteDeviceLookup, RemoteDeviceRepository,
+    RemotePairingCodeRepository, RemotePairingOutcome, RemotePairingRedemption,
+    RemoteWsTicketOutcome,
 };
 use crate::domain::services::key_crypto::hash_key;
 use crate::error::{AppError, AppResult};
@@ -91,6 +92,15 @@ fn post_json(path: &str, token: Option<&str>, body: Value) -> Request<Body> {
     }
     builder
         .body(Body::from(body.to_string()))
+        .expect("request should build")
+}
+
+fn delete_with_bearer(path: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::DELETE)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
         .expect("request should build")
 }
 
@@ -209,6 +219,29 @@ impl RemotePairingCodeRepository for FailingPairingCodeRepository {
     }
 }
 
+struct FailingAuditRepository;
+
+#[async_trait]
+impl RemoteAuditLogRepository for FailingAuditRepository {
+    async fn record(
+        &self,
+        _device_id: Option<&RemoteDeviceId>,
+        _action: RemoteAuditAction,
+        _detail: Option<&str>,
+        _now: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Database("database is locked".to_string()))
+    }
+
+    async fn list_recent(&self, _limit: Option<i64>) -> AppResult<Vec<RemoteAuditEntry>> {
+        Err(AppError::Database("database is locked".to_string()))
+    }
+
+    async fn prune_before(&self, _cutoff: &str) -> AppResult<usize> {
+        Err(AppError::Database("database is locked".to_string()))
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Credential shape
 // ---------------------------------------------------------------------------------------
@@ -322,6 +355,41 @@ fn absent_invalid_and_store_error_are_separate_typed_rejections() {
         "a flaky store must not lock the owner out"
     );
     assert!(!absent.counts_as_auth_failure());
+    assert_eq!(
+        RemoteAuthRejection::RateLimited {
+            retry_after_secs: 7
+        }
+        .audit_action(),
+        RemoteAuditAction::RateLimited
+    );
+    assert_eq!(
+        RemoteAuthRejection::TooManyConcurrentRequests.audit_action(),
+        RemoteAuditAction::RateLimited
+    );
+}
+
+#[test]
+fn every_remote_scope_has_the_protocol_label() {
+    assert_eq!(scope_label(Scope::UiRead), "ui:read");
+    assert_eq!(scope_label(Scope::UiOperate), "ui:operate");
+    assert_eq!(scope_label(Scope::UiAgent), "ui:agent");
+    assert_eq!(scope_label(Scope::UiElevated), "ui:elevated");
+}
+
+#[tokio::test]
+async fn audit_store_failures_are_reported_to_authorizing_callers() {
+    let mut context = in_memory_auth_context();
+    context.audit = Arc::new(FailingAuditRepository);
+
+    assert!(
+        !context
+            .record_audit(
+                None,
+                RemoteAuditAction::AuthAccepted,
+                Some("GET /remote/v1/session")
+            )
+            .await
+    );
 }
 
 /// A-2: a host with zero paired devices answers only the descriptor and `/pair`.
@@ -519,6 +587,37 @@ async fn a_pairing_request_may_narrow_its_own_grant() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["scopes"], json!(["ui:read"]));
+}
+
+#[tokio::test]
+async fn pairing_rejects_blank_and_oversized_device_names() {
+    let context = in_memory_auth_context();
+
+    for device_name in ["   ".to_string(), "x".repeat(121)] {
+        let code = mint_pairing_code(&context, RemoteScopeSet::default_pairing_grant()).await;
+        let response = router_for(&context)
+            .oneshot(post_json(
+                PAIR_PATH,
+                None,
+                json!({"pairingCode": code, "deviceName": device_name}),
+            ))
+            .await
+            .expect("pair request should complete");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert_eq!(body["code"], Value::from("REMOTE_FORBIDDEN"));
+    }
+
+    assert!(context
+        .devices
+        .list()
+        .await
+        .expect("devices should read")
+        .is_empty());
+    assert!(audit_actions(&context)
+        .await
+        .contains(&"pairing_rejected".to_string()));
 }
 
 /// Acceptance: the 6th failed pair attempt inside the window is rate limited.
@@ -854,15 +953,100 @@ async fn revocation_invalidates_outstanding_ws_tickets() {
 }
 
 #[tokio::test]
-async fn deleting_the_session_closes_the_callers_own_sessions_only() {
+async fn deleting_a_named_owned_session_closes_only_that_session() {
+    let context = in_memory_auth_context();
+    let (token, device_id) = pair_device(&context, "laptop").await;
+    let named_session_id = RemoteSessionId::new();
+    let surviving_session_id = RemoteSessionId::new();
+    let RemoteSessionAdmission::Admitted(mut named_kill) =
+        context.registry.register(&device_id, &named_session_id)
+    else {
+        panic!("the named session should be admitted");
+    };
+    let RemoteSessionAdmission::Admitted(mut surviving_kill) =
+        context.registry.register(&device_id, &surviving_session_id)
+    else {
+        panic!("the second session should be admitted");
+    };
+
+    let response = router_for(&context)
+        .oneshot(delete_with_bearer(
+            &format!("{SESSION_PATH}?sessionId={named_session_id}"),
+            &token,
+        ))
+        .await
+        .expect("delete should complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["closedSessions"], json!(1));
+    assert_eq!(named_kill.try_recv(), Some(ResetReason::Revoked));
+    assert_eq!(
+        surviving_kill.try_recv(),
+        None,
+        "another session on the same device must stay live"
+    );
+    assert_eq!(
+        context.registry.live_sessions(&device_id),
+        vec![surviving_session_id]
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_session_the_device_does_not_own_returns_404_and_closes_nothing() {
+    let context = in_memory_auth_context();
+    let (token, device_id) = pair_device(&context, "laptop").await;
+    let (_, other_device_id) = pair_device(&context, "phone").await;
+    let own_session_id = RemoteSessionId::new();
+    let other_session_id = RemoteSessionId::new();
+    let RemoteSessionAdmission::Admitted(mut own_kill) =
+        context.registry.register(&device_id, &own_session_id)
+    else {
+        panic!("the caller session should be admitted");
+    };
+    let RemoteSessionAdmission::Admitted(mut other_kill) = context
+        .registry
+        .register(&other_device_id, &other_session_id)
+    else {
+        panic!("the other device session should be admitted");
+    };
+
+    let response = router_for(&context)
+        .oneshot(delete_with_bearer(
+            &format!("{SESSION_PATH}?sessionId={other_session_id}"),
+            &token,
+        ))
+        .await
+        .expect("delete should complete");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(own_kill.try_recv(), None);
+    assert_eq!(other_kill.try_recv(), None);
+    assert_eq!(
+        context.registry.live_sessions(&device_id),
+        vec![own_session_id]
+    );
+    assert_eq!(
+        context.registry.live_sessions(&other_device_id),
+        vec![other_session_id]
+    );
+}
+
+#[tokio::test]
+async fn deleting_without_a_session_id_closes_every_session_on_the_callers_device_only() {
     let context = in_memory_auth_context();
     let (token, device_id) = pair_device(&context, "laptop").await;
     let (_, bystander_id) = pair_device(&context, "phone").await;
-    let RemoteSessionAdmission::Admitted(mut kill) = context
+    let RemoteSessionAdmission::Admitted(mut first_kill) = context
         .registry
         .register(&device_id, &RemoteSessionId::new())
     else {
-        panic!("the session should be admitted");
+        panic!("the first session should be admitted");
+    };
+    let RemoteSessionAdmission::Admitted(mut second_kill) = context
+        .registry
+        .register(&device_id, &RemoteSessionId::new())
+    else {
+        panic!("the second session should be admitted");
     };
     let RemoteSessionAdmission::Admitted(mut bystander_kill) = context
         .registry
@@ -872,20 +1056,14 @@ async fn deleting_the_session_closes_the_callers_own_sessions_only() {
     };
 
     let response = router_for(&context)
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri(SESSION_PATH)
-                .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("request should build"),
-        )
+        .oneshot(delete_with_bearer(SESSION_PATH, &token))
         .await
         .expect("delete should complete");
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_json(response).await["closedSessions"], json!(1));
-    assert_eq!(kill.try_recv(), Some(ResetReason::Revoked));
+    assert_eq!(body_json(response).await["closedSessions"], json!(2));
+    assert_eq!(first_kill.try_recv(), Some(ResetReason::Revoked));
+    assert_eq!(second_kill.try_recv(), Some(ResetReason::Revoked));
     assert_eq!(
         bystander_kill.try_recv(),
         None,

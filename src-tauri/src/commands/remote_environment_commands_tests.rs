@@ -5,6 +5,10 @@ use super::*;
 use crate::domain::entities::remote_environment::{
     RemoteEnvironment, RemoteEnvironmentId, RemoteEnvironmentStatus,
 };
+use crate::domain::repositories::{RemoteEnvironmentRepository, UpsertPairedEnvironment};
+use crate::infrastructure::memory::{MemoryRemoteEnvironmentRepository, MemorySecretStore};
+use std::sync::Arc;
+use tauri::Manager;
 
 fn sample_environment() -> RemoteEnvironment {
     RemoteEnvironment {
@@ -144,4 +148,187 @@ fn the_remote_environment_command_surface_is_registered() {
             "{command} must be registered in the Tauri invoke handler"
         );
     }
+}
+
+// ============ Command wrapper coverage ============
+
+fn test_app() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build remote environment test app")
+}
+
+fn test_app_with_service(
+    service: RemoteEnvironmentService,
+) -> tauri::App<tauri::test::MockRuntime> {
+    let mut state = AppState::new_test();
+    state.remote_environment_service = Arc::new(service);
+    tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build seeded remote environment test app")
+}
+
+#[tokio::test]
+async fn get_active_environment_returns_the_local_environment_id() {
+    let app = test_app();
+    let id = get_active_environment(app.state::<AppState>())
+        .await
+        .expect("active environment should resolve");
+    assert!(!id.is_empty());
+}
+
+#[tokio::test]
+async fn list_remote_environments_returns_an_empty_fresh_registry() {
+    let app = test_app();
+    let environments = list_remote_environments(app.state::<AppState>())
+        .await
+        .expect("fresh registry should list");
+    assert!(environments.is_empty());
+}
+
+#[tokio::test]
+async fn pair_remote_environment_maps_host_client_errors() {
+    let app = test_app();
+    let error = pair_remote_environment(
+        PairRemoteEnvironmentInput {
+            url: "https://example.test".to_string(),
+            code: "rxp_code".to_string(),
+            name: "Example".to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("unavailable host client should reject pairing");
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
+async fn remove_remote_environment_is_idempotent_for_an_unknown_id() {
+    // `RemoteEnvironmentService::remove` documents removing an unknown environment as a
+    // no-op success (idempotent), not a rejection — this proves the command wrapper
+    // passes that Ok(()) straight through rather than turning it into an error.
+    let app = test_app();
+    remove_remote_environment(
+        RemoteEnvironmentIdInput {
+            id: "missing".to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("removing an unknown environment should be an idempotent no-op success");
+}
+
+#[tokio::test]
+async fn set_active_environment_rejects_an_unknown_id() {
+    let app = test_app();
+    let error = set_active_environment(
+        RemoteEnvironmentIdInput {
+            id: "missing".to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("unknown environment should be rejected");
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
+async fn remote_connect_rejects_an_unknown_id() {
+    let app = test_app();
+    let error = remote_connect(
+        RemoteEnvironmentIdInput {
+            id: "missing".to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("unknown environment should be rejected");
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
+async fn remote_disconnect_rejects_an_unknown_id() {
+    let app = test_app();
+    let error = remote_disconnect(
+        RemoteEnvironmentIdInput {
+            id: "missing".to_string(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("unknown environment should be rejected");
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
+async fn remote_invoke_rejects_an_unknown_id() {
+    let app = test_app();
+    let error = remote_invoke(
+        RemoteInvokeInput {
+            id: "missing".to_string(),
+            request_id: "req-1".to_string(),
+            cmd: "health_check".to_string(),
+            args: serde_json::json!({}),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("unknown environment should be rejected");
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
+async fn remote_fetch_rejects_an_unknown_id() {
+    let app = test_app();
+    let error = remote_fetch(
+        RemoteFetchInput {
+            id: "missing".to_string(),
+            path: "/remote/v1/health".to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("unknown environment should be rejected");
+    assert!(!error.is_empty());
+}
+
+#[tokio::test]
+async fn list_remote_environments_maps_a_seeded_environment() {
+    let repo = Arc::new(MemoryRemoteEnvironmentRepository::new());
+    let seeded = repo
+        .upsert_paired(UpsertPairedEnvironment {
+            environment_id: "env-seeded".to_string(),
+            name: "Seeded Mac".to_string(),
+            url: "https://seeded.example".to_string(),
+            scopes: vec![ralphx_remote_protocol::Scope::UiRead],
+            protocol_version: 1,
+        })
+        .await
+        .expect("seed environment");
+    let service = RemoteEnvironmentService::new(
+        Arc::clone(&repo) as Arc<dyn RemoteEnvironmentRepository>,
+        Arc::new(MemorySecretStore::new()),
+        Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
+            "not needed by list",
+        )),
+    );
+    let app = test_app_with_service(service);
+
+    let environments = list_remote_environments(app.state::<AppState>())
+        .await
+        .expect("seeded registry should list");
+
+    assert_eq!(environments.len(), 1);
+    let summary = &environments[0];
+    assert_eq!(summary.id, seeded.id.as_str());
+    assert_eq!(summary.environment_id, "env-seeded");
+    assert_eq!(summary.name, "Seeded Mac");
+    assert_eq!(summary.base_url, "https://seeded.example");
+    assert_eq!(summary.status, RemoteEnvironmentStatus::PendingAdd);
+    assert_eq!(summary.protocol_version, 1);
 }

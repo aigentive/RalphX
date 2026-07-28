@@ -756,7 +756,7 @@ mod tests {
         find_claude_native_cli_path, find_cli_path_with_candidate_groups_for_test,
         find_codex_cli_candidates, find_codex_cli_path, find_launchable_cli_path,
         find_launchable_cli_path_without_shell, find_launchable_cli_paths_with_login_shell,
-        is_safe_tool_name, launchable_cli_paths_from_shell_output,
+        find_tailscale_cli_path, is_safe_tool_name, launchable_cli_paths_from_shell_output,
         nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir, resolve_node_cli_path,
         safe_cli_path_from_shell_output, TEST_ENV_MUTEX,
     };
@@ -899,6 +899,23 @@ mod tests {
             find_launchable_cli_path("fake-launcher", &[]),
             Some(launcher)
         );
+    }
+
+    #[test]
+    fn find_tailscale_cli_path_uses_path_candidate() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        let tailscale = bin_dir.join("tailscale");
+        write_fake_tool(&tailscale);
+
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+        assert_eq!(find_tailscale_cli_path(), Some(tailscale));
     }
 
     #[test]
