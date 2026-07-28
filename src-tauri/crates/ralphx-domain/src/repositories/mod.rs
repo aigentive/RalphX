@@ -89,7 +89,7 @@ pub use agent_conversation_workspace_repository::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
     AgentWorkspacePrTerminalSettlement, AgentWorkspaceRepairStateGuard,
-    AgentWorkspaceRepairStateTransition, validate_publication_pushed_sha,
+    AgentWorkspaceRepairStateTransition,
 };
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use manual_role_default_repository::ManualRoleDefaultRepository;

@@ -128,7 +128,7 @@ impl<'a> TransitionHandler<'a> {
                 );
                 match push_publish_branch(github_service, &working_dir, &branch_name).await {
                     Err(e) => Err(e),
-                    Ok(()) => {
+                    Ok(_) => {
                         let _ = plan_branch_repo
                             .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
                             .await;
@@ -193,7 +193,7 @@ impl<'a> TransitionHandler<'a> {
                     );
                     match push_publish_branch(github_service, &working_dir, &branch_name).await {
                         Err(e) => Err(e),
-                        Ok(()) => {
+                        Ok(_) => {
                             let _ = plan_branch_repo
                                 .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
                                 .await;
@@ -233,7 +233,7 @@ impl<'a> TransitionHandler<'a> {
                     );
                     match push_publish_branch(github_service, &working_dir, &branch_name).await {
                         Err(e) => Err(e),
-                        Ok(()) => {
+                        Ok(_) => {
                             let publisher = PlanPrPublisher::new(
                                 github_service,
                                 self.machine.context.services.ideation_session_repo.as_ref(),

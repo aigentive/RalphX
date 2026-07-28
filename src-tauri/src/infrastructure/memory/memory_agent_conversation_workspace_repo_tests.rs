@@ -18,6 +18,59 @@ use crate::domain::repositories::{
     AgentWorkspaceRepairStateTransition,
 };
 
+#[tokio::test]
+async fn publication_pushed_sha_setter_is_branch_fenced_and_restart_clears_it() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-pushed-sha-memory");
+    let workspace = repo
+        .create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+
+    assert!(repo
+        .set_publication_pushed_sha(
+            &conversation_id,
+            &workspace.branch_name,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .await
+        .unwrap());
+    assert!(!repo
+        .set_publication_pushed_sha(
+            &conversation_id,
+            "stale-branch",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .await
+        .unwrap());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pushed_sha
+            .as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+
+    repo.restore_after_restart(
+        &conversation_id,
+        &IdeationSessionId::from_string("session-restart"),
+        &PlanBranchId::from_string("plan-branch-restart"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pushed_sha,
+        None
+    );
+}
+
 fn pr_review_action(
     conversation_id: ChatConversationId,
     pr_number: i64,
@@ -673,76 +726,6 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
 }
 
 #[tokio::test]
-async fn publication_pushed_sha_setter_overwrites_and_clears_current_attempt() {
-    let repo = MemoryAgentConversationWorkspaceRepository::new();
-    let conversation_id = ChatConversationId::from_string("publication-sha-memory");
-    repo.create_or_update(make_workspace(conversation_id.clone()))
-        .await
-        .expect("insert workspace");
-
-    repo.set_publication_pushed_sha(
-        &conversation_id,
-        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-    )
-    .await
-    .expect("set first SHA");
-    repo.set_publication_pushed_sha(
-        &conversation_id,
-        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-    )
-    .await
-    .expect("replace SHA");
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .publication_pushed_sha
-            .as_deref(),
-        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-    );
-
-    repo.set_publication_pushed_sha(&conversation_id, None)
-        .await
-        .expect("clear SHA");
-    assert!(repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .publication_pushed_sha
-        .is_none());
-}
-
-#[tokio::test]
-async fn publication_pushed_sha_setter_rejects_invalid_or_missing_targets() {
-    let repo = MemoryAgentConversationWorkspaceRepository::new();
-    let conversation_id = ChatConversationId::new();
-    repo.create_or_update(make_workspace(conversation_id.clone()))
-        .await
-        .expect("insert workspace");
-
-    assert!(repo
-        .set_publication_pushed_sha(&conversation_id, Some("not-a-commit"))
-        .await
-        .is_err());
-    assert!(repo
-        .set_publication_pushed_sha(
-            &ChatConversationId::new(),
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        )
-        .await
-        .is_err());
-    assert!(repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .publication_pushed_sha
-        .is_none());
-}
-
-#[tokio::test]
 async fn repair_state_cas_is_atomic_and_rejects_a_stale_guard() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("repair-state-memory");
@@ -925,7 +908,6 @@ async fn restart_restore_reactivates_workspace_and_clears_cleanup_marker() {
     let conversation_id = ChatConversationId::from_string("conversation-restart");
     let mut workspace = make_workspace(conversation_id.clone());
     workspace.status = AgentConversationWorkspaceStatus::Missing;
-    workspace.publication_pushed_sha = Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
     repo.create_or_update(workspace)
         .await
         .expect("insert missing workspace");
@@ -959,7 +941,6 @@ async fn restart_restore_reactivates_workspace_and_clears_cleanup_marker() {
             .expect("read cleanup marker"),
         None
     );
-    assert!(restored.publication_pushed_sha.is_none());
 }
 
 #[tokio::test]

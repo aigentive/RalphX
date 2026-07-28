@@ -36,6 +36,58 @@ fn setup_repo() -> (
 }
 
 #[tokio::test]
+async fn publication_pushed_sha_setter_is_branch_fenced_and_restart_clears_it() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let workspace = repo
+        .create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+
+    assert!(repo
+        .set_publication_pushed_sha(
+            &conversation_id,
+            &workspace.branch_name,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .await
+        .unwrap());
+    assert!(!repo
+        .set_publication_pushed_sha(
+            &conversation_id,
+            "stale-branch",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .await
+        .unwrap());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pushed_sha
+            .as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+
+    repo.restore_after_restart(
+        &conversation_id,
+        &IdeationSessionId::from_string("session-restart"),
+        &PlanBranchId::from_string("plan-branch-restart"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pushed_sha,
+        None
+    );
+}
+
+#[tokio::test]
 async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id))
@@ -237,74 +289,6 @@ fn set_workspace_updated_at(
         )
         .unwrap();
     });
-}
-
-#[tokio::test]
-async fn publication_pushed_sha_setter_round_trips_overwrites_and_clears() {
-    let (_db, repo, conversation_id) = setup_repo();
-    repo.create_or_update(make_workspace(conversation_id.clone()))
-        .await
-        .expect("insert workspace");
-
-    repo.set_publication_pushed_sha(
-        &conversation_id,
-        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-    )
-    .await
-    .expect("set SHA");
-    repo.set_publication_pushed_sha(
-        &conversation_id,
-        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-    )
-    .await
-    .expect("overwrite SHA");
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .publication_pushed_sha
-            .as_deref(),
-        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-    );
-
-    repo.set_publication_pushed_sha(&conversation_id, None)
-        .await
-        .expect("clear SHA");
-    assert!(repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .publication_pushed_sha
-        .is_none());
-}
-
-#[tokio::test]
-async fn publication_pushed_sha_setter_rejects_invalid_or_missing_targets() {
-    let (_db, repo, conversation_id) = setup_repo();
-    repo.create_or_update(make_workspace(conversation_id.clone()))
-        .await
-        .expect("insert workspace");
-
-    assert!(repo
-        .set_publication_pushed_sha(&conversation_id, Some("not-a-commit"))
-        .await
-        .is_err());
-    assert!(repo
-        .set_publication_pushed_sha(
-            &ChatConversationId::from_string("missing-workspace"),
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        )
-        .await
-        .is_err());
-    assert!(repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .publication_pushed_sha
-        .is_none());
 }
 
 #[tokio::test]
@@ -929,7 +913,6 @@ async fn restore_after_restart_reactivates_links_and_clears_cleanup_marker() {
     let (_db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id.clone());
     workspace.status = AgentConversationWorkspaceStatus::Missing;
-    workspace.publication_pushed_sha = Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
     repo.create_or_update(workspace).await.unwrap();
     repo.mark_local_cleanup_status(&conversation_id, "cleaned", chrono::Utc::now())
         .await
@@ -961,7 +944,6 @@ async fn restore_after_restart_reactivates_links_and_clears_cleanup_marker() {
             .unwrap(),
         None
     );
-    assert!(restored.publication_pushed_sha.is_none());
 }
 
 #[tokio::test]

@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -145,29 +146,70 @@ pub async fn count_publishable_commits_with_base_fallback(
         .await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishBranchReceipt {
+    pub branch: String,
+    pub sha: String,
+}
+
+pub(crate) async fn push_publish_branch_with<F, Fut>(
+    repo_path: &Path,
+    branch: &str,
+    push: F,
+) -> AppResult<PublishBranchReceipt>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = AppResult<()>>,
+{
+    let pushed_sha = GitService::get_branch_sha(repo_path, branch).await?;
+    push().await?;
+    let current_sha = GitService::get_branch_sha(repo_path, branch).await?;
+    if current_sha != pushed_sha {
+        return Err(crate::error::AppError::Conflict(format!(
+            "Publish branch '{branch}' moved while it was being pushed (captured {pushed_sha}, now {current_sha})"
+        )));
+    }
+    Ok(PublishBranchReceipt {
+        branch: branch.to_string(),
+        sha: pushed_sha,
+    })
+}
+
 pub async fn push_publish_branch(
     github: &Arc<dyn GithubServiceTrait>,
     repo_path: &Path,
     branch: &str,
+) -> AppResult<PublishBranchReceipt> {
+    push_publish_branch_with(repo_path, branch, || github.push_branch(repo_path, branch)).await
+}
+
+pub async fn persist_workspace_push_receipt(
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+    receipt: &PublishBranchReceipt,
 ) -> AppResult<()> {
-    github.push_branch(repo_path, branch).await
+    if workspace_repo
+        .set_publication_pushed_sha(conversation_id, &receipt.branch, &receipt.sha)
+        .await?
+    {
+        return Ok(());
+    }
+    Err(crate::error::AppError::Conflict(format!(
+        "Workspace publication ownership changed before pushed SHA {} for branch '{}' could be persisted",
+        receipt.sha, receipt.branch
+    )))
 }
 
 pub async fn push_agent_workspace_publish_branch(
     github: &Arc<dyn GithubServiceTrait>,
-    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
-    conversation_id: &ChatConversationId,
     repo_path: &Path,
     branch: &str,
-) -> AppResult<()> {
-    workspace_repo
-        .set_publication_pushed_sha(conversation_id, None)
-        .await?;
-    github.push_branch(repo_path, branch).await?;
-    let pushed_sha = GitService::get_branch_sha(repo_path, branch).await?;
-    workspace_repo
-        .set_publication_pushed_sha(conversation_id, Some(&pushed_sha))
-        .await
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+) -> AppResult<PublishBranchReceipt> {
+    let receipt = push_publish_branch(github, repo_path, branch).await?;
+    persist_workspace_push_receipt(workspace_repo, conversation_id, &receipt).await?;
+    Ok(receipt)
 }
 
 /// Lazily publish an automation run's local-only base branch to origin before the
@@ -191,26 +233,28 @@ pub async fn ensure_publish_base_pushed(
     repo_path: &Path,
     conversation: &ChatConversation,
     workspace: &AgentConversationWorkspace,
-) -> AppResult<()> {
+) -> AppResult<Option<PublishBranchReceipt>> {
     // Scope belt (authority): only automation-owned runs lazily publish their base.
     if conversation.automation_id.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     // Cheap pre-filter: project-default / current-branch bases already live on origin.
     if workspace.base_ref_kind != IdeationAnalysisBaseRefKind::LocalBranch {
-        return Ok(());
+        return Ok(None);
     }
     let base_ref = workspace.base_ref.trim();
     if base_ref.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     // Safety belt: skip when the base is already on origin (idempotent; also covers
     // pr_head_stacked / source-PR successors whose base is a pushed head branch).
     let remote_ref = remote_tracking_ref_for_publish(base_ref);
     if GitService::ref_exists(repo_path, &remote_ref).await? {
-        return Ok(());
+        return Ok(None);
     }
-    github.push_branch(repo_path, base_ref).await
+    push_publish_branch(github, repo_path, base_ref)
+        .await
+        .map(Some)
 }
 
 pub async fn ensure_publish_branch_fresh(

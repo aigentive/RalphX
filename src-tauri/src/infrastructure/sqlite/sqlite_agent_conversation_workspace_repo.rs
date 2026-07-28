@@ -23,9 +23,9 @@ use crate::domain::entities::{
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
-    validate_publication_pushed_sha, AgentConversationWorkspaceRepository,
-    AgentWorkspaceLocalCleanupClaim, AgentWorkspacePrReviewActionMutation,
-    AgentWorkspacePrReviewStateTransition, AgentWorkspacePrTerminalSettlement,
+    AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
+    AgentWorkspacePrTerminalSettlement,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -657,7 +657,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_pr_url=excluded.publication_pr_url,
                         publication_pr_status=excluded.publication_pr_status,
                         publication_push_status=excluded.publication_push_status,
-                        publication_pushed_sha=excluded.publication_pushed_sha,
+                        publication_pushed_sha=COALESCE(
+                            excluded.publication_pushed_sha,
+                            agent_conversation_workspaces.publication_pushed_sha
+                        ),
                         auto_publish_enabled=excluded.auto_publish_enabled,
                         auto_publish_initial_pr_enabled=excluded.auto_publish_initial_pr_enabled,
                         auto_publish_paused_pr_autofix_enabled=excluded.auto_publish_paused_pr_autofix_enabled,
@@ -1422,9 +1425,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      SET linked_ideation_session_id = ?2,
                          linked_plan_branch_id = ?3,
                          status = 'active',
+                         publication_pushed_sha = NULL,
                          local_cleanup_status = NULL,
                          local_cleanup_checked_at = NULL,
-                         publication_pushed_sha = NULL,
                          updated_at = ?4
                      WHERE conversation_id = ?1",
                     rusqlite::params![
@@ -1489,28 +1492,49 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
     async fn set_publication_pushed_sha(
         &self,
         conversation_id: &ChatConversationId,
-        pushed_sha: Option<&str>,
-    ) -> AppResult<()> {
-        if let Some(pushed_sha) = pushed_sha {
-            validate_publication_pushed_sha(pushed_sha)?;
-        }
+        expected_branch_name: &str,
+        pushed_sha: &str,
+    ) -> AppResult<bool> {
         let conversation_id = conversation_id.as_str().to_string();
-        let pushed_sha = pushed_sha.map(str::to_string);
+        let expected_branch_name = expected_branch_name.to_string();
+        let pushed_sha = pushed_sha.to_string();
         let updated_at = Utc::now().to_rfc3339();
         self.db
             .run(move |conn| {
                 let rows = conn.execute(
                     "UPDATE agent_conversation_workspaces
-                     SET publication_pushed_sha = ?2,
-                         updated_at = ?3
-                     WHERE conversation_id = ?1",
-                    rusqlite::params![conversation_id, pushed_sha, updated_at],
+                     SET publication_pushed_sha = ?3,
+                         updated_at = ?4
+                     WHERE conversation_id = ?1
+                       AND branch_name = ?2
+                       AND status = 'active'",
+                    rusqlite::params![
+                        conversation_id,
+                        expected_branch_name,
+                        pushed_sha,
+                        updated_at,
+                    ],
                 )?;
-                if rows == 0 {
-                    return Err(AppError::NotFound(format!(
-                        "Workspace not found: {conversation_id}"
-                    )));
-                }
+                Ok(rows == 1)
+            })
+            .await
+    }
+
+    async fn clear_publication_pushed_sha(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_pushed_sha = NULL,
+                         updated_at = ?2
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, updated_at],
+                )?;
                 Ok(())
             })
             .await

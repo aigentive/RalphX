@@ -7,6 +7,7 @@ use crate::application::agent_workspace_terminal_cleanup::{
     TerminalAgentWorkspaceOutcome, TerminalCleanupClaimState, TerminalLocalCleanupResult,
     TerminalPrObservation,
 };
+use crate::application::agent_workspace_terminal_observation::resolve_merge_cleanliness_best_effort;
 use crate::application::chat_service::ChatService;
 use crate::application::task_cleanup_service::{StopMode, TaskCleanupService};
 use crate::application::AppState;
@@ -130,6 +131,18 @@ pub async fn archive_agent_conversation_for_state(
                 observation
             }
         });
+    let observation = match (persisted_workspace.as_ref(), observation) {
+        (Some(persisted_workspace), Some(observation)) => Some(
+            resolve_merge_cleanliness_best_effort(
+                state.github_service.as_ref(),
+                Path::new(&project.working_directory),
+                persisted_workspace,
+                observation,
+            )
+            .await,
+        ),
+        _ => None,
+    };
     if !had_effective_pr {
         let reason = if matches!(
             workspace.publication_push_status.as_deref(),

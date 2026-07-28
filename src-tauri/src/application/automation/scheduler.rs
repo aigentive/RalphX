@@ -58,8 +58,8 @@ use crate::application::harness_runtime_registry::{
     default_automation_signal_failure_pause_threshold,
 };
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
-use crate::application::plan_verdict_history::{
-    record_plan_verdict, PlanVerdict, PlanVerdictCapture,
+use crate::application::plan_verdict_ledger::{
+    record_plan_verdict, PlanVerdict, PlanVerdictLedgerInput, PlanVerdictLinkage,
 };
 use crate::application::plan_verification_service::PlanVerificationStatusKind;
 use crate::application::services::pr_auto_merge_status::{
@@ -526,11 +526,11 @@ struct AutomationPlanJudgeTask {
     transition_service: AutomationTransitionService,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
-    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
     plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
     artifact_repo: Arc<dyn ArtifactRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
     config: AutomationSchedulerConfig,
     verification_context: Option<AutomationPlanVerificationJudgeContext>,
@@ -686,19 +686,17 @@ impl AutomationPlanJudgeTask {
             .map_err(|error| JudgeInvocationFailure::Invocation {
                 detail: error.to_string(),
             })?;
-        let mut verdict = parse_automation_plan_judge_verdict(
+        let verdict = parse_automation_plan_judge_verdict(
             &output.raw_output,
             AutomationPlanJudgeValidationContext {
                 expected_artifact_id: Some(&payload.plan_artifact_id),
+                expected_artifact_version: Some(payload.plan_artifact_version),
             },
         )
         .map_err(|error| JudgeInvocationFailure::InvalidOutput {
             detail: error.to_string(),
             raw_output: output.raw_output.clone(),
         })?;
-        // Backend authority: the judge evaluated the artifact version loaded into
-        // the prompt payload, regardless of what the model echoed back.
-        verdict.evaluated_artifact_version = Some(payload.plan_artifact_version);
         let verdict_json = serde_json::to_string(&verdict).map_err(|error| {
             JudgeInvocationFailure::InvalidOutput {
                 detail: format!("failed to serialize normalized plan judge verdict: {error}"),
@@ -739,15 +737,15 @@ impl AutomationPlanJudgeTask {
             });
         };
         if current.plan_artifact_id != parsed.verdict.evaluated_artifact_id
-            || parsed.verdict.evaluated_artifact_version != Some(current.artifact_version)
+            || parsed.verdict.evaluated_artifact_version != Some(current.plan_artifact_version)
         {
             tracing::warn!(
                 automation_id = %automation.id,
                 run_id = %run.id,
                 evaluated_artifact_id = parsed.verdict.evaluated_artifact_id,
-                evaluated_artifact_version = ?parsed.verdict.evaluated_artifact_version,
+                evaluated_artifact_version = parsed.verdict.evaluated_artifact_version,
                 current_artifact_id = current.plan_artifact_id,
-                current_artifact_version = current.artifact_version,
+                current_artifact_version = current.plan_artifact_version,
                 "Discarding automation plan judge verdict because the plan artifact changed"
             );
             self.transition_service
@@ -792,18 +790,15 @@ impl AutomationPlanJudgeTask {
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .is_some_and(|approval| {
-                        approval.artifact_id.as_str() == current.plan_artifact_id
-                    })
+                    .is_some_and(|approval| current.matches_approval(&approval))
                 {
-                    record_judge_plan_verdict(
-                        Arc::clone(&self.task_outcome_repo),
+                    self.record_judge_plan_verdict(
+                        automation,
                         &current,
                         PlanVerdict::Accepted,
                         None,
-                        "automation_plan_judge",
                     )
-                    .await;
+                    .await?;
                     return Ok(AutomationPlanJudgeTaskOutcome {
                         judge_succeeded: true,
                         ..AutomationPlanJudgeTaskOutcome::default()
@@ -819,14 +814,13 @@ impl AutomationPlanJudgeTask {
                     .await
                 {
                     Ok(_) => {
-                        record_judge_plan_verdict(
-                            Arc::clone(&self.task_outcome_repo),
+                        self.record_judge_plan_verdict(
+                            automation,
                             &current,
                             PlanVerdict::Accepted,
                             None,
-                            "automation_plan_judge",
                         )
-                        .await;
+                        .await?;
                     }
                     Err(AppError::Conflict(detail)) => {
                         tracing::debug!(
@@ -853,7 +847,7 @@ impl AutomationPlanJudgeTask {
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .filter(|approval| approval.artifact_id.as_str() == current.plan_artifact_id)
+                    .filter(|approval| current.matches_approval(approval))
                 {
                     tracing::warn!(
                         automation_id = %automation.id,
@@ -958,14 +952,13 @@ impl AutomationPlanJudgeTask {
                 self.run_repo
                     .set_plan_pending_instructions(&run.id, Some(instructions.to_string()))
                     .await?;
-                record_judge_plan_verdict(
-                    Arc::clone(&self.task_outcome_repo),
+                self.record_judge_plan_verdict(
+                    automation,
                     &current,
                     PlanVerdict::RevisionRequested,
-                    Some(instructions.to_string()),
-                    "automation_plan_judge",
+                    Some(instructions),
                 )
-                .await;
+                .await?;
             }
         }
 
@@ -998,16 +991,48 @@ impl AutomationPlanJudgeTask {
         let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
             return Ok(None);
         };
-        let Some(artifact) = self.artifact_repo.get_by_id(plan_artifact_id).await? else {
-            return Ok(None);
+        let Some(plan_artifact) = self.artifact_repo.get_by_id(plan_artifact_id).await? else {
+            return Err(AppError::NotFound(format!(
+                "Automation plan artifact {} not found",
+                plan_artifact_id.as_str()
+            )));
         };
         Ok(Some(PlanApplicationContext {
-            project_id: session.project_id,
-            conversation_id: conversation_id.clone(),
             session_id: session_id.clone(),
             plan_artifact_id: plan_artifact_id.as_str().to_string(),
-            artifact_version: artifact.metadata.version,
+            plan_artifact_version: plan_artifact.metadata.version,
+            project_id: session.project_id,
+            conversation_id: conversation_id.clone(),
         }))
+    }
+
+    async fn record_judge_plan_verdict(
+        &self,
+        automation: &Automation,
+        current: &PlanApplicationContext,
+        verdict: PlanVerdict,
+        reason: Option<&str>,
+    ) -> AppResult<()> {
+        record_plan_verdict(
+            Arc::clone(&self.task_outcome_repo),
+            PlanVerdictLedgerInput {
+                project_id: current.project_id.clone(),
+                session_id: current.session_id.as_str().to_string(),
+                artifact_id: current.plan_artifact_id.clone(),
+                artifact_version: current.plan_artifact_version,
+                actor: PlanApprovalActor::Judge,
+                verdict,
+                source_surface: "automation_plan_judge".to_string(),
+                linkage: PlanVerdictLinkage {
+                    conversation_id: Some(current.conversation_id.as_str().to_string()),
+                    automation_id: Some(automation.id.as_str().to_string()),
+                    imported_from_session_id: None,
+                },
+                reason: reason.map(str::to_string),
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     async fn mark_plan_judge_failed(
@@ -1059,46 +1084,17 @@ struct AutomationPlanJudgePayload {
 
 #[derive(Debug, Clone)]
 struct PlanApplicationContext {
-    project_id: crate::domain::entities::ProjectId,
-    conversation_id: ChatConversationId,
     session_id: crate::domain::entities::IdeationSessionId,
     plan_artifact_id: String,
-    artifact_version: u32,
+    plan_artifact_version: u32,
+    project_id: crate::domain::entities::ProjectId,
+    conversation_id: ChatConversationId,
 }
 
-async fn record_judge_plan_verdict(
-    repo: Arc<dyn TaskOutcomeRepository>,
-    current: &PlanApplicationContext,
-    verdict: PlanVerdict,
-    summary: Option<String>,
-    origin: &'static str,
-) {
-    if let Err(error) = record_plan_verdict(
-        repo,
-        PlanVerdictCapture {
-            project_id: current.project_id.clone(),
-            conversation_id: Some(current.conversation_id.as_str()),
-            session_id: current.session_id.as_str().to_string(),
-            artifact_id: current.plan_artifact_id.clone(),
-            artifact_version: current.artifact_version,
-            actor: PlanApprovalActor::Judge,
-            verdict,
-            origin,
-            summary,
-        },
-    )
-    .await
-    {
-        tracing::warn!(
-            session_id = current.session_id.as_str(),
-            artifact_id = current.plan_artifact_id,
-            artifact_version = current.artifact_version,
-            actor = PlanApprovalActor::Judge.as_str(),
-            verdict = verdict.as_str(),
-            origin,
-            error = %error,
-            "Plan judge verdict committed but history capture failed"
-        );
+impl PlanApplicationContext {
+    fn matches_approval(&self, approval: &PlanArtifactApproval) -> bool {
+        approval.artifact_id.as_str() == self.plan_artifact_id
+            && approval.artifact_version == self.plan_artifact_version
     }
 }
 
@@ -3085,11 +3081,11 @@ impl AutomationScheduler {
                         self.transition_service.clone(),
                         Arc::clone(&self.run_repo),
                         Arc::clone(&self.workspace_repo),
-                        Arc::clone(&self.task_outcome_repo),
                         Arc::clone(&self.ideation_session_repo),
                         Arc::clone(&self.plan_approval_repo),
                         Arc::clone(&self.plan_approval_writer),
                         Arc::clone(&self.artifact_repo),
+                        Arc::clone(&self.task_outcome_repo),
                         Arc::clone(&self.plan_judge_invoker),
                         self.config.clone(),
                         automation.clone(),
@@ -3789,6 +3785,7 @@ impl AutomationScheduler {
             verdict_json,
             AutomationPlanJudgeValidationContext {
                 expected_artifact_id: None,
+                expected_artifact_version: None,
             },
         ) {
             Ok(verdict) => verdict,
@@ -3807,16 +3804,16 @@ impl AutomationScheduler {
             return Ok(());
         };
         if current.plan_artifact_id != verdict.evaluated_artifact_id
-            || verdict.evaluated_artifact_version != Some(current.artifact_version)
+            || verdict.evaluated_artifact_version != Some(current.plan_artifact_version)
         {
             tracing::warn!(
                 automation_id = %automation.id,
                 run_id = %run.id,
                 evaluated_artifact_id = verdict.evaluated_artifact_id,
-                evaluated_artifact_version = ?verdict.evaluated_artifact_version,
+                evaluated_artifact_version = verdict.evaluated_artifact_version,
                 current_artifact_id = current.plan_artifact_id,
-                current_artifact_version = current.artifact_version,
-                "Ignoring stored automation plan judge verdict because the plan artifact changed"
+                current_artifact_version = current.plan_artifact_version,
+                "Ignoring stored automation plan judge verdict because the plan artifact changed or was revised"
             );
             self.transition_service
                 .transition_plan_judge_state(
@@ -3836,18 +3833,15 @@ impl AutomationScheduler {
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .is_some_and(|approval| {
-                        approval.artifact_id.as_str() == current.plan_artifact_id
-                    })
+                    .is_some_and(|approval| current.matches_approval(&approval))
                 {
-                    record_judge_plan_verdict(
-                        Arc::clone(&self.task_outcome_repo),
+                    self.record_judge_plan_verdict(
+                        automation,
                         &current,
                         PlanVerdict::Accepted,
                         None,
-                        "automation_stored_plan_judge_verdict",
                     )
-                    .await;
+                    .await?;
                     return Ok(());
                 }
                 self.plan_approval_writer
@@ -3857,23 +3851,15 @@ impl AutomationScheduler {
                         PlanApprovalActor::Judge,
                     )
                     .await?;
-                record_judge_plan_verdict(
-                    Arc::clone(&self.task_outcome_repo),
-                    &current,
-                    PlanVerdict::Accepted,
-                    None,
-                    "automation_stored_plan_judge_verdict",
-                )
-                .await;
+                self.record_judge_plan_verdict(automation, &current, PlanVerdict::Accepted, None)
+                    .await?;
             }
             AutomationPlanJudgeDecision::Revise => {
                 if self
                     .plan_approval_repo
                     .get_by_session(&current.session_id)
                     .await?
-                    .is_some_and(|approval| {
-                        approval.artifact_id.as_str() == current.plan_artifact_id
-                    })
+                    .is_some_and(|approval| current.matches_approval(&approval))
                 {
                     return Ok(());
                 }
@@ -3881,27 +3867,25 @@ impl AutomationScheduler {
                     return Ok(());
                 };
                 if run.plan_pending_instructions.as_deref() == Some(instructions) {
-                    record_judge_plan_verdict(
-                        Arc::clone(&self.task_outcome_repo),
+                    self.record_judge_plan_verdict(
+                        automation,
                         &current,
                         PlanVerdict::RevisionRequested,
-                        Some(instructions.to_string()),
-                        "automation_stored_plan_judge_verdict",
+                        Some(instructions),
                     )
-                    .await;
+                    .await?;
                     return Ok(());
                 }
                 self.run_repo
                     .set_plan_pending_instructions(&run.id, Some(instructions.to_string()))
                     .await?;
-                record_judge_plan_verdict(
-                    Arc::clone(&self.task_outcome_repo),
+                self.record_judge_plan_verdict(
+                    automation,
                     &current,
                     PlanVerdict::RevisionRequested,
-                    Some(instructions.to_string()),
-                    "automation_stored_plan_judge_verdict",
+                    Some(instructions),
                 )
-                .await;
+                .await?;
             }
         }
         Ok(())
@@ -3930,16 +3914,48 @@ impl AutomationScheduler {
         let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
             return Ok(None);
         };
-        let Some(artifact) = self.artifact_repo.get_by_id(plan_artifact_id).await? else {
-            return Ok(None);
+        let Some(plan_artifact) = self.artifact_repo.get_by_id(plan_artifact_id).await? else {
+            return Err(AppError::NotFound(format!(
+                "Automation plan artifact {} not found",
+                plan_artifact_id.as_str()
+            )));
         };
         Ok(Some(PlanApplicationContext {
-            project_id: session.project_id,
-            conversation_id: conversation_id.clone(),
             session_id: session_id.clone(),
             plan_artifact_id: plan_artifact_id.as_str().to_string(),
-            artifact_version: artifact.metadata.version,
+            plan_artifact_version: plan_artifact.metadata.version,
+            project_id: session.project_id,
+            conversation_id: conversation_id.clone(),
         }))
+    }
+
+    async fn record_judge_plan_verdict(
+        &self,
+        automation: &Automation,
+        current: &PlanApplicationContext,
+        verdict: PlanVerdict,
+        reason: Option<&str>,
+    ) -> AppResult<()> {
+        record_plan_verdict(
+            Arc::clone(&self.task_outcome_repo),
+            PlanVerdictLedgerInput {
+                project_id: current.project_id.clone(),
+                session_id: current.session_id.as_str().to_string(),
+                artifact_id: current.plan_artifact_id.clone(),
+                artifact_version: current.plan_artifact_version,
+                actor: PlanApprovalActor::Judge,
+                verdict,
+                source_surface: "automation_plan_judge".to_string(),
+                linkage: PlanVerdictLinkage {
+                    conversation_id: Some(current.conversation_id.as_str().to_string()),
+                    automation_id: Some(automation.id.as_str().to_string()),
+                    imported_from_session_id: None,
+                },
+                reason: reason.map(str::to_string),
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     async fn observe_published_run(
@@ -4308,11 +4324,11 @@ pub(crate) fn spawn_automation_plan_judge_task(
     transition_service: AutomationTransitionService,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
-    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
     plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
     artifact_repo: Arc<dyn ArtifactRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
     config: AutomationSchedulerConfig,
     automation: Automation,
@@ -4323,11 +4339,11 @@ pub(crate) fn spawn_automation_plan_judge_task(
         transition_service,
         run_repo,
         workspace_repo,
-        task_outcome_repo,
         ideation_session_repo,
         plan_approval_repo,
         plan_approval_writer,
         artifact_repo,
+        task_outcome_repo,
         plan_judge_invoker,
         config,
         verification_context,
@@ -4480,6 +4496,7 @@ fn prior_revision_instruction_repeats(
         prior_verdict_json,
         AutomationPlanJudgeValidationContext {
             expected_artifact_id: None,
+            expected_artifact_version: None,
         },
     ) else {
         return false;

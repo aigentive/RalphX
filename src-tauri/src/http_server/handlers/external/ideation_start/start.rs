@@ -460,7 +460,9 @@ async fn clone_plan_approval_if_approved(
     source_session_status: IdeationSessionStatus,
     new_session_id: &str,
     cloned_artifact: &Artifact,
-) {
+    project_id: &ProjectId,
+    conversation_id: Option<&ChatConversationId>,
+) -> Result<bool, HttpError> {
     let is_approved_source = source_session_status == IdeationSessionStatus::Accepted;
 
     let source_sid = source_session_id.to_string();
@@ -471,29 +473,30 @@ async fn clone_plan_approval_if_approved(
             .app_state
             .db
             .run(move |conn| {
-                let count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM plan_artifact_approvals
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM plan_artifact_approvals
                          WHERE session_id = ?1 AND status = 'approved'",
-                        [source_sid.as_str()],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
+                    [source_sid.as_str()],
+                    |row| row.get(0),
+                )?;
                 Ok(count > 0)
             })
             .await
-            .unwrap_or(false)
+            .map_err(|error| HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some(format!("Failed to inspect imported plan approval: {error}")),
+            })?
     };
 
     if !should_approve {
-        return;
+        return Ok(false);
     }
 
     let new_sid = new_session_id.to_string();
     let artifact = cloned_artifact.clone();
     let now = chrono::Utc::now().to_rfc3339();
 
-    match state
+    state
         .app_state
         .db
         .run(move |conn| {
@@ -506,59 +509,53 @@ async fn clone_plan_approval_if_approved(
             )
         })
         .await
-    {
-        Ok(()) => {
-            let project_id = state
-                .app_state
-                .ideation_session_repo
-                .get_by_id(&IdeationSessionId::from_string(new_session_id))
-                .await
-                .ok()
-                .flatten()
-                .map(|session| session.project_id);
-            if let Some(project_id) = project_id {
-                let conversation_id = state
-                    .app_state
-                    .agent_conversation_workspace_repo
-                    .get_by_linked_ideation_session_id(&IdeationSessionId::from_string(
-                        new_session_id,
-                    ))
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|workspace| workspace.conversation_id.as_str());
-                if let Err(error) = crate::application::plan_verdict_history::record_plan_verdict(
-                    std::sync::Arc::clone(&state.app_state.task_outcome_repo),
-                    crate::application::plan_verdict_history::PlanVerdictCapture {
-                        project_id,
-                        conversation_id,
-                        session_id: new_session_id.to_string(),
-                        artifact_id: cloned_artifact.id.as_str().to_string(),
-                        artifact_version: cloned_artifact.metadata.version,
-                        actor: crate::domain::repositories::PlanApprovalActor::PlanImport,
-                        verdict: crate::application::plan_verdict_history::PlanVerdict::Accepted,
-                        origin: "external_ideation_plan_import",
-                        summary: None,
-                    },
-                )
-                .await
-                {
-                    tracing::warn!(
-                        session_id = new_session_id,
-                        artifact_id = cloned_artifact.id.as_str(),
-                        error = %error,
-                        "Imported plan approval committed but verdict history capture failed"
-                    );
-                }
-            }
-        }
-        Err(error) => {
-            tracing::warn!(
-                "Failed to clone plan approval for imported session: {}",
-                error
-            );
-        }
-    }
+        .map_err(|error| HttpError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: Some(format!("Failed to clone imported plan approval: {error}")),
+        })?;
+    let automation_id = match conversation_id {
+        Some(conversation_id) => state
+            .app_state
+            .chat_conversation_repo
+            .get_by_id(conversation_id)
+            .await
+            .map_err(|error| HttpError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: Some(format!(
+                    "Failed to load imported plan conversation linkage: {error}"
+                )),
+            })?
+            .and_then(|conversation| conversation.automation_id)
+            .map(|automation_id| automation_id.as_str().to_string()),
+        None => None,
+    };
+    crate::application::plan_verdict_ledger::record_plan_verdict(
+        Arc::clone(&state.app_state.task_outcome_repo),
+        crate::application::plan_verdict_ledger::PlanVerdictLedgerInput {
+            project_id: project_id.clone(),
+            session_id: new_session_id.to_string(),
+            artifact_id: cloned_artifact.id.as_str().to_string(),
+            artifact_version: cloned_artifact.metadata.version,
+            actor: crate::domain::repositories::PlanApprovalActor::PlanImport,
+            verdict: crate::application::plan_verdict_ledger::PlanVerdict::Accepted,
+            source_surface: "external_plan_import".to_string(),
+            linkage: crate::application::plan_verdict_ledger::PlanVerdictLinkage {
+                conversation_id: conversation_id
+                    .map(|conversation_id| conversation_id.as_str().to_string()),
+                automation_id,
+                imported_from_session_id: Some(source_session_id.to_string()),
+            },
+            reason: None,
+        },
+    )
+    .await
+    .map_err(|error| HttpError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: Some(format!(
+            "Failed to record imported plan approval verdict: {error}"
+        )),
+    })?;
+    Ok(true)
 }
 
 /// POST /api/external/start_ideation
@@ -885,8 +882,12 @@ pub async fn start_ideation_http(
             import.source_session_status,
             &session_id_str,
             cloned,
+            &created.project_id,
+            parent_workspace_binding
+                .as_ref()
+                .map(|binding| &binding.conversation_id),
         )
-        .await;
+        .await?;
     }
 
     {

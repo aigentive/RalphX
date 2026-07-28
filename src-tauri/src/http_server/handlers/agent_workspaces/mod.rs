@@ -2893,10 +2893,10 @@ async fn complete_ideation_plan_pr_fix_publish(
 
     if let Err(error) = push_agent_workspace_publish_branch(
         github,
-        &state.app_state.agent_conversation_workspace_repo,
-        conversation_id,
         &target.working_dir,
         &target.branch_name,
+        &state.app_state.agent_conversation_workspace_repo,
+        conversation_id,
     )
     .await
     {
@@ -5116,14 +5116,14 @@ pub async fn complete_agent_workspace_repair(
         {
             match push_agent_workspace_publish_branch(
                 github,
-                &state.app_state.agent_conversation_workspace_repo,
-                &conversation_id,
                 &publish_target.worktree_path,
                 &publish_target.branch_name,
+                &state.app_state.agent_conversation_workspace_repo,
+                &conversation_id,
             )
             .await
             {
-                Ok(()) => {
+                Ok(_) => {
                     state
                         .app_state
                         .plan_branch_repo

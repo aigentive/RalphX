@@ -16,9 +16,6 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_merge_classification::{
-    classify_merged_workspace_outcome_from_github, MergedWorkspaceOutcome,
-};
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
@@ -1007,27 +1004,19 @@ async fn agent_workspace_poll_loop(
         match github.check_pr_status(&working_dir, pr_number).await {
             Ok(PrStatus::Merged { .. }) => {
                 drop(permit);
-                let merged_outcome = classify_merged_workspace_outcome_from_github(
-                    &workspace_repo,
-                    &github,
-                    &conversation_id,
-                    &working_dir,
-                    pr_number,
-                )
-                .await;
                 terminalize_polled_agent_workspace_with_notifications(
                     &workspace_repo,
                     &agent_run_repo,
                     &task_outcome_repo,
                     &plan_branch_repo,
                     &chat_service,
+                    Some(&github),
                     &stopping,
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::MergedPr,
                     "merged",
                     "Pull request merged",
-                    merged_outcome,
                     interval,
                     notification_service.as_ref(),
                 )
@@ -1044,13 +1033,13 @@ async fn agent_workspace_poll_loop(
                     &task_outcome_repo,
                     &plan_branch_repo,
                     &chat_service,
+                    Some(&github),
                     &stopping,
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::ClosedPr,
                     "closed",
                     "Pull request closed without merging",
-                    MergedWorkspaceOutcome::Merged,
                     interval,
                     notification_service.as_ref(),
                 )
@@ -1280,13 +1269,13 @@ async fn terminalize_polled_agent_workspace(
         task_outcome_repo,
         plan_branch_repo,
         chat_service,
+        None,
         stopping,
         conversation_id,
         project,
         cause,
         status,
         summary,
-        MergedWorkspaceOutcome::Merged,
         retry_interval,
         None,
     )
@@ -1300,13 +1289,13 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     task_outcome_repo: &Arc<dyn TaskOutcomeRepository>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
     chat_service: &Arc<dyn ChatService>,
+    github: Option<&Arc<dyn GithubServiceTrait>>,
     stopping: &Arc<DashMap<ChatConversationId, ()>>,
     conversation_id: &ChatConversationId,
     project: &Project,
     cause: TerminalAgentWorkspaceCause,
     status: &str,
     summary: &str,
-    merged_outcome: MergedWorkspaceOutcome,
     retry_interval: Duration,
     notification_service: Option<&Arc<NotificationService>>,
 ) {
@@ -1401,19 +1390,25 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     }
 
     loop {
-        let observation = workspace_repo
+        let workspace = workspace_repo
             .get_by_conversation_id(conversation_id)
             .await
             .ok()
-            .flatten()
-            .and_then(|workspace| TerminalPrObservation::from_persisted_workspace(&workspace))
-            .map(|observation| {
-                if status == "merged" {
-                    observation.with_status(merged_outcome.observation_status())
-                } else {
-                    observation
-                }
-            });
+            .flatten();
+        let observation = match workspace.as_ref().and_then(|workspace| {
+            TerminalPrObservation::from_persisted_workspace(workspace)
+        }) {
+            Some(observation) => Some(
+                crate::application::agent_workspace_terminal_observation::resolve_merge_cleanliness_best_effort(
+                    github,
+                    std::path::Path::new(&project.working_directory),
+                    workspace.as_ref().expect("observation requires workspace"),
+                    observation,
+                )
+                .await,
+            ),
+            None => None,
+        };
         let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(workspace_repo),
             Arc::clone(agent_run_repo),

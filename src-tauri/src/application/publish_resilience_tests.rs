@@ -3,26 +3,16 @@ use super::publish_resilience::{
     count_unpublished_publish_commits, publish_branch_freshness_outcome_from_source_update,
     publish_branch_freshness_status_from_commits,
     publish_branch_freshness_status_from_commits_and_branch, publish_push_status_for_failure,
-    remote_tracking_ref_for_publish, verify_agent_workspace_repair_completion,
-    verify_agent_workspace_settled_current_head, AgentWorkspaceRepairCompletionCheck,
-    AgentWorkspaceSettledHeadCheck, PublishBranchFreshnessOutcome, PublishFailureClass,
+    push_publish_branch_with, remote_tracking_ref_for_publish,
+    verify_agent_workspace_repair_completion, verify_agent_workspace_settled_current_head,
+    AgentWorkspaceRepairCompletionCheck, AgentWorkspaceSettledHeadCheck,
+    PublishBranchFreshnessOutcome, PublishFailureClass,
 };
-use super::publish_resilience::{
-    ensure_plan_publish_branch_fresh, push_agent_workspace_publish_branch, review_base_for_publish,
-};
-use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    IdeationAnalysisBaseRefKind, Project, ProjectId,
-};
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
-use crate::domain::services::GithubServiceTrait;
+use super::publish_resilience::{ensure_plan_publish_branch_fresh, review_base_for_publish};
+use crate::domain::entities::Project;
 use crate::domain::state_machine::transition_handler::SourceUpdateResult;
-use crate::error::AppError;
-use crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository;
-use crate::tests::mock_github_service::MockGithubService;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -51,135 +41,53 @@ fn setup_publish_freshness_repo(repo: &Path) -> String {
     git(repo, &["rev-parse", "HEAD"])
 }
 
-fn publish_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
-    AgentConversationWorkspace::new(
-        conversation_id,
-        ProjectId::from_string("publish-resilience-project".to_string()),
-        AgentConversationWorkspaceMode::Edit,
-        IdeationAnalysisBaseRefKind::ProjectDefault,
-        "main".to_string(),
-        Some("Project default (main)".to_string()),
-        None,
-        "main".to_string(),
-        "/tmp/publish-resilience".to_string(),
-    )
+#[tokio::test]
+async fn push_publish_branch_returns_the_exact_stable_branch_tip() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    let expected_sha = setup_publish_freshness_repo(repo.path());
+
+    let receipt = push_publish_branch_with(repo.path(), "main", || async { Ok(()) })
+        .await
+        .expect("stable push should return a receipt");
+
+    assert_eq!(receipt.branch, "main");
+    assert_eq!(receipt.sha, expected_sha);
 }
 
 #[tokio::test]
-async fn workspace_publish_push_captures_the_exact_local_branch_sha() {
-    let temp = tempfile::tempdir().expect("tempdir should be created");
-    let repo_path = temp.path().join("repo");
-    let expected_sha = setup_publish_freshness_repo(&repo_path);
-    let conversation_id = ChatConversationId::new();
-    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
-    workspace_repo
-        .create_or_update(publish_workspace(conversation_id))
-        .await
-        .expect("workspace should be inserted");
-    let github: Arc<dyn GithubServiceTrait> = Arc::new(MockGithubService::new());
+async fn push_publish_branch_rejects_branch_movement_during_push() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    setup_publish_freshness_repo(repo.path());
 
-    push_agent_workspace_publish_branch(
-        &github,
-        &workspace_repo,
-        &conversation_id,
-        &repo_path,
-        "main",
-    )
+    let error = push_publish_branch_with(repo.path(), "main", || async {
+        std::fs::write(repo.path().join("follow-up.txt"), "follow-up\n")
+            .expect("follow-up fixture should be written");
+        git(repo.path(), &["add", "follow-up.txt"]);
+        git(repo.path(), &["commit", "-m", "follow-up"]);
+        Ok(())
+    })
     .await
-    .expect("push should capture publication SHA");
+    .expect_err("a moving branch must not produce authoritative pushed-SHA evidence");
 
-    assert_eq!(
-        workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .publication_pushed_sha
-            .as_deref(),
-        Some(expected_sha.as_str())
-    );
+    assert!(error
+        .to_string()
+        .contains("moved while it was being pushed"));
 }
 
 #[tokio::test]
-async fn failed_workspace_publish_push_clears_stale_sha_before_the_attempt() {
-    let temp = tempfile::tempdir().expect("tempdir should be created");
-    let repo_path = temp.path().join("repo");
-    setup_publish_freshness_repo(&repo_path);
-    let conversation_id = ChatConversationId::new();
-    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
-    workspace_repo
-        .create_or_update(publish_workspace(conversation_id))
-        .await
-        .expect("workspace should be inserted");
-    workspace_repo
-        .set_publication_pushed_sha(
-            &conversation_id,
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        )
-        .await
-        .expect("stale SHA should be seeded");
-    let github = Arc::new(MockGithubService::new());
-    github.state().push_branch_result =
-        Some(Err(AppError::Infrastructure("push rejected".to_string())));
-    let github_trait: Arc<dyn GithubServiceTrait> = github;
+async fn push_publish_branch_propagates_push_failure_without_a_receipt() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    setup_publish_freshness_repo(repo.path());
 
-    assert!(push_agent_workspace_publish_branch(
-        &github_trait,
-        &workspace_repo,
-        &conversation_id,
-        &repo_path,
-        "main",
-    )
+    let error = push_publish_branch_with(repo.path(), "main", || async {
+        Err(crate::error::AppError::Infrastructure(
+            "push unavailable".to_string(),
+        ))
+    })
     .await
-    .is_err());
-    assert!(workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .publication_pushed_sha
-        .is_none());
-}
+    .expect_err("failed pushes must not return evidence");
 
-#[tokio::test]
-async fn workspace_publish_oid_read_failure_leaves_attempt_sha_absent() {
-    let temp = tempfile::tempdir().expect("tempdir should be created");
-    let repo_path = temp.path().join("repo");
-    setup_publish_freshness_repo(&repo_path);
-    let conversation_id = ChatConversationId::new();
-    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
-    workspace_repo
-        .create_or_update(publish_workspace(conversation_id))
-        .await
-        .expect("workspace should be inserted");
-    workspace_repo
-        .set_publication_pushed_sha(
-            &conversation_id,
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        )
-        .await
-        .expect("stale SHA should be seeded");
-    let github: Arc<dyn GithubServiceTrait> = Arc::new(MockGithubService::new());
-
-    assert!(push_agent_workspace_publish_branch(
-        &github,
-        &workspace_repo,
-        &conversation_id,
-        &repo_path,
-        "missing-branch",
-    )
-    .await
-    .is_err());
-    assert!(workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .publication_pushed_sha
-        .is_none());
+    assert!(error.to_string().contains("push unavailable"));
 }
 
 #[test]

@@ -11,10 +11,14 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, TaskOutcomeListOptions, WORKSPACE_PR_MERGED_CLASS,
-    WORKSPACE_SESSION_ABANDONED_CLASS,
+    WORKSPACE_PR_MERGED_CLEAN_CLASS, WORKSPACE_SESSION_ABANDONED_CLASS,
 };
-use crate::domain::services::{AGENT_WORKSPACE_OUTCOME_SOURCE, AGENT_WORKSPACE_PR_OUTCOME_SOURCE};
+use crate::domain::services::{
+    GithubServiceTrait, PrStatus, PrSyncState, AGENT_WORKSPACE_OUTCOME_SOURCE,
+    AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
+};
 use crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository;
+use crate::tests::mock_github_service::MockGithubService;
 
 async fn setup_finalizer_state(
     persist_project: bool,
@@ -192,6 +196,72 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
         outcome.outcome_class.as_ref().map(|class| class.as_str())
             != Some(WORKSPACE_SESSION_ABANDONED_CLASS)
     }));
+}
+
+#[tokio::test]
+async fn merged_run_finalizer_records_clean_merge_from_authoritative_remote_head() {
+    let (_temp, mut state, workspace_repo, conversation_id) = setup_finalizer_state(true).await;
+    let mut workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.publication_pushed_sha = Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    let github = Arc::new(MockGithubService::new());
+    github.state().check_pr_sync_state_result = Some(Ok(PrSyncState {
+        status: PrStatus::Merged {
+            merge_commit_sha: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
+            merged_at: Some("2026-07-27T00:00:00Z".to_string()),
+        },
+        merge_state_status: None,
+        mergeable: None,
+        is_draft: false,
+        head_ref_name: workspace.branch_name.clone(),
+        base_ref_name: workspace.base_ref.clone(),
+        head_ref_oid: workspace.publication_pushed_sha.clone(),
+        base_ref_oid: None,
+    }));
+    state.github_service = Some(github as Arc<dyn GithubServiceTrait>);
+
+    AppStateAutomationMergedRunFinalizer::new(state.clone())
+        .finalize_merged_conversation(&conversation_id)
+        .await
+        .expect("merged finalization should succeed");
+
+    let pr_outcomes = state
+        .task_outcome_repo
+        .list_by_project(
+            &workspace.project_id,
+            TaskOutcomeListOptions {
+                source: Some(AGENT_WORKSPACE_PR_OUTCOME_SOURCE),
+                ..TaskOutcomeListOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(pr_outcomes.len(), 1);
+    assert_eq!(
+        pr_outcomes[0]
+            .outcome_class
+            .as_ref()
+            .map(|class| class.as_str()),
+        Some(WORKSPACE_PR_MERGED_CLEAN_CLASS)
+    );
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pr_status
+            .as_deref(),
+        Some("merged"),
+        "cleanliness is transient ledger evidence, not workspace lifecycle state"
+    );
 }
 
 #[tokio::test]

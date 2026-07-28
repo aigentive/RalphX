@@ -24,6 +24,59 @@ pub async fn approve_plan_artifact(
             map_app_err(e)
         })?;
 
+    let session = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&approved.session_id)
+        .await
+        .map_err(map_app_err)?
+        .ok_or_else(|| {
+            map_app_err(crate::error::AppError::NotFound(format!(
+                "Session {} disappeared after plan approval",
+                approved.session_id
+            )))
+        })?;
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(&approved.session_id)
+        .await
+        .map_err(map_app_err)?;
+    let conversation_id = workspace
+        .as_ref()
+        .map(|workspace| workspace.conversation_id.as_str().to_string());
+    let automation_id = match workspace.as_ref() {
+        Some(workspace) => state
+            .app_state
+            .chat_conversation_repo
+            .get_by_id(&workspace.conversation_id)
+            .await
+            .map_err(map_app_err)?
+            .and_then(|conversation| conversation.automation_id)
+            .map(|automation_id| automation_id.as_str().to_string()),
+        None => None,
+    };
+    crate::application::plan_verdict_ledger::record_plan_verdict(
+        std::sync::Arc::clone(&state.app_state.task_outcome_repo),
+        crate::application::plan_verdict_ledger::PlanVerdictLedgerInput {
+            project_id: session.project_id,
+            session_id: approved.session_id.as_str().to_string(),
+            artifact_id: approved.artifact.id.as_str().to_string(),
+            artifact_version: approved.artifact.metadata.version,
+            actor: crate::domain::repositories::PlanApprovalActor::User,
+            verdict: crate::application::plan_verdict_ledger::PlanVerdict::Accepted,
+            source_surface: "artifact_approval".to_string(),
+            linkage: crate::application::plan_verdict_ledger::PlanVerdictLinkage {
+                conversation_id,
+                automation_id,
+                imported_from_session_id: None,
+            },
+            reason: None,
+        },
+    )
+    .await
+    .map_err(map_app_err)?;
+
     let mut response = ArtifactResponse::from(approved.artifact);
     response.session_id = Some(approved.session_id.as_str().to_string());
     let response_id = response.id.clone();
@@ -36,46 +89,6 @@ pub async fn approve_plan_artifact(
             approved.approved_at.clone(),
         ),
     );
-
-    if let Ok(Some(session)) = state
-        .app_state
-        .ideation_session_repo
-        .get_by_id(&approved.session_id)
-        .await
-    {
-        let conversation_id = state
-            .app_state
-            .agent_conversation_workspace_repo
-            .get_by_linked_ideation_session_id(&approved.session_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|workspace| workspace.conversation_id.as_str());
-        if let Err(error) = crate::application::plan_verdict_history::record_plan_verdict(
-            std::sync::Arc::clone(&state.app_state.task_outcome_repo),
-            crate::application::plan_verdict_history::PlanVerdictCapture {
-                project_id: session.project_id,
-                conversation_id,
-                session_id: approved.session_id.as_str().to_string(),
-                artifact_id: response_id.clone(),
-                artifact_version: response_version,
-                actor: crate::domain::repositories::PlanApprovalActor::User,
-                verdict: crate::application::plan_verdict_history::PlanVerdict::Accepted,
-                origin: "approve_plan_artifact",
-                summary: None,
-            },
-        )
-        .await
-        {
-            tracing::warn!(
-                session_id = approved.session_id.as_str(),
-                artifact_id = response_id,
-                artifact_version = response_version,
-                error = %error,
-                "Plan approval committed but verdict history capture failed"
-            );
-        }
-    }
 
     crate::http_server::emit_http_event(
         &state,

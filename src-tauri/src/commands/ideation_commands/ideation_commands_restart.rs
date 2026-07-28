@@ -426,6 +426,7 @@ fn restore_restart_workspace_state(
                  SET linked_ideation_session_id = ?2,
                      linked_plan_branch_id = ?3,
                      status = 'active',
+                     publication_pushed_sha = NULL,
                      local_cleanup_status = NULL,
                      local_cleanup_checked_at = NULL,
                      publication_pr_number = NULL,

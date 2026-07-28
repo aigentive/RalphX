@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::domain::entities::{
@@ -5,7 +6,49 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentRun, ChatConversationId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, TaskOutcomeRepository};
-use crate::domain::services::AgentWorkspaceOutcomeAdapter;
+use crate::domain::services::{
+    AgentWorkspaceOutcomeAdapter, GithubServiceTrait, PrStatus, PrSyncState,
+};
+
+pub(crate) const MERGED_CLEAN_STATUS: &str = "merged_clean";
+pub(crate) const MERGED_WITH_FOLLOWUPS_STATUS: &str = "merged_with_followups";
+
+fn normalized_branch_name(value: &str) -> &str {
+    value.trim().strip_prefix("origin/").unwrap_or(value.trim())
+}
+
+fn is_full_git_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub(crate) fn classify_merged_workspace_observation(
+    workspace: &AgentConversationWorkspace,
+    pr_number: i64,
+    sync_state: &PrSyncState,
+) -> &'static str {
+    if workspace.publication_pr_number != Some(pr_number)
+        || !matches!(sync_state.status, PrStatus::Merged { .. })
+        || sync_state.head_ref_name != workspace.branch_name
+        || normalized_branch_name(&sync_state.base_ref_name)
+            != normalized_branch_name(&workspace.base_ref)
+    {
+        return "merged";
+    }
+    let (Some(pushed_sha), Some(remote_head_sha)) = (
+        workspace.publication_pushed_sha.as_deref(),
+        sync_state.head_ref_oid.as_deref(),
+    ) else {
+        return "merged";
+    };
+    if !is_full_git_object_id(pushed_sha) || !is_full_git_object_id(remote_head_sha) {
+        return "merged";
+    }
+    if pushed_sha.eq_ignore_ascii_case(remote_head_sha) {
+        MERGED_CLEAN_STATUS
+    } else {
+        MERGED_WITH_FOLLOWUPS_STATUS
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct TerminalPrObservation {
@@ -32,16 +75,24 @@ impl TerminalPrObservation {
         self
     }
 
-    pub(crate) fn with_status(mut self, status: &str) -> Self {
-        self.status = status.to_string();
-        self
-    }
-
     pub(crate) fn with_publication_event(
         mut self,
         publication_event: AgentConversationWorkspacePublicationEvent,
     ) -> Self {
         self.publication_event = Some(publication_event);
+        self
+    }
+
+    pub(crate) fn with_merge_cleanliness(
+        mut self,
+        workspace: &AgentConversationWorkspace,
+        sync_state: &PrSyncState,
+    ) -> Self {
+        if self.status == "merged" {
+            self.status =
+                classify_merged_workspace_observation(workspace, self.pr_number, sync_state)
+                    .to_string();
+        }
         self
     }
 
@@ -65,6 +116,35 @@ impl TerminalPrObservation {
             _ => "Pull request terminalization failed",
         };
         Some(Self::new(pr_number, status, summary))
+    }
+}
+
+pub(crate) async fn resolve_merge_cleanliness_best_effort(
+    github: Option<&Arc<dyn GithubServiceTrait>>,
+    working_dir: &Path,
+    workspace: &AgentConversationWorkspace,
+    observation: TerminalPrObservation,
+) -> TerminalPrObservation {
+    if observation.status != "merged" {
+        return observation;
+    }
+    let Some(github) = github else {
+        return observation;
+    };
+    match github
+        .check_pr_sync_state(working_dir, observation.pr_number)
+        .await
+    {
+        Ok(sync_state) => observation.with_merge_cleanliness(workspace, &sync_state),
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                pr_number = observation.pr_number,
+                error = %error,
+                "Could not prove merged workspace cleanliness; keeping plain merged outcome"
+            );
+            observation
+        }
     }
 }
 
