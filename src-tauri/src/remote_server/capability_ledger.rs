@@ -551,6 +551,81 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              plus the in-memory gate map; answers no question and arms no scheduling",
         ),
     },
+    // PR 3.1-b batch 2 — census `B1`, `task_commands` read cluster.
+    //
+    // Every row here previously resolved through the `task_commands` `agent_default`, i.e. it
+    // carried "conservative-module-default: may steer or arm autonomous work" — a placeholder,
+    // not a reviewed judgement. Each was run through the live `authority_audit` call graph
+    // (detectors (a), (b) and (c) all silent for all seven; the claim is pinned by the
+    // calibration lists in `capability_ledger_tests`) and then hand-traced to its repository
+    // call. The module default stays `AgentControl` because the module also holds
+    // `move_task`/`unblock_task`/`inject_task`/`resume_execution_plan`; these seven only read.
+    //
+    // The shared structural reason: each body is a repository query whose error is propagated
+    // (`map_err(...)?` / `?`), never collapsed into an empty or default result. A read failure
+    // therefore cannot be presented to a remote client as "nothing here" — the fail-open shape
+    // is what disqualifies `get_pending_permissions`/`get_pending_questions` below.
+    CommandOverride {
+        command: "get_archived_count",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "archived-task count: `task_repo.get_archived_count`, a scalar count read",
+        ),
+    },
+    CommandOverride {
+        command: "get_tasks_awaiting_review",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "review-queue read: `task_repo.list_paginated` filtered to the four review \
+             statuses; selects rows and starts no review",
+        ),
+    },
+    CommandOverride {
+        command: "get_session_task_history_availability",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "session history availability: `task_repo.count_tasks` rendered as a bool plus \
+             a count",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_state_transitions",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "status-history read: `task_repo.get_status_history` mapped to a response; \
+             reads transitions already taken and requests none",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_dependency_graph",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "dependency-graph read: in-process traversal over `task_repo` rows; writes no \
+             edge and schedules nothing",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_timeline_events",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "timeline read: derives events from `task_repo` rows in process",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_agent_workspace",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "workspace-association read: joins the task's plan-branch and agent-conversation \
+             workspace rows; resolves no CLI and touches no filesystem",
+        ),
+    },
     // Detector (c) finding: the advertised-endpoint listing resolves the Tailscale CLI, so it
     // spawns a process. `SpawnsProcess` is expressible only under `Elevated`; the previous
     // `Read` row was the same under-labelling shape as the `list_projects` mislabel.

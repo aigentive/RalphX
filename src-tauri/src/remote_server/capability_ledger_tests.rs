@@ -688,6 +688,23 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // naming them keeps the audit note and the mechanism in the same place.
         "list_pending_permission_gates",
         "list_pending_question_gates",
+        // PR 3.1-b batch 2 — the census `B1` read cluster. Each was reclassified out of
+        // `conservative-module-default` on the strength of detectors (a)/(b)/(c) being
+        // silent; naming them here turns that observation into a standing assertion, so a
+        // refactor that makes one of them seed scheduler-consumed state fails CI instead of
+        // shipping a `Read` row with spawn-triggering authority.
+        "get_archived_count",
+        "get_tasks_awaiting_review",
+        "get_session_task_history_availability",
+        "get_task_state_transitions",
+        "get_task_dependency_graph",
+        "get_task_timeline_events",
+        "get_task_agent_workspace",
+        "get_task_steps",
+        "get_step_progress",
+        "get_execution_settings",
+        "get_global_execution_settings",
+        "get_active_project",
     ] {
         assert!(
             !flagged.contains(command),
@@ -1407,6 +1424,21 @@ fn detector_c_floors_process_spawn_authority() {
         // resolves a CLI path, the registration fails here rather than shipping.
         "list_pending_permission_gates",
         "list_pending_question_gates",
+        // PR 3.1-b batch 2 — census `B1` read cluster. `get_execution_status` and
+        // `get_running_processes` are deliberately ABSENT: detector (c) fires on both, which
+        // is exactly why they stayed above `Read`.
+        "get_archived_count",
+        "get_tasks_awaiting_review",
+        "get_session_task_history_availability",
+        "get_task_state_transitions",
+        "get_task_dependency_graph",
+        "get_task_timeline_events",
+        "get_task_agent_workspace",
+        "get_task_steps",
+        "get_step_progress",
+        "get_execution_settings",
+        "get_global_execution_settings",
+        "get_active_project",
     ] {
         assert!(
             !spawners.contains(command),
@@ -1544,4 +1576,115 @@ fn wry_monomorphic_remote_reads_are_ledgered_but_unregistered() {
         find_spec("list_remote_advertised_endpoints").is_none(),
         "process-spawning endpoint listing must not be registered"
     );
+}
+
+/// PR 3.1-b batch 2 — the census `B1` reclassifications are reviewed rows, not defaults.
+///
+/// The failure this pins is subtle and was the whole reason batch 1 could not register
+/// anything: a command can LOOK classified while carrying only
+/// `conservative-module-default`. Asserting the class alone would pass for a row that
+/// merely inherited its module policy, so each row is checked against its module default
+/// too — the reason string must have changed, and the class must sit strictly below the
+/// module's.
+#[test]
+fn b1_read_reclassifications_are_reviewed_rather_than_module_defaults() {
+    const RECLASSIFIED_READS: &[(&str, &str)] = &[
+        ("get_archived_count", "task_commands"),
+        ("get_tasks_awaiting_review", "task_commands"),
+        ("get_session_task_history_availability", "task_commands"),
+        ("get_task_state_transitions", "task_commands"),
+        ("get_task_dependency_graph", "task_commands"),
+        ("get_task_timeline_events", "task_commands"),
+        ("get_task_agent_workspace", "task_commands"),
+    ];
+
+    for (command, module) in RECLASSIFIED_READS {
+        let row = policy_for(command, module).expect("reclassified command is ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` must be ledgered Read"
+        );
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a Read row and must carry no capability"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; a reclassification must \
+             record the audit that justified it"
+        );
+
+        let module_row = MODULE_DEFAULTS
+            .iter()
+            .find(|entry| entry.module == *module)
+            .expect("module has a default");
+        assert_eq!(
+            module_row.policy.class,
+            RiskClass::AgentControl,
+            "`{module}` default must still be conservative; these rows are exceptions to it, \
+             not evidence the whole module is safe"
+        );
+
+        assert!(
+            find_spec(command).is_some(),
+            "`{command}` audited clean and must be registered"
+        );
+    }
+
+    // The counterweight: the two fail-OPEN gate siblings audit as reads too, and are
+    // deliberately NOT reclassified. `get_pending_permissions`/`get_pending_questions`
+    // return `Ok(vec![])` when the repository read fails, so registering them would let a
+    // remote client be told "no gates are open" because a read errored. Batch 1 recorded
+    // this; here it is enforced.
+    for command in ["get_pending_permissions", "get_pending_questions"] {
+        let module = if command.contains("permission") {
+            "permission_commands"
+        } else {
+            "question_commands"
+        };
+        let row = policy_for(command, module).expect("fail-open sibling is ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::AgentControl,
+            "`{command}` is fail-open and must not be reclassified downward by module analogy"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not be registered"
+        );
+    }
+}
+
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b1_module_batch_audit() {
+    const B1_MODULES: &[&str] = &[
+        "execution_commands",
+        "permission_commands",
+        "question_commands",
+        "task_commands",
+        "task_step_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !B1_MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B1 {module} {command} a={a} b={b} c={c} class={:?} caps={:?} registered={}",
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+    }
 }

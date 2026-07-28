@@ -591,3 +591,271 @@ async fn a_ui_read_device_reaches_the_pending_gate_reads_over_the_router() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 2 — census `B1` task-core reads (`ui:read`)
+//
+// Every one of these sat at `AgentControl` under `conservative-module-default`, not under a
+// reviewed judgement. The audit probe run over the live `authority_audit` call graph reports
+// detectors (a), (b) and (c) all silent for each, and the hand-trace confirms every body is a
+// repository read whose error is propagated (`map_err(...)?`), never collapsed into an empty
+// or default result. They are reads in fact, so they are ledgered `Read` and registered here.
+// ---------------------------------------------------------------------------------------
+
+/// A mock app whose managed `AppState` can carry seeded tasks.
+fn app_with_task_state() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
+}
+
+const B1_TASK_READS: [&str; 7] = [
+    "get_archived_count",
+    "get_tasks_awaiting_review",
+    "get_session_task_history_availability",
+    "get_task_state_transitions",
+    "get_task_dependency_graph",
+    "get_task_timeline_events",
+    "get_task_agent_workspace",
+];
+
+const B1_FIXTURE_PROJECT: &str = "11111111-1111-1111-1111-111111111111";
+const B1_FIXTURE_SESSION: &str = "33333333-3333-3333-3333-333333333333";
+
+/// Seeds two real tasks (one carrying steps) through the PRODUCTION `create_task` entry
+/// point and returns their ids. Parity over an all-empty fixture is vacuous — it passes
+/// against a command that unconditionally returns nothing — so every parity row below runs
+/// against state that actually contains tasks.
+async fn seed_b1_tasks(app: &tauri::App<tauri::test::MockRuntime>) -> (String, String) {
+    use tauri::Manager;
+
+    // `create_task` validates the ideation session exists, so the session is seeded first.
+    // The session id is what makes `get_session_task_history_availability` non-vacuous.
+    let state = app.state::<crate::application::AppState>();
+    state
+        .ideation_session_repo
+        .create(
+            crate::domain::entities::IdeationSession::builder()
+                .id(crate::domain::entities::IdeationSessionId::from_string(
+                    B1_FIXTURE_SESSION.to_string(),
+                ))
+                .project_id(crate::domain::entities::ProjectId::from_string(
+                    B1_FIXTURE_PROJECT.to_string(),
+                ))
+                .build(),
+        )
+        .await
+        .expect("seeding the ideation session succeeds");
+
+    let first = crate::commands::task_commands::mutation::create_task(
+        crate::commands::task_commands::types::CreateTaskInput {
+            project_id: B1_FIXTURE_PROJECT.to_string(),
+            title: "B1 parity task one".to_string(),
+            category: None,
+            description: Some("seeded for the B1 parity rows".to_string()),
+            priority: Some(3),
+            steps: Some(vec!["step one".to_string(), "step two".to_string()]),
+            ideation_session_id: Some(B1_FIXTURE_SESSION.to_string()),
+            execution_plan_id: None,
+        },
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("seeding the first task succeeds");
+
+    let second = crate::commands::task_commands::mutation::create_task(
+        crate::commands::task_commands::types::CreateTaskInput {
+            project_id: B1_FIXTURE_PROJECT.to_string(),
+            title: "B1 parity task two".to_string(),
+            category: None,
+            description: None,
+            priority: Some(1),
+            steps: None,
+            ideation_session_id: Some(B1_FIXTURE_SESSION.to_string()),
+            execution_plan_id: None,
+        },
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("seeding the second task succeeds");
+
+    (first.id, second.id)
+}
+
+/// P-4 parity — each dispatched payload is byte-identical to the direct local IPC call over a
+/// populated fixture.
+#[tokio::test]
+async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
+    use tauri::Manager;
+
+    let app = app_with_task_state();
+    let (task_id, _other) = seed_b1_tasks(&app).await;
+
+    let direct_archived = crate::commands::task_commands::query::get_archived_count(
+        B1_FIXTURE_PROJECT.to_string(),
+        None,
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct archived-count read succeeds");
+    let direct_awaiting = crate::commands::task_commands::query::get_tasks_awaiting_review(
+        B1_FIXTURE_PROJECT.to_string(),
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct awaiting-review read succeeds");
+    let direct_history =
+        crate::commands::task_commands::query::get_session_task_history_availability(
+            B1_FIXTURE_PROJECT.to_string(),
+            B1_FIXTURE_SESSION.to_string(),
+            app.state::<crate::application::AppState>(),
+        )
+        .await
+        .expect("direct history-availability read succeeds");
+    let direct_transitions = crate::commands::task_commands::query::get_task_state_transitions(
+        task_id.clone(),
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct state-transitions read succeeds");
+    let direct_graph = crate::commands::task_commands::query::get_task_dependency_graph(
+        B1_FIXTURE_PROJECT.to_string(),
+        None,
+        None,
+        None,
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct dependency-graph read succeeds");
+    let direct_timeline = crate::commands::task_commands::query::get_task_timeline_events(
+        B1_FIXTURE_PROJECT.to_string(),
+        None,
+        None,
+        None,
+        None,
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct timeline read succeeds");
+    let direct_workspace = crate::commands::task_commands::query::get_task_agent_workspace(
+        task_id.clone(),
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct agent-workspace read succeeds");
+
+    // Non-vacuity: the fixture must actually be visible through these reads, or byte parity
+    // below would be satisfied by a command that always returns nothing.
+    assert_eq!(
+        direct_history.task_count, 2,
+        "history availability must see both seeded tasks"
+    );
+    assert!(
+        direct_history.has_history,
+        "history availability must be positive over a seeded session"
+    );
+    assert_eq!(
+        direct_graph.nodes.len(),
+        2,
+        "dependency graph must carry both seeded tasks"
+    );
+    // The remaining four reads are empty-by-construction over a freshly seeded fixture
+    // (no archived task, no review-status task, no recorded status history, and therefore no
+    // timeline event). Their parity rows below are consequently weaker than the two above,
+    // which is recorded rather than papered over: the load-bearing guarantee for those four
+    // is the scope negative, not the parity row.
+    assert!(
+        direct_timeline.events.is_empty(),
+        "a freshly seeded fixture records no timeline events; revisit the non-vacuity \
+         anchors above if this changes"
+    );
+
+    for (command, args, direct) in [
+        (
+            "get_archived_count",
+            json!({"projectId": B1_FIXTURE_PROJECT, "ideationSessionId": null}),
+            registry::serialize_ok(&direct_archived).unwrap(),
+        ),
+        (
+            "get_tasks_awaiting_review",
+            json!({"projectId": B1_FIXTURE_PROJECT}),
+            registry::serialize_ok(&direct_awaiting).unwrap(),
+        ),
+        (
+            "get_session_task_history_availability",
+            json!({
+                "projectId": B1_FIXTURE_PROJECT,
+                "ideationSessionId": B1_FIXTURE_SESSION,
+            }),
+            registry::serialize_ok(&direct_history).unwrap(),
+        ),
+        (
+            "get_task_state_transitions",
+            json!({"taskId": task_id}),
+            registry::serialize_ok(&direct_transitions).unwrap(),
+        ),
+        (
+            "get_task_dependency_graph",
+            json!({"projectId": B1_FIXTURE_PROJECT}),
+            registry::serialize_ok(&direct_graph).unwrap(),
+        ),
+        (
+            "get_task_timeline_events",
+            json!({"projectId": B1_FIXTURE_PROJECT}),
+            registry::serialize_ok(&direct_timeline).unwrap(),
+        ),
+        (
+            "get_task_agent_workspace",
+            json!({"taskId": task_id}),
+            registry::serialize_ok(&direct_workspace).unwrap(),
+        ),
+    ] {
+        let outcome = registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
+            .await
+            .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(direct),
+            "P-4 parity mismatch for `{command}`"
+        );
+    }
+}
+
+/// Scope negative — no grant weaker than (or sideways from) `ui:read` reaches these reads.
+#[tokio::test]
+async fn the_b1_task_reads_are_refused_below_ui_read() {
+    let app = app_with_task_state();
+
+    for command in B1_TASK_READS {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(
+            spec.class,
+            RiskClass::Read,
+            "`{command}` must be a Read row"
+        );
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` must carry no capability; a Read row with a capability is the \
+             under-labelling signature itself"
+        );
+
+        for scopes in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let error = registry::dispatch(&app.handle().clone(), &scopes, command, &json!({}))
+                .await
+                .expect_err("insufficient scope must be refused");
+            assert_eq!(
+                error.code,
+                ErrorCode::RemoteForbidden,
+                "`{command}` admitted {scopes:?}"
+            );
+        }
+    }
+}
