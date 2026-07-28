@@ -291,6 +291,17 @@ pub struct AppState {
             >,
         >,
     >,
+    /// Command-composed PR-fix publisher resumed only after a Workspace Review handoff. The
+    /// handle is shared with the HTTP AppState graph during runtime wiring.
+    pub(crate) agent_workspace_pr_fix_review_publish_resumer: Arc<
+        RwLock<
+            Option<
+                Arc<
+                    dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+                >,
+            >,
+        >,
+    >,
     /// Conversation-owned primary Jira assignment/cache repository
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     /// Conversation-owned primary Linear assignment/cache repository
@@ -445,6 +456,40 @@ impl AppState {
                 AppError::Infrastructure(
                     "workspace repair publish continuation is unavailable in this runtime"
                         .to_string(),
+                )
+            })
+    }
+
+    /// Installs the command-composed Workspace Review PR-fix resumer after the runtime is
+    /// available. Replacing an existing resumer is intentional during startup retry.
+    pub(crate) fn install_agent_workspace_pr_fix_review_publish_resumer(
+        &self,
+        resumer: Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    ) {
+        *self
+            .agent_workspace_pr_fix_review_publish_resumer
+            .write()
+            .expect("PR-fix review publish resumer lock") = Some(resumer);
+    }
+
+    /// Returns the command-composed resumer only at the Workspace Review handoff boundary.
+    /// Missing runtime composition fails closed before recovery can publish a PR fix.
+    pub(crate) fn agent_workspace_pr_fix_review_publish_resumer(
+        &self,
+    ) -> AppResult<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >{
+        self.agent_workspace_pr_fix_review_publish_resumer
+            .read()
+            .expect("PR-fix review publish resumer lock")
+            .clone()
+            .ok_or_else(|| {
+                AppError::Infrastructure(
+                    "PR-fix review publish resumer is unavailable in this runtime".to_string(),
                 )
             })
     }
@@ -1495,6 +1540,7 @@ impl AppState {
             agent_conversation_workspace_repo,
             agent_workspace_repair_repo,
             agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1771,6 +1817,7 @@ impl AppState {
             agent_conversation_workspace_repo,
             agent_workspace_repair_repo,
             agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
@@ -1966,6 +2013,7 @@ impl AppState {
             agent_conversation_workspace_repo,
             agent_workspace_repair_repo,
             agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
@@ -2173,6 +2221,7 @@ impl AppState {
             agent_conversation_workspace_repo,
             agent_workspace_repair_repo,
             agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2353,6 +2402,7 @@ impl AppState {
             agent_conversation_workspace_repo,
             agent_workspace_repair_repo,
             agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),

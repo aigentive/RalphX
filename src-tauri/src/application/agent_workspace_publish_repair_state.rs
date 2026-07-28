@@ -18,6 +18,8 @@ use crate::application::publish_resilience::{
     AgentWorkspaceRepairCompletionCheck,
 };
 use crate::application::{AppState, GitService};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::domain::entities::AgentRun;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
@@ -25,8 +27,6 @@ use crate::domain::entities::{
     AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
     ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
-#[cfg(any(test, feature = "test-utils"))]
-use crate::domain::entities::AgentRun;
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
     AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
@@ -536,7 +536,9 @@ pub(crate) async fn inspect_agent_workspace_repair_completion(
         .get_by_id(&workspace.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
-    if workspace.is_execution_owned() {
+    let linked_ideation_plan_workspace = workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_some();
+    if workspace.is_execution_owned() && !linked_ideation_plan_workspace {
         return Err(AppError::Validation(
             "execution-owned workspaces cannot use direct repair publication".to_string(),
         ));
@@ -1752,9 +1754,9 @@ pub(crate) async fn resume_current_agent_workspace_repair_publish(
     match transition {
         AgentWorkspaceRepairTransitionOutcome::Applied(next) => match next.phase {
             AgentWorkspaceRepairPhase::ContinuationPending
-            | AgentWorkspaceRepairPhase::Continuing => {
-                Ok(AgentWorkspaceRepairPublishResumeOutcome::Continue(Box::new(next)))
-            }
+            | AgentWorkspaceRepairPhase::Continuing => Ok(
+                AgentWorkspaceRepairPublishResumeOutcome::Continue(Box::new(next)),
+            ),
             AgentWorkspaceRepairPhase::AwaitingReview => {
                 Ok(AgentWorkspaceRepairPublishResumeOutcome::AwaitingReview)
             }
@@ -1829,9 +1831,9 @@ pub(crate) async fn classify_agent_workspace_repair_completion_authority(
         }
         AgentWorkspaceRepairPhase::Requested
         | AgentWorkspaceRepairPhase::Dispatching
-        | AgentWorkspaceRepairPhase::Repairing => {
-            Ok(AgentWorkspaceRepairCompletionAuthority::Current(Box::new(exact)))
-        }
+        | AgentWorkspaceRepairPhase::Repairing => Ok(
+            AgentWorkspaceRepairCompletionAuthority::Current(Box::new(exact)),
+        ),
     }
 }
 

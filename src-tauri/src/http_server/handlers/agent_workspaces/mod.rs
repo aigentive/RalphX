@@ -98,8 +98,6 @@ use crate::commands::unified_chat_commands::{
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
-#[cfg(test)]
-use crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer;
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
 };
@@ -2853,10 +2851,9 @@ fn schedule_pr_autofix_completion_recovery(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
 ) {
-    let resumer = Arc::new(AgentWorkspacePrFixReviewPublishCommandResumer {
-        app_state: state.app_state.as_ref().clone(),
-        execution_state: Arc::clone(&state.execution_state),
-    });
+    let Ok(resumer) = state.app_state.agent_workspace_pr_fix_review_publish_resumer() else {
+        return;
+    };
     let runtime_app_handle = state.app_state.app_handle.clone();
     let transition_service = Arc::new(
         state.app_state.build_transition_service_for_runtime(

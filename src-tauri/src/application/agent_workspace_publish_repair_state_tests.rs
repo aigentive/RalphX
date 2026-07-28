@@ -10,16 +10,17 @@ use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, complete_agent_workspace_pr_fix_claim,
     complete_agent_workspace_repair_claim, continue_agent_workspace_repair_at_boundary,
     continue_agent_workspace_repair_at_boundary_with_review_starter,
-    current_agent_workspace_repair_claim_for_completion, reconcile_active_agent_workspace_repair,
-    repair_event_authorizes_active_run, reserve_agent_workspace_repair_dispatch,
-    resume_current_agent_workspace_repair_publish, settle_agent_workspace_repair_dispatch_outcome,
-    settle_agent_workspace_repair_failure, start_or_join_agent_workspace_repair,
-    terminal_run_authorizes_repair_recovery, transition_agent_workspace_repair_attempt,
-    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
-    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
-    DurableRepairWorkspaceReviewStartFuture, DurableRepairWorkspaceReviewStarter,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    current_agent_workspace_repair_claim_for_completion, inspect_agent_workspace_repair_completion,
+    reconcile_active_agent_workspace_repair, repair_event_authorizes_active_run,
+    reserve_agent_workspace_repair_dispatch, resume_current_agent_workspace_repair_publish,
+    settle_agent_workspace_repair_dispatch_outcome, settle_agent_workspace_repair_failure,
+    start_or_join_agent_workspace_repair, terminal_run_authorizes_repair_recovery,
+    transition_agent_workspace_repair_attempt, AgentWorkspaceRepairDispatchOutcome,
+    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
+    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
+    AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
+    DurableRepairWorkspaceReviewStarter, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -33,7 +34,7 @@ use crate::domain::entities::{
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairPhase,
     AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId, GitTargetIdentity,
-    GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, PlanBranchId, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -62,6 +63,36 @@ fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWor
     workspace.publication_push_status = Some("needs_agent".to_string());
     workspace.pr_supervision_status = Some("blocked".to_string());
     workspace
+}
+
+#[tokio::test]
+async fn repair_completion_rejects_execution_owned_non_ideation_workspace_before_git_inspection() {
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Execution-owned repair rejection".to_string(),
+        "/not/a/real/execution-owned-workspace".to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project before eligibility inspection");
+    let mut workspace = repair_workspace(ChatConversationId::from_string(
+        "execution-owned-repair-rejection",
+    ));
+    workspace.project_id = project.id;
+    workspace.linked_plan_branch_id = Some(PlanBranchId::from_string(
+        "execution-owned-repair-plan".to_string(),
+    ));
+
+    let error = inspect_agent_workspace_repair_completion(&state, &workspace, "main", None)
+        .await
+        .expect_err("non-Ideation execution-owned workspaces must remain ineligible");
+
+    assert!(
+        matches!(error, crate::error::AppError::Validation(_)),
+        "the eligibility boundary must reject before attempting to resolve the nonexistent workspace"
+    );
 }
 
 #[test]

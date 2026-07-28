@@ -17,7 +17,7 @@ use ralphx_lib::application::agent_workspace_review::{
 use ralphx_lib::application::{AppState, GitService};
 use ralphx_lib::commands::{
     unified_chat_commands::{
-        agent_workspace_response_for_state, install_agent_workspace_repair_publish_continuation,
+        install_agent_workspace_repair_publish_continuation,
         publish_agent_conversation_workspace_for_app_state_with_repair_intent,
         set_agent_conversation_workspace_auto_publish_for_state,
         AgentConversationWorkspaceAutoPublishInput,
@@ -356,10 +356,9 @@ async fn checkpoint_current_repair_target_lease(
         .await
         .expect("load recovery repair attempt")
         .expect("recovery repair attempt is current");
-    let identity =
-        GitService::canonical_target_identity(workspace_path, branch_name)
-            .await
-            .expect("resolve canonical recovery target");
+    let identity = GitService::canonical_target_identity(workspace_path, branch_name)
+        .await
+        .expect("resolve canonical recovery target");
     let owner = GitTargetLeaseOwner::agent_workspace_repair(current.id.as_str());
     let fencing_epoch = match state
         .branch_update_repo
@@ -414,6 +413,111 @@ async fn checkpoint_recovery_repair_target_lease(
     .await
 }
 
+async fn seed_checkpointed_rewritten_repair_publish_workspace(
+    app_state: &AppState,
+    fixture: &RewrittenRepairPublishFixture,
+) -> AgentRunId {
+    let run_id = seed_rewritten_repair_publish_workspace(app_state, fixture).await;
+    checkpoint_recovery_repair_target_lease(app_state, fixture).await;
+    run_id
+}
+
+async fn auto_publish_push_boundary_diagnostics(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    mock_github: &MockGithubService,
+    workspace_path: &std::path::Path,
+    branch_name: &str,
+) -> String {
+    let attempt = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await;
+    let open_effect = match &attempt {
+        Ok(Some(attempt)) => state
+            .app_state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&attempt.id)
+            .await
+            .map(|effect| effect.map(|effect| (effect.kind, effect.status))),
+        Ok(None) => Ok(None),
+        Err(_) => Ok(None),
+    };
+    let lease = match GitService::canonical_target_identity(workspace_path, branch_name).await {
+        Ok(identity) => state
+            .app_state
+            .branch_update_repo
+            .get_target_lease(&identity)
+            .await
+            .map(|lease| {
+                lease.map(|lease| {
+                    (
+                        lease.owner().clone(),
+                        lease.fencing_epoch(),
+                        lease.active_mutation().cloned(),
+                        lease.is_released(),
+                    )
+                })
+            }),
+        Err(error) => Err(error),
+    };
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await;
+    let message_count = state
+        .app_state
+        .chat_message_repo
+        .get_by_conversation(conversation_id)
+        .await
+        .map(|messages| messages.len());
+    let exact_push_calls = *mock_github
+        .push_branch_with_expected_remote_oid_lease_calls
+        .lock()
+        .expect("exact push counter lock");
+
+    format!(
+        "attempt={attempt:?}; expected_owner={}; checkpoint=(common_dir={:?}, ref={:?}, identity_version={:?}, epoch={:?}); lease={lease:?}; open_effect_count={}; open_effect={open_effect:?}; normal_push_calls={}; exact_push_calls={exact_push_calls}; pr_create_calls={}; workspace_pr={:?}; message_count={message_count:?}; queued_message_count={}",
+        attempt
+            .as_ref()
+            .ok()
+            .and_then(|attempt| attempt.as_ref())
+            .map(|attempt| GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str()).owner_id)
+            .unwrap_or_else(|| "<no-current-attempt>".to_string()),
+        attempt
+            .as_ref()
+            .ok()
+            .and_then(|attempt| attempt.as_ref())
+            .and_then(|attempt| attempt.git_common_dir.as_ref()),
+        attempt
+            .as_ref()
+            .ok()
+            .and_then(|attempt| attempt.as_ref())
+            .and_then(|attempt| attempt.target_ref.as_ref()),
+        attempt
+            .as_ref()
+            .ok()
+            .and_then(|attempt| attempt.as_ref())
+            .and_then(|attempt| attempt.target_identity_version),
+        attempt
+            .as_ref()
+            .ok()
+            .and_then(|attempt| attempt.as_ref())
+            .and_then(|attempt| attempt.target_lease_epoch),
+        usize::from(matches!(open_effect, Ok(Some(_)))),
+        mock_github.push_calls(),
+        mock_github.create_calls(),
+        workspace
+            .as_ref()
+            .ok()
+            .and_then(|workspace| workspace.as_ref())
+            .and_then(|workspace| workspace.publication_pr_number),
+        state.app_state.message_queue.list_keys().len(),
+    )
+}
+
 async fn park_current_repair_at_ready(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -460,8 +564,7 @@ async fn setup_durable_recovery_fixture(
     let workspace_repo = Arc::clone(&app_state.agent_conversation_workspace_repo);
     app_state =
         app_state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
-    let run_id = seed_rewritten_repair_publish_workspace(&app_state, fixture).await;
-    checkpoint_recovery_repair_target_lease(&app_state, fixture).await;
+    let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, fixture).await;
     (make_http_state(app_state), mock_github, run_id)
 }
 
@@ -559,60 +662,100 @@ async fn terminal_then_startup_recovery_continues_a_clean_durable_repair_once() 
     *mock_github
         .push_branch_with_expected_remote_oid_lease_delay_ms
         .lock()
-        .expect("exact push delay lock") = 50;
+        .expect("exact push delay lock") = 1_000;
     *mock_github
         .push_branch_with_expected_remote_oid_lease_started
         .lock()
         .expect("exact push notification lock") = Some(Arc::clone(&push_started));
-    let remote_path = fixture.remote_path.clone();
-    let workspace_path = fixture.workspace_path.clone();
-    let branch_name = fixture.branch_name.clone();
-    let repaired_head = fixture.repaired_head.clone();
-    let remote_update = tokio::spawn(async move {
-        push_started.notified().await;
-        let source_refspec = format!("refs/heads/{branch_name}:refs/ralphx-test/recovery-source");
-        git(
-            &remote_path,
-            &[
-                "fetch",
-                workspace_path.to_str().expect("workspace path"),
-                &source_refspec,
-            ],
-        );
-        git(
-            &remote_path,
-            &[
-                "update-ref",
-                &format!("refs/heads/{branch_name}"),
-                &repaired_head,
-            ],
-        );
-    });
-
-    let workspace = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .expect("load workspace for response")
-        .expect("workspace should remain available");
-    let workspace_response =
-        agent_workspace_response_for_state(state.app_state.as_ref(), workspace)
-            .await
-            .expect("workspace response should schedule recovery without waiting for it");
-    assert_eq!(workspace_response.conversation_id, conversation_id.as_str());
-
-    let (recovered, startup_recovered) = tokio::join!(
+    let terminal_state = state.app_state.clone();
+    let terminal_conversation_id = conversation_id.clone();
+    let terminal_run_id = run_id.clone();
+    let mut terminal_recovery = tokio::spawn(async move {
         recover_agent_workspace_repair_after_terminal_run(
-            state.app_state.as_ref(),
-            &conversation_id,
-            &run_id,
-        ),
-        recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref()),
+            terminal_state.as_ref(),
+            &terminal_conversation_id,
+            &terminal_run_id,
+        )
+        .await
+    });
+    tokio::select! {
+        _ = push_started.notified() => {}
+        terminal_outcome = &mut terminal_recovery => {
+            let diagnostics = auto_publish_push_boundary_diagnostics(
+                &state,
+                &conversation_id,
+                mock_github.as_ref(),
+                &fixture.workspace_path,
+                &fixture.branch_name,
+            )
+            .await;
+            panic!(
+                "terminal recovery returned before the exact push boundary; recovery_outcome={terminal_outcome:?}; {diagnostics}"
+            );
+        }
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+            let diagnostics = auto_publish_push_boundary_diagnostics(
+                &state,
+                &conversation_id,
+                mock_github.as_ref(),
+                &fixture.workspace_path,
+                &fixture.branch_name,
+            )
+            .await;
+            panic!(
+                "terminal recovery did not reach the exact push boundary within five seconds; {diagnostics}"
+            );
+        }
+    }
+    let startup_state = state.app_state.clone();
+    let startup_recovery = tokio::spawn(async move {
+        recover_stale_agent_workspace_publish_repairs_for_state(startup_state.as_ref()).await
+    });
+    let source_refspec = format!(
+        "refs/heads/{}:refs/ralphx-test/recovery-source",
+        fixture.branch_name
     );
-    let recovered = recovered.expect("recover terminal committed repair");
-    let startup_recovered = startup_recovered.expect("startup recovery should join safely");
-    remote_update.await.expect("remote update joins");
+    git(
+        &fixture.remote_path,
+        &[
+            "fetch",
+            fixture.workspace_path.to_str().expect("workspace path"),
+            &source_refspec,
+        ],
+    );
+    git(
+        &fixture.remote_path,
+        &[
+            "update-ref",
+            &format!("refs/heads/{}", fixture.branch_name),
+            &fixture.repaired_head,
+        ],
+    );
+    let recovered = tokio::time::timeout(Duration::from_secs(5), terminal_recovery)
+        .await
+        .unwrap_or_else(|_| panic!("terminal recovery did not settle after the remote update"))
+        .expect("terminal recovery task joins")
+        .expect("recover terminal committed repair");
+    let startup_recovered = match tokio::time::timeout(Duration::from_secs(5), startup_recovery)
+        .await
+    {
+        Ok(startup_recovery) => startup_recovery
+            .expect("startup recovery task joins")
+            .expect("startup recovery should join safely"),
+        Err(_) => {
+            let diagnostics = auto_publish_push_boundary_diagnostics(
+                &state,
+                &conversation_id,
+                mock_github.as_ref(),
+                &fixture.workspace_path,
+                &fixture.branch_name,
+            )
+            .await;
+            panic!(
+                "startup recovery did not settle while the terminal continuation owned the push; {diagnostics}"
+            );
+        }
+    };
     let final_recovery =
         recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
             .await
@@ -874,7 +1017,7 @@ async fn terminal_recovery_continues_a_clean_repair_when_its_reserved_run_row_is
         conversation_id.clone(),
         "project-missing-run-repair-recovery",
     );
-    let (state, mock_github, _run_id) = setup_durable_recovery_fixture(&fixture).await;
+    let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
     let mut workspace = state
         .app_state
         .agent_conversation_workspace_repo
@@ -918,16 +1061,19 @@ async fn terminal_recovery_continues_a_clean_repair_when_its_reserved_run_row_is
         outcome => panic!("expected missing-run checkpoint, got {outcome:?}"),
     };
 
-    assert!(
-        recover_agent_workspace_repair_after_terminal_run(
-            state.app_state.as_ref(),
-            &conversation_id,
-            &missing_run_id,
-        )
+    state
+        .app_state
+        .agent_run_repo
+        .delete(&run_id)
         .await
-        .expect("recover missing reserved run"),
-        "an exact durable repair may recover when its reserved run row has disappeared"
-    );
+        .expect("remove the superseded seeded repair run");
+    recover_agent_workspace_repair_after_terminal_run(
+        state.app_state.as_ref(),
+        &conversation_id,
+        &missing_run_id,
+    )
+    .await
+    .expect("recover missing reserved run");
     let recovered = state
         .app_state
         .agent_workspace_repair_repo
@@ -1301,7 +1447,7 @@ async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
     let workspace_repo = Arc::clone(&app_state.agent_conversation_workspace_repo);
     app_state =
         app_state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
-    let run_id = seed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
+    let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
     let mut workspace = app_state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -1708,7 +1854,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
     let workspace_repo = Arc::clone(&app_state.agent_conversation_workspace_repo);
     app_state =
         app_state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
-    let run_id = seed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
+    let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
     app_state
         .review_settings_repo
         .update_settings(&ReviewSettings {
@@ -1886,9 +2032,8 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
         }),
     )
     .await
-    .expect("stale completion is harmless")
-    .0;
-    assert_eq!(stale.status, "superseded");
+    .expect_err("stale completion must fail closed");
+    assert_eq!(stale.0, axum::http::StatusCode::CONFLICT);
     assert_eq!(
         state
             .app_state
@@ -2033,7 +2178,7 @@ async fn failed_workspace_review_blocks_durable_repair_without_starting_or_publi
     let github_trait: Arc<dyn GithubServiceTrait> = mock_github.clone();
     let mut app_state = AppState::new_test();
     app_state.github_service = Some(github_trait);
-    let run_id = seed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
+    let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
     app_state
         .review_settings_repo
         .update_settings(&ReviewSettings {
@@ -2149,7 +2294,7 @@ async fn unavailable_workspace_reviewer_blocks_durable_repair_without_publishing
     let github_trait: Arc<dyn GithubServiceTrait> = mock_github.clone();
     let mut app_state = AppState::new_test();
     app_state.github_service = Some(github_trait);
-    let run_id = seed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
+    let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
     app_state
         .review_settings_repo
         .update_settings(&ReviewSettings {
@@ -2237,7 +2382,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
     let workspace_repo = Arc::clone(&app_state.agent_conversation_workspace_repo);
     app_state =
         app_state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
-    let run_id = seed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
+    let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
     let state = make_http_state(app_state);
     let repair_attempt = state
         .app_state
@@ -2510,7 +2655,7 @@ async fn repaired_auto_publish_blocks_when_base_advances_before_pr_handoff() {
     let workspace_repo = Arc::clone(&app_state.agent_conversation_workspace_repo);
     app_state =
         app_state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
-    let run_id = seed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
+    let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, &fixture).await;
     let state = make_http_state(app_state);
 
     let push_started = Arc::new(tokio::sync::Notify::new());
@@ -2722,7 +2867,9 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
     git(&workspace_path, &["commit", "-m", "repair workspace"]);
     let _repair_sha = git(&workspace_path, &["rev-parse", "HEAD"]);
 
-    let app_state = AppState::new_test();
+    let github_trait: Arc<dyn GithubServiceTrait> = Arc::new(MockGithubService::new());
+    let mut app_state = AppState::new_test();
+    app_state.github_service = Some(github_trait);
     app_state
         .project_repo
         .create(project.clone())
@@ -2775,6 +2922,14 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
         .await
         .expect("seed update-only repair request");
     let run_id = seed_current_repair_attempt(&app_state, conversation_id.clone()).await;
+    checkpoint_current_repair_target_lease(
+        &app_state,
+        &conversation_id,
+        &workspace_path,
+        branch_name,
+        &base_sha,
+    )
+    .await;
     disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
@@ -2894,6 +3049,17 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
     plan_branch.pr_push_status = PrPushStatus::Failed;
     let plan_worktree_path =
         resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch).unwrap();
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            plan_worktree_path
+                .to_str()
+                .expect("linked plan worktree path"),
+            plan_branch_name,
+        ],
+    );
     app_state
         .plan_branch_repo
         .create(plan_branch.clone())
@@ -2921,6 +3087,14 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
         .await
         .expect("seed workspace");
     let run_id = seed_current_repair_attempt(&app_state, conversation_id.clone()).await;
+    checkpoint_current_repair_target_lease(
+        &app_state,
+        &conversation_id,
+        repo.path(),
+        plan_branch_name,
+        &base_sha,
+    )
+    .await;
     disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
@@ -2940,7 +3114,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
         .push_branch_delay_ms
         .lock()
         .expect("linked-plan push delay lock") = 1_000;
-    let completion = tokio::spawn(complete_agent_workspace_repair(
+    let mut completion = tokio::spawn(complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
         completion_headers(conversation_id.clone(), run_id.clone()),
@@ -2949,7 +3123,35 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
             blocker: None,
         }),
     ));
-    push_started.notified().await;
+    tokio::select! {
+        _ = push_started.notified() => {}
+        completion_outcome = &mut completion => {
+            let diagnostics = auto_publish_push_boundary_diagnostics(
+                &state,
+                &conversation_id,
+                mock_github.as_ref(),
+                &plan_worktree_path,
+                plan_branch_name,
+            )
+            .await;
+            panic!(
+                "linked-plan completion returned before the push boundary; http_outcome={completion_outcome:?}; {diagnostics}"
+            );
+        }
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+            let diagnostics = auto_publish_push_boundary_diagnostics(
+                &state,
+                &conversation_id,
+                mock_github.as_ref(),
+                &plan_worktree_path,
+                plan_branch_name,
+            )
+            .await;
+            panic!(
+                "linked-plan completion did not reach the push boundary within five seconds; {diagnostics}"
+            );
+        }
+    }
     recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
         .await
         .expect("overlapping recovery must leave the live linked-plan push authoritative");

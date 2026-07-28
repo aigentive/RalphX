@@ -367,6 +367,9 @@ fn launch_startup_attempt(
             &app_state,
             Arc::clone(&startup_execution_state),
         );
+        if let Some(resumer) = pr_fix_review_publish_resumer.as_ref() {
+            app_state.install_agent_workspace_pr_fix_review_publish_resumer(Arc::clone(resumer));
+        }
 
         if let Err(error) = register_managed_state(
             &app_handle,
