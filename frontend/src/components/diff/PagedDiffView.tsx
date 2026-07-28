@@ -26,7 +26,6 @@ import {
   buildAnnotationIndex,
   buildHunkAnnotationIndex,
   hunkAnnotationsForHunk,
-  renderAnnotationRows,
   renderDiffLine,
   renderHunkHeader,
   renderHunkAnnotationRows,
@@ -54,7 +53,6 @@ export interface PagedDiffViewProps {
   defaultWrapLines?: boolean | undefined;
   initialTotalRows?: number | undefined;
   initialIsBinary?: boolean | undefined;
-  contentMode?: "full" | "review-only" | undefined;
 }
 
 function refKindCacheKey(refKind: DiffRefKind): string {
@@ -130,7 +128,6 @@ export function PagedDiffView({
   defaultWrapLines = true,
   initialTotalRows,
   initialIsBinary,
-  contentMode = "full",
 }: PagedDiffViewProps) {
   const pagesRef = useRef<Map<number, FileDiffPage>>(new Map());
   const loadingOffsetsRef = useRef<Set<number>>(new Set());
@@ -152,31 +149,6 @@ export function PagedDiffView({
     () => buildHunkAnnotationIndex(hunkAnnotations),
     [hunkAnnotations]
   );
-  const reviewOnlyHunkGroups = useMemo(() => {
-    const groups = new Map<
-      string,
-      { header: string; annotations: WorkspaceReviewHunkAnnotation[] }
-    >();
-    for (const annotation of hunkAnnotations) {
-      const key = [
-        annotation.hunkHeader,
-        annotation.oldStart,
-        annotation.oldLines,
-        annotation.newStart,
-        annotation.newLines,
-      ].join("\u0000");
-      const existing = groups.get(key);
-      if (existing) {
-        existing.annotations.push(annotation);
-      } else {
-        groups.set(key, {
-          header: annotation.hunkHeader,
-          annotations: [annotation],
-        });
-      }
-    }
-    return [...groups.entries()].map(([key, value]) => ({ key, ...value }));
-  }, [hunkAnnotations]);
   const cacheKey = refKindCacheKey(refKind);
   const firstPage = pages.get(0);
   const rowCount = totalRows ?? firstPage?.totalRows ?? 0;
@@ -275,15 +247,10 @@ export function PagedDiffView({
       setInlineScrollContainer(null);
     }
     setRenderedRange(null);
-    if (contentMode === "review-only") {
-      setIsInitialLoading(false);
-      return;
-    }
     void loadPage(0, { generation });
   }, [
     cacheKey,
     conversationId,
-    contentMode,
     filePath,
     hasExplicitInlineScrollParent,
     loadPage,
@@ -341,9 +308,6 @@ export function PagedDiffView({
   );
 
   useLayoutEffect(() => {
-    if (contentMode === "review-only") {
-      return;
-    }
     if (scrollContainer || hasExplicitInlineScrollParent) {
       setInlineScrollContainer(null);
       return;
@@ -356,67 +320,7 @@ export function PagedDiffView({
     setInlineScrollContainer((current) =>
       current === nextScrollContainer ? current : nextScrollContainer
     );
-  }, [contentMode, hasExplicitInlineScrollParent, rowCount, scrollContainer]);
-
-  if (contentMode === "review-only") {
-    return (
-      <div className={scrollContainer ? "h-full overflow-y-auto" : "w-full overflow-visible"}>
-        <div
-          className="font-mono text-[0.8125rem] leading-[20px]"
-          data-testid="paged-diff-review-only"
-          style={{ backgroundColor: "var(--bg-base)" }}
-        >
-          {reviewOnlyHunkGroups.length === 0 && annotations.length === 0 ? (
-            <div
-              className="px-3 py-4 text-xs"
-              data-testid="paged-diff-review-only-empty"
-              style={{ color: "var(--text-muted)" }}
-            >
-              No review annotations for this file.
-            </div>
-          ) : (
-            <>
-              {reviewOnlyHunkGroups.map((group) => (
-                <div
-                  key={group.key}
-                  data-testid="diff-review-only-hunk"
-                  style={{
-                    borderBottomColor: "var(--overlay-faint)",
-                    borderBottomStyle: "solid",
-                    borderBottomWidth: "1px",
-                  }}
-                >
-                  {renderHunkHeader(group.header)}
-                  {renderHunkAnnotationRows(group.annotations, true, "standard")}
-                </div>
-              ))}
-              {annotations.length > 0 && (
-                <div
-                  data-testid="paged-diff-review-only-pr-annotations"
-                  style={{
-                    borderBottomColor: "var(--overlay-faint)",
-                    borderBottomStyle: "solid",
-                    borderBottomWidth: "1px",
-                  }}
-                >
-                  <div
-                    className="px-3 py-1 text-[0.6875rem] font-semibold uppercase"
-                    style={{
-                      backgroundColor: "var(--bg-subtle)",
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    GitHub annotations
-                  </div>
-                  {renderAnnotationRows(annotations, true, "standard")}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
+  }, [hasExplicitInlineScrollParent, rowCount, scrollContainer]);
 
   if (initialError && !hasAnyPage) {
     return (

@@ -263,27 +263,6 @@ describe("SimpleDiffView", () => {
       expect(screen.getByText("This hunk updates the renderer.")).toBeInTheDocument();
     });
 
-    it("renders review-only hunk headers and annotations without code rows or controls", () => {
-      render(
-        <SimpleDiffView
-          hunks={defaultHunks}
-          oldTotalLines={3}
-          newTotalLines={3}
-          annotations={[makeAnnotation()]}
-          hunkAnnotations={[makeHunkAnnotation()]}
-          contentMode="review-only"
-        />
-      );
-
-      expect(screen.getByTestId("simple-diff-review-only")).toBeInTheDocument();
-      expect(screen.getByText("@@ -1,3 +1,3 @@")).toBeInTheDocument();
-      expect(screen.getByText("Review summary")).toBeInTheDocument();
-      expect(screen.getByText("CodeQL warning")).toBeInTheDocument();
-      expect(screen.queryByText("new line")).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: /wrap/i })).toBeNull();
-      expect(screen.queryByTestId("diff-gap-control")).toBeNull();
-    });
-
     it("toggles line wrapping when the wrap control is visible", async () => {
       const user = userEvent.setup();
       const { container } = render(
