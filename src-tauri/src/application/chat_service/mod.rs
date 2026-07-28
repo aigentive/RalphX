@@ -1594,6 +1594,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     conversation_repo: Arc<dyn ChatConversationRepository>,
     persona_repo: Option<Arc<dyn PersonaRepository>>,
     persona_feature_enabled_override: Option<bool>,
+    managed_team: Option<Arc<crate::application::managed_team::ManagedTeamService>>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     task_repo: Arc<dyn TaskRepository>,
@@ -1744,6 +1745,7 @@ impl<R: Runtime> AppChatService<R> {
             conversation_repo,
             persona_repo: None,
             persona_feature_enabled_override: None,
+            managed_team: None,
             agent_run_repo,
             project_repo,
             task_repo,
@@ -1815,6 +1817,16 @@ impl<R: Runtime> AppChatService<R> {
     ) -> Self {
         self.conversation_folder_reference_repo = Some(repo);
         self.folder_reference_app_data_dir = Some(app_data_dir);
+        self
+    }
+
+    /// Set the shared managed-Team authority used to record coordinator run
+    /// bindings for RxNativeTeam sends (builder pattern).
+    pub fn with_managed_team(
+        mut self,
+        managed_team: Arc<crate::application::managed_team::ManagedTeamService>,
+    ) -> Self {
+        self.managed_team = Some(managed_team);
         self
     }
 
@@ -6935,6 +6947,28 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 resolved_spawn_settings.effective_harness,
             )
             .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+            // Record the member-null coordinator run binding before launch.
+            // Override read errors and binding write errors fail the send;
+            // launching an unbound Team run would break run-binding authority.
+            if let Some(managed_team) = self.managed_team.as_ref() {
+                let Some(team_project_id) = project_id.clone() else {
+                    cleanup_and_err!(ChatServiceError::SpawnFailed(
+                        "managed Team send requires a resolvable project".to_string()
+                    ));
+                };
+                if let Err(error) = managed_team
+                    .preallocate_coordinator_run_binding(
+                        crate::domain::entities::ProjectId::from_string(team_project_id),
+                        &conversation.id,
+                        &agent_run.id,
+                    )
+                    .await
+                {
+                    cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                        "managed Team coordinator run binding failed: {error}"
+                    )));
+                }
+            }
         }
         let effective_model_id = resolved_spawn_settings.model.clone();
         if let Err(reason) =

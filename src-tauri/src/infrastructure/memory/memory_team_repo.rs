@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -9,15 +10,28 @@ use crate::domain::entities::{
 use crate::domain::repositories::TeamRepository;
 use crate::error::{AppError, AppResult};
 
+/// Session store shared between `MemoryTeamRepository` and
+/// `MemoryTeamCoordinationTransitionRepository` so both observe one durable
+/// authority, matching the shared-database SQLite behavior.
+pub type MemoryTeamSessionStore = Arc<RwLock<HashMap<TeamSessionId, TeamSession>>>;
+
 pub struct MemoryTeamRepository {
-    sessions: RwLock<HashMap<TeamSessionId, TeamSession>>,
+    sessions: MemoryTeamSessionStore,
     members: RwLock<HashMap<TeamMemberId, TeamMember>>,
 }
 
 impl MemoryTeamRepository {
+    pub fn new_shared_sessions() -> MemoryTeamSessionStore {
+        Arc::new(RwLock::new(HashMap::new()))
+    }
+
     pub fn new() -> Self {
+        Self::with_sessions(Self::new_shared_sessions())
+    }
+
+    pub fn with_sessions(sessions: MemoryTeamSessionStore) -> Self {
         Self {
-            sessions: RwLock::new(HashMap::new()),
+            sessions,
             members: RwLock::new(HashMap::new()),
         }
     }
@@ -57,6 +71,22 @@ impl TeamRepository for MemoryTeamRepository {
                 value.coordinator_conversation_id == *conversation_id && !value.status.is_closed()
             })
             .cloned())
+    }
+    async fn list_open_sessions(&self) -> AppResult<Vec<TeamSession>> {
+        let mut sessions: Vec<TeamSession> = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|value| !value.status.is_closed())
+            .cloned()
+            .collect();
+        sessions.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+        });
+        Ok(sessions)
     }
     async fn update_session(&self, session: TeamSession, expected_version: i64) -> AppResult<bool> {
         let mut sessions = self.sessions.write().await;

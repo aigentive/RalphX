@@ -2578,3 +2578,49 @@ mod http_error_tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
+
+// ============================================================================
+// Request/Response Types - Managed Team (/api/managed_team/*)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureManagedTeamRequest {
+    pub conversation_id: String,
+    pub project_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamSessionSummary {
+    pub id: String,
+    pub project_id: String,
+    pub coordinator_conversation_id: String,
+    pub status: String,
+    pub configured_concurrency: u32,
+    pub effective_concurrency: u32,
+    pub automatic_wake_limit: u32,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberSummary {
+    pub id: String,
+    pub team_id: String,
+    pub name: String,
+    pub normalized_name: String,
+    pub canonical_agent_name: String,
+    pub role_summary: String,
+    pub status: String,
+    pub generation: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamStatusResponse {
+    pub session: ManagedTeamSessionSummary,
+    pub members: Vec<ManagedTeamMemberSummary>,
+}

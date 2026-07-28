@@ -13,6 +13,8 @@ pub trait TeamRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<TeamSession>>;
+    /// Lists every session whose status is not closed, across all conversations.
+    async fn list_open_sessions(&self) -> AppResult<Vec<TeamSession>>;
     async fn update_session(&self, session: TeamSession, expected_version: i64) -> AppResult<bool>;
     async fn create_member(&self, member: TeamMember) -> AppResult<TeamMember>;
     async fn get_member(&self, id: &TeamMemberId) -> AppResult<Option<TeamMember>>;

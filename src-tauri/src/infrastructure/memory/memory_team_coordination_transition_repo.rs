@@ -1,17 +1,20 @@
 use crate::domain::entities::{ChatConversationId, CoordinationMode, TeamSession, TeamSessionId};
 use crate::domain::repositories::{TeamCoordinationTransitionRepository, TeamExitMarker};
 use crate::error::AppResult;
+use crate::infrastructure::memory::memory_team_repo::{
+    MemoryTeamRepository, MemoryTeamSessionStore,
+};
 use async_trait::async_trait;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
 pub struct MemoryTeamCoordinationTransitionRepository {
-    sessions: RwLock<HashMap<TeamSessionId, TeamSession>>,
+    sessions: MemoryTeamSessionStore,
 }
 impl MemoryTeamCoordinationTransitionRepository {
     pub fn new() -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-        }
+        Self::with_sessions(MemoryTeamRepository::new_shared_sessions())
+    }
+
+    pub fn with_sessions(sessions: MemoryTeamSessionStore) -> Self {
+        Self { sessions }
     }
 }
 impl Default for MemoryTeamCoordinationTransitionRepository {

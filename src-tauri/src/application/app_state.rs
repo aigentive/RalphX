@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use super::services::PrPollerRegistry;
 use crate::application::agent_capability_gate::AgentCapabilityGate;
 use crate::application::app_paths::AppPaths;
+use crate::application::managed_team::ManagedTeamService;
 use crate::application::chat_service::AppChatService;
 use crate::application::notification_service::{
     NoopDesktopNotifier, NoopNotificationEventEmitter, NotificationEventEmitter,
@@ -220,6 +221,9 @@ pub struct AppState {
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
     /// Persisted UI feature flag overrides.
     pub ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    /// Shared managed-Team authority (sessions, roster, run bindings, startup barrier).
+    /// INVARIANT: both AppState graphs must hold the same instance (runtime_wiring).
+    pub managed_team: Arc<ManagedTeamService>,
     /// Live authoritative gates for Agent conversation orchestration capabilities.
     pub agent_capability_gate: Arc<AgentCapabilityGate>,
     /// Durable task validation run/result repository
@@ -541,6 +545,58 @@ impl AppState {
 
     fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
         (Arc::new(NullEventSink), InternalEventBus::new())
+    }
+
+    fn build_managed_team_sqlite(
+        shared_conn: &Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+        feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    ) -> Arc<crate::application::managed_team::ManagedTeamService> {
+        use crate::infrastructure::sqlite::{
+            SqliteTeamCoordinationTransitionRepository, SqliteTeamMessageRepository,
+            SqliteTeamRepository, SqliteTeamRunBindingRepository, SqliteTeamWakeBatchRepository,
+            SqliteTeamWorkspaceReservationRepository,
+        };
+        Arc::new(crate::application::managed_team::ManagedTeamService::new(
+            Arc::new(SqliteTeamRepository::from_shared(Arc::clone(shared_conn))),
+            Arc::new(SqliteTeamCoordinationTransitionRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(SqliteTeamRunBindingRepository::from_shared(Arc::clone(
+                shared_conn,
+            ))),
+            Arc::new(SqliteTeamMessageRepository::from_shared(Arc::clone(
+                shared_conn,
+            ))),
+            Arc::new(SqliteTeamWakeBatchRepository::from_shared(Arc::clone(
+                shared_conn,
+            ))),
+            Arc::new(SqliteTeamWorkspaceReservationRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            feature_overrides_repo,
+        ))
+    }
+
+    fn build_managed_team_memory(
+        feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    ) -> Arc<crate::application::managed_team::ManagedTeamService> {
+        use crate::infrastructure::memory::{
+            MemoryTeamCoordinationTransitionRepository, MemoryTeamMessageRepository,
+            MemoryTeamRepository, MemoryTeamRunBindingRepository, MemoryTeamWakeBatchRepository,
+            MemoryTeamWorkspaceReservationRepository,
+        };
+        let sessions = MemoryTeamRepository::new_shared_sessions();
+        Arc::new(crate::application::managed_team::ManagedTeamService::new(
+            Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
+            Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+                sessions,
+            )),
+            Arc::new(MemoryTeamRunBindingRepository::new()),
+            Arc::new(MemoryTeamMessageRepository::new()),
+            Arc::new(MemoryTeamWakeBatchRepository::new()),
+            Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+            feature_overrides_repo,
+        ))
     }
 
     fn production_agent_clients(
@@ -1297,6 +1353,11 @@ impl AppState {
 
         let gh_svc: Arc<dyn GithubServiceTrait> = Arc::new(GhCliGithubService::new());
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> = Arc::new(
+            SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
+        );
+        let managed_team =
+            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
         let state = Self {
             task_repo: Arc::clone(&task_repo),
             branch_update_repo: Arc::new(
@@ -1333,9 +1394,8 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
-            ui_feature_flag_overrides_repo: Arc::new(
-                SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(
                 SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1618,6 +1678,10 @@ impl AppState {
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team =
+            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -1638,7 +1702,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
@@ -1812,6 +1877,10 @@ impl AppState {
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team =
+            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -1832,7 +1901,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
@@ -2011,6 +2081,10 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team =
+            Self::build_managed_team_sqlite(&shared_conn, Arc::clone(&ui_feature_flag_overrides_repo));
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -2036,7 +2110,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
@@ -2217,6 +2292,10 @@ impl AppState {
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team =
+            Self::build_managed_team_memory(Arc::clone(&ui_feature_flag_overrides_repo));
         Self {
             task_repo: Arc::clone(&task_repo),
             branch_update_repo: Arc::new(MemoryBranchUpdateRepository::new()),
@@ -2233,7 +2312,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),

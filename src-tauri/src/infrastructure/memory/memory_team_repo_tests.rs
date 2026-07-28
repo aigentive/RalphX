@@ -57,6 +57,26 @@ async fn test_update_session_rejects_stale_version() {
 }
 
 #[tokio::test]
+async fn test_list_open_sessions_excludes_closed() {
+    let repo = MemoryTeamRepository::new();
+
+    let mut closing = repo
+        .ensure_session(team_session("team-1", &team_conversation_id(1)))
+        .await
+        .unwrap();
+    repo.ensure_session(team_session("team-2", &team_conversation_id(2)))
+        .await
+        .unwrap();
+    closing.status = TeamSessionStatus::Closed;
+    closing.version += 1;
+    assert!(repo.update_session(closing, 0).await.unwrap());
+
+    let open = repo.list_open_sessions().await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].id.as_str(), "team-2");
+}
+
+#[tokio::test]
 async fn test_member_names_unique_per_team_and_generation_cas() {
     let repo = MemoryTeamRepository::new();
 

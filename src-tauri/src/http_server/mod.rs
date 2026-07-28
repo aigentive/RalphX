@@ -161,6 +161,16 @@ pub async fn start_http_server_with_listener_ready(
         .route("/api/auth/validate-key", get(validate_api_key))
         // Legacy validate_key endpoint (kept for backward compat)
         .route("/api/validate_key", get(validate_key))
+        // Managed Team lifecycle surface
+        .route("/api/managed_team/ensure", post(ensure_managed_team))
+        .route(
+            "/api/managed_team/status/:conversation_id",
+            get(get_managed_team_status),
+        )
+        .route(
+            "/api/managed_team/roster/:team_id",
+            get(get_managed_team_roster),
+        )
         // Ideation tools (ralphx-ideation agent)
         .route("/api/create_task_proposal", post(create_task_proposal))
         .route("/api/finalize_proposals", post(finalize_proposals))

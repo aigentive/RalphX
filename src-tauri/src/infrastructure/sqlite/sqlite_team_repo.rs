@@ -201,6 +201,23 @@ impl TeamRepository for SqliteTeamRepository {
             .await
     }
 
+    async fn list_open_sessions(&self) -> AppResult<Vec<TeamSession>> {
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM managed_team_sessions WHERE status != 'closed'
+                     ORDER BY created_at, id",
+                )?;
+                let mut rows = stmt.query([])?;
+                let mut sessions = Vec::new();
+                while let Some(row) = rows.next()? {
+                    sessions.push(session_from_row(row)?);
+                }
+                Ok(sessions)
+            })
+            .await
+    }
+
     async fn update_session(&self, session: TeamSession, expected_version: i64) -> AppResult<bool> {
         self.db
             .run(move |conn| {

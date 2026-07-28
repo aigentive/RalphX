@@ -919,6 +919,19 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_phase_completed("memory_archive_recovery", phase_started_at);
     }
 
+    // Managed-Team recovery barrier: must settle before chat resumption so Team
+    // conversations cannot relaunch against unverified Team state. A failed
+    // barrier fences Team conversations only; non-Team startup is unaffected.
+    {
+        let phase_started_at = startup_phase_started("managed_team_barrier");
+        let managed_team = Arc::clone(&app_state.managed_team);
+        managed_team
+            .startup_barrier()
+            .run(&managed_team.team_repo())
+            .await;
+        startup_phase_completed("managed_team_barrier", phase_started_at);
+    }
+
     if active_git_startup_blocked {
         tracing::warn!(
             "Startup Git auth preflight blocked active-project chat resumption until user repair"
@@ -937,6 +950,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             plan_branch_repo: Arc::clone(&plan_branch_repo),
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             app_handle: app_handle.clone(),
+            managed_team_barrier: app_state.managed_team.startup_barrier(),
         });
         run_startup_owned_phase("chat_resumption", STARTUP_BACKGROUND_DB_GRACE, async move {
             chat_resumption.run().await;
