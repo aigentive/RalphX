@@ -53,7 +53,23 @@ mod registry_tests;
 mod scope_suite_tests;
 // --- end PR 1.5 block ---
 
+// --- PR 1.5-C: request idempotency + attachment ingress (one contiguous block) ---
+pub mod attachments;
+#[cfg(test)]
+mod attachments_tests;
+pub mod dedup;
+#[cfg(test)]
+mod dedup_tests;
+// --- end PR 1.5-C block ---
+
+// --- PR 1.5-B: curated fetch-route remount (one contiguous block) ---
+pub mod fetch_remount;
+#[cfg(test)]
+mod fetch_remount_tests;
+// --- end PR 1.5-B block ---
+
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -74,10 +90,18 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::domain::repositories::RemoteSessionRepository;
 use crate::error::AppError;
-use crate::infrastructure::sqlite::{SqliteRemoteAccessRepository, SqliteRemoteEventLogRepository};
+use crate::infrastructure::sqlite::{
+    SqliteRemoteAccessRepository, SqliteRemoteEventLogRepository,
+    SqliteRemoteRequestDedupRepository,
+};
 use crate::infrastructure::tailscale::{
     RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
+};
+use crate::remote_server::attachments::{
+    fetch_handler as attachment_fetch_handler, upload_handler as attachment_upload_handler,
+    RemoteAttachmentContext, ATTACHMENT_FETCH_PATH, ATTACHMENT_UPLOAD_PATH,
+    REMOTE_ATTACHMENT_MAX_BYTES,
 };
 use crate::remote_server::auth::{
     authenticate_remote_request, enforce_auth_endpoint_rate_limit, strip_trust_headers,
@@ -87,6 +111,7 @@ use crate::remote_server::auth_endpoints::{
     pair_handler, self_revoke_handler, session_introspection_handler, session_teardown_handler,
     ws_ticket_handler, REMOTE_AUTH_BODY_LIMIT_BYTES,
 };
+use crate::remote_server::dedup::{RemoteDedupState, REMOTE_INVOKE_BODY_LIMIT_BYTES};
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
 };
@@ -312,6 +337,45 @@ pub(crate) fn remote_router(state: RemoteRouterState) -> Router {
 /// Exposed so tests can prove the auth slot itself lets `OPTIONS` through instead of relying
 /// on the CORS layer short-circuiting preflight ahead of it.
 pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
+    let base: Router = base_remote_routes().with_state(state.clone());
+
+    // The curated `/api` remount (PR 1.5-B). Merged BEFORE the fallback and the auth stack, so
+    // remounted routes sit inside the same trust-header stripping, rate limiting and bearer
+    // check as every other authenticated route, and an unlisted `/api` path still lands on the
+    // 404 fallback. Absent or unbuildable shared state mounts NOTHING — never a fresh AppState.
+    let router = match state.remount() {
+        Some(shared) => match fetch_remount::remount_router(shared) {
+            Ok(build) => base.merge(build.router),
+            Err(error) => {
+                tracing::error!(%error, "remote fetch remount refused to build; /api stays unmounted");
+                base
+            }
+        },
+        None => {
+            tracing::warn!(
+                "shared :3847 AppState is not managed; remote fetch remount stays unmounted"
+            );
+            base
+        }
+    };
+
+    router
+        .fallback(remote_fallback_handler)
+        // Layers apply outermost-last: trust headers are stripped before anything else
+        // runs, then pre-auth flood control, then the bearer check.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            authenticate_remote_request,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            enforce_auth_endpoint_rate_limit,
+        ))
+        .layer(middleware::from_fn(strip_trust_headers))
+}
+
+/// The listener's own routes, before the remount merge and the auth stack.
+fn base_remote_routes() -> Router<RemoteRouterState> {
     Router::new()
         .route(
             DESCRIPTOR_PATH,
@@ -347,25 +411,26 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
         )
         .route(
             INVOKE_PATH,
-            post(invoke::invoke_handler).options(remote_preflight_handler),
+            post(invoke::invoke_handler)
+                .options(remote_preflight_handler)
+                // C-16: `/invoke` carries command arguments, never payload bytes. Attachments
+                // have their own endpoint with its own, larger cap.
+                .layer(DefaultBodyLimit::max(REMOTE_INVOKE_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            ATTACHMENT_UPLOAD_PATH,
+            post(attachment_upload_handler)
+                .options(remote_preflight_handler)
+                .layer(DefaultBodyLimit::max(REMOTE_ATTACHMENT_MAX_BYTES)),
+        )
+        .route(
+            ATTACHMENT_FETCH_PATH,
+            get(attachment_fetch_handler).options(remote_preflight_handler),
         )
         .route(
             ws::WS_EVENTS_PATH,
             get(ws::ws_events_handler).options(remote_preflight_handler),
         )
-        .fallback(remote_fallback_handler)
-        // Layers apply outermost-last: trust headers are stripped before anything else
-        // runs, then pre-auth flood control, then the bearer check.
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            authenticate_remote_request,
-        ))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            enforce_auth_endpoint_rate_limit,
-        ))
-        .layer(middleware::from_fn(strip_trust_headers))
-        .with_state(state)
 }
 
 fn remote_cors_layer() -> CorsLayer {
@@ -410,6 +475,53 @@ pub(crate) fn remote_error_response(
         .into_response()
 }
 
+/// Everything the listener core needs out of the Tauri `AppHandle`, resolved one frame earlier.
+///
+/// The listener never wanted an `AppHandle` as such — it wanted three things the handle happens
+/// to own: the Tauri command registry (already abstracted behind [`RemoteInvokeDispatcher`]),
+/// the app-owned data dir, and the shared :3847 state registered at `server_boot`. Resolving
+/// them in the thin `AppHandle` wrapper means the bind/persist/serve core can be tested without
+/// constructing a Wry `AppHandle` — which panics off the main thread on macOS (`On macOS,
+/// EventLoop must be created on the main thread!`) and made all of `listener_tests`
+/// permanently red.
+///
+/// Resolution *failures* are carried, not logged, so the core still reports them at the exact
+/// point in the start sequence it always did — including not at all when the listener is
+/// already running and returns early.
+pub(crate) struct RemoteListenerRuntime {
+    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+    /// `Err` carries the `AppPaths` failure text so the core logs what it always logged.
+    attachment_root: Result<PathBuf, String>,
+    /// `None` when `server_boot` never managed the shared state; the core keeps `/api` unmounted.
+    remount: Option<Arc<fetch_remount::SharedHttpAppState>>,
+}
+
+impl RemoteListenerRuntime {
+    /// Production resolution. Identical to what the core used to do inline, one frame earlier.
+    pub(crate) fn from_app_handle(app_handle: &tauri::AppHandle) -> Self {
+        Self {
+            invoke_dispatcher: TauriRemoteInvokeDispatcher::shared(app_handle.clone()),
+            attachment_root: crate::application::app_paths::AppPaths::from_app_handle(app_handle)
+                .map(|paths| paths.app_data_dir)
+                .map_err(|error| error.to_string()),
+            remount: app_handle
+                .try_state::<Arc<fetch_remount::SharedHttpAppState>>()
+                .map(|shared| Arc::clone(shared.inner())),
+        }
+    }
+
+    /// Test resolution: a dispatcher and nothing else, so attachments and the `/api` remount
+    /// take exactly the fail-closed branches they take in production when wiring is absent.
+    #[cfg(test)]
+    pub(crate) fn for_tests(invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>) -> Self {
+        Self {
+            invoke_dispatcher,
+            attachment_root: Err("no app data dir in tests".to_string()),
+            remount: None,
+        }
+    }
+}
+
 /// Binds and serves the remote listener, persisting the enablement flag once the bind succeeds.
 ///
 /// Ordering is deliberate: refuse → bind → persist → spawn. A refused or failed bind never
@@ -421,8 +533,8 @@ pub(crate) async fn start_listener(
     provider: &dyn TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<SocketAddr, RemoteListenerError> {
-    start_listener_with_dispatcher(
-        TauriRemoteInvokeDispatcher::shared(app_handle.clone()),
+    start_listener_with_runtime(
+        RemoteListenerRuntime::from_app_handle(app_handle),
         handle,
         store,
         provider,
@@ -431,17 +543,12 @@ pub(crate) async fn start_listener(
     .await
 }
 
-/// Listener core, parameterised over the command dispatcher.
+/// Listener core, parameterised over [`RemoteListenerRuntime`] instead of the Wry `AppHandle`.
 ///
-/// The only thing the listener ever wanted from the `AppHandle` was a way to reach the Tauri
-/// command registry, which [`RemoteRouterState`] already abstracts behind
-/// [`RemoteInvokeDispatcher`]. Taking the dispatcher directly means the bind/persist/serve
-/// ordering can be tested without constructing a Wry `AppHandle` — which panics off the main
-/// thread on macOS (`On macOS, EventLoop must be created on the main thread!`) and made all of
-/// `listener_tests` permanently red. Production keeps the `AppHandle` wrapper above, so the
-/// resolution path and its fail-closed behaviour are byte-for-byte what they were.
-pub(crate) async fn start_listener_with_dispatcher(
-    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+/// Production keeps the `AppHandle` wrapper above, so the resolution path and its fail-closed
+/// behaviour are byte-for-byte what they were.
+pub(crate) async fn start_listener_with_runtime(
+    runtime: RemoteListenerRuntime,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -533,14 +640,47 @@ pub(crate) async fn start_listener_with_dispatcher(
     let (stopped_tx, stopped) = oneshot::channel();
     let auth =
         RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
+    // One SQLite store backs both remote request idempotency and attachment metadata; it is
+    // built from the SAME `DbConnection` as the auth context so a replay and the device row it
+    // is scoped to can never come from different connections.
+    let idempotency_store = Arc::new(SqliteRemoteRequestDedupRepository::from_db(store.db()));
     let mut state = RemoteRouterState::new_with_invoke_dispatcher(
         settings.environment_id.as_str(),
         auth,
-        invoke_dispatcher,
+        runtime.invoke_dispatcher,
     )
+    .with_dedup(Arc::new(RemoteDedupState::new(idempotency_store.clone())))
     // Installed at app setup, not here: the listener toggle governs network exposure only, so
     // a restart of the listener must not restart the stream (P-15, P-23).
     .with_stream(handle.stream());
+    // The attachment root is app-owned. If it cannot be resolved the routes stay unwired and
+    // fail closed with `REMOTE_INTERNAL_ERROR` — never a fallback to a guessed directory. The
+    // resolution itself happened in the `AppHandle` wrapper; the failure is reported here, at
+    // the same point in the start sequence it always was.
+    match runtime.attachment_root {
+        Ok(app_data_dir) => {
+            state = state.with_attachments(Arc::new(RemoteAttachmentContext::new(
+                idempotency_store,
+                &app_data_dir,
+            )));
+        }
+        Err(error) => {
+            tracing::error!(%error, "app data dir unavailable; remote attachments stay disabled");
+        }
+    }
+    // R-8: reuse the EXACT `Arc<AppState>` :3847 serves from. If `server_boot` never managed it
+    // the curated `/api` remount stays unmounted — a fresh clone here would recreate precisely
+    // the invoke-vs-fetch divergence the newtype exists to eliminate.
+    match runtime.remount {
+        Some(shared) => {
+            state = state.with_remount(shared);
+        }
+        None => {
+            tracing::error!(
+                "shared :3847 AppState is not managed; remote fetch remount stays unmounted"
+            );
+        }
+    }
     if let Some(sink) = handle.lifecycle_sink() {
         state = state.with_lifecycle_sink(sink);
     }
@@ -624,8 +764,8 @@ pub(crate) async fn apply_exposure_mode(
     tailscale: &dyn TailscaleCommandRunner,
     exposure_mode: RemoteExposureMode,
 ) -> Result<RemoteHostSettings, RemoteListenerError> {
-    apply_exposure_mode_with_dispatcher(
-        TauriRemoteInvokeDispatcher::shared(app_handle.clone()),
+    apply_exposure_mode_with_runtime(
+        RemoteListenerRuntime::from_app_handle(app_handle),
         handle,
         store,
         provider,
@@ -635,9 +775,9 @@ pub(crate) async fn apply_exposure_mode(
     .await
 }
 
-/// See [`start_listener_with_dispatcher`] for why the core is parameterised over the dispatcher.
-pub(crate) async fn apply_exposure_mode_with_dispatcher(
-    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+/// See [`start_listener_with_runtime`] for why the core is parameterised over the runtime.
+pub(crate) async fn apply_exposure_mode_with_runtime(
+    runtime: RemoteListenerRuntime,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -654,9 +794,7 @@ pub(crate) async fn apply_exposure_mode_with_dispatcher(
         return Ok(settings);
     }
 
-    match start_listener_with_dispatcher(invoke_dispatcher, handle, store, provider, tailscale)
-        .await
-    {
+    match start_listener_with_runtime(runtime, handle, store, provider, tailscale).await {
         Ok(_) => Ok(store.get_or_create().await?),
         Err(error) => {
             tracing::error!(
@@ -677,8 +815,8 @@ pub(crate) async fn auto_start_if_enabled(
     provider: &dyn TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<Option<SocketAddr>, RemoteListenerError> {
-    auto_start_if_enabled_with_dispatcher(
-        TauriRemoteInvokeDispatcher::shared(app_handle.clone()),
+    auto_start_if_enabled_with_runtime(
+        RemoteListenerRuntime::from_app_handle(app_handle),
         handle,
         store,
         provider,
@@ -687,9 +825,9 @@ pub(crate) async fn auto_start_if_enabled(
     .await
 }
 
-/// See [`start_listener_with_dispatcher`] for why the core is parameterised over the dispatcher.
-pub(crate) async fn auto_start_if_enabled_with_dispatcher(
-    invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
+/// See [`start_listener_with_runtime`] for why the core is parameterised over the runtime.
+pub(crate) async fn auto_start_if_enabled_with_runtime(
+    runtime: RemoteListenerRuntime,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -703,7 +841,7 @@ pub(crate) async fn auto_start_if_enabled_with_dispatcher(
         tracing::debug!("Remote host mode is disabled; remote listener stays off");
         return Ok(None);
     }
-    start_listener_with_dispatcher(invoke_dispatcher, handle, store, provider, tailscale)
+    start_listener_with_runtime(runtime, handle, store, provider, tailscale)
         .await
         .map(Some)
 }

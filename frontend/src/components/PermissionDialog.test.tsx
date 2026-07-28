@@ -3,6 +3,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PermissionDialog } from "./PermissionDialog";
 import type { PermissionRequest } from "@/types/permission";
+import { requestPendingGateReconcile } from "@/lib/remote/pending-gate-reconcile";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
+import { UNKNOWN_OUTCOME_MESSAGE } from "@/lib/remote/unknown-outcome";
+import { LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
 
 // ============================================================================
 // Mocks
@@ -22,6 +26,7 @@ vi.mock("@/lib/tauri", () => ({
     permission: {
       resolveRequest: vi.fn(),
       getPendingPermissions: vi.fn(),
+      listPendingPermissionGates: vi.fn(),
     },
   },
 }));
@@ -44,6 +49,7 @@ import { toast } from "sonner";
 
 const mockResolveRequest = vi.mocked(api.permission.resolveRequest);
 const mockGetPendingPermissions = vi.mocked(api.permission.getPendingPermissions);
+const mockListPendingGates = vi.mocked(api.permission.listPendingPermissionGates);
 const mockToastError = vi.mocked(toast.error);
 const mockToastInfo = vi.mocked(toast.info);
 
@@ -90,6 +96,7 @@ describe("PermissionDialog", () => {
     mockResolveRequest.mockResolvedValue(undefined);
     // Default: no pending permissions on mount
     mockGetPendingPermissions.mockResolvedValue([]);
+    mockListPendingGates.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -716,5 +723,251 @@ describe("PermissionDialog", () => {
 
     await user.click(screen.getByText("Hide"));
     await waitFor(() => expect(screen.getByText("existing command")).toBeInTheDocument());
+  });
+
+  // ==========================================================================
+  // P-21: authoritative gate reconciliation on (re)connect (PR 2.7-c)
+  // ==========================================================================
+
+  describe("pending-gate reconciliation", () => {
+    async function reconcile(environmentId = LOCAL_ENVIRONMENT_ID) {
+      await act(async () => {
+        requestPendingGateReconcile(environmentId);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it("adopts a gate raised while this client was disconnected", async () => {
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.queryByText("Permission Required")).toBeNull();
+
+      mockListPendingGates.mockResolvedValue([
+        makeRequest({ request_id: "raised-offline", tool_input: { command: "while away" } }),
+      ]);
+      await reconcile();
+
+      expect(screen.getByText("while away")).toBeInTheDocument();
+    });
+
+    it("drops a gate the host no longer lists — resolved elsewhere, not still waiting", async () => {
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+      emitEvent("permission:request", makeRequest({ request_id: "stale", tool_input: { command: "already answered" } }));
+      await waitFor(() => expect(screen.getByText("already answered")).toBeInTheDocument());
+
+      mockListPendingGates.mockResolvedValue([]);
+      await reconcile();
+
+      expect(screen.queryByText("already answered")).toBeNull();
+    });
+
+    it("FAILS CLOSED on a read error: keeps the prior UI and says so", async () => {
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+      emitEvent("permission:request", makeRequest({ request_id: "live", tool_input: { command: "still pending" } }));
+      await waitFor(() => expect(screen.getByText("still pending")).toBeInTheDocument());
+
+      mockListPendingGates.mockRejectedValue(new Error("gate state unreadable"));
+      await reconcile();
+
+      // "No data" must never authorize clearing a live permission prompt.
+      expect(screen.getByText("still pending")).toBeInTheDocument();
+      expect(mockToastError).toHaveBeenCalledWith(
+        "Couldn't refresh pending permission requests"
+      );
+    });
+
+    it("stays silent when the host simply does not expose the gate list yet", async () => {
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+      emitEvent("permission:request", makeRequest({ request_id: "live", tool_input: { command: "still pending" } }));
+      await waitFor(() => expect(screen.getByText("still pending")).toBeInTheDocument());
+
+      mockListPendingGates.mockRejectedValue(
+        new RemoteTransportError({
+          code: "REMOTE_COMMAND_UNAVAILABLE",
+          message: "not registered on this host",
+          environmentId: LOCAL_ENVIRONMENT_ID,
+        })
+      );
+      await reconcile();
+
+      expect(screen.getByText("still pending")).toBeInTheDocument();
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
+
+    it("ignores a BACKGROUND environment's connect (SCOPE negative)", async () => {
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+      emitEvent("permission:request", makeRequest({ request_id: "live", tool_input: { command: "still pending" } }));
+      await waitFor(() => expect(screen.getByText("still pending")).toBeInTheDocument());
+
+      mockListPendingGates.mockResolvedValue([]);
+      await reconcile("some-other-environment");
+
+      expect(mockListPendingGates).not.toHaveBeenCalled();
+      expect(screen.getByText("still pending")).toBeInTheDocument();
+    });
+
+    it("keeps a gate raised WHILE the authoritative list was in flight", async () => {
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+
+      // The list call departs before the gate exists, so its response can never
+      // mention it. Dropping it here loses a live prompt no further event re-raises.
+      let settleList: ((pending: PermissionRequest[]) => void) | undefined;
+      mockListPendingGates.mockImplementation(
+        () => new Promise<PermissionRequest[]>((resolve) => { settleList = resolve; })
+      );
+      await act(async () => {
+        requestPendingGateReconcile(LOCAL_ENVIRONMENT_ID);
+        await Promise.resolve();
+      });
+
+      emitEvent("permission:request", makeRequest({
+        request_id: "raised-midflight",
+        tool_input: { command: "arrived late" },
+      }));
+      await waitFor(() => expect(screen.getByText("arrived late")).toBeInTheDocument());
+
+      await act(async () => {
+        settleList?.([]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByText("arrived late")).toBeInTheDocument();
+    });
+
+    it("still drops a pre-call gate the host no longer lists", async () => {
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+      emitEvent("permission:request", makeRequest({
+        request_id: "pre-call",
+        tool_input: { command: "already answered" },
+      }));
+      await waitFor(() => expect(screen.getByText("already answered")).toBeInTheDocument());
+
+      let settleList: ((pending: PermissionRequest[]) => void) | undefined;
+      mockListPendingGates.mockImplementation(
+        () => new Promise<PermissionRequest[]>((resolve) => { settleList = resolve; })
+      );
+      await act(async () => {
+        requestPendingGateReconcile(LOCAL_ENVIRONMENT_ID);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        settleList?.([]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByText("already answered")).toBeNull();
+    });
+  });
+
+  // ==========================================================================
+  // P-20: unknown mutation outcome — refetch, never re-send (PR 2.7-b)
+  // ==========================================================================
+
+  describe("unknown resolve outcome", () => {
+    for (const code of ["REMOTE_TIMEOUT_UNKNOWN", "REMOTE_REQUEST_IN_PROGRESS"] as const) {
+      it(`reconciles ${code} with exactly one refetch and zero re-sends`, async () => {
+        const user = userEvent.setup();
+        render(<PermissionDialog />);
+        await act(async () => { await Promise.resolve(); });
+
+        emitEvent("permission:request", makeRequest({
+          request_id: "maybe-applied",
+          tool_input: { command: "maybe applied" },
+        }));
+        await waitFor(() => expect(screen.getByText("maybe applied")).toBeInTheDocument());
+
+        mockGetPendingPermissions.mockClear();
+        // The host already applied it — the refetch is what settles that.
+        mockGetPendingPermissions.mockResolvedValue([]);
+        mockResolveRequest.mockRejectedValue(
+          new RemoteTransportError({
+            code,
+            message: "no answer",
+            environmentId: LOCAL_ENVIRONMENT_ID,
+          })
+        );
+
+        await user.click(screen.getByText("Allow"));
+
+        await waitFor(() =>
+          expect(mockGetPendingPermissions).toHaveBeenCalledTimes(1)
+        );
+        expect(mockResolveRequest).toHaveBeenCalledTimes(1);
+        // "please retry" is the advice that invites the forbidden blind re-send.
+        expect(mockToastError).not.toHaveBeenCalled();
+        expect(mockToastInfo).toHaveBeenCalledWith(UNKNOWN_OUTCOME_MESSAGE);
+        await waitFor(() => expect(screen.queryByText("maybe applied")).toBeNull());
+      });
+    }
+
+    it("keeps the request when the host still lists it as pending", async () => {
+      const user = userEvent.setup();
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+
+      const pending = makeRequest({
+        request_id: "still-open",
+        tool_input: { command: "never landed" },
+      });
+      emitEvent("permission:request", pending);
+      await waitFor(() => expect(screen.getByText("never landed")).toBeInTheDocument());
+
+      mockGetPendingPermissions.mockClear();
+      mockGetPendingPermissions.mockResolvedValue([pending]);
+      mockResolveRequest.mockRejectedValue(
+        new RemoteTransportError({
+          code: "REMOTE_TIMEOUT_UNKNOWN",
+          message: "no answer",
+          environmentId: LOCAL_ENVIRONMENT_ID,
+        })
+      );
+
+      await user.click(screen.getByText("Allow"));
+
+      await waitFor(() =>
+        expect(mockGetPendingPermissions).toHaveBeenCalledTimes(1)
+      );
+      expect(mockResolveRequest).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("never landed")).toBeInTheDocument();
+    });
+
+    it("leaves an unreadable refetch as a no-op: the prompt stays up", async () => {
+      const user = userEvent.setup();
+      render(<PermissionDialog />);
+      await act(async () => { await Promise.resolve(); });
+
+      emitEvent("permission:request", makeRequest({
+        request_id: "unreadable",
+        tool_input: { command: "state unknown" },
+      }));
+      await waitFor(() => expect(screen.getByText("state unknown")).toBeInTheDocument());
+
+      mockGetPendingPermissions.mockClear();
+      mockGetPendingPermissions.mockRejectedValue(new Error("unreadable"));
+      mockResolveRequest.mockRejectedValue(
+        new RemoteTransportError({
+          code: "REMOTE_TIMEOUT_UNKNOWN",
+          message: "no answer",
+          environmentId: LOCAL_ENVIRONMENT_ID,
+        })
+      );
+
+      await user.click(screen.getByText("Allow"));
+
+      await waitFor(() =>
+        expect(mockGetPendingPermissions).toHaveBeenCalledTimes(1)
+      );
+      expect(mockResolveRequest).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("state unknown")).toBeInTheDocument();
+    });
   });
 });

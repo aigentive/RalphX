@@ -10,7 +10,10 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
 use serde::Serialize;
 
+use crate::remote_server::attachments::RemoteAttachmentContext;
 use crate::remote_server::auth::RemoteAuthContext;
+use crate::remote_server::dedup::RemoteDedupState;
+use crate::remote_server::fetch_remount::SharedHttpAppState;
 use crate::remote_server::invoke::RemoteInvokeDispatcher;
 use crate::remote_server::sequencer::RemoteStreamHandle;
 use crate::remote_server::settings::RemoteExposureMode;
@@ -38,12 +41,36 @@ pub(crate) struct RemoteRouterState {
     /// HTTP route and refuses only the WS upgrade, explicitly.
     stream: Option<RemoteStreamHandle>,
     lifecycle: Arc<dyn SessionLifecycleSink>,
+    /// Request idempotency (PR 1.5-C).
+    ///
+    /// `Option` because the auth-only router shapes used by several 1.2/1.3 tests build a state
+    /// with no dedup store. Absence is fail-CLOSED for mutating commands: [`invoke_handler`]
+    /// refuses them with `REMOTE_INTERNAL_ERROR` rather than dispatching un-deduplicated, so a
+    /// wiring regression can never silently restore at-least-once semantics.
+    ///
+    /// [`invoke_handler`]: crate::remote_server::invoke::invoke_handler
+    dedup: Option<Arc<RemoteDedupState>>,
+    /// Attachment store + app-owned storage root (PR 1.5-C).
+    ///
+    /// `Option` for the same fail-closed reason as `dedup`: if the app data dir could not be
+    /// resolved the attachment handlers refuse rather than write to a guessed directory.
+    attachments: Option<Arc<RemoteAttachmentContext>>,
+    /// The shared :3847 `AppState` behind the curated fetch remount (PR 1.5-B, R-8).
+    ///
+    /// `Option` for the same fail-closed reason as `dedup`: when the shared state was never
+    /// managed, the `/api` routes are never mounted at all — they answer with the 404 fallback
+    /// exactly like any other unlisted path. The remount NEVER falls back to a fresh
+    /// `AppState`, because a second graph would reintroduce the invoke-vs-fetch divergence
+    /// this field exists to eliminate.
+    remount: Option<Arc<SharedHttpAppState>>,
 }
 
 impl RemoteRouterState {
     /// The `AppHandle`-taking `new` is gone: `start_listener` — its only caller — now resolves
-    /// the dispatcher itself so the listener core can be tested without a Wry handle. Production
-    /// still lands on `TauriRemoteInvokeDispatcher::shared(app_handle)`, one frame earlier.
+    /// every `AppHandle`-derived input (dispatcher, attachment root, shared remount state) into
+    /// a `RemoteListenerRuntime` one frame earlier, so the listener core can be tested without a
+    /// Wry handle. Production still lands on `TauriRemoteInvokeDispatcher::shared(app_handle)`,
+    /// `AppPaths::from_app_handle` and `try_state::<Arc<SharedHttpAppState>>()` exactly as before.
     pub(crate) fn new_with_invoke_dispatcher(
         environment_id: impl Into<Arc<str>>,
         auth: RemoteAuthContext,
@@ -55,7 +82,32 @@ impl RemoteRouterState {
             invoke_dispatcher,
             stream: None,
             lifecycle: Arc::new(NoopLifecycleSink),
+            dedup: None,
+            attachments: None,
+            remount: None,
         }
+    }
+
+    pub(crate) fn with_remount(mut self, remount: Arc<SharedHttpAppState>) -> Self {
+        self.remount = Some(remount);
+        self
+    }
+
+    /// The shared :3847 state, or `None` when it was never managed.
+    ///
+    /// Callers must treat `None` as "mount nothing", never as "build a fresh state".
+    pub(crate) fn remount(&self) -> Option<&Arc<SharedHttpAppState>> {
+        self.remount.as_ref()
+    }
+
+    pub(crate) fn with_dedup(mut self, dedup: Arc<RemoteDedupState>) -> Self {
+        self.dedup = Some(dedup);
+        self
+    }
+
+    pub(crate) fn with_attachments(mut self, attachments: Arc<RemoteAttachmentContext>) -> Self {
+        self.attachments = Some(attachments);
+        self
     }
 
     pub(crate) fn with_stream(mut self, stream: Option<RemoteStreamHandle>) -> Self {
@@ -82,6 +134,18 @@ impl RemoteRouterState {
 
     pub(crate) fn stream(&self) -> Option<&RemoteStreamHandle> {
         self.stream.as_ref()
+    }
+
+    /// The dedup state, or `None` when the router was built without one.
+    ///
+    /// Callers must treat `None` as a refusal for mutating commands, never as "skip dedup".
+    pub(crate) fn dedup(&self) -> Option<&Arc<RemoteDedupState>> {
+        self.dedup.as_ref()
+    }
+
+    /// The attachment context, or `None` when storage could not be wired.
+    pub(crate) fn attachments(&self) -> Option<&Arc<RemoteAttachmentContext>> {
+        self.attachments.as_ref()
     }
 
     pub(crate) fn lifecycle(&self) -> Arc<dyn SessionLifecycleSink> {

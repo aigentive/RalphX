@@ -25,9 +25,29 @@ const SNAPSHOT_WITH_AGENT = {
   scopes: ["ui:read", "ui:operate", "ui:agent"],
 } as never;
 
+/**
+ * Seeds a CONNECTED presentation alongside the scopes.
+ *
+ * 2.7-a folded degraded-mode read-only into this same gate, and read-only outranks the
+ * scope answer — correctly, since there is nothing to steer while disconnected. These
+ * tests are about the SCOPE dimension, so the connection dimension is held healthy;
+ * the interaction between the two is pinned in `useEnvironmentWritable.test.ts`.
+ */
 function seed(effectiveScopes: Record<string, readonly string[] | null>): void {
   useEnvironmentStore.setState({
     activeEnvironmentId: REMOTE_ID,
+    connectionPresentations: {
+      [REMOTE_ID]: {
+        presentation: "connected",
+        blockedFailure: null,
+        blockedMessage: null,
+      },
+      "env-other": {
+        presentation: "connected",
+        blockedFailure: null,
+        blockedMessage: null,
+      },
+    },
     environments: [
       { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
       {
@@ -46,6 +66,7 @@ beforeEach(() => {
     activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
     environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
     effectiveScopes: {},
+    connectionPresentations: {},
   });
 });
 
@@ -128,6 +149,19 @@ describe("agent gate scope consumption", () => {
       effectiveScopes: {
         [REMOTE_ID]: ["ui:read", "ui:operate", "ui:agent"],
         "env-other": ["ui:read"],
+      },
+      // Both remotes healthy: the scope dimension is what is under test here.
+      connectionPresentations: {
+        [REMOTE_ID]: {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+        "env-other": {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
       },
     });
 

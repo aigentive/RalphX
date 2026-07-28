@@ -12,6 +12,11 @@ import { toast } from "sonner";
 import { useEventBus } from "@/providers/EventProvider";
 import { api } from "@/lib/tauri";
 import { useUiStore } from "@/stores/uiStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
+import {
+  isSilentGateReconcileFailure,
+  onPendingGateReconcile,
+} from "@/lib/remote/pending-gate-reconcile";
 import {
   AskUserQuestionPayloadSchema,
   type AskUserQuestionResponse,
@@ -114,6 +119,61 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
   // Run once per session ID change — intentionally excludes activeQuestion to avoid loops
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId]);
+
+  /**
+   * P-21 (2.7-c): AUTHORITATIVE reconciliation on every (re)connect.
+   *
+   * A question gate raised while this client was disconnected produced no event we ever
+   * saw, and one resolved while we were away produced none either. The visibility-based
+   * reconcile below only ever CLEARS, and only when the app is refocused; a reconnect
+   * that happens while the window is already visible reaches neither.
+   *
+   * FAIL CLOSED: the strict command raises rather than answering `[]`. On failure the
+   * banner that is already up stays up and the user is told, because clearing a live
+   * gate on an unreadable state is how an agent ends up waiting forever on an answer
+   * nobody can see it needs.
+   */
+  useEffect(() => {
+    if (!currentSessionId) return undefined;
+
+    return onPendingGateReconcile(({ environmentId }) => {
+      if (environmentId !== useEnvironmentStore.getState().activeEnvironmentId) {
+        // SCOPE: a background environment's connect must not rewrite this banner.
+        return;
+      }
+      const preCallRequestId =
+        useUiStore.getState().activeQuestions[currentSessionId]?.requestId;
+
+      api.askUserQuestion
+        .listPendingQuestionGates()
+        .then((questions) => {
+          const match = questions.find((q) => q.sessionId === currentSessionId);
+          if (match) {
+            if (answeredRequestIds.has(match.requestId)) return;
+            cancelAutoDismissTimer();
+            setActiveQuestion(currentSessionId, match);
+            return;
+          }
+          // Absent from the authoritative set = resolved or expired. Drop it, unless a
+          // live event replaced it while this call was in flight.
+          const current = useUiStore.getState().activeQuestions[currentSessionId];
+          if (current && current.requestId === preCallRequestId) {
+            clearActiveQuestion(currentSessionId);
+          }
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to reconcile pending questions:", error);
+          if (!isSilentGateReconcileFailure(error)) {
+            toast.error("Couldn't refresh the pending question");
+          }
+        });
+    });
+  }, [
+    cancelAutoDismissTimer,
+    clearActiveQuestion,
+    currentSessionId,
+    setActiveQuestion,
+  ]);
 
   // Reconcile on window focus: detect resolved/removed questions when returning to the app.
   useEffect(() => {

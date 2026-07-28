@@ -79,8 +79,29 @@ export const askUserQuestionApi = {
    * questions whose agent-side wait has timed out.
    */
   getPendingQuestions: async (): Promise<AskUserQuestionPayload[]> => {
-    const raw = await invoke<PendingQuestionInfoRaw[]>("get_pending_questions");
-    return raw.map((item) => ({
+    return toQuestionPayloads(
+      await invoke<PendingQuestionInfoRaw[]>("get_pending_questions")
+    );
+  },
+
+  /**
+   * The AUTHORITATIVE pending question set (P-21, PR 2.7-c).
+   *
+   * Strict facade command: an unreadable question state raises instead of answering
+   * `[]`, because this list is used to DROP banners that are no longer pending and an
+   * empty answer would silently clear every one of them.
+   */
+  listPendingQuestionGates: async (): Promise<AskUserQuestionPayload[]> => {
+    return toQuestionPayloads(
+      await invoke<PendingQuestionInfoRaw[]>("list_pending_question_gates")
+    );
+  },
+} as const;
+
+function toQuestionPayloads(
+  raw: PendingQuestionInfoRaw[]
+): AskUserQuestionPayload[] {
+  return raw.map((item) => ({
       requestId: item.request_id,
       sessionId: item.session_id,
       question: item.question,
@@ -90,7 +111,6 @@ export const askUserQuestionApi = {
       allowSkip: item.allow_skip ?? true,
       batchIndex: item.batch_index ?? null,
       batchTotal: item.batch_total ?? null,
-      metadata: item.metadata ?? null,
-    }));
-  },
-} as const;
+    metadata: item.metadata ?? null,
+  }));
+}

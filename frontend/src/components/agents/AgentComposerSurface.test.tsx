@@ -18,6 +18,11 @@ import {
   AgentComposerSurface,
 } from "./AgentComposerSurface";
 import { stageComposerExcerptReference } from "./artifact-selection/composerExcerptBridge";
+import { chatKeys } from "@/hooks/useChat";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
+import { UNKNOWN_OUTCOME_MESSAGE } from "@/lib/remote/unknown-outcome";
+import { LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
+import { toast } from "sonner";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
@@ -31,6 +36,10 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+vi.mock("sonner", () => ({
+  toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() },
+}));
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 vi.mock("@/hooks/useFeatureFlags", () => ({
@@ -134,10 +143,12 @@ function mockComposerIntegrationAvailability({
   });
 }
 
-function renderComposer(overrides: Partial<ComposerProps> = {}) {
-  const queryClient = new QueryClient({
+function renderComposer(
+  overrides: Partial<ComposerProps> = {},
+  queryClient: QueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
-  });
+  }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
@@ -3198,5 +3209,82 @@ describe("AgentComposerSurface", () => {
 
       expect(screen.getByLabelText("Message input")).toHaveFocus();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-20: unknown send outcome — refetch the transcript, never re-send
+// ---------------------------------------------------------------------------
+
+describe("unknown send outcome", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    mockComposerIntegrationAvailability();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  for (const code of ["REMOTE_TIMEOUT_UNKNOWN", "REMOTE_REQUEST_IN_PROGRESS"] as const) {
+    it(`reconciles ${code} with one transcript refetch and zero re-sends`, async () => {
+      const onSend = vi.fn().mockRejectedValue(
+        new RemoteTransportError({
+          code,
+          message: "no answer",
+          environmentId: LOCAL_ENVIRONMENT_ID,
+        }),
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+      renderComposer({ conversationId: "conversation-1", onSend }, queryClient);
+
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Maybe delivered" },
+      });
+      fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+      await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(invalidate).toHaveBeenCalledWith({
+          queryKey: chatKeys.conversation("conversation-1"),
+        }),
+      );
+      expect(vi.mocked(toast.info)).toHaveBeenCalledWith(UNKNOWN_OUTCOME_MESSAGE);
+      // The message stays sent-once: the host's transcript, not a second send, is
+      // what settles whether it landed.
+      expect(onSend).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it("leaves other send failures to the existing inline banner", async () => {
+    const onSend = vi.fn().mockRejectedValue(
+      new RemoteTransportError({
+        code: "REMOTE_FORBIDDEN",
+        message: "scope narrowed",
+        environmentId: LOCAL_ENVIRONMENT_ID,
+      }),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderComposer({ conversationId: "conversation-1", onSend }, queryClient);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Refused" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByTestId("agent-composer-remote-error"),
+    ).toBeInTheDocument();
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.info)).not.toHaveBeenCalled();
   });
 });

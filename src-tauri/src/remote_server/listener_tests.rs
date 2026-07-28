@@ -18,9 +18,9 @@ use super::settings::{
     REMOTE_PORT_ENV,
 };
 use super::{
-    allowed_app_origins, apply_exposure_mode_with_dispatcher, authenticated_remote_routes,
-    auto_start_if_enabled_with_dispatcher, remote_router, start_listener_with_dispatcher,
-    stop_listener, RemoteListenerError, RemoteListenerHandle, DESCRIPTOR_PATH, HEALTH_PATH,
+    allowed_app_origins, apply_exposure_mode_with_runtime, authenticated_remote_routes,
+    auto_start_if_enabled_with_runtime, remote_router, start_listener_with_runtime, stop_listener,
+    RemoteListenerError, RemoteListenerHandle, RemoteListenerRuntime, DESCRIPTOR_PATH, HEALTH_PATH,
     PAIR_PATH, PRE_AUTH_ALLOWLIST,
 };
 use crate::infrastructure::sqlite::DbConnection;
@@ -35,9 +35,15 @@ const TEST_APP_ORIGIN: &str = "tauri://localhost";
 /// The listener under test never dispatches a command, so the auth-test dispatcher fake is the
 /// whole seam it needs. Building a real Wry `AppHandle` here used to panic with
 /// `On macOS, EventLoop must be created on the main thread!`, which failed every test in this
-/// file before the `*_with_dispatcher` split.
+/// file before the `*_with_runtime` split.
 fn test_invoke_dispatcher() -> Arc<dyn super::invoke::RemoteInvokeDispatcher> {
     Arc::new(super::auth_tests::UnavailableInvokeDispatcher)
+}
+
+/// Dispatcher only: attachments and the `/api` remount take their absent-wiring branches, which
+/// is exactly what production does when the app data dir or the shared :3847 state is missing.
+fn test_listener_runtime() -> RemoteListenerRuntime {
+    RemoteListenerRuntime::for_tests(test_invoke_dispatcher())
 }
 
 async fn start_listener(
@@ -46,8 +52,7 @@ async fn start_listener(
     provider: &dyn super::settings::TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<SocketAddr, RemoteListenerError> {
-    start_listener_with_dispatcher(test_invoke_dispatcher(), handle, store, provider, tailscale)
-        .await
+    start_listener_with_runtime(test_listener_runtime(), handle, store, provider, tailscale).await
 }
 
 async fn auto_start_if_enabled(
@@ -56,14 +61,8 @@ async fn auto_start_if_enabled(
     provider: &dyn super::settings::TailnetSelfAddressProvider,
     tailscale: &dyn TailscaleCommandRunner,
 ) -> Result<Option<SocketAddr>, RemoteListenerError> {
-    auto_start_if_enabled_with_dispatcher(
-        test_invoke_dispatcher(),
-        handle,
-        store,
-        provider,
-        tailscale,
-    )
-    .await
+    auto_start_if_enabled_with_runtime(test_listener_runtime(), handle, store, provider, tailscale)
+        .await
 }
 
 async fn apply_exposure_mode(
@@ -73,8 +72,8 @@ async fn apply_exposure_mode(
     tailscale: &dyn TailscaleCommandRunner,
     exposure_mode: RemoteExposureMode,
 ) -> Result<super::settings::RemoteHostSettings, RemoteListenerError> {
-    apply_exposure_mode_with_dispatcher(
-        test_invoke_dispatcher(),
+    apply_exposure_mode_with_runtime(
+        test_listener_runtime(),
         handle,
         store,
         provider,

@@ -26,12 +26,12 @@ import { getClientOwnedFeatureFlag } from "./feature-flag-authority";
 
 import { NetworkEventBus } from "./network-event-bus";
 import { networkFetch } from "./network-fetch";
+import { requestPendingGateReconcile } from "./pending-gate-reconcile";
 import { attachRemoteStreamRelay, type RemoteStreamTarget } from "./stream-relay";
 import {
   isAuthorityResetReason,
   type RemoteClientFrame,
   type RemoteConnectOutcome,
-  type RemoteServerFrame,
 } from "./stream-frames";
 import {
   ConnectionSupervisor,
@@ -64,6 +64,30 @@ interface RuntimeEntry {
 }
 
 let activeTeardown: (() => void) | null = null;
+
+/**
+ * The runtime's user-facing actions, published by the live composition root.
+ *
+ * A module-level handle rather than a React context: the runtime is app-lifetime and
+ * mounted imperatively (`initializeEnvironmentRuntime`), so a context provider would
+ * only re-wrap what already exists. Components stay READERS of the store and callers
+ * of these actions; none of them holds a supervisor.
+ */
+interface RuntimeActions {
+  readonly retryNow: (environmentId: string) => void;
+}
+
+let runtimeActions: RuntimeActions | null = null;
+
+/**
+ * The ONE user-driven wakeup (A-5: the supervisor is the sole retry owner, and this is
+ * not a retry — it is the user telling a parked FSM to try again). A no-op when no
+ * runtime is live or the id has no supervisor, so a stale banner click cannot resurrect
+ * a torn-down environment.
+ */
+export function retryActiveEnvironmentNow(environmentId: string): void {
+  runtimeActions?.retryNow(environmentId);
+}
 
 /**
  * The confirmed scope set lives on `environmentStore.effectiveScopes` and NOWHERE
@@ -218,14 +242,12 @@ export function initializeEnvironmentRuntime(): () => void {
     detachRelay(runtime);
     const target: RemoteStreamTarget = {
       environmentId: () => runtime.entry.id,
-      handleFrame: (frame: RemoteServerFrame) => {
-        if (frame.type === "heartbeat") {
-          void sendFrame(runtime.entry.id, {
-            type: "heartbeatAck",
-            t: frame.t,
-          });
-        }
-        // Full background projection is a v1 non-goal: every non-heartbeat frame drops.
+      handleFrame: () => {
+        // Every frame drops: full background projection is a v1 non-goal, and the
+        // heartbeat ack is NOT this relay's job. The Rust relay already acks each
+        // heartbeat on the socket it owns (`remote_event_relay.rs`), precisely so a
+        // busy webview can never starve the host's 2-unacked budget. Acking again from
+        // here sent a second `heartbeatAck` per beat for every background environment.
       },
       handleStreamClosed: () => {
         runtime.socketLive = false;
@@ -269,6 +291,10 @@ export function initializeEnvironmentRuntime(): () => void {
       },
       sweep: () => {
         void getQueryClient(environmentId).invalidateQueries();
+        // P-21 (2.7-c): ordering is replay → sweep → gate reconcile. Permission and
+        // question gates live in host MEMORY, not the event log, so replaying the
+        // stream cannot discover a gate raised — or resolved — while we were away.
+        requestPendingGateReconcile(environmentId);
       },
       onRestartRequired: (cause) => {
         // Resolved at call time, never captured: the bus outlives any single runtime.
@@ -376,8 +402,20 @@ export function initializeEnvironmentRuntime(): () => void {
         await runtime.bus.beginStream(outcome);
       },
       hasLiveSocket: () => runtime.socketLive,
-      onStateChange: (state) => {
+      onStateChange: (state, presentation) => {
         publishConnectionState(environmentId, state);
+        // Read `blocked()` HERE rather than wiring `onBlocked` separately: the
+        // supervisor populates its blocked reason before it dispatches, so by the time
+        // this callback runs the pair is already consistent. Two callbacks writing the
+        // same slice would be two writers for one UI concern, and the interleaving
+        // (`onBlocked` fires BEFORE the transition) would let a reader observe a
+        // blocked message under a still-connecting presentation.
+        const blocked = supervisor.blocked();
+        useEnvironmentStore.getState().setConnectionPresentation(environmentId, {
+          presentation,
+          blockedFailure: blocked?.failure ?? null,
+          blockedMessage: blocked?.message ?? null,
+        });
       },
     });
     runtime = {
@@ -427,6 +465,9 @@ export function initializeEnvironmentRuntime(): () => void {
       detachRelay(runtime);
       runtime.bus.abandonStream();
       useEnvironmentStore.getState().clearEffectiveScopes(environmentId);
+      // A stopped supervisor reports nothing further, so a retained presentation would
+      // be a claim about a connection nobody is maintaining.
+      useEnvironmentStore.getState().clearConnectionPresentation(environmentId);
     }
     runtimes.clear();
   };
@@ -447,6 +488,7 @@ export function initializeEnvironmentRuntime(): () => void {
         // The registry row is gone, so this environment's bus identity may go too.
         buses.delete(environmentId);
         useEnvironmentStore.getState().clearEffectiveScopes(environmentId);
+        useEnvironmentStore.getState().clearConnectionPresentation(environmentId);
         removeQueryClient(environmentId);
       }
     }
@@ -550,6 +592,12 @@ export function initializeEnvironmentRuntime(): () => void {
       runtime.supervisor.networkChanged(false);
     }
   };
+  runtimeActions = {
+    retryNow: (environmentId) => {
+      runtimes.get(environmentId)?.supervisor.retryNow();
+    },
+  };
+
   document.addEventListener("visibilitychange", visibilityChanged);
   window.addEventListener("online", online);
   window.addEventListener("offline", offline);
@@ -571,6 +619,7 @@ export function initializeEnvironmentRuntime(): () => void {
     window.removeEventListener("offline", offline);
     quiesce();
     resetRemoteEventBusFactory();
+    runtimeActions = null;
     activeTeardown = null;
   };
   activeTeardown = teardown;

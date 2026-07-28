@@ -111,7 +111,11 @@ describe("local environment", () => {
 describe("remote environment", () => {
   beforeEach(() => {
     setTransportEnvironmentId(REMOTE_ENV);
-    primitiveInvoke.mockResolvedValue({ status: 200, body: '{"ok":true}' });
+    primitiveInvoke.mockResolvedValue({
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: '{"ok":true}',
+    });
   });
 
   it("proxies through remote_fetch instead of the network", async () => {
@@ -155,6 +159,7 @@ describe("remote environment", () => {
   it("rebuilds a real Response the call site can read", async () => {
     primitiveInvoke.mockResolvedValue({
       status: 200,
+      headers: [["content-type", "application/json"]],
       body: JSON.stringify({ id: "task-1" }),
     });
 
@@ -168,6 +173,7 @@ describe("remote environment", () => {
   it("returns a non-2xx as a Response, not a rejection", async () => {
     primitiveInvoke.mockResolvedValue({
       status: 422,
+      headers: [["content-type", "application/json"]],
       body: JSON.stringify({ error: "bad input" }),
     });
 
@@ -180,7 +186,7 @@ describe("remote environment", () => {
   });
 
   it("builds a null-body Response for statuses that forbid one", async () => {
-    primitiveInvoke.mockResolvedValue({ status: 204, body: "" });
+    primitiveInvoke.mockResolvedValue({ status: 204, headers: [], body: "" });
 
     const response = await backendFetch("agent_tasks/list");
 
@@ -212,6 +218,58 @@ describe("remote environment", () => {
       "REMOTE_COMMAND_UNAVAILABLE"
     );
     expect(primitiveInvoke).not.toHaveBeenCalled();
+  });
+
+  /**
+   * C-11 contract test: this is the EXACT JSON `RemoteFetchOutcome` serializes to
+   * (camelCase keys, header tuples as two-element arrays, lowercased names), copied
+   * from the Rust-side assertion in `remote_environment_service_tests.rs`.
+   */
+  it("forwards the host's real response headers instead of asserting JSON", async () => {
+    primitiveInvoke.mockResolvedValue({
+      status: 200,
+      headers: [
+        ["content-type", "text/plain; charset=utf-8"],
+        ["etag", '"v1"'],
+        ["cache-control", "no-store"],
+        ["cache-control", "private"],
+      ],
+      body: "plain text",
+    });
+
+    const response = await backendFetch("agent_tasks/list");
+
+    expect(response.headers.get("content-type")).toBe(
+      "text/plain; charset=utf-8"
+    );
+    expect(response.headers.get("etag")).toBe('"v1"');
+    // Repeats survive the crossing rather than collapsing to the last value.
+    expect(response.headers.get("cache-control")).toBe("no-store, private");
+    await expect(response.text()).resolves.toBe("plain text");
+  });
+
+  it("synthesizes no content type when the host sent none", async () => {
+    primitiveInvoke.mockResolvedValue({
+      status: 200,
+      headers: [["etag", '"v1"']],
+      body: "raw",
+    });
+
+    const response = await backendFetch("agent_tasks/list");
+
+    expect(response.headers.get("content-type")).toBeNull();
+  });
+
+  it("treats a headerless envelope as a version mismatch", async () => {
+    // The proxy that mints this envelope ships in the same binary as this file, so a
+    // missing `headers` is drift, not an old host — never a silent `[]`.
+    primitiveInvoke.mockResolvedValue({ status: 200, body: "{}" });
+
+    const error = await backendFetch("agent_tasks/list").catch(
+      (reason: unknown) => reason
+    );
+
+    expect((error as RemoteTransportError).code).toBe("REMOTE_VERSION_MISMATCH");
   });
 
   it("treats an unrecognised envelope as a version mismatch", async () => {
