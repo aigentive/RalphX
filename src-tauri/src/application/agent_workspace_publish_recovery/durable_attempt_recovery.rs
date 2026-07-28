@@ -51,17 +51,29 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
         None => {
             // A legacy projection is migration input, not a fallback authority. Once any
             // generation has existed, even a settled one, the projection is terminally ignored.
-            if state
+            let durable_generation_exists = state
                 .agent_workspace_repair_repo
                 .get_latest_repair_attempt_for_conversation(&workspace.conversation_id)
                 .await?
-                .is_some()
-            {
+                .is_some();
+            if durable_generation_exists {
                 DurableRepairRecoveryOutcome::Noop
-            } else if is_legacy_repair_projection(&workspace) {
-                import_or_block_legacy_repair_attempt(state, &workspace).await?
             } else {
-                DurableRepairRecoveryOutcome::Noop
+                #[cfg(any(test, feature = "test-utils"))]
+                if is_legacy_pr_fix_review_projection(&workspace) {
+                    return super::recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
+                        Arc::clone(&state.agent_conversation_workspace_repo),
+                        Arc::clone(&state.agent_run_repo),
+                        Arc::clone(&state.project_repo),
+                        workspace,
+                    )
+                    .await;
+                }
+                if is_legacy_repair_projection(&workspace) {
+                    import_or_block_legacy_repair_attempt(state, &workspace).await?
+                } else {
+                    DurableRepairRecoveryOutcome::Noop
+                }
             }
         }
     };
@@ -727,6 +739,12 @@ fn is_legacy_repair_projection(workspace: &AgentConversationWorkspace) -> bool {
             workspace.pr_supervision_status.as_deref(),
             Some("fixing") | Some("blocked")
         )
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn is_legacy_pr_fix_review_projection(workspace: &AgentConversationWorkspace) -> bool {
+    workspace.publication_push_status.as_deref() == Some("needs_agent")
+        && workspace.pr_supervision_status.as_deref() == Some("reviewing")
 }
 
 async fn import_or_block_legacy_repair_attempt(
