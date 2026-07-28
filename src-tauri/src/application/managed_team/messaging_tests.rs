@@ -6,12 +6,15 @@ use crate::application::managed_team::{
     ManagedTeamMemberSpec, ManagedTeamMessageRequest, ManagedTeamMessageSender,
     ManagedTeamMessageTarget, ManagedTeamService,
 };
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRunId, ChatConversation, CoordinationMode, DelegatedSessionId, ProjectId, TeamMessageKind,
+    AgentRun, AgentRunId, ChatConversation, CoordinationMode, DelegatedSessionId, ProjectId,
+    TeamMessageKind,
 };
 use crate::domain::repositories::{
     AgentRunRepository, ChatConversationRepository, QueuedMessageRepository, TeamMessageRepository,
-    TeamRepository, TeamWakeBatchRepository, UiFeatureFlagOverridesRepository,
+    TeamRepository, TeamRunBindingRepository, TeamWakeBatchRepository,
+    UiFeatureFlagOverridesRepository,
 };
 use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::error::{AppError, AppResult};
@@ -26,6 +29,8 @@ use crate::testing::team_fixtures::{team_agent_run_id, team_conversation_id};
 struct Parts {
     service: ManagedTeamService,
     team_repo: Arc<MemoryTeamRepository>,
+    run_repo: Arc<MemoryAgentRunRepository>,
+    binding_repo: Arc<MemoryTeamRunBindingRepository>,
     message_repo: Arc<MemoryTeamMessageRepository>,
     wake_repo: Arc<MemoryTeamWakeBatchRepository>,
     queue_repo: Arc<MemoryQueuedMessageRepository>,
@@ -102,17 +107,19 @@ fn build_parts() -> Parts {
     let wake_repo = Arc::new(MemoryTeamWakeBatchRepository::new());
     let queue_repo = Arc::new(MemoryQueuedMessageRepository::new());
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let binding_repo = Arc::new(MemoryTeamRunBindingRepository::new());
     let service = ManagedTeamService::new(
         Arc::clone(&team_repo) as Arc<_>,
         Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
             sessions,
         )),
-        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::clone(&binding_repo) as Arc<_>,
         Arc::clone(&message_repo) as Arc<dyn TeamMessageRepository>,
         Arc::clone(&wake_repo) as Arc<dyn TeamWakeBatchRepository>,
         Arc::clone(&queue_repo) as Arc<dyn QueuedMessageRepository>,
         Arc::clone(&conversation_repo) as Arc<dyn ChatConversationRepository>,
-        Arc::new(MemoryAgentRunRepository::new()) as Arc<dyn AgentRunRepository>,
+        Arc::clone(&run_repo) as Arc<dyn AgentRunRepository>,
         Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
         Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
             as Arc<dyn UiFeatureFlagOverridesRepository>,
@@ -120,6 +127,8 @@ fn build_parts() -> Parts {
     Parts {
         service,
         team_repo,
+        run_repo,
+        binding_repo,
         message_repo,
         wake_repo,
         queue_repo,
@@ -254,6 +263,57 @@ async fn idle_member_delivery_projects_once_with_typed_prompt() {
     assert!(queued[0].content.contains("<team_message"));
     assert!(queued[0].content.contains("&lt;this&gt;"));
     assert_eq!(message.sequence, 1);
+}
+
+#[tokio::test]
+async fn mixed_claude_codex_leads_and_members_share_the_same_message_service_path() {
+    for (lead_harness, member_harness, run_index) in [
+        (AgentHarnessKind::Claude, AgentHarnessKind::Codex, 31),
+        (AgentHarnessKind::Codex, AgentHarnessKind::Claude, 32),
+    ] {
+        let parts = build_parts();
+        let team = ready_team(&parts).await;
+        let member = add_delivery_member(&parts, &team, "Mixed member").await;
+        let mut provider_member = member.clone();
+        provider_member.harness = Some(member_harness);
+        assert!(parts
+            .team_repo
+            .update_member(provider_member.clone(), member.generation)
+            .await
+            .unwrap());
+        let mut lead = AgentRun::new(team_conversation_id(1));
+        lead.id = team_agent_run_id(run_index);
+        lead.harness = Some(lead_harness);
+        parts.run_repo.create(lead.clone()).await.unwrap();
+        parts
+            .binding_repo
+            .create(
+                crate::application::managed_team::new_coordinator_run_binding(
+                    team.id.clone(),
+                    team_conversation_id(1),
+                    lead.id,
+                ),
+            )
+            .await
+            .unwrap();
+        let request = ManagedTeamMessageRequest {
+            team_id: team.id,
+            sender: ManagedTeamMessageSender::Coordinator {
+                conversation_id: team_conversation_id(1),
+                source_run_id: Some(lead.id),
+            },
+            target: ManagedTeamMessageTarget::MemberName(provider_member.normalized_name),
+            kind: TeamMessageKind::Instruction,
+            content: "mixed-provider delivery".to_string(),
+            idempotency_key: format!("mixed-{run_index}"),
+        };
+        let (message, deliveries) = parts.service.send_team_message(request).await.unwrap();
+        assert_eq!(
+            message.sender_kind,
+            crate::domain::entities::TeamMessageActorKind::Coordinator
+        );
+        assert_eq!(deliveries.len(), 1);
+    }
 }
 
 #[tokio::test]

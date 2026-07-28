@@ -30,6 +30,15 @@ export const ManagedTeamMemberSchema = z.object({
 export const ManagedTeamStatusSchema = z.object({
   session: ManagedTeamSessionSchema,
   members: z.array(ManagedTeamMemberSchema),
+  usage: z.object({
+    tokens: z.number(),
+    costMicros: z.number(),
+    members: z.array(z.object({
+      memberId: z.string().nullable(),
+      tokens: z.number(),
+      costMicros: z.number(),
+    })),
+  }),
 });
 
 export const ManagedTeamAssignmentSchema = z.object({

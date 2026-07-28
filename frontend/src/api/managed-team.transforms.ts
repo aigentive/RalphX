@@ -30,6 +30,7 @@ export function transformManagedTeamStatus(raw: RawStatus): ManagedTeamStatus {
   return {
     session: transformManagedTeamSession(raw.session),
     members: raw.members.map(transformManagedTeamMember),
+    usage: raw.usage,
   };
 }
 

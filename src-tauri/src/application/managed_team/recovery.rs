@@ -10,8 +10,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::domain::entities::{ChatConversationId, CoordinationMode};
+use crate::domain::entities::{ChatConversationId, CoordinationMode, TeamRunBindingStatus};
 use crate::domain::repositories::TeamRepository;
+use crate::error::{AppError, AppResult};
+
+use super::service::ManagedTeamService;
 
 #[derive(Debug, Clone)]
 enum BarrierState {
@@ -117,5 +120,59 @@ impl ManagedTeamStartupBarrier {
                 ..
             }
         )
+    }
+}
+
+impl ManagedTeamService {
+    /// Startup and compensation recovery release reservations as soon as the
+    /// exact owning binding is terminal. The binding identity is the authority;
+    /// a newer member generation cannot release a replacement reservation.
+    pub async fn recover_terminal_binding_reservations(&self) -> AppResult<usize> {
+        let mut released = 0usize;
+        for session in self.team_repo.list_open_sessions().await? {
+            for binding in self.run_binding_repo.list_for_team(&session.id).await? {
+                if !matches!(
+                    binding.status,
+                    TeamRunBindingStatus::Terminal
+                        | TeamRunBindingStatus::Cancelled
+                        | TeamRunBindingStatus::Failed
+                ) {
+                    continue;
+                }
+                let Some(assignment_id) = binding.assignment_id.as_ref() else {
+                    continue;
+                };
+                let member_id = binding.team_member_id.clone().ok_or_else(|| {
+                    AppError::Conflict("terminal Team binding has no member identity".to_string())
+                })?;
+                let generation = binding.team_member_generation.ok_or_else(|| {
+                    AppError::Conflict("terminal Team binding has no member generation".to_string())
+                })?;
+                for reservation in self
+                    .reservation_repo
+                    .list_active_for_assignment(assignment_id.as_str())
+                    .await?
+                {
+                    if reservation.team_id != session.id
+                        || reservation.team_member_id != member_id
+                        || reservation.team_member_generation != generation
+                    {
+                        continue;
+                    }
+                    if self
+                        .reservation_repo
+                        .release_if_current(
+                            &reservation.id,
+                            reservation.team_member_generation,
+                            reservation.attempt_number,
+                        )
+                        .await?
+                    {
+                        released += 1;
+                    }
+                }
+            }
+        }
+        Ok(released)
     }
 }

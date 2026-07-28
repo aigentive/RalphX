@@ -60,6 +60,10 @@ impl ManagedTeamService {
                 "managed Team message content and idempotency key are required".to_string(),
             ));
         }
+        // Check the live fence before creating any delivery effect. A queued
+        // message can lead to a new member/coordinator turn, so it is part of
+        // dispatch admission rather than a harmless audit write.
+        self.admit_dispatch(&request.team_id).await?;
         let session = self.open_session(&request.team_id).await?;
         self.validate_message_sender(&session, &request.sender)
             .await?;

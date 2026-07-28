@@ -48,10 +48,14 @@ describe("managedTeamApi", () => {
 
   it("parses the backend's camelCase status response into the public Team model", async () => {
     fetchMock.mockResolvedValue(
-      jsonResponse({ session: sessionResponse, members: [memberResponse] }),
+      jsonResponse({
+        session: sessionResponse,
+        members: [memberResponse],
+        usage: { tokens: 12, costMicros: 4, members: [] },
+      }),
     );
 
-    await expect(managedTeamApi.getStatus("conversation-1")).resolves.toEqual({
+    await expect(managedTeamApi.getStatus("conversation-1")).resolves.toEqual(expect.objectContaining({
       session: expect.objectContaining({
         projectId: "project-1",
         coordinatorConversationId: "conversation-1",
@@ -63,7 +67,8 @@ describe("managedTeamApi", () => {
           normalizedName: "scout",
         }),
       ],
-    });
+      usage: { tokens: 12, costMicros: 4, members: [] },
+    }));
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/managed_team/status/conversation-1"),
       expect.objectContaining({ method: "GET" }),
@@ -110,6 +115,29 @@ describe("managedTeamApi", () => {
           canonical_agent_name: "ralphx-general-explorer",
           role_summary: "Investigates focused questions.",
         }),
+      }),
+    );
+  });
+
+  it("posts a staged exit through trusted authority and accepts the no-content response", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(
+      managedTeamApi.exit({
+        authority: { conversationId: "conversation-1", agentRunId: "run-1" },
+        action: "drain_and_close",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/managed_team/exit"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "x-ralphx-conversation-id": "conversation-1",
+          "x-ralphx-agent-run-id": "run-1",
+        }),
+        body: JSON.stringify({ action: "drain_and_close" }),
       }),
     );
   });

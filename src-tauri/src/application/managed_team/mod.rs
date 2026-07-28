@@ -1,3 +1,9 @@
+pub mod budgets;
+#[cfg(test)]
+mod budgets_tests;
+pub mod exit;
+#[cfg(test)]
+mod exit_tests;
 pub mod lifecycle;
 pub mod messaging;
 mod messaging_delivery;
@@ -23,6 +29,8 @@ pub mod team_prompt;
 mod team_prompt_tests;
 
 pub use lifecycle::{new_coordinator_run_binding, new_team_session};
+pub use budgets::{ManagedTeamMemberUsage, ManagedTeamUsage};
+pub use exit::TeamExitAction;
 pub use messaging::{
     ManagedTeamMessageRequest, ManagedTeamMessageSender, ManagedTeamMessageTarget,
 };

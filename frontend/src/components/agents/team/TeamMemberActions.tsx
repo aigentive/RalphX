@@ -20,7 +20,7 @@ export function TeamMemberActions({
   members: readonly ManagedTeamMember[];
   tasks: readonly AgentTaskSummary[];
 }) {
-  const { addMember, assignMember, stopMember } = useManagedTeamMemberActions(conversationId);
+  const { addMember, assignMember, stopMember, exit } = useManagedTeamMemberActions(conversationId);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const [showAddForm, setShowAddForm] = useState(false);
   const [name, setName] = useState("");
@@ -92,6 +92,25 @@ export function TeamMemberActions({
     }
   };
 
+  const exitTeam = async (action: "suspend" | "drain_and_close") => {
+    if (!authority) return;
+    const draining = action === "drain_and_close";
+    const accepted = await confirm({
+      title: draining ? "Drain and close this Team?" : "Suspend this Team?",
+      description: draining
+        ? "New work stops immediately. Active member work is cancelled before this conversation returns to Solo."
+        : "New Team work stops. Idle members are suspended before this conversation returns to Solo.",
+      confirmText: draining ? "Drain and close" : "Suspend Team",
+      variant: draining ? "destructive" : "default",
+    });
+    if (!accepted) return;
+    try {
+      await exit.mutateAsync({ authority, action });
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Could not exit Team mode."));
+    }
+  };
+
   return (
     <section className="space-y-3" data-testid="team-member-actions">
       <div className="flex items-center justify-between gap-2">
@@ -139,6 +158,10 @@ export function TeamMemberActions({
           </div>
         );
       })}
+      <div className="flex flex-wrap gap-2 border-t pt-3" style={{ borderColor: "var(--border-subtle)" }}>
+        <Button type="button" size="sm" variant="outline" disabled={actionsDisabled || exit.isPending} onClick={() => void exitTeam("suspend")}>Suspend Team</Button>
+        <Button type="button" size="sm" variant="destructive" disabled={actionsDisabled || exit.isPending} onClick={() => void exitTeam("drain_and_close")}>Drain and close</Button>
+      </div>
       <ConfirmationDialog {...confirmationDialogProps} />
     </section>
   );

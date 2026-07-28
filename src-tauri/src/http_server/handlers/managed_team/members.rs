@@ -17,6 +17,7 @@ use chrono::Utc;
 use crate::application::chat_service::ChatService;
 use crate::application::managed_team::{
     ManagedTeamAssignmentRequest, ManagedTeamMemberSpec, ManagedTeamWorkspaceRequest,
+    TeamExitAction,
 };
 use crate::application::native_delegation_launcher::{
     NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
@@ -31,8 +32,9 @@ use crate::http_server::handlers::coordination::{
     ensure_delegated_conversation, fail_started_delegated_launch,
 };
 use crate::http_server::types::{
-    AddManagedTeamMemberRequest, AssignManagedTeamMemberRequest, HttpServerState,
-    ManagedTeamAssignmentResponse, ManagedTeamMemberSummary, StopManagedTeamMemberRequest,
+    AddManagedTeamMemberRequest, AssignManagedTeamMemberRequest, ExitManagedTeamRequest,
+    HttpServerState, ManagedTeamAssignmentResponse, ManagedTeamMemberSummary,
+    StopManagedTeamMemberRequest,
 };
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
@@ -578,4 +580,24 @@ pub async fn stop_managed_team_member(
         .await
         .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string()))?;
     Ok(Json(member_summary(&stopped)))
+}
+
+/// POST /api/managed_team/exit — records a durable Team exit marker and then
+/// completes the selected staged cleanup using trusted coordinator authority.
+pub async fn exit_managed_team(
+    State(state): State<HttpServerState>,
+    headers: HeaderMap,
+    Json(request): Json<ExitManagedTeamRequest>,
+) -> Result<StatusCode, JsonError> {
+    let authority = resolve_coordinator_authority(&state, &headers).await?;
+    let action = TeamExitAction::parse(&request.action)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let task_service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
+    state
+        .app_state
+        .managed_team
+        .exit_team(&task_service, &authority.team_id, action)
+        .await
+        .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
 }

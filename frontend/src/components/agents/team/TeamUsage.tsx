@@ -5,11 +5,12 @@ export function TeamUsage({ status }: { status: ManagedTeamStatus }) {
   const cards = [
     ["Active", `${activeMembers}/${status.session.effectiveConcurrency}`],
     ["Configured", String(status.session.configuredConcurrency)],
-    ["Wake limit", String(status.session.automaticWakeLimit)],
+    ["Tokens", status.usage.tokens.toLocaleString()],
+    ["Cost", `$${(status.usage.costMicros / 1_000_000).toFixed(4)}`],
   ] as const;
 
   return (
-    <div className="grid grid-cols-3 gap-2" data-testid="team-usage">
+    <div className="grid grid-cols-2 gap-2" data-testid="team-usage">
       {cards.map(([label, value]) => (
         <div
           key={label}

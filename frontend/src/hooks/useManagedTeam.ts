@@ -4,6 +4,7 @@ import {
   managedTeamApi,
   type AddManagedTeamMemberInput,
   type AssignManagedTeamMemberInput,
+  type ExitManagedTeamInput,
   type ManagedTeamMember,
   type ManagedTeamStatus,
   type StopManagedTeamMemberInput,
@@ -154,8 +155,12 @@ export function useManagedTeamMemberActions(conversationId: string | null) {
       invalidate();
     },
   });
+  const exit = useMutation({
+    mutationFn: (input: ExitManagedTeamInput) => managedTeamApi.exit(input),
+    onSuccess: invalidate,
+  });
 
-  return { addMember, assignMember, stopMember };
+  return { addMember, assignMember, stopMember, exit };
 }
 
 export interface ManagedTeamRealtimeEvent {

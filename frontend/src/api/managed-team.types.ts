@@ -25,6 +25,19 @@ export interface ManagedTeamMember {
 export interface ManagedTeamStatus {
   session: ManagedTeamSession;
   members: ManagedTeamMember[];
+  usage: ManagedTeamUsage;
+}
+
+export interface ManagedTeamUsage {
+  tokens: number;
+  costMicros: number;
+  members: ManagedTeamMemberUsage[];
+}
+
+export interface ManagedTeamMemberUsage {
+  memberId: string | null;
+  tokens: number;
+  costMicros: number;
 }
 
 export interface ManagedTeamAssignment {
@@ -67,4 +80,9 @@ export interface AssignManagedTeamMemberInput {
 export interface StopManagedTeamMemberInput {
   authority: ManagedTeamAuthority;
   memberName: string;
+}
+
+export interface ExitManagedTeamInput {
+  authority: ManagedTeamAuthority;
+  action: "suspend" | "drain_and_close";
 }

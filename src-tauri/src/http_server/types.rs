@@ -2623,6 +2623,23 @@ pub struct ManagedTeamMemberSummary {
 pub struct ManagedTeamStatusResponse {
     pub session: ManagedTeamSessionSummary,
     pub members: Vec<ManagedTeamMemberSummary>,
+    pub usage: ManagedTeamUsageSummary,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamUsageSummary {
+    pub tokens: u64,
+    pub cost_micros: u64,
+    pub members: Vec<ManagedTeamMemberUsageSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberUsageSummary {
+    pub member_id: Option<String>,
+    pub tokens: u64,
+    pub cost_micros: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2651,6 +2668,11 @@ pub struct AssignManagedTeamMemberRequest {
 #[derive(Debug, Deserialize)]
 pub struct StopManagedTeamMemberRequest {
     pub member_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExitManagedTeamRequest {
+    pub action: String,
 }
 
 #[derive(Debug, Serialize)]

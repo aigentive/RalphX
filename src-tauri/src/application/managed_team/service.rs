@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::application::managed_team::budgets::ManagedTeamUsage;
 use crate::application::managed_team::lifecycle::{new_coordinator_run_binding, new_team_session};
 use crate::application::managed_team::recovery::ManagedTeamStartupBarrier;
 use crate::domain::entities::{
@@ -25,6 +26,7 @@ use crate::error::AppResult;
 pub struct ManagedTeamStatus {
     pub session: TeamSession,
     pub members: Vec<TeamMember>,
+    pub usage: ManagedTeamUsage,
 }
 
 pub struct ManagedTeamService {
@@ -115,7 +117,12 @@ impl ManagedTeamService {
             return Ok(None);
         };
         let members = self.team_repo.list_members(&session.id).await?;
-        Ok(Some(ManagedTeamStatus { session, members }))
+        let usage = self.team_usage(&session.id).await?;
+        Ok(Some(ManagedTeamStatus {
+            session,
+            members,
+            usage,
+        }))
     }
 
     pub async fn roster(&self, team_id: &TeamSessionId) -> AppResult<Vec<TeamMember>> {

@@ -978,16 +978,32 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             );
             match app_state
                 .managed_team
-                .release_delivery_projection_after_recovery()
+                .recover_terminal_binding_reservations()
                 .await
             {
-                Ok(projected) => tracing::info!(
-                    projected,
-                    "Managed Team delivery projection released after assignment recovery"
-                ),
+                Ok(released) => {
+                    tracing::info!(
+                        released,
+                        "Released terminal managed Team workspace reservations during startup recovery"
+                    );
+                    match app_state
+                        .managed_team
+                        .release_delivery_projection_after_recovery()
+                        .await
+                    {
+                        Ok(projected) => tracing::info!(
+                            projected,
+                            "Managed Team delivery projection released after assignment recovery"
+                        ),
+                        Err(error) => tracing::error!(
+                            %error,
+                            "Managed Team delivery projection remains deferred after recovery"
+                        ),
+                    }
+                }
                 Err(error) => tracing::error!(
                     %error,
-                    "Managed Team delivery projection remains deferred after recovery"
+                    "Managed Team reservation recovery failed; delivery projection remains fenced"
                 ),
             }
         }

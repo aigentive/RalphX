@@ -143,6 +143,13 @@ impl ManagedTeamService {
         task_service: &AgentTaskService,
         request: ManagedTeamAssignmentRequest,
     ) -> AppResult<ManagedTeamAssignmentPlan> {
+        let session = self.admit_dispatch(&request.team_id).await?;
+        if self.configured_dispatch_count(&request.team_id).await? >= session.configured_concurrency
+        {
+            return Err(AppError::Conflict(
+                "managed Team configured concurrency is exhausted".to_string(),
+            ));
+        }
         let member = self
             .member_by_normalized_name(&request.team_id, &request.member_name)
             .await?;
@@ -348,6 +355,14 @@ impl ManagedTeamService {
         plan: &ManagedTeamAssignmentPlan,
     ) -> AppResult<TeamRunBinding> {
         self.revalidate_member_assignment_launch(plan).await?;
+        let session = self.admit_dispatch(&plan.member.team_id).await?;
+        if self.configured_dispatch_count(&plan.member.team_id).await?
+            >= session.configured_concurrency
+        {
+            return Err(AppError::Conflict(
+                "managed Team configured concurrency is exhausted".to_string(),
+            ));
+        }
         let mut binding = self
             .run_binding_repo
             .get_by_id(&plan.binding.id)

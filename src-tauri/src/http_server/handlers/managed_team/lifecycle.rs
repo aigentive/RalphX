@@ -11,8 +11,9 @@ use crate::domain::entities::{
     ChatConversationId, ProjectId, TeamMember, TeamSession, TeamSessionId,
 };
 use crate::http_server::types::{
-    EnsureManagedTeamRequest, HttpServerState, ManagedTeamMemberSummary, ManagedTeamSessionSummary,
-    ManagedTeamStatusResponse,
+    EnsureManagedTeamRequest, HttpServerState, ManagedTeamMemberSummary,
+    ManagedTeamMemberUsageSummary, ManagedTeamSessionSummary, ManagedTeamStatusResponse,
+    ManagedTeamUsageSummary,
 };
 
 type JsonError = (StatusCode, Json<serde_json::Value>);
@@ -101,9 +102,25 @@ pub async fn get_managed_team_status(
         .team_status(&conversation_id)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    Ok(Json(status.map(|status| ManagedTeamStatusResponse {
-        session: session_summary(&status.session),
-        members: status.members.iter().map(member_summary).collect(),
+    Ok(Json(status.map(|status| {
+        ManagedTeamStatusResponse {
+            session: session_summary(&status.session),
+            members: status.members.iter().map(member_summary).collect(),
+            usage: ManagedTeamUsageSummary {
+                tokens: status.usage.tokens,
+                cost_micros: status.usage.cost_micros,
+                members: status
+                    .usage
+                    .members
+                    .into_iter()
+                    .map(|member| ManagedTeamMemberUsageSummary {
+                        member_id: member.member_id,
+                        tokens: member.tokens,
+                        cost_micros: member.cost_micros,
+                    })
+                    .collect(),
+            },
+        }
     })))
 }
 

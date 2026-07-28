@@ -33,6 +33,7 @@ function status(memberGeneration = 2): ManagedTeamStatus {
         generation: memberGeneration,
       },
     ],
+    usage: { tokens: 0, costMicros: 0, members: [] },
   };
 }
 

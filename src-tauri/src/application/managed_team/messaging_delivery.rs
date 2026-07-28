@@ -177,6 +177,7 @@ impl ManagedTeamService {
                 continue;
             }
             let session = self.open_session(&message.team_id).await?;
+            self.admit_dispatch(&session.id).await?;
             if self
                 .agent_run_repo
                 .get_active_for_conversation(&session.coordinator_conversation_id)

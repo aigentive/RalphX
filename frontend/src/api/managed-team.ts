@@ -17,6 +17,7 @@ import type {
   AddManagedTeamMemberInput,
   AssignManagedTeamMemberInput,
   EnsureManagedTeamInput,
+  ExitManagedTeamInput,
   ManagedTeamAssignment,
   ManagedTeamAuthority,
   ManagedTeamMember,
@@ -29,11 +30,14 @@ export type {
   AddManagedTeamMemberInput,
   AssignManagedTeamMemberInput,
   EnsureManagedTeamInput,
+  ExitManagedTeamInput,
   ManagedTeamAssignment,
   ManagedTeamAuthority,
   ManagedTeamMember,
+  ManagedTeamMemberUsage,
   ManagedTeamSession,
   ManagedTeamStatus,
+  ManagedTeamUsage,
   StopManagedTeamMemberInput,
 } from "./managed-team.types";
 export {
@@ -63,6 +67,7 @@ async function requestJson(
 ): Promise<unknown> {
   const response = await fetch(backendApiUrl(endpoint), init);
   if (response.ok) {
+    if (response.status === 204) return null;
     return response.json();
   }
   const payload = (await response.json().catch(() => null)) as {
@@ -171,5 +176,9 @@ export const managedTeamApi = {
       input.authority,
     );
     return transformManagedTeamMember(ManagedTeamMemberSchema.parse(raw));
+  },
+
+  async exit(input: ExitManagedTeamInput): Promise<void> {
+    await postJson("managed_team/exit", { action: input.action }, input.authority);
   },
 } as const;

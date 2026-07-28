@@ -180,6 +180,7 @@ pub async fn start_http_server_with_listener_ready(
             "/api/managed_team/member/stop",
             post(stop_managed_team_member),
         )
+        .route("/api/managed_team/exit", post(exit_managed_team))
         .route(
             "/api/managed_team/members/idle",
             get(list_idle_managed_team_members),

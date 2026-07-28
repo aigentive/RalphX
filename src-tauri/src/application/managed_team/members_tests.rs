@@ -7,10 +7,14 @@ use crate::application::managed_team::{
 use crate::application::AgentTaskService;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRunId, AgentTaskCreate, AgentTaskScope, DelegatedSessionId, ProjectId, TeamMemberStatus,
-    TeamWorkClassification,
+    AgentRun, AgentRunId, AgentTaskAssignmentId, AgentTaskCreate, AgentTaskScope,
+    DelegatedSessionId, ProjectId, TeamMemberStatus, TeamRunBindingStatus, TeamWorkClassification,
+    TeamWorkspaceReservation, TeamWorkspaceReservationId,
 };
-use crate::domain::repositories::{AgentTaskRepository, UiFeatureFlagOverridesRepository};
+use crate::domain::repositories::{
+    AgentRunRepository, AgentTaskRepository, TeamRepository, TeamRunBindingRepository,
+    TeamWorkspaceReservationRepository, UiFeatureFlagOverridesRepository,
+};
 use crate::infrastructure::memory::{
     MemoryAgentRunRepository, MemoryAgentTaskRepository, MemoryChatConversationRepository,
     MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
@@ -18,7 +22,7 @@ use crate::infrastructure::memory::{
     MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
     MemoryUiFeatureFlagOverridesRepository,
 };
-use crate::testing::team_fixtures::{team_agent_run_id, team_conversation_id};
+use crate::testing::team_fixtures::{member_run_binding, team_agent_run_id, team_conversation_id};
 
 fn build_service() -> ManagedTeamService {
     let sessions = MemoryTeamRepository::new_shared_sessions();
@@ -37,6 +41,27 @@ fn build_service() -> ManagedTeamService {
         Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
             as Arc<dyn UiFeatureFlagOverridesRepository>,
     )
+}
+
+fn build_service_with_runs() -> (ManagedTeamService, Arc<MemoryAgentRunRepository>) {
+    let sessions = MemoryTeamRepository::new_shared_sessions();
+    let runs = Arc::new(MemoryAgentRunRepository::new());
+    let service = ManagedTeamService::new(
+        Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+            sessions,
+        )),
+        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::clone(&runs) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+        Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
+            as Arc<dyn UiFeatureFlagOverridesRepository>,
+    );
+    (service, runs)
 }
 
 fn task(title: &str) -> AgentTaskCreate {
@@ -135,6 +160,187 @@ async fn idle_members_preserve_mixed_claude_and_codex_harness_metadata() {
     assert!(idle.iter().any(|member| {
         member.id == claude.id && member.harness == Some(AgentHarnessKind::Claude)
     }));
+}
+
+#[tokio::test]
+async fn mixed_claude_codex_leads_and_members_follow_the_same_assignment_saga() {
+    for (lead_harness, member_harness) in [
+        (AgentHarnessKind::Claude, AgentHarnessKind::Codex),
+        (AgentHarnessKind::Codex, AgentHarnessKind::Claude),
+    ] {
+        let (service, runs) = build_service_with_runs();
+        let team = service
+            .ensure_team(
+                ProjectId::from_string("project-1".to_string()),
+                &team_conversation_id(1),
+            )
+            .await
+            .unwrap();
+        let member = service
+            .add_member(
+                &team.id,
+                ManagedTeamMemberSpec {
+                    name: format!("member-{member_harness:?}"),
+                    canonical_agent_name: "ralphx-general-worker".to_string(),
+                    role_summary: "mixed-provider assignment member".to_string(),
+                    harness: Some(member_harness),
+                    logical_model: None,
+                    logical_effort: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut lead = AgentRun::new(team_conversation_id(1));
+        lead.id = team_agent_run_id(if lead_harness == AgentHarnessKind::Claude {
+            41
+        } else {
+            42
+        });
+        lead.harness = Some(lead_harness);
+        runs.create(lead.clone()).await.unwrap();
+        let repo = Arc::new(MemoryAgentTaskRepository::new());
+        let tasks = AgentTaskService::new(Arc::clone(&repo) as Arc<dyn AgentTaskRepository>);
+        let mut scope = AgentTaskScope::new("conversation", team_conversation_id(1).as_str());
+        scope.project_id = Some(ProjectId::from_string("project-1".to_string()));
+        tasks
+            .create_task(&scope, task("mixed provider task"))
+            .await
+            .unwrap();
+        tasks
+            .create_task(&scope, task("second task keeps ledger claimable"))
+            .await
+            .unwrap();
+
+        let plan = service
+            .plan_member_assignment(
+                &tasks,
+                ManagedTeamAssignmentRequest {
+                    team_id: team.id.clone(),
+                    member_name: member.normalized_name.clone(),
+                    expected_member_generation: member.generation,
+                    caller_scope: scope,
+                    caller_agent_run_id: lead.id,
+                    task_ref: "1".to_string(),
+                    delegated_session_id: DelegatedSessionId::new(),
+                    delegated_conversation_id: team_conversation_id(2),
+                    planned_agent_run_id: AgentRunId::new(),
+                    work_classification: TeamWorkClassification::ReadOnly,
+                    workspace: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.member.harness, Some(member_harness));
+        assert_eq!(plan.binding.team_id, team.id);
+        service
+            .fail_member_assignment_launch(&tasks, &plan, "mixed_provider_test_cleanup")
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn launch_rechecks_member_only_configured_concurrency_after_parallel_planning() {
+    let (service, runs) = build_service_with_runs();
+    let first = create_member(&service).await;
+    let second = service
+        .add_member(
+            &first.team_id,
+            ManagedTeamMemberSpec {
+                name: "Second writer".to_string(),
+                canonical_agent_name: "ralphx-general-worker".to_string(),
+                role_summary: "second bounded writer".to_string(),
+                harness: Some(AgentHarnessKind::Claude),
+                logical_model: None,
+                logical_effort: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut session = service
+        .team_repo()
+        .get_session(&first.team_id)
+        .await
+        .unwrap()
+        .unwrap();
+    session.configured_concurrency = 1;
+    session.version += 1;
+    assert!(service
+        .team_repo()
+        .update_session(session, 0)
+        .await
+        .unwrap());
+    let repo = Arc::new(MemoryAgentTaskRepository::new());
+    let tasks = AgentTaskService::new(Arc::clone(&repo) as Arc<dyn AgentTaskRepository>);
+    let mut scope = AgentTaskScope::new("conversation", team_conversation_id(1).as_str());
+    scope.project_id = Some(ProjectId::from_string("project-1".to_string()));
+    tasks
+        .create_task(&scope, task("first concurrent task"))
+        .await
+        .unwrap();
+    tasks
+        .create_task(&scope, task("second concurrent task"))
+        .await
+        .unwrap();
+    let first_plan = service
+        .plan_member_assignment(
+            &tasks,
+            ManagedTeamAssignmentRequest {
+                team_id: first.team_id.clone(),
+                member_name: first.normalized_name.clone(),
+                expected_member_generation: first.generation,
+                caller_scope: scope.clone(),
+                caller_agent_run_id: team_agent_run_id(1),
+                task_ref: "1".to_string(),
+                delegated_session_id: DelegatedSessionId::new(),
+                delegated_conversation_id: team_conversation_id(2),
+                planned_agent_run_id: AgentRunId::new(),
+                work_classification: TeamWorkClassification::ReadOnly,
+                workspace: None,
+            },
+        )
+        .await
+        .unwrap();
+    let second_plan = service
+        .plan_member_assignment(
+            &tasks,
+            ManagedTeamAssignmentRequest {
+                team_id: second.team_id.clone(),
+                member_name: second.normalized_name.clone(),
+                expected_member_generation: second.generation,
+                caller_scope: scope,
+                caller_agent_run_id: team_agent_run_id(1),
+                task_ref: "2".to_string(),
+                delegated_session_id: DelegatedSessionId::new(),
+                delegated_conversation_id: team_conversation_id(3),
+                planned_agent_run_id: AgentRunId::new(),
+                work_classification: TeamWorkClassification::ReadOnly,
+                workspace: None,
+            },
+        )
+        .await
+        .unwrap();
+    for plan in [&first_plan, &second_plan] {
+        let mut run = AgentRun::new(plan.binding.conversation_id);
+        run.id = plan.binding.agent_run_id;
+        run.harness = Some(AgentHarnessKind::Codex);
+        runs.create(run).await.unwrap();
+    }
+    service
+        .mark_member_assignment_launching(&first_plan)
+        .await
+        .unwrap();
+    assert!(service
+        .mark_member_assignment_launching(&second_plan)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("configured concurrency"));
+    service
+        .fail_member_assignment_launch(&tasks, &first_plan, "test_cleanup")
+        .await;
+    service
+        .fail_member_assignment_launch(&tasks, &second_plan, "test_cleanup")
+        .await;
 }
 
 #[tokio::test]
@@ -424,4 +630,65 @@ async fn idle_member_can_be_stopped_without_provider_process() {
 
     assert_eq!(stopped.status, TeamMemberStatus::Stopped);
     assert!(stopped.current_run_id.is_none());
+}
+
+#[tokio::test]
+async fn terminal_binding_recovery_releases_its_exact_workspace_reservation() {
+    let service = build_service();
+    let member = create_member(&service).await;
+    let assignment_id = AgentTaskAssignmentId::from_string("assignment-1");
+    let mut binding = member_run_binding(
+        "terminal-binding",
+        member.team_id.as_str(),
+        23,
+        member.id.as_str(),
+        member.generation,
+    );
+    binding.assignment_id = Some(assignment_id.clone());
+    binding.status = TeamRunBindingStatus::Failed;
+    service.run_binding_repo().create(binding).await.unwrap();
+    let reservation_repo = Arc::new(MemoryTeamWorkspaceReservationRepository::new());
+    let recovery_service = ManagedTeamService::new(
+        service.team_repo(),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::new()),
+        service.run_binding_repo(),
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::clone(&reservation_repo) as Arc<dyn TeamWorkspaceReservationRepository>,
+        Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
+            as Arc<dyn UiFeatureFlagOverridesRepository>,
+    );
+    reservation_repo
+        .acquire(TeamWorkspaceReservation {
+            id: TeamWorkspaceReservationId::new(),
+            team_id: member.team_id.clone(),
+            team_member_id: member.id.clone(),
+            assignment_id: Some(assignment_id.clone()),
+            team_member_generation: member.generation,
+            writable_paths: vec!["src/team.rs".to_string()],
+            generated_outputs: Vec::new(),
+            resource_locks: Vec::new(),
+            work_classification: TeamWorkClassification::Write,
+            attempt_number: 1,
+            acquired_at: chrono::Utc::now(),
+            released_at: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        recovery_service
+            .recover_terminal_binding_reservations()
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(reservation_repo
+        .list_active_for_assignment(assignment_id.as_str())
+        .await
+        .unwrap()
+        .is_empty());
 }
