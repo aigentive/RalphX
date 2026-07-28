@@ -56,6 +56,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "cancel_tasks_in_group": {
+    opClass: "operate",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "create_artifact": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -206,6 +212,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl","mutatesAgentConsumedContent"],
     pins: [],
   },
+  "pause_execution": {
+    opClass: "operate",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "pause_task": {
     opClass: "operate",
     argumentSensitive: false,
@@ -241,6 +253,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [{"param":"input","field":"role","value":"user"}],
+  },
+  "stop_execution": {
+    opClass: "operate",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
   },
   "stop_task": {
     opClass: "operate",
