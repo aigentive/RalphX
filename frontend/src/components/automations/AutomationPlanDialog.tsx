@@ -104,11 +104,14 @@ function PlanDialogBody({ planArtifactId }: { planArtifactId: string }) {
 
 export function AutomationPlanDialog({
   planArtifactId,
+  heading = "Run plan",
   title,
   open,
   onOpenChange,
 }: {
   planArtifactId: string | null;
+  /** Visible dialog heading; existing run-plan callers keep the default. */
+  heading?: string;
   /** Context line, e.g. the goal item or run the plan belongs to. */
   title?: string | null;
   open: boolean;
@@ -121,7 +124,7 @@ export function AutomationPlanDialog({
         data-testid="automation-plan-dialog"
       >
         <DialogHeader className="flex-col items-start gap-1 pr-12">
-          <DialogTitle>Run plan</DialogTitle>
+          <DialogTitle>{heading}</DialogTitle>
           <DialogDescription>
             {title?.trim() || "Plan produced by this automation run."}
           </DialogDescription>

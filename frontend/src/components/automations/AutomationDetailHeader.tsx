@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Pill } from "./automationDetailShared";
+import { formatDate } from "./automationDetailFormat";
 
 function TooltipIconButton({
   label,
@@ -65,7 +65,16 @@ function RunStatusChip({
   label: string;
   testId?: string;
 }) {
-  return <StatusPill label={label} tone="accent" size="md" live testId={testId} />;
+  return (
+    <StatusPill
+      label={label}
+      tone="accent"
+      variant="tinted"
+      size="md"
+      live
+      testId={testId}
+    />
+  );
 }
 
 export interface AutomationDetailHeaderProps {
@@ -110,17 +119,23 @@ export function AutomationDetailHeader({
   onDelete,
 }: AutomationDetailHeaderProps) {
   return (
-    <div
-      className="flex flex-wrap items-center justify-between gap-3 border-b px-6 py-5"
+    <header
+      className="flex flex-wrap items-center justify-between gap-4 border-b px-6 py-4"
       style={{
         backgroundColor: "var(--app-content-bg)",
-        borderBottomColor: "var(--border-default)",
+        borderBottomColor: "var(--border-subtle, #2e2e36)",
         borderBottomStyle: "solid",
         borderBottomWidth: "1px",
       }}
     >
-      <div className="flex min-w-0 items-center gap-3">
-        <Button type="button" variant="ghost" onClick={onBack} className="gap-2">
+      <div className="flex min-w-0 items-center gap-4">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onBack}
+          className="shrink-0 gap-2"
+        >
           <ArrowLeft className="h-4 w-4" />
           Back
         </Button>
@@ -129,15 +144,28 @@ export function AutomationDetailHeader({
             <h1 className="truncate text-xl font-semibold" style={{ color: "var(--text-primary)" }}>
               {automation.name}
             </h1>
-            <Pill label={AUTOMATION_STATUS_LABELS[automation.status]} status={automation.status} />
+            <StatusPill
+              label={AUTOMATION_STATUS_LABELS[automation.status]}
+              tone={automation.status === "active" || automation.status === "completed"
+                ? "success"
+                : automation.status === "paused"
+                  ? "warning"
+                  : automation.status === "stopped"
+                    ? "error"
+                    : "neutral"}
+              variant="tinted"
+              size="md"
+              testId="automation-header-status"
+            />
             {liveStageLabel && <RunStatusChip label={liveStageLabel} />}
           </div>
-          <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-            {projectLabel}
-          </div>
+          <p className="mt-1 truncate text-xs" style={{ color: "var(--text-muted)" }}>
+            {projectLabel} · created {formatDate(automation.createdAt)} · updated{" "}
+            {formatDate(automation.updatedAt)}
+          </p>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         {automation.status === "draft" && (
           <Button
             type="button"
@@ -253,6 +281,6 @@ export function AutomationDetailHeader({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-    </div>
+    </header>
   );
 }

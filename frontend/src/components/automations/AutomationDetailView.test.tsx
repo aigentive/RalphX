@@ -339,9 +339,18 @@ describe("AutomationDetailView", () => {
 
     expect(await screen.findByTestId("automation-detail-view")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ship migration loop" })).toBeInTheDocument();
+    expect(screen.getByTestId("automation-header-status")).toHaveTextContent("Approved");
+    expect(screen.getByText(/Demo Project · created .* · updated/)).toBeInTheDocument();
     expect(screen.getByLabelText("Pause automation")).toBeInTheDocument();
     expect(screen.getByLabelText("Run now")).toBeInTheDocument();
     expect(screen.getByLabelText("Cancel automation")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-stat-cards")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-stat-budget")).toHaveTextContent("2 / 25");
+    expect(screen.getByTestId("automation-stat-last-merge")).toHaveTextContent("Run 2");
+    expect(screen.getByTestId("automation-detail-branch-meta"))
+      .toHaveTextContent("base main · chain merged base");
+    expect(screen.getByTestId("automation-execution-card")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-spec-inputs-card")).toBeInTheDocument();
     expect(screen.getByText("Input tokens")).toBeInTheDocument();
     expect(screen.getByText("200")).toBeInTheDocument();
     expect(screen.getByText("Estimated cost")).toBeInTheDocument();
@@ -407,7 +416,7 @@ describe("AutomationDetailView", () => {
       });
 
       await screen.findByTestId("automation-detail-view");
-      expect(screen.getByText("Branch")).toBeInTheDocument();
+      expect(screen.getByText("Working branch")).toBeInTheDocument();
       expect(screen.getAllByText("Automation workspace").length).toBeGreaterThan(0);
       expect(screen.getByTestId("automation-branch-value")).toHaveTextContent(
         "ralphx/automation-workspace/automation-1",
@@ -469,9 +478,6 @@ describe("AutomationDetailView", () => {
 
     await screen.findByTestId("automation-detail-view");
     await openRunsTab();
-    expect(
-      screen.getAllByRole("button", { name: "Open PR #612 in browser" }),
-    ).toHaveLength(1);
     expect(screen.getByTestId("automation-run-run-pr-pr-link")).toHaveTextContent(
       "PR #612",
     );
@@ -502,9 +508,6 @@ describe("AutomationDetailView", () => {
 
     await screen.findByTestId("automation-detail-view");
     await openRunsTab();
-    expect(
-      screen.getAllByRole("button", { name: "Open PR in browser" }),
-    ).toHaveLength(1);
     expect(
       screen.getByTestId("automation-run-run-pr-url-only-pr-link"),
     ).toHaveTextContent("PR");
@@ -674,7 +677,7 @@ describe("AutomationDetailView", () => {
     );
   });
 
-  it("renders the linked spec and a Phases heading in the goal card", async () => {
+  it("renders phases and opens the linked spec in a markdown dialog", async () => {
     const user = userEvent.setup();
     useArtifactMock.mockReturnValue({
       data: {
@@ -702,19 +705,18 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
+    const phasesCard = screen.getByTestId("automation-phases-card");
+    expect(phasesCard).toHaveTextContent("Phases");
+    expect(phasesCard).toHaveTextContent("Land P6");
+    await user.click(screen.getByTestId("automation-spec-chip"));
 
-    const specCard = screen.getByTestId("automation-spec-card");
-    expect(specCard).toHaveTextContent("Migration loop spec");
-    expect(specCard).toHaveTextContent("Build the shared context model.");
+    const specDialog = screen.getByTestId("automation-plan-dialog");
+    expect(within(specDialog).getByText("Automation spec")).toBeInTheDocument();
+    expect(specDialog).toHaveTextContent("Build the shared context model.");
     expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
-
-    const goalCard = screen.getByTestId("automation-goal-card");
-    expect(goalCard).toHaveTextContent("Phases");
-    expect(goalCard).toHaveTextContent("Land P6");
   });
 
-  it("shows phase progress and a collapsed expandable spec", async () => {
+  it("shows segmented phase progress and keeps spec content deferred until open", async () => {
     const user = userEvent.setup();
     useArtifactMock.mockReturnValue({
       data: {
@@ -750,24 +752,17 @@ describe("AutomationDetailView", () => {
 
     await screen.findByTestId("automation-detail-view");
 
-    const goalCard = screen.getByTestId("automation-goal-card");
-    expect(goalCard).toHaveTextContent("1/3 done");
-    expect(within(goalCard).getByRole("progressbar")).toHaveAttribute(
+    const phasesCard = screen.getByTestId("automation-phases-card");
+    expect(within(phasesCard).getByRole("progressbar")).toHaveAttribute(
       "aria-valuenow",
       "1",
     );
-    expect(within(goalCard).getByText("In progress")).toBeInTheDocument();
+    expect(within(phasesCard).getByLabelText("in progress")).toBeInTheDocument();
+    expect(useArtifactMock).not.toHaveBeenCalled();
 
-    // Spec stays collapsed by default with an expand affordance; heavy markdown
-    // is not mounted until the user expands it.
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-    const specCard = screen.getByTestId("automation-spec-card");
-    expect(within(specCard).getByTestId("automation-spec-toggle")).toHaveTextContent(
-      "Show full spec",
-    );
-    expect(
-      within(specCard).queryByTestId("automation-spec-markdown"),
-    ).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("automation-spec-chip"));
+    expect(screen.getByTestId("automation-plan-dialog")).toBeInTheDocument();
+    expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
   });
 
   it("keeps every phase available in a scrollable list", async () => {
@@ -785,14 +780,9 @@ describe("AutomationDetailView", () => {
 
     await screen.findByTestId("automation-detail-view");
 
-    const goalCard = screen.getByTestId("automation-goal-card");
-    const phaseList = within(goalCard).getByRole("list", {
-      name: "Automation phases",
-    });
+    const phaseList = screen.getByTestId("automation-phase-list");
     expect(within(phaseList).getAllByRole("listitem")).toHaveLength(25);
     expect(within(phaseList).getByText("Phase 25")).toBeInTheDocument();
-    expect(phaseList).toHaveClass("max-h-64", "overflow-y-auto");
-    expect(phaseList).toHaveAttribute("tabindex", "0");
   });
 
   it("shows the current phase chip on open timeline runs only", async () => {
@@ -912,7 +902,6 @@ describe("AutomationDetailView", () => {
   });
 
   it("shows the spec fallback when no spec is linked", async () => {
-    const user = userEvent.setup();
     renderDetail({
       automation: automation({ specArtifactId: null }),
       runs: [run()],
@@ -920,15 +909,12 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-
-    expect(screen.getByTestId("automation-spec-card")).toHaveTextContent(
-      "No spec linked yet.",
+    expect(screen.getByTestId("automation-spec-inputs-card")).toHaveTextContent(
+      "No specification artifact is linked.",
     );
   });
 
-  it("defaults to Config and keeps config, spec, inputs, and paused context one click away", async () => {
-    const user = userEvent.setup();
+  it("keeps execution, limits, inputs, and paused context visible in Overview", async () => {
     renderDetail({
       automation: automation({
         status: "paused",
@@ -941,55 +927,40 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
-    const card = await screen.findByTestId("automation-details-card");
-    const configTab = within(card).getByRole("tab", { name: "Config" });
-    expect(configTab).toHaveAttribute("aria-selected", "true");
-    const configPanel = within(card).getByTestId("automation-config-panel");
-    const execution = within(configPanel).getByTestId("automation-config-group-execution");
-    expect(within(execution).getByText("Execution")).toBeInTheDocument();
+    const executionCard = await screen.findByTestId("automation-execution-card");
+    const execution = within(executionCard).getByTestId("automation-config-group-execution");
     expect(
       within(execution).getAllByRole("term").map((term) => term.textContent),
     ).toEqual([
-      "Mode / model",
-      "Setup conversation",
-      "Last PR",
-      "Base",
-      "Branch",
+      "Mode",
+      "Model / effort",
       "Chain mode",
-      "Completion signal",
+      "Completion",
     ]);
-    // The config PR row reuses the shared PR link for the newest run with a PR.
+    const source = within(executionCard).getByTestId("automation-config-group-source");
     expect(
-      within(execution).getByTestId("automation-config-pr-link"),
+      within(source).getAllByRole("term").map((term) => term.textContent),
+    ).toEqual(["Base", "Working branch", "Last PR", "Setup conversation"]);
+    expect(
+      within(source).getByTestId("automation-config-pr-link"),
     ).toHaveTextContent("PR #593");
-    const limits = within(configPanel).getByTestId("automation-config-group-limits");
-    expect(
-      within(limits).getAllByRole("term").map((term) => term.textContent),
-    ).toEqual(["Max runs", "Max failures"]);
-    const usageGroup = within(configPanel).getByTestId("automation-config-group-usage");
+    expect(within(executionCard).getByTestId("automation-config-group-limits"))
+      .toHaveTextContent("Auto-pauses when this limit is reached.");
+    const usageGroup = within(executionCard).getByTestId("automation-config-group-usage");
     expect(
       within(usageGroup).getAllByRole("term").map((term) => term.textContent),
     ).toEqual(["Input tokens", "Output tokens", "Cache tokens", "Estimated cost"]);
-    const timestamps = within(configPanel).getByTestId("automation-config-timestamps");
+    const timestamps = within(executionCard).getByTestId("automation-config-timestamps");
     expect(timestamps).toHaveTextContent("Created");
     expect(timestamps).toHaveTextContent("Updated");
-    expect(configPanel).toHaveTextContent("Paused: Release freeze. Waiting on base branch");
-    expect(within(card).queryByText("No spec linked yet.")).not.toBeInTheDocument();
-
-    await user.click(within(card).getByRole("tab", { name: "Spec" }));
-    expect(within(card).getByText("No spec linked yet.")).toBeInTheDocument();
-    expect(configPanel).not.toBeVisible();
-
-    await user.click(within(card).getByRole("tab", { name: "Inputs" }));
+    expect(screen.getByTestId("automation-paused-reason"))
+      .toHaveTextContent("Paused: Release freeze. Waiting on base branch");
     expect(
-      within(card).getByText("Setup references provided when this automation was created."),
-    ).toBeInTheDocument();
-    expect(
-      within(card).getByText("No setup input references are attached to this automation record."),
+      screen.getByText("No setup input references are attached."),
     ).toBeInTheDocument();
   });
 
-  it("marks populated Spec and Inputs tabs without mounting spec content before selection", async () => {
+  it("shows populated spec and input summaries without fetching spec content", async () => {
     const user = userEvent.setup();
     useArtifactMock.mockReturnValue({
       data: {
@@ -1015,12 +986,11 @@ describe("AutomationDetailView", () => {
       usage,
     });
 
-    const card = await screen.findByTestId("automation-details-card");
-    expect(within(card).getByRole("tab", { name: "Spec" })).toHaveTextContent("•");
-    expect(within(card).getByRole("tab", { name: "Inputs (1)" })).toBeInTheDocument();
+    const card = await screen.findByTestId("automation-spec-inputs-card");
+    expect(within(card).getByTestId("automation-spec-chip")).toBeInTheDocument();
+    expect(within(card).getByText("1 input")).toBeInTheDocument();
     expect(useArtifactMock).not.toHaveBeenCalled();
 
-    await user.click(within(card).getByRole("tab", { name: "Inputs (1)" }));
     const sourcePr = within(card).getByTestId("automation-source-pr-input");
     expect(within(sourcePr).getByText("Source pull request")).toBeInTheDocument();
     expect(within(sourcePr).getByText("PR #593")).toBeInTheDocument();
@@ -1030,6 +1000,9 @@ describe("AutomationDetailView", () => {
       "https://github.com/aigentive/ralphx.app/pull/593",
     );
     expect(useArtifactMock).not.toHaveBeenCalled();
+
+    await user.click(within(card).getByTestId("automation-spec-chip"));
+    expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
   });
 
   it("calls pause and skip-judge controls through the automation API", async () => {
@@ -1103,8 +1076,7 @@ describe("AutomationDetailView", () => {
     // rendering a "Not recorded" placeholder.
     expect(screen.queryByText("Estimated cost")).not.toBeInTheDocument();
     expect(screen.queryByText("Not recorded")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Inputs" }));
-    expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+    expect(screen.getByText("No setup input references are attached.")).toBeInTheDocument();
 
     await openRunsTab();
     expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
@@ -1140,8 +1112,7 @@ describe("AutomationDetailView", () => {
 
     await screen.findByTestId("automation-detail-view");
     expect(screen.queryByText("Diff not recorded")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Inputs" }));
-    expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+    expect(screen.getByText("No setup input references are attached.")).toBeInTheDocument();
 
     await user.click(screen.getByLabelText("Run now"));
 
@@ -1709,12 +1680,12 @@ describe("AutomationDetailView", () => {
     expect(screen.getByText("Phase 1")).toBeInTheDocument();
     // "Not recorded" survives only in the intentional Setup conversation slot;
     // run-card facts omit empty fields entirely.
-    const configPanel = screen.getByTestId("automation-config-panel");
-    expect(within(configPanel).getByText("Not recorded")).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Inputs (1)" }));
-    expect(screen.getByText("Setup references provided when this automation was created.")).toBeInTheDocument();
+    const executionCard = screen.getByTestId("automation-execution-card");
+    expect(within(executionCard).getAllByText("Not recorded")).toHaveLength(2);
+    expect(within(executionCard).getByTestId("automation-config-pr-link"))
+      .toHaveTextContent("PR #41");
     expect(screen.getByText("Source pull request")).toBeInTheDocument();
-    expect(screen.getByText("PR #41")).toBeInTheDocument();
+    expect(screen.getAllByText("PR #41")).toHaveLength(3);
     expect(screen.getByLabelText("Run now")).toBeDisabled();
     expect(screen.getByLabelText("Cancel automation")).toBeDisabled();
 

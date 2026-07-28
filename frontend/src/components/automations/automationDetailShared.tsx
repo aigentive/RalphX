@@ -86,27 +86,36 @@ export function FieldLabel({
 
 export function Section({
   title,
+  headerRight,
   children,
   testId,
+  background = "elevated",
 }: {
   title: string;
+  headerRight?: ReactNode;
   children: ReactNode;
   testId?: string;
+  background?: "elevated" | "surface";
 }) {
   return (
     <section
       className="rounded-lg p-5 shadow-[var(--shadow-xs)]"
       style={{
-        backgroundColor: "var(--bg-elevated, #232329)",
+        backgroundColor: background === "surface"
+          ? "var(--bg-surface, #1e1e23)"
+          : "var(--bg-elevated, #232329)",
         borderColor: "var(--border-subtle, #2e2e36)",
         borderStyle: "solid",
         borderWidth: "1px",
       }}
       {...(testId ? { "data-testid": testId } : {})}
     >
-      <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-        {title}
-      </h2>
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+          {title}
+        </h2>
+        {headerRight}
+      </div>
       <div className="mt-3">{children}</div>
     </section>
   );
