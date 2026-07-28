@@ -3978,7 +3978,7 @@ mod ipc_contract {
             .await
             .expect("planning session should persist");
         let mut workspace = AgentConversationWorkspace::new(
-            conversation.id.clone(),
+            conversation.id,
             project_id.clone(),
             AgentConversationWorkspaceMode::Plan,
             IdeationAnalysisBaseRefKind::ProjectDefault,
