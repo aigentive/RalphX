@@ -452,6 +452,44 @@ describe("P-10: version skew parks in blocked with zero retries", () => {
   });
 });
 
+describe("authority withdrawal parks instead of redialling", () => {
+  it("blocks with a populated reason and burns no ws-tickets", async () => {
+    const r = rig();
+    await connect(r);
+    r.spies.openStream.mockClear();
+
+    r.supervisor.authorityWithdrawn("The host ended this device's session (revoked).");
+
+    expect(r.supervisor.currentState()).toBe("blocked");
+    expect(r.supervisor.blocked()?.failure).toBe("unauthorized");
+    expect(r.supervisor.blocked()?.message).toContain("revoked");
+    expect(r.spies.onBlocked).toHaveBeenCalledWith("unauthorized", expect.any(String));
+    expect(r.supervisor.armedTimers()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(r.spies.openStream).not.toHaveBeenCalled();
+    expect(r.supervisor.presentation()).toBe("error");
+  });
+
+  it("keeps the block and its reason across a background/foreground cycle", async () => {
+    const r = rig({
+      fetchDescriptor: vi.fn(async () => ({ ...DESCRIPTOR, minClientProtocol: 2 })),
+    });
+    await connect(r);
+    expect(r.supervisor.blocked()?.failure).toBe("version");
+
+    // Backgrounding for longer than the debounce must not downgrade the actionable
+    // block to a benign "Suspended" with no re-pair affordance.
+    r.supervisor.visibilityChanged(true);
+    await vi.advanceTimersByTimeAsync(SUSPEND_DEBOUNCE_MS + 10);
+
+    expect(r.supervisor.currentState()).toBe("blocked");
+    expect(r.supervisor.blocked()?.failure).toBe("version");
+    expect(r.supervisor.presentation()).toBe("error");
+    expect(r.supervisor.armedTimers()).toEqual([]);
+  });
+});
+
 // ===========================================================================
 // P-9 — dead-host detection
 // ===========================================================================

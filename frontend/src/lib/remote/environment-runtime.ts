@@ -26,6 +26,7 @@ import { NetworkEventBus } from "./network-event-bus";
 import { networkFetch } from "./network-fetch";
 import { attachRemoteStreamRelay, type RemoteStreamTarget } from "./stream-relay";
 import {
+  isAuthorityResetReason,
   type RemoteClientFrame,
   type RemoteConnectOutcome,
   type RemoteServerFrame,
@@ -34,6 +35,8 @@ import {
   ConnectionSupervisor,
   type EnvironmentDescriptorView,
 } from "./supervisor";
+import type { SupervisorState } from "./supervisor-transition-table";
+import { toRemoteTransportError } from "./transport-errors";
 
 const CLIENT_PROTOCOL_VERSION = 1;
 const CLIENT_MIN_PROTOCOL = 1;
@@ -45,7 +48,15 @@ interface RuntimeEntry {
   entry: EnvironmentEntry;
   supervisor: ConnectionSupervisor;
   socketLive: boolean;
-  bus: NetworkEventBus | null;
+  /**
+   * The environment's ONE bus instance, from the app-lifetime bus registry.
+   *
+   * `EventProvider` memoizes the bus on `environmentId` alone, so rebuilding it for a
+   * same-id reactivation (a flag toggle, a re-activate) would leave the whole mounted
+   * tree subscribed to an orphaned instance while the badge still read Connected.
+   * Identity is therefore stable per environment; only the relay wiring is swapped.
+   */
+  bus: NetworkEventBus;
   detachRelay: (() => void) | null;
   relayKind: "full" | "health" | null;
 }
@@ -119,9 +130,15 @@ async function sendFrame(
   environmentId: string,
   frame: RemoteClientFrame
 ): Promise<void> {
-  await primitiveInvoke("remote_stream_send", {
-    input: { id: environmentId, frame },
-  });
+  try {
+    await primitiveInvoke("remote_stream_send", {
+      input: { id: environmentId, frame },
+    });
+  } catch (reason: unknown) {
+    // The proxy rejects with the `"{CODE}: {message}"` rendering, which the
+    // supervisor's typed classification cannot read as anything but `transient`.
+    throw toRemoteTransportError(reason, environmentId, "remote_stream_send");
+  }
 }
 
 function detachedBus(environmentId: string, localBus: EventBus): NetworkEventBus {
@@ -144,6 +161,29 @@ export function initializeEnvironmentRuntime(): () => void {
   const runtimes = new Map<string, RuntimeEntry>();
   let enabled = useUiStore.getState().featureFlags.remoteEnvironments;
   let activeEnvironmentId = useEnvironmentStore.getState().activeEnvironmentId;
+
+  /**
+   * The single writer of `connectionStates`, and the one place the P-25 "never a probe
+   * alone" rule is enforced for BACKGROUND environments.
+   *
+   * A non-active environment completes descriptor + socket + hello + probe, but its
+   * `beginStream` is a no-op: no `subscribe` frame is ever sent and nothing is
+   * projected (full background projection is a v1 non-goal). Painting that green would
+   * assert a stream liveness that does not exist, so it presents as `health_only`.
+   */
+  const publishConnectionState = (
+    environmentId: string,
+    state: SupervisorState
+  ): void => {
+    useEnvironmentStore
+      .getState()
+      .setConnectionState(
+        environmentId,
+        state === "connected" && environmentId !== activeEnvironmentId
+          ? "health_only"
+          : state
+      );
+  };
 
   const detachRelay = (runtime: RuntimeEntry): void => {
     runtime.detachRelay?.();
@@ -185,25 +225,67 @@ export function initializeEnvironmentRuntime(): () => void {
     runtime.relayKind = "health";
   };
 
-  const buildActiveBus = (runtime: RuntimeEntry): void => {
-    detachRelay(runtime);
-    const environmentId = runtime.entry.id;
+  /**
+   * The app-lifetime bus registry: exactly ONE `NetworkEventBus` per environment id,
+   * outliving deactivation, flag toggles, and runtime reconciliation. Only a removed
+   * registry row forgets its bus.
+   */
+  const buses = new Map<string, NetworkEventBus>();
+
+  const projectionBus = (environmentId: string): NetworkEventBus => {
+    const existing = buses.get(environmentId);
+    if (existing !== undefined) {
+      return existing;
+    }
     const bus = new NetworkEventBus({
       environmentId,
       localBus,
       sendFrame: (frame) => sendFrame(environmentId, frame),
       hydrate: async () => {
-        await getQueryClient(environmentId).invalidateQueries();
+        // The §3.4 hydration barrier must FAIL CLOSED: TanStack swallows every refetch
+        // rejection unless `throwOnError`, so a 500ing host would resolve the barrier,
+        // validate the cursor, and let the badge read Connected over an empty board.
+        // `refetchType: "all"` because a snapshot is not "taken" if the inactive
+        // queries the next render will read were left stale.
+        await getQueryClient(environmentId).invalidateQueries(
+          { refetchType: "all" },
+          { throwOnError: true }
+        );
       },
       sweep: () => {
         void getQueryClient(environmentId).invalidateQueries();
       },
-      onRestartRequired: () => runtime.supervisor.streamLost(),
+      onRestartRequired: (cause) => {
+        // Resolved at call time, never captured: the bus outlives any single runtime.
+        const runtime = runtimes.get(environmentId);
+        if (runtime === undefined) {
+          return;
+        }
+        // `revoked` / `host_disabled` are the host WITHDRAWING the session. Routing
+        // them to `streamLost` would redial the 16 s ladder forever against a host
+        // that already refused this device, instead of showing the re-pair state.
+        if (cause.kind === "reset" && isAuthorityResetReason(cause.reason)) {
+          runtime.supervisor.authorityWithdrawn(
+            `The host ended this device's session (${cause.reason}). Re-pair this environment to reconnect.`
+          );
+          return;
+        }
+        runtime.supervisor.streamLost();
+      },
     });
-    runtime.bus = bus;
+    buses.set(environmentId, bus);
+    return bus;
+  };
+
+  /** Points the environment's stable bus at the live relay and starts projecting. */
+  const attachProjectionRelay = (runtime: RuntimeEntry): void => {
+    detachRelay(runtime);
+    // Whatever the host did while this bus was not projecting is unobserved, so the
+    // next attempt must cold-hydrate rather than resume a cursor it stopped honouring.
+    runtime.bus.abandonStream();
     runtime.detachRelay = attachRemoteStreamRelay({
       localBus,
-      target: bus,
+      target: runtime.bus,
       onFrameActivity: () => runtime.supervisor.noteFrameActivity(),
       onStreamClosed: () => streamClosed(runtime),
       onUndecodableFrame: () => runtime.supervisor.streamLost(),
@@ -227,15 +309,27 @@ export function initializeEnvironmentRuntime(): () => void {
         return parseDescriptor(await response.json());
       },
       openStream: async () => {
-        const outcome = parseConnectOutcome(
-          await primitiveInvoke("remote_connect", { input: { id: environmentId } })
-        );
+        let raw: unknown;
+        try {
+          raw = await primitiveInvoke("remote_connect", {
+            input: { id: environmentId },
+          });
+        } catch (reason: unknown) {
+          // A revoked credential must reach `classifyFailure` as REMOTE_UNAUTHORIZED,
+          // not as an untyped string the ladder retries forever.
+          throw toRemoteTransportError(reason, environmentId, "remote_connect");
+        }
+        const outcome = parseConnectOutcome(raw);
         runtime.socketLive = true;
         return outcome;
       },
       releaseStream: async () => {
         runtime.socketLive = false;
-        await primitiveInvoke("remote_disconnect", { input: { id: environmentId } });
+        try {
+          await primitiveInvoke("remote_disconnect", { input: { id: environmentId } });
+        } catch (reason: unknown) {
+          throw toRemoteTransportError(reason, environmentId, "remote_disconnect");
+        }
       },
       probe: async () => {
         const response = await networkFetch(environmentId, HEALTH_PATH);
@@ -266,18 +360,18 @@ export function initializeEnvironmentRuntime(): () => void {
         if (useEnvironmentStore.getState().activeEnvironmentId !== environmentId) {
           return;
         }
-        await runtime.bus?.beginStream(outcome);
+        await runtime.bus.beginStream(outcome);
       },
       hasLiveSocket: () => runtime.socketLive,
       onStateChange: (state) => {
-        useEnvironmentStore.getState().setConnectionState(environmentId, state);
+        publishConnectionState(environmentId, state);
       },
     });
     runtime = {
       entry,
       supervisor,
       socketLive: false,
-      bus: null,
+      bus: projectionBus(environmentId),
       detachRelay: null,
       relayKind: null,
     };
@@ -286,17 +380,30 @@ export function initializeEnvironmentRuntime(): () => void {
 
   const activate = (environmentId: string): void => {
     const previous = runtimes.get(activeEnvironmentId);
-    if (previous !== undefined && previous.entry.id !== environmentId) {
-      previous.bus = null;
+    const demoted = previous !== undefined && previous.entry.id !== environmentId;
+    if (demoted) {
+      // The instance survives — React holds it — but it stops projecting.
+      previous.bus.abandonStream();
       attachHealthRelay(previous);
     }
     activeEnvironmentId = environmentId;
+    // Persistence never substitutes for the cold hydrate on reactivation. The target
+    // environment's QueryClient is RETAINED across switches, so without this every
+    // remounted query is inside its 5-minute staleTime and the board renders minutes
+    // -old data as current — for `local` (which has no supervisor to re-hydrate it)
+    // and for any remote environment whose supervisor is parked in backoff/blocked.
+    void getQueryClient(environmentId).invalidateQueries();
+    if (demoted) {
+      // The demoted environment stops projecting the instant it loses the bus, so its
+      // badge must stop claiming a live stream even though its FSM state is unchanged.
+      publishConnectionState(previous.entry.id, previous.supervisor.currentState());
+    }
     const runtime = runtimes.get(environmentId);
     if (runtime === undefined) {
       return;
     }
-    buildActiveBus(runtime);
-    // A fresh supervisor attempt pairs the fresh bus with the next hello H barrier.
+    attachProjectionRelay(runtime);
+    // A fresh supervisor attempt pairs the reset bus with the next hello H barrier.
     runtime.supervisor.stop();
     runtime.supervisor.start();
   };
@@ -305,7 +412,7 @@ export function initializeEnvironmentRuntime(): () => void {
     for (const [environmentId, runtime] of runtimes) {
       runtime.supervisor.stop();
       detachRelay(runtime);
-      runtime.bus = null;
+      runtime.bus.abandonStream();
       confirmedScopes.delete(environmentId);
     }
     runtimes.clear();
@@ -322,7 +429,10 @@ export function initializeEnvironmentRuntime(): () => void {
       if (!wanted.has(environmentId)) {
         runtime.supervisor.stop();
         detachRelay(runtime);
+        runtime.bus.abandonStream();
         runtimes.delete(environmentId);
+        // The registry row is gone, so this environment's bus identity may go too.
+        buses.delete(environmentId);
         confirmedScopes.delete(environmentId);
         removeQueryClient(environmentId);
       }
@@ -336,7 +446,7 @@ export function initializeEnvironmentRuntime(): () => void {
       const runtime = createRuntime(entry);
       runtimes.set(entry.id, runtime);
       if (entry.id === state.activeEnvironmentId) {
-        buildActiveBus(runtime);
+        attachProjectionRelay(runtime);
       } else {
         attachHealthRelay(runtime);
       }
@@ -345,11 +455,13 @@ export function initializeEnvironmentRuntime(): () => void {
   };
 
   registerRemoteEventBusFactory((environmentId, fallbackLocalBus) => {
+    // `relayKind`, not bus existence: the bus is permanent, so what decides whether a
+    // consumer gets the real projector is whether it is currently wired to the relay.
     const runtime = runtimes.get(environmentId);
     return enabled &&
       environmentId === activeEnvironmentId &&
-      runtime?.bus !== null &&
-      runtime?.bus !== undefined
+      runtime !== undefined &&
+      runtime.relayKind === "full"
       ? runtime.bus
       : detachedBus(environmentId, fallbackLocalBus);
   });

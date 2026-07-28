@@ -30,7 +30,17 @@ import {
 
 export { LOCAL_ENVIRONMENT_ID };
 
-/** Canonical supervisor FSM vocabulary (§6.5); "connected" is all local ever is. */
+/**
+ * Canonical supervisor FSM vocabulary (§6.5); "connected" is all local ever is.
+ *
+ * Plus ONE presentation-only value the FSM never produces: `health_only`. A
+ * background environment completes descriptor + socket + hello + probe but never
+ * sends `subscribe` and never projects (full background projection is a v1
+ * non-goal), so rendering it as `connected` would assert a stream liveness that
+ * does not exist — "never a probe alone" (§6.5, P-25). The runtime projects a
+ * non-active environment's `connected` to this instead. It is deliberately NOT in
+ * `SUPERVISOR_STATES`: the FSM vocabulary the mobile client consumes is unchanged.
+ */
 export type EnvironmentConnectionState =
   | "idle"
   | "connecting"
@@ -38,7 +48,8 @@ export type EnvironmentConnectionState =
   | "backoff"
   | "offline"
   | "blocked"
-  | "suspended";
+  | "suspended"
+  | "health_only";
 
 export interface EnvironmentEntry {
   id: string;

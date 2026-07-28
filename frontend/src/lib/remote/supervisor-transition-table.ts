@@ -316,7 +316,10 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     // Losing the network does not un-block, and does not start a timer.
     offline: stay("blocked"),
     online: WAKE_FROM_BLOCKED,
-    suspend: stay("suspended"),
+    // Backgrounding does not un-block either, and must not downgrade an actionable
+    // block to a benign `suspended`: that erases the re-pair affordance (P-10) until
+    // another attempt burns. `blocked` already parks with zero timers.
+    suspend: stay("blocked"),
     resume: WAKE_FROM_BLOCKED,
     credentials_changed: WAKE_FROM_BLOCKED,
     retry_now: WAKE_FROM_BLOCKED,

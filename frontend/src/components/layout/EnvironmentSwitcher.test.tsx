@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { remoteEnvironmentsApi } from "@/api/remote-environments";
@@ -15,6 +16,10 @@ import type { RemoteEnvironmentSummary } from "@/api/remote-environments";
 import { EnvironmentSwitcher } from "./EnvironmentSwitcher";
 import { ENVIRONMENT_STATUS_DOT } from "./environment-switcher-status";
 
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn() },
+}));
+
 vi.mock("@/api/remote-environments", () => ({
   remoteEnvironmentsApi: {
     setActiveEnvironment: vi.fn(),
@@ -29,6 +34,7 @@ const ALL_STATES: EnvironmentConnectionState[] = [
   "offline",
   "blocked",
   "suspended",
+  "health_only",
 ];
 
 function remote(id: string, name: string): RemoteEnvironmentSummary {
@@ -102,7 +108,7 @@ describe("EnvironmentSwitcher", () => {
     expect(screen.queryByRole("button", { name: "Switch environment" })).not.toBeInTheDocument();
   });
 
-  it("exports one typed dot description for all seven supervisor states and local", async () => {
+  it("exports one typed dot description for every presented state and local", async () => {
     seed(ALL_STATES);
     renderSwitcher();
     await openSwitcher();
@@ -214,10 +220,10 @@ describe("EnvironmentSwitcher", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("follows the store when a failed optimistic switch reverts", async () => {
+  it("follows the store and surfaces the error when a switch is refused", async () => {
     seed(["connected"]);
     vi.mocked(remoteEnvironmentsApi.setActiveEnvironment).mockRejectedValue(
-      new Error("refused"),
+      "REMOTE_FORBIDDEN: the proxy still points at another environment",
     );
     renderSwitcher();
     await openSwitcher();
@@ -231,6 +237,10 @@ describe("EnvironmentSwitcher", () => {
       expect(screen.getByRole("button", { name: "Switch environment" })).toHaveTextContent(
         "This Mac",
       );
+    });
+    // A silent revert would leave the user with an unexplained remount flicker.
+    expect(toast.error).toHaveBeenCalledWith("Could not switch to Remote 0", {
+      description: "REMOTE_FORBIDDEN",
     });
   });
 });

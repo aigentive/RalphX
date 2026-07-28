@@ -120,7 +120,10 @@ describe("blocked entry and wakeups", () => {
   });
 
   it("suspend parks a blocked environment rather than clearing the block", () => {
-    expect(lookupTransition("blocked", "suspend").next).toBe("suspended");
+    // Backgrounding must not convert an actionable block into a benign "Suspended":
+    // `blocked` already parks with zero timers, so there is nothing left to suspend.
+    expect(lookupTransition("blocked", "suspend").next).toBe("blocked");
+    expect(lookupTransition("blocked", "suspend").effects).toEqual([]);
   });
 
   it("every blocked wakeup resets the ladder and begins one attempt", () => {

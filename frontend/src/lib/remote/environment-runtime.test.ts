@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RemoteEnvironmentSummary } from "@/api/remote-environments";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
-import { resetQueryClient } from "@/lib/queryClient";
+import { getQueryClient, resetQueryClient } from "@/lib/queryClient";
 import {
   LOCAL_ENVIRONMENT_ID,
   useEnvironmentStore,
@@ -10,6 +10,7 @@ import {
 import { useUiStore } from "@/stores/uiStore";
 
 import type { RemoteStreamTarget } from "./stream-relay";
+import { RemoteTransportError } from "./transport-errors";
 
 const { supervisors } = vi.hoisted(() => ({
   supervisors: [] as Array<{
@@ -17,6 +18,8 @@ const { supervisors } = vi.hoisted(() => ({
       environmentId: string;
       refreshScopes: () => Promise<readonly string[]>;
       applyScopes: (scopes: readonly string[]) => void;
+      openStream: () => Promise<unknown>;
+      onStateChange: (state: string) => void;
       beginStream: (outcome: {
         environmentId: string;
         hostEnvironmentId: string;
@@ -30,6 +33,9 @@ const { supervisors } = vi.hoisted(() => ({
     stops: number;
     visibility: boolean[];
     networks: boolean[];
+    streamLosses: number;
+    authorityWithdrawals: string[];
+    setState: (state: string) => void;
   }>,
 }));
 
@@ -45,17 +51,32 @@ vi.mock("./supervisor", async (importOriginal) => {
         stops: 0,
         visibility: [],
         networks: [],
+        streamLosses: 0,
+        authorityWithdrawals: [],
+        setState: (state: string) => {
+          this.state = state;
+        },
       };
       supervisors.push(this.record);
     }
 
+    state: string = "idle";
+
     start(): void {
       this.record.starts += 1;
+    }
+    currentState(): string {
+      return this.state;
     }
     stop(): void {
       this.record.stops += 1;
     }
-    streamLost(): void {}
+    streamLost(): void {
+      this.record.streamLosses += 1;
+    }
+    authorityWithdrawn(message: string): void {
+      this.record.authorityWithdrawals.push(message);
+    }
     noteFrameActivity(): void {}
     visibilityChanged(hidden: boolean): void {
       this.record.visibility.push(hidden);
@@ -70,6 +91,19 @@ vi.mock("./supervisor", async (importOriginal) => {
 vi.mock("./network-fetch", () => ({
   networkFetch: vi.fn(),
 }));
+
+vi.mock("#tauri-core-primitive", () => ({
+  invoke: vi.fn(async () => undefined),
+}));
+
+const OUTCOME = {
+  environmentId: "env-b",
+  hostEnvironmentId: "host-env-b",
+  streamEpoch: "epoch-1",
+  maxSeq: 100,
+  heartbeatSecs: 20,
+  protocolVersion: 1,
+};
 
 function summary(id: string): RemoteEnvironmentSummary {
   return {
@@ -175,6 +209,172 @@ describe("environment runtime composition", () => {
 
     expect((bus as EventBus & RemoteStreamTarget).environmentId()).toBe("env-b");
     expect(supervisors[0]?.starts).toBeGreaterThan(1);
+  });
+
+  it.each(["revoked", "host_disabled"] as const)(
+    "routes reset(%s) to the block path, never to the retry ladder",
+    async (reason) => {
+      const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+      useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+      setFlag(true);
+      teardown = initializeEnvironmentRuntime();
+      useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+      const runtime = supervisors[supervisors.length - 1];
+      const bus = createEventBus("env-b") as EventBus & {
+        handleFrame: (frame: { type: "reset"; reason: string }) => void;
+      };
+
+      bus.handleFrame({ type: "reset", reason });
+
+      expect(runtime?.authorityWithdrawals).toHaveLength(1);
+      expect(runtime?.authorityWithdrawals[0]).toContain(reason);
+      expect(runtime?.streamLosses).toBe(0);
+    }
+  );
+
+  it("routes a non-authority reset to the ordinary retry ladder", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const runtime = supervisors[supervisors.length - 1];
+    const bus = createEventBus("env-b") as EventBus & {
+      handleFrame: (frame: { type: "reset"; reason: string }) => void;
+    };
+
+    bus.handleFrame({ type: "reset", reason: "cursor_pruned" });
+
+    expect(runtime?.streamLosses).toBe(1);
+    expect(runtime?.authorityWithdrawals).toEqual([]);
+  });
+
+  it("lifts a proxy refusal on the connect path into the transport taxonomy", async () => {
+    const { invoke } = await import("#tauri-core-primitive");
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    const runtime = supervisors[supervisors.length - 1];
+
+    // The Rust proxy rejects with its `"{CODE}: {message}"` rendering. Left raw, the
+    // supervisor classifies a revoked device as `transient` and loops the ladder.
+    vi.mocked(invoke).mockRejectedValueOnce(
+      "REMOTE_UNAUTHORIZED: this device was revoked"
+    );
+    const failure = await runtime?.deps.openStream().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(RemoteTransportError);
+    expect((failure as RemoteTransportError).code).toBe("REMOTE_UNAUTHORIZED");
+  });
+
+  it("fails the hydration barrier when the snapshot refetch rejects", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const client = getQueryClient("env-b");
+    const invalidate = vi
+      .spyOn(client, "invalidateQueries")
+      .mockRejectedValue(new Error("host answered 500"));
+
+    // A swallowed refetch failure would resolve the §3.4 barrier over an empty board.
+    await expect(
+      supervisors[supervisors.length - 1]?.deps.beginStream(OUTCOME)
+    ).rejects.toThrow(/500/);
+    expect(invalidate).toHaveBeenCalledWith(
+      { refetchType: "all" },
+      { throwOnError: true }
+    );
+  });
+
+  it("keeps one bus identity per environment across reactivation", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const first = createEventBus("env-b");
+
+    // EventProvider memoizes the bus on environmentId alone, so a same-id
+    // reactivation that rebuilt the bus would orphan every mounted subscriber.
+    setFlag(false);
+    setFlag(true);
+    expect(createEventBus("env-b")).toBe(first);
+
+    useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    expect(createEventBus("env-b")).toBe(first);
+
+    // A removed registry row does forget its bus.
+    useEnvironmentStore.getState().setEnvironments([]);
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    expect(createEventBus("env-b")).not.toBe(first);
+  });
+
+  it("never paints a background environment as connected (P-25)", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const forEnvironment = (id: string) =>
+      supervisors.filter((item) => item.deps.environmentId === id).at(-1)!;
+    const b = forEnvironment("env-b");
+    const c = forEnvironment("env-c");
+
+    // env-c never sends `subscribe` and never projects: its attempt is a probe on a
+    // socket nobody reads, so it must not wear the connected dot.
+    c.setState("connected");
+    c.deps.onStateChange("connected");
+    b.setState("connected");
+    b.deps.onStateChange("connected");
+
+    expect(useEnvironmentStore.getState().connectionStates["env-c"]).toBe("health_only");
+    expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("connected");
+  });
+
+  it("demotes the outgoing environment's badge when the active one changes", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const b = supervisors.filter((item) => item.deps.environmentId === "env-b").at(-1)!;
+    b.setState("connected");
+    b.deps.onStateChange("connected");
+    expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("connected");
+
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-c" });
+
+    // env-b lost its bus, so it stops projecting the instant the switch lands.
+    expect(useEnvironmentStore.getState().connectionStates["env-b"]).toBe("health_only");
+  });
+
+  it("re-hydrates the target cache on every activation, local included", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+
+    const local = vi
+      .spyOn(getQueryClient(LOCAL_ENVIRONMENT_ID), "invalidateQueries")
+      .mockResolvedValue();
+    const remote = vi
+      .spyOn(getQueryClient("env-b"), "invalidateQueries")
+      .mockResolvedValue();
+
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    expect(remote).toHaveBeenCalled();
+
+    // Local has no supervisor to cold-hydrate it, so without an explicit sweep the
+    // retained cache stays fresh for 5 minutes over whatever changed meanwhile.
+    useEnvironmentStore.setState({ activeEnvironmentId: LOCAL_ENVIRONMENT_ID });
+    expect(local).toHaveBeenCalled();
   });
 
   it("uses pairing scopes in background without a session fetch and records them", async () => {

@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { Check, ChevronDown } from "lucide-react";
+import { toast } from "sonner";
 
 import {
   Popover,
@@ -26,6 +27,10 @@ import {
   useEnvironmentStore,
 } from "@/stores/environmentStore";
 import { useUiStore } from "@/stores/uiStore";
+import {
+  isRemoteTransportError,
+  parseRemoteTransportErrorCode,
+} from "@/lib/remote/transport-errors";
 
 import { ENVIRONMENT_STATUS_DOT } from "./environment-switcher-status";
 
@@ -102,6 +107,18 @@ const EnvironmentRow = memo(function EnvironmentRow({
   );
 });
 
+/** The transport code where there is one, so the toast names the actual refusal. */
+function switchFailureDetail(error: unknown): string {
+  if (isRemoteTransportError(error)) {
+    return error.code;
+  }
+  const code = parseRemoteTransportErrorCode(error);
+  if (code !== null) {
+    return code;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 export interface EnvironmentSwitcherProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -153,11 +170,20 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
     (id: string) => {
       setOpen(false);
       if (id !== activeEnvironmentId) {
-        void setActiveEnvironment(id).catch(() => undefined);
+        const name =
+          environments.find((environment) => environment.id === id)?.name ?? id;
+        void setActiveEnvironment(id).catch((error: unknown) => {
+          // Rust refused the switch and the store already reverted. Swallowing the
+          // rejection would turn a backend refusal into a UI no-op: a double remount
+          // flicker, in-flight REMOTE_FORBIDDEN failures, then a silent revert.
+          toast.error(`Could not switch to ${name}`, {
+            description: switchFailureDetail(error),
+          });
+        });
       }
       queueMicrotask(() => triggerRef.current?.focus());
     },
-    [activeEnvironmentId, setActiveEnvironment, setOpen],
+    [activeEnvironmentId, environments, setActiveEnvironment, setOpen],
   );
 
   const handleOptionKeyDown = useCallback(

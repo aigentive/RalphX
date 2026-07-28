@@ -129,6 +129,35 @@ export function parseRemoteTransportErrorCode(
   return PROXY_ERROR_CODE_ALIASES[token] ?? null;
 }
 
+/**
+ * Lifts a raw proxy rejection into the taxonomy, or returns it untouched when it
+ * carries no transport code (that is the signal to treat it as the command's own
+ * error). Every seam that awaits a `remote_*` Tauri command must go through this:
+ * `classifyFailure` in the supervisor recognises `RemoteTransportError` instances,
+ * never the `"{CODE}: {message}"` strings the proxy actually rejects with, so a raw
+ * rejection classifies a revoked credential as `transient` and loops the backoff
+ * ladder instead of parking in `blocked`.
+ */
+export function toRemoteTransportError(
+  reason: unknown,
+  environmentId: string,
+  context?: string
+): unknown {
+  if (reason instanceof RemoteTransportError) {
+    return reason;
+  }
+  const code = parseRemoteTransportErrorCode(reason);
+  if (code === null) {
+    return reason;
+  }
+  const message = parseRemoteTransportErrorMessage(reason);
+  return new RemoteTransportError({
+    code,
+    message: context === undefined ? message : `${message} (${context})`,
+    environmentId,
+  });
+}
+
 /** The human-readable half of `"{CODE}: {message}"`, or the whole value. */
 export function parseRemoteTransportErrorMessage(value: unknown): string {
   if (typeof value !== "string") {

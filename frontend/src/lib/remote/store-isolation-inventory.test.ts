@@ -8,6 +8,38 @@ import { useProjectStore } from "@/stores/projectStore";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { STORE_ISOLATION_INVENTORY } from "./store-isolation-inventory";
 
+/**
+ * Every local binding a module imports from ANY zustand entry point — `zustand`,
+ * `zustand/vanilla`, `zustand/traditional`, and aliased forms
+ * (`import { create as createStore }`). Matching the binding rather than the literal
+ * `create<` is what keeps an untyped `create(persist(...))`, a
+ * `createWithEqualityFn`, or an alias from adding an env-owned store that skips this
+ * inventory — and therefore skips the reset-on-switch funnel — with green CI.
+ */
+function zustandCreateBindings(source: string): string[] {
+  const bindings: string[] = [];
+  const imports = source.matchAll(
+    /import\s+([^;]+?)\s+from\s+["']zustand(?:\/[\w-]+)*["']/g
+  );
+  for (const [, clause] of imports) {
+    for (const [, imported, alias] of (clause ?? "").matchAll(
+      /(?:^|[{,\s])([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?/g
+    )) {
+      const local = alias ?? imported;
+      if (local !== undefined && /^create/i.test(imported ?? "")) {
+        bindings.push(local);
+      }
+    }
+  }
+  return bindings;
+}
+
+function createsStore(source: string): boolean {
+  return zustandCreateBindings(source).some((binding) =>
+    new RegExp(`\\b${binding}\\s*[<(]`).test(source)
+  );
+}
+
 function findStores(root: string): string[] {
   const found: string[] = [];
   const walk = (directory: string) => {
@@ -17,7 +49,7 @@ function findStores(root: string): string[] {
       if (entry.isDirectory()) walk(path);
       else if (!/\.test\./.test(entry.name)) {
         const source = readFileSync(path, "utf8");
-        if (/from ["']zustand["']/.test(source) && /\bcreate\s*</.test(source)) {
+        if (createsStore(source)) {
           found.push(relative(join(root, ".."), path).replaceAll("\\", "/"));
         }
       }
@@ -32,6 +64,24 @@ describe("store isolation inventory", () => {
     expect(STORE_ISOLATION_INVENTORY.map((entry) => entry.modulePath).sort()).toEqual(
       findStores(join(process.cwd(), "src")),
     );
+  });
+
+  it("detects create sites the old `create<` scan was blind to", () => {
+    expect(
+      createsStore(`import { create } from "zustand";\nexport const s = create(persist(f, o));`)
+    ).toBe(true);
+    expect(
+      createsStore(
+        `import { createWithEqualityFn } from "zustand/traditional";\nconst s = createWithEqualityFn(f);`
+      )
+    ).toBe(true);
+    expect(
+      createsStore(
+        `import { create as createStore } from "zustand/vanilla";\nconst s = createStore(f);`
+      )
+    ).toBe(true);
+    expect(createsStore(`import { persist } from "zustand/middleware";`)).toBe(false);
+    expect(createsStore(`const create = other();\ncreate(1);`)).toBe(false);
   });
 
   it("matches every persisted partialize contract with disjoint fields", () => {
