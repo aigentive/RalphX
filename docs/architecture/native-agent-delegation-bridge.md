@@ -23,7 +23,8 @@
   - `delegate_wait`
   - `delegate_cancel`
 - Backend owns:
-  - async job lifecycle
+  - reusable delegated launch/reuse orchestration through `NativeDelegationLauncher`
+  - HTTP one-shot job lifecycle, snapshots, cancellation, and lifecycle projection
   - canonical agent lookup from `agents/`
   - explicit harness selection
   - delegated-session creation/linking
@@ -88,6 +89,7 @@
   - ideation, project, task-like, and nested-delegation parents; standalone remains unsupported
   - explicit parent turn/message lineage in request metadata, agent env, prompt context, and returned job snapshots
   - exact caller-task reservation, delegated-run settlement, and startup orphan recovery
+  - application-layer launch results that remain independent of one-shot HTTP job snapshots
   - per-job status history (`running`, `completed`, `failed`, `cancelled`) on the snapshot contract
   - `delegate_wait` hydration of delegated-session status with optional recent messages
 - Still required:

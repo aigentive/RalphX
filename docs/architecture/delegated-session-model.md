@@ -58,6 +58,9 @@
 ## Continuity
 - RalphX continuity key is the delegated session id.
 - Provider continuity is additive through `provider_session_id`, not by reusing ideation session ids.
+- `NativeDelegationLauncher` launches/reuses this durable session and returns the delegated
+  session/conversation/run outcome; HTTP `DelegationJobSnapshot` state is a separate one-shot
+  wrapper concern.
 
 ## Phase 0 Implementation Cut
 - add delegated-session entity + repository

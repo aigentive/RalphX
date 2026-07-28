@@ -150,6 +150,7 @@ pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod merge_pipeline_visibility;
 pub(crate) mod native_menu;
+pub mod native_delegation_launcher;
 pub mod notification_context_resolver;
 pub mod notification_service;
 #[cfg(test)]
