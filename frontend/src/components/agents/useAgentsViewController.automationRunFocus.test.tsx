@@ -36,6 +36,7 @@ const {
   useConversationMock,
   useProjectAgentConversationsMock,
 } = getAgentsViewTestMocks();
+const deferredHydrationTimeout = { timeout: 3_000 };
 const originalClearAutomationRunFocusRequest =
   useAgentSessionStore.getState().clearAutomationRunFocusRequest;
 
@@ -293,10 +294,13 @@ describe("useAgentsViewController automation run focus", () => {
 
     const first = renderControllerView();
     await expectRunFocusApplied();
-    expect(await screen.findByTestId("agents-artifact-pane")).toHaveAttribute(
-      "data-active-tab",
-      "tasks",
-    );
+    expect(
+      await screen.findByTestId(
+        "agents-artifact-pane",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveAttribute("data-active-tab", "tasks");
     first.unmount();
 
     const requestWithoutSeed = {
@@ -316,10 +320,13 @@ describe("useAgentsViewController automation run focus", () => {
 
     renderControllerView();
     await expectRunFocusApplied();
-    expect(await screen.findByTestId("agents-artifact-pane")).toHaveAttribute(
-      "data-active-tab",
-      "pr",
-    );
+    expect(
+      await screen.findByTestId(
+        "agents-artifact-pane",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveAttribute("data-active-tab", "pr");
   });
 
   it("reveals a hidden tab targeted by an explicit automation-run focus request", async () => {
@@ -350,10 +357,13 @@ describe("useAgentsViewController automation run focus", () => {
     renderControllerView();
     await expectRunFocusApplied();
 
-    expect(await screen.findByTestId("agents-artifact-pane")).toHaveAttribute(
-      "data-active-tab",
-      "plan",
-    );
+    expect(
+      await screen.findByTestId(
+        "agents-artifact-pane",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveAttribute("data-active-tab", "plan");
     await waitFor(() => {
       expect(
         useAgentSessionStore.getState().artifactByConversationId[setup.id]
@@ -386,10 +396,13 @@ describe("useAgentsViewController automation run focus", () => {
 
     renderControllerView();
 
-    expect(await screen.findByTestId("agents-artifact-pane")).toHaveAttribute(
-      "data-active-tab",
-      "plan",
-    );
+    expect(
+      await screen.findByTestId(
+        "agents-artifact-pane",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveAttribute("data-active-tab", "plan");
     await waitFor(() => {
       expect(
         useAgentSessionStore.getState().artifactByConversationId[setup.id]
