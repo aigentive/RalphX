@@ -1608,6 +1608,16 @@
         "hostManagement"
       ],
       "class": "elevated",
+      "command": "preview_remote_environment",
+      "module": "remote_environment_commands",
+      "reason": "remote environment authority",
+      "registered": false
+    },
+    {
+      "capabilities": [
+        "hostManagement"
+      ],
+      "class": "elevated",
       "command": "pair_remote_environment",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",

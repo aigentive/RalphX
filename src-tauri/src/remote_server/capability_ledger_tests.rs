@@ -519,7 +519,7 @@ fn detector_b_is_calibrated_and_floor_enforced() {
     let rows = census();
     assert_eq!(
         rows.len(),
-        539,
+        540,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
