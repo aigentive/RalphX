@@ -173,6 +173,9 @@ pub(crate) fn classify_agent_workspace_repair_delivery(
             | ChatServiceError::ConversationNotFound(_)
             | ChatServiceError::PersonaUnavailable(_),
         ) => AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure,
+        Err(ChatServiceError::MessageDeliveredNotPersisted(_)) => {
+            AgentWorkspaceRepairDispatchSettlement::Delivered
+        }
         Err(
             ChatServiceError::SpawnFailed(_)
             | ChatServiceError::CommunicationFailed(_)

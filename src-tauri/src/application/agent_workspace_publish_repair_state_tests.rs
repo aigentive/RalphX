@@ -138,6 +138,18 @@ fn repair_delivery_classifier_blocks_deterministic_errors_and_retries_uncertain_
         );
     }
 
+    let delivered_not_persisted =
+        ChatServiceError::MessageDeliveredNotPersisted("transcript write failed".to_string());
+    assert_eq!(
+        classify_agent_workspace_repair_delivery(
+            Err(&delivered_not_persisted),
+            &conversation_id,
+            &run_id,
+        ),
+        AgentWorkspaceRepairDispatchSettlement::Delivered,
+        "a live process that accepted the repair turn must not receive a duplicate retry"
+    );
+
     let mismatched = SendResult {
         conversation_id: "another-conversation".to_string(),
         agent_run_id: run_id.as_str().to_string(),
