@@ -193,9 +193,8 @@ impl Drop for RetentionLease {
 
 /// Runs the pruner on a fixed interval for the life of the process.
 ///
-/// Spawned from an async context (rule 17). Every prune reads the lease floor **immediately
-/// before** issuing the delete, so a lease taken during the interval is honoured rather than
-/// raced: the floor is a live read, not a cached one.
+/// Spawned from an async context (rule 17). Every prune reads the lease floor when it builds the
+/// request, so a lease held across the interval is honoured rather than raced.
 pub(crate) fn spawn_pruner(stream: crate::remote_server::sequencer::RemoteStreamHandle) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(PRUNE_INTERVAL);
@@ -213,8 +212,14 @@ pub(crate) async fn prune_once(stream: &crate::remote_server::sequencer::RemoteS
         current_epoch: window.epoch.as_str().to_string(),
         epoch_floor_seq: window.floor_seq,
         max_seq: stream.max_seq(),
-        // Read last and used immediately: a lease acquired after this read cannot be below it,
-        // because a new subscription's cursor is always >= the current pruned floor.
+        // Read last, but NOT a serialization point: the DELETE runs later on the DB thread, so a
+        // subscription starting in between can take a lease at a cursor this prune is already
+        // about to delete past (a new cursor is only guaranteed >= the PREVIOUS pruned floor, not
+        // >= this prune's ceiling). That case stays fail-closed downstream rather than here — the
+        // drain detects the hole/short read and `begin_subscription` re-validates the pruned floor
+        // after draining — so the racing client gets `reset(cursor_pruned)` and cold-hydrates
+        // instead of being served a spliced replay. Honouring it inside the delete transaction
+        // (a floor re-read at DELETE time) is what would upgrade that reset back to a warm resume.
         lease_floor: stream.leases().lease_floor(),
         retain_rows: RETAIN_ROWS,
         retain_days: RETAIN_DAYS,
