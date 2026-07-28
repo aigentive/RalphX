@@ -1449,6 +1449,10 @@
     {
       "command": "resolve_user_question",
       "reason": "steering-question"
+    },
+    {
+      "command": "send_remote_chat_message",
+      "reason": "steers-live-agent-turn"
     }
   ],
   "facade_ops": [

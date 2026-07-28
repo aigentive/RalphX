@@ -908,6 +908,11 @@ pub const CONDITIONAL_CAPABILITIES: &[ConditionalCapability] = &[ConditionalCapa
 pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     ("approve_permission_request", "authorizes-live-tool-call"),
     ("resolve_user_question", "steering-question"),
+    // Declared, precisely BECAUSE the detectors are silent on it. The P-17b negative
+    // suite is generated from detector output, so a spawn-free command that steers a
+    // live agent would otherwise never be proved unreachable from a default pairing —
+    // the one class of member the generator cannot find by itself.
+    ("send_remote_chat_message", "steers-live-agent-turn"),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.
