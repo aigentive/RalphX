@@ -121,6 +121,33 @@ describe("P-13 environment store isolation", () => {
     resolve();
     await pending;
   });
+  /**
+   * P-12's proof obligation is an ORDER, not a state snapshot: the DOM-visible state
+   * change must precede the first proxy call. Asserting both after the fact establishes
+   * nothing — an implementation that awaited the invoke first would pass. This records
+   * both events into one ordered log.
+   */
+  it("writes the visible state before dispatching the first proxy call", async () => {
+    const order: string[] = [];
+    const unsubscribe = useEnvironmentStore.subscribe((state, previous) => {
+      if (state.activeEnvironmentId !== previous.activeEnvironmentId) {
+        order.push(`state:${state.activeEnvironmentId}`);
+      }
+    });
+    mockedApi.setActiveEnvironment.mockImplementation(async () => {
+      order.push("invoke");
+      return null;
+    });
+
+    try {
+      await useEnvironmentStore.getState().setActiveEnvironment("env-b");
+    } finally {
+      unsubscribe();
+    }
+
+    expect(order).toEqual(["state:env-b", "invoke"]);
+  });
+
   it("does no storage work for a no-op switch", async () => {
     const getSpy = vi.spyOn(Storage.prototype, "getItem");
     const setSpy = vi.spyOn(Storage.prototype, "setItem");

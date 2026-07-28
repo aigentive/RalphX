@@ -190,6 +190,22 @@ describe("blocked triple", () => {
     );
   });
 
+  it("separates an argument-shape rejection from a host identity failure", () => {
+    seed({
+      presentation: "error",
+      blockedFailure: "invalid_request",
+      blockedMessage: null,
+    });
+    renderBanner();
+
+    const banner = screen.getByTestId("remote-connection-banner");
+    expect(banner).toHaveTextContent(`"${REMOTE_NAME}" rejected this app's request`);
+    // The host's identity was never in question, so the malformed-descriptor copy — and the
+    // re-pair affordance it implies — must not appear.
+    expect(banner).not.toHaveTextContent("sent an invalid identity response");
+    expect(screen.queryByTestId("remote-connection-banner-repair")).toBeNull();
+  });
+
   it("stays blocked-shaped for an unrecognised cause (fail closed)", () => {
     seed({ presentation: "error", blockedFailure: null });
     renderBanner();

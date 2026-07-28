@@ -67,6 +67,13 @@ export const SUPERVISOR_EVENTS = [
   "connect_failed_version",
   /** The descriptor did not parse, or its environmentId disagreed with the paired row. */
   "connect_failed_malformed_descriptor",
+  /**
+   * The host rejected the request's ARGUMENTS (400). A client-side request bug: identical
+   * retries cannot succeed, so it blocks rather than entering the backoff ladder. Kept
+   * distinct from `connect_failed_malformed_descriptor` because the user-facing fix differs
+   * — update the app, not re-pair the host.
+   */
+  "connect_failed_invalid_request",
   /** The retry-ladder timer fired. */
   "backoff_elapsed",
   /** The socket died while connected (close, error, or the heartbeat watchdog). */
@@ -163,6 +170,7 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     connect_failed_unauthorized: stay("idle"),
     connect_failed_version: stay("idle"),
     connect_failed_malformed_descriptor: stay("idle"),
+    connect_failed_invalid_request: stay("idle"),
     backoff_elapsed: stay("idle"),
     socket_lost: stay("idle"),
     offline: stay("idle"),
@@ -189,6 +197,7 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     connect_failed_unauthorized: ENTER_BLOCKED,
     connect_failed_version: ENTER_BLOCKED,
     connect_failed_malformed_descriptor: ENTER_BLOCKED,
+    connect_failed_invalid_request: ENTER_BLOCKED,
     backoff_elapsed: stay("connecting"),
     socket_lost: {
       next: "backoff",
@@ -227,6 +236,7 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     connect_failed_unauthorized: ENTER_BLOCKED,
     connect_failed_version: ENTER_BLOCKED,
     connect_failed_malformed_descriptor: stay("connected"),
+    connect_failed_invalid_request: stay("connected"),
     backoff_elapsed: stay("connected"),
     socket_lost: { next: "backoff", effects: ["releaseSocket", "scheduleBackoff"] },
     offline: { next: "offline", effects: ["releaseSocket", "clearTimers"] },
@@ -255,6 +265,7 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     connect_failed_unauthorized: ENTER_BLOCKED,
     connect_failed_version: ENTER_BLOCKED,
     connect_failed_malformed_descriptor: ENTER_BLOCKED,
+    connect_failed_invalid_request: ENTER_BLOCKED,
     backoff_elapsed: { next: "connecting", effects: ["beginAttempt"] },
     socket_lost: stay("backoff"),
     // Parked, but the attempt count is KEPT: a flapping NIC must not reset the ladder.
@@ -285,6 +296,7 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     connect_failed_unauthorized: stay("offline"),
     connect_failed_version: stay("offline"),
     connect_failed_malformed_descriptor: stay("offline"),
+    connect_failed_invalid_request: stay("offline"),
     backoff_elapsed: stay("offline"),
     socket_lost: stay("offline"),
     offline: stay("offline"),
@@ -311,6 +323,7 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     connect_failed_unauthorized: stay("blocked"),
     connect_failed_version: stay("blocked"),
     connect_failed_malformed_descriptor: stay("blocked"),
+    connect_failed_invalid_request: stay("blocked"),
     backoff_elapsed: stay("blocked"),
     socket_lost: stay("blocked"),
     // Losing the network does not un-block, and does not start a timer.
@@ -340,6 +353,7 @@ export const SUPERVISOR_TRANSITION_TABLE: Readonly<
     connect_failed_unauthorized: stay("suspended"),
     connect_failed_version: stay("suspended"),
     connect_failed_malformed_descriptor: stay("suspended"),
+    connect_failed_invalid_request: stay("suspended"),
     backoff_elapsed: stay("suspended"),
     socket_lost: stay("suspended"),
     // Connectivity changes are absorbed while parked and re-evaluated on resume.

@@ -6,7 +6,7 @@
  * rejects with `E` itself so existing `catch` paths behave exactly as they do over
  * local Tauri IPC (§6.3).
  *
- * Two of the eight are the SAME unknown outcome and must be handled identically:
+ * Two of the ten are the SAME unknown outcome and must be handled identically:
  * `REMOTE_TIMEOUT_UNKNOWN` (30 s elapsed, the host may or may not have applied the
  * mutation) and `REMOTE_REQUEST_IN_PROGRESS` (the host is already executing this
  * exact `requestId`). Both mean "reconcile by refetching the affected entity" and

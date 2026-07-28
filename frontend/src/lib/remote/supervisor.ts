@@ -81,7 +81,8 @@ export type AttemptFailure =
   | "transient"
   | "unauthorized"
   | "version"
-  | "malformed_descriptor";
+  | "malformed_descriptor"
+  | "invalid_request";
 
 /** A typed attempt failure so classification never depends on message matching (rule 5). */
 export class ConnectAttemptError extends Error {
@@ -522,6 +523,9 @@ export class ConnectionSupervisor {
       case "malformed_descriptor":
         this.dispatch("connect_failed_malformed_descriptor");
         return;
+      case "invalid_request":
+        this.dispatch("connect_failed_invalid_request");
+        return;
       case "transient":
         this.dispatch("connect_failed_transient");
     }
@@ -587,8 +591,9 @@ function classifyFailure(error: unknown): AttemptFailure {
         return "version";
       case "REMOTE_INVALID_ARGUMENTS":
         // A client-side request bug. Retrying an identical malformed request cannot
-        // succeed, so it must not enter the backoff ladder as transient.
-        return "malformed_descriptor";
+        // succeed, so it must not enter the backoff ladder as transient. It is NOT a
+        // malformed descriptor: the host's identity was fine, the request was not.
+        return "invalid_request";
       default:
         return "transient";
     }

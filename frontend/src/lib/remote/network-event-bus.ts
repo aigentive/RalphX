@@ -66,9 +66,10 @@ import {
  * here: they are produced by `emit()` inside the webview, so both sides of that
  * in-app re-broadcast must meet on THIS bus's registry, not on the Tauri bus.
  *
- * PR 2.4 obligation: replace this hand-mirrored list with one generated from the
- * protocol crate's table, so a new Local-only backend name cannot be added host-side
- * without the client learning about it.
+ * The list is GENERATED from the protocol crate's table
+ * (`local-only-backend-events.generated.ts`) and guarded by
+ * `scripts/check-local-only-event-mirror.mjs` in the `pretypecheck` chain, so a new
+ * Local-only backend name cannot be added host-side without the client learning about it.
  */
 export { LOCAL_ONLY_BACKEND_EVENT_NAMES };
 

@@ -102,6 +102,7 @@ describe("blocked entry and wakeups", () => {
     "connect_failed_unauthorized",
     "connect_failed_version",
     "connect_failed_malformed_descriptor",
+    "connect_failed_invalid_request",
   ];
 
   it.each(BLOCKED_CAUSES)("connecting × %s → blocked", (event) => {

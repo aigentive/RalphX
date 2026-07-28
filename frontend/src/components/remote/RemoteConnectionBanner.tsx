@@ -45,6 +45,15 @@ function blockedCopy(
         showRetry: false,
         showRePair: true,
       };
+    case "invalid_request":
+      return {
+        title: `"${name}" rejected this app's request`,
+        body:
+          message ??
+          "The host understood the connection but rejected the request this app sent. Update RalphX, then try again.",
+        showRetry: true,
+        showRePair: false,
+      };
     case "malformed_descriptor":
       return {
         title: `"${name}" sent an invalid identity response`,

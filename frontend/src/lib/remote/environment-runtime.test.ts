@@ -209,6 +209,34 @@ describe("environment runtime composition", () => {
     expect(supervisors[1]?.stops).toBeGreaterThan(0);
   });
 
+  it("clears env-scoped persisted slices when a reconciler removes the row", async () => {
+    const { STORE_ISOLATION_INVENTORY } = await import("./store-isolation-inventory");
+    const storageNames = STORE_ISOLATION_INVENTORY.flatMap((entry) =>
+      entry.persisted ? [entry.persisted.storageName] : []
+    );
+    expect(storageNames.length).toBeGreaterThan(0);
+    for (const name of storageNames) {
+      localStorage.setItem(`${name}:env-b`, JSON.stringify({ state: {}, version: 0 }));
+      localStorage.setItem(`${name}:env-c`, JSON.stringify({ state: {}, version: 0 }));
+    }
+
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+
+    // The Rust startup reconciler finished a staged removal: the row simply disappears.
+    useEnvironmentStore.getState().setEnvironments([summary("env-c")]);
+
+    for (const name of storageNames) {
+      expect(localStorage.getItem(`${name}:env-b`)).toBeNull();
+      expect(localStorage.getItem(`${name}:env-c`)).not.toBeNull();
+    }
+    for (const name of storageNames) {
+      localStorage.removeItem(`${name}:env-c`);
+    }
+  });
+
   it("installs the active remote bus synchronously during a store switch", async () => {
     const { initializeEnvironmentRuntime } = await import("./environment-runtime");
     useEnvironmentStore.getState().setEnvironments([summary("env-b")]);

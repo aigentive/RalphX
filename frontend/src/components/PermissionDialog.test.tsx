@@ -779,7 +779,9 @@ describe("PermissionDialog", () => {
       );
     });
 
-    it("stays silent when the host simply does not expose the gate list yet", async () => {
+    // Both gate lists ARE on the registered facade surface (3.1 batch 1), so
+    // REMOTE_COMMAND_UNAVAILABLE from them is a regression, not a capability gap.
+    it("surfaces REMOTE_COMMAND_UNAVAILABLE instead of swallowing it", async () => {
       render(<PermissionDialog />);
       await act(async () => { await Promise.resolve(); });
       emitEvent("permission:request", makeRequest({ request_id: "live", tool_input: { command: "still pending" } }));
@@ -794,8 +796,9 @@ describe("PermissionDialog", () => {
       );
       await reconcile();
 
+      // Fail closed either way: the live request is never cleared by a failed read.
       expect(screen.getByText("still pending")).toBeInTheDocument();
-      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastError).toHaveBeenCalled();
     });
 
     it("ignores a BACKGROUND environment's connect (SCOPE negative)", async () => {

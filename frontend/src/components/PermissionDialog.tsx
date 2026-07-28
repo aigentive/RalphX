@@ -14,7 +14,6 @@ import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { useAgentGate } from "@/hooks/useAgentGate";
 import { RemoteErrorBanner } from "@/components/remote/RemoteErrorBanner";
 import {
-  isSilentGateReconcileFailure,
   onPendingGateReconcile,
 } from "@/lib/remote/pending-gate-reconcile";
 import { useEnvironmentStore } from "@/stores/environmentStore";
@@ -297,9 +296,7 @@ export function PermissionDialog() {
         })
         .catch((error: unknown) => {
           console.error("Failed to reconcile pending permissions:", error);
-          if (!isSilentGateReconcileFailure(error)) {
-            toast.error("Couldn't refresh pending permission requests");
-          }
+          toast.error("Couldn't refresh pending permission requests");
         });
     });
   }, []);
