@@ -92,6 +92,53 @@ async fn get_pending_permissions_command_returns_registered_requests() {
 }
 
 #[tokio::test]
+async fn list_pending_permission_gates_rehydrates_only_still_pending_disconnect_gates() {
+    let app = permission_command_app();
+    let mut survives_disconnect = pending_permission("permission-disconnected");
+    survives_disconnect.created_at = chrono::Utc::now().to_rfc3339();
+    let mut resolved_before_reconnect = pending_permission("permission-resolved");
+    resolved_before_reconnect.created_at = chrono::Utc::now().to_rfc3339();
+    app.state::<AppState>()
+        .permission_state
+        .register(survives_disconnect)
+        .await;
+    app.state::<AppState>()
+        .permission_state
+        .register(resolved_before_reconnect)
+        .await;
+
+    let while_disconnected = list_pending_permission_gates(app.state::<AppState>())
+        .await
+        .expect("pending gates load while the client is disconnected");
+    assert_eq!(while_disconnected.len(), 2);
+
+    assert!(
+        app.state::<AppState>()
+            .permission_state
+            .resolve(
+                "permission-resolved",
+                PermissionDecision {
+                    decision: "deny".to_string(),
+                    message: None,
+                },
+            )
+            .await
+    );
+
+    let after_reconnect = list_pending_permission_gates(app.state::<AppState>())
+        .await
+        .expect("pending gates reload on reconnect");
+    assert_eq!(
+        after_reconnect
+            .iter()
+            .map(|permission| permission.request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["permission-disconnected"],
+        "the unresolved disconnect-window gate is rehydrated and the resolved gate is absent"
+    );
+}
+
+#[tokio::test]
 async fn resolve_permission_request_command_emits_resolved_events_for_allow_and_deny() {
     let (app, event_sink) = permission_command_app_with_event_sink();
     for request_id in ["permission-allow", "permission-deny"] {

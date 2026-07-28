@@ -55,7 +55,7 @@ fn installs_once_for_each_backend_non_excluded_non_local_event_only() {
 #[test]
 fn backend_origin_local_only_entries_register_no_handler() {
     let registrar = RecordingRegistrar::default();
-    let (feed, receivers) = CaptureFeed::channels(16);
+    let (feed, mut receivers) = CaptureFeed::channels(16);
     RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
 
     let backend_local_names = EVENT_CLASSIFICATIONS
@@ -83,7 +83,7 @@ fn backend_origin_local_only_entries_register_no_handler() {
 #[test]
 fn routes_raw_payloads_to_the_classified_sync_channel() {
     let registrar = RecordingRegistrar::default();
-    let (feed, receivers) = CaptureFeed::channels(16);
+    let (feed, mut receivers) = CaptureFeed::channels(16);
     RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
 
     registrar.emit("notification:created", r#"{"id":"n-1"}"#);
@@ -111,7 +111,7 @@ fn routes_raw_payloads_to_the_classified_sync_channel() {
 #[test]
 fn full_durable_channel_drops_without_blocking_the_emit_thread() {
     let registrar = RecordingRegistrar::default();
-    let (feed, receivers) = CaptureFeed::channels(1);
+    let (feed, mut receivers) = CaptureFeed::channels(1);
     RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
     registrar.emit("notification:created", "{}");
     registrar.emit("notification:created", "{}");

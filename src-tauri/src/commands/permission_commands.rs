@@ -83,6 +83,18 @@ pub async fn get_pending_permissions(
     Ok(pending)
 }
 
+// Tauri Read facade: remote clients consume this indirectly through the registered command surface.
+#[tauri::command]
+pub async fn list_pending_permission_gates(
+    state: State<'_, AppState>,
+) -> Result<Vec<PendingPermissionInfo>, String> {
+    state
+        .permission_state
+        .get_pending_info_strict()
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 #[path = "permission_commands_tests.rs"]
 mod tests;

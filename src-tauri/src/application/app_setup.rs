@@ -177,15 +177,9 @@ pub(crate) fn run_app_setup(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
 
-    // Constant-false seam, still unwired ON PURPOSE — PR 1.1 (merged) mints the
-    // `remote_host_settings` row but does NOT own this call site. PR 1.4 owns it: it replaces
-    // the constant with the persisted host-mode-configured read AND installs the durable
-    // sequencer behind it (02-phase-1-host-mode.md, "Wire capture (PR 0.1 bank) + sequencer
-    // installation into app setup, gated on host-mode-configured"; §3.4 capture-at-setup, P-23).
-    // Note for that PR: this runs BEFORE SQLite open/migration, so the settings read has to move
-    // into the async setup phase (next to `auto_start_remote_listener_from_handle` below).
-    // Until then capture never installs, and the durable feed is a no-op drain regardless.
-    crate::remote_server::capture::install_if_host_mode_configured(app_handle.clone(), false);
+    // Remote event capture + the durable sequencer install in the async setup phase below
+    // (`install_remote_stream_from_handle`), not here: this point runs before SQLite is open, and
+    // "host mode is configured" is a persisted read (§3.4 capture-at-setup, P-23).
 
     configure_bundled_runtime_env(app);
 
@@ -428,6 +422,11 @@ fn launch_startup_attempt(
             }
             return;
         }
+        // Capture + sequencer first, and gated only on host mode being CONFIGURED — not on the
+        // listener being enabled. That ordering is the point of P-23: events emitted during a
+        // disabled-listener window are still recorded, so a reconnect after a re-enable replays
+        // them instead of warm-resuming across an unrecorded gap (§5.2, §3.4).
+        crate::remote_server::install_remote_stream_from_handle(&app_handle).await;
         // Remote host mode starts in the same setup phase as the local runtime, but only when
         // the persisted `remote_host_settings` row enables it (§5.2). With the flag off or the
         // row absent, nothing listens on the remote port.

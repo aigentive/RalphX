@@ -410,4 +410,11 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     local_backend("ralphx://check-for-updates"),
     local_backend("ralphx://show-release-notes"),
     local_backend("gh-auth:login_prompt"),
+    // PR 1.4 (§5.5): WS session lifecycle, emitted by the host when a remote client's socket
+    // opens and closes. **Local-only is a security property, not housekeeping** — forwarding
+    // these would let every paired device watch every other device connect and disconnect. The
+    // host's own Remote Access pane consumes them (PR 1.7); the capture bank drops Local-only
+    // rows structurally, so they can never reach the sequencer or `remote_event_log`.
+    local_backend("remote:session_connected"),
+    local_backend("remote:session_closed"),
 ];

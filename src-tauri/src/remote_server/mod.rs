@@ -18,6 +18,8 @@ mod listener_tests;
 pub mod rate_limit;
 #[cfg(test)]
 mod rate_limit_tests;
+pub mod retention;
+pub mod sequencer;
 pub mod session_registry;
 #[cfg(test)]
 mod session_registry_tests;
@@ -28,6 +30,7 @@ mod settings_tests;
 pub mod transport_spike;
 #[cfg(all(test, debug_assertions))]
 mod transport_spike_tests;
+pub mod ws;
 
 // --- PR 1.3: invoke facade, capability ledger, authority audit (one contiguous block) ---
 #[cfg(test)]
@@ -65,6 +68,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::AppError;
+use crate::infrastructure::sqlite::SqliteRemoteEventLogRepository;
 use crate::infrastructure::tailscale::{
     RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
@@ -80,6 +84,7 @@ use crate::remote_server::auth_endpoints::{
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
 };
+use crate::remote_server::retention::RetentionLeaseRegistry;
 use crate::remote_server::session_registry::RemoteSessionRegistry;
 use crate::remote_server::settings::{
     effective_remote_port, resolve_bind_address, RemoteBindError, RemoteExposureMode,
@@ -101,8 +106,21 @@ pub(crate) const HEALTH_PATH: &str = "/health";
 /// [`authenticate_remote_request`]; there is no zero-devices bootstrap pass (§4.4, A-2).
 pub(crate) const PRE_AUTH_ALLOWLIST: &[&str] = &[DESCRIPTOR_PATH, PAIR_PATH];
 
+/// Routes that authenticate themselves instead of presenting a bearer token.
+///
+/// Exactly one: the WS upgrade. **This is not a pre-auth route** — it is device-bound
+/// single-use-ticket auth performed *before* the upgrade, because a browser cannot attach an
+/// `Authorization` header to a WebSocket (§3.2). It is kept separate from
+/// [`PRE_AUTH_ALLOWLIST`] so the two-entry pre-auth guarantee (P-1) stays literally true and a
+/// future addition here has to be argued on its own terms.
+pub(crate) const TICKET_AUTH_ALLOWLIST: &[&str] = &[ws::WS_EVENTS_PATH];
+
 /// Origins the shipped app itself uses.
 pub(crate) const PRODUCTION_APP_ORIGINS: &[&str] = &["tauri://localhost"];
+
+/// Bounded durable capture queue. Overflow means an epoch roll, not backpressure (§3.4 #3) —
+/// blocking here would block whichever thread emitted the event.
+pub(crate) const REMOTE_CAPTURE_QUEUE_CAPACITY: usize = 1_024;
 
 /// Dev-server origins, admitted only in debug builds.
 pub(crate) const DEVELOPMENT_APP_ORIGINS: &[&str] = &[
@@ -192,6 +210,15 @@ pub(crate) struct RemoteListenerHandle {
     /// Lives on the handle, not inside the router, so it survives listener restarts and is
     /// reachable from the host-local revoke commands (§4.4).
     sessions: RemoteSessionRegistry,
+    /// The durable stream, installed once at app setup.
+    ///
+    /// A `OnceLock` rather than a mutable slot because the epoch's per-boot guarantee depends on
+    /// there being exactly one sequencer per process: a second install would mint a second epoch
+    /// and silently fork the numbering. Listener stop/start deliberately does not clear it —
+    /// capture keeps recording while the listener is off (§5.2, P-15, P-23).
+    stream: Arc<std::sync::OnceLock<sequencer::RemoteStreamHandle>>,
+    /// The host-local bus the WS session emits `remote:session_connected/closed` on.
+    lifecycle: Arc<std::sync::OnceLock<Arc<dyn ws::SessionLifecycleSink>>>,
 }
 
 impl RemoteListenerHandle {
@@ -199,12 +226,31 @@ impl RemoteListenerHandle {
         Self {
             active: Arc::new(Mutex::new(None)),
             sessions: RemoteSessionRegistry::new(),
+            stream: Arc::new(std::sync::OnceLock::new()),
+            lifecycle: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
     /// The process-wide live-session registry.
     pub(crate) fn sessions(&self) -> &RemoteSessionRegistry {
         &self.sessions
+    }
+
+    pub(crate) fn stream(&self) -> Option<sequencer::RemoteStreamHandle> {
+        self.stream.get().cloned()
+    }
+
+    /// Publishes the stream handle. Returns `false` if one was already installed.
+    pub(crate) fn install_stream(&self, stream: sequencer::RemoteStreamHandle) -> bool {
+        self.stream.set(stream).is_ok()
+    }
+
+    pub(crate) fn lifecycle_sink(&self) -> Option<Arc<dyn ws::SessionLifecycleSink>> {
+        self.lifecycle.get().cloned()
+    }
+
+    pub(crate) fn install_lifecycle_sink(&self, sink: Arc<dyn ws::SessionLifecycleSink>) -> bool {
+        self.lifecycle.set(sink).is_ok()
     }
 
     pub(crate) async fn bound_address(&self) -> Option<SocketAddr> {
@@ -290,6 +336,10 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
         .route(
             HEALTH_PATH,
             get(health_handler).options(remote_preflight_handler),
+        )
+        .route(
+            ws::WS_EVENTS_PATH,
+            get(ws::ws_events_handler).options(remote_preflight_handler),
         )
         .fallback(remote_fallback_handler)
         // Layers apply outermost-last: trust headers are stripped before anything else
@@ -444,10 +494,14 @@ pub(crate) async fn start_listener(
     let (stopped_tx, stopped) = oneshot::channel();
     let auth =
         RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
-    let router = remote_router(RemoteRouterState::new(
-        settings.environment_id.as_str(),
-        auth,
-    ));
+    let mut state = RemoteRouterState::new(settings.environment_id.as_str(), auth)
+        // Installed at app setup, not here: the listener toggle governs network exposure only, so
+        // a restart of the listener must not restart the stream (P-15, P-23).
+        .with_stream(handle.stream());
+    if let Some(sink) = handle.lifecycle_sink() {
+        state = state.with_lifecycle_sink(sink);
+    }
+    let router = remote_router(state);
 
     tauri::async_runtime::spawn(async move {
         // Connect info is what lets direct-tailnet mode key rate limiting on the real peer;
@@ -567,6 +621,66 @@ pub(crate) async fn auto_start_if_enabled(
     start_listener(handle, store, provider, tailscale)
         .await
         .map(Some)
+}
+
+/// Installs the capture bank + durable sequencer + pruner when host mode is **configured**.
+///
+/// P-23: this runs at app setup and is deliberately independent of listener enablement. The
+/// listener toggle governs network exposure only, so events emitted while the listener is off are
+/// still captured, sequenced, and replayable after a re-enable — a reconnect never warm-resumes
+/// across an unrecorded gap (§5.2, §3.4 capture-at-setup).
+///
+/// "Configured" means the `remote_host_settings` row exists. It is read with `get()`, never
+/// `get_or_create()`: minting the row here would install capture on every host that merely
+/// launched the app, which §3.4 explicitly rules out ("if host mode was never configured, capture
+/// is not installed — no cost").
+pub(crate) async fn install_remote_stream_from_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<crate::AppState>() else {
+        tracing::warn!("AppState is unavailable; skipping remote capture installation");
+        return;
+    };
+    let store = RemoteHostSettingsStore::from_db(state.db.clone());
+    match store.get().await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            tracing::debug!("Remote host mode is not configured; capture stays uninstalled");
+            return;
+        }
+        Err(error) => {
+            // Fail closed and loudly: silently skipping capture would produce a host that looks
+            // healthy but records nothing, and the gap would only surface as a client reset.
+            tracing::error!(%error, "Reading remote host settings failed; capture stays uninstalled");
+            return;
+        }
+    }
+
+    let handle = remote_listener_handle(app_handle);
+    if handle.stream().is_some() {
+        tracing::debug!("Remote durable sequencer is already installed");
+        return;
+    }
+
+    let (feed, receivers) = capture::CaptureFeed::channels(REMOTE_CAPTURE_QUEUE_CAPACITY);
+    let log = Arc::new(SqliteRemoteEventLogRepository::from_db(state.db.clone()));
+    let leases = RetentionLeaseRegistry::new();
+    let stream = match sequencer::RemoteSequencer::start(log, receivers, leases).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::error!(%error, "Remote durable sequencer failed to start; capture stays uninstalled");
+            return;
+        }
+    };
+
+    // Capture is installed only after the sequencer is live, so no captured event can be dropped
+    // into a channel nobody is draining yet.
+    capture::RemoteEventCapture::install(app_handle.clone(), feed);
+    if !handle.install_stream(stream.clone()) {
+        tracing::warn!("A remote durable sequencer was already installed; keeping the first");
+        return;
+    }
+    handle.install_lifecycle_sink(Arc::new(ws::TauriLifecycleSink(app_handle.clone())));
+    retention::spawn_pruner(stream);
+    tracing::info!("Remote event capture and durable sequencer installed at app setup");
 }
 
 /// Startup hook, invoked from the same setup phase that calls `start_server_boot`.
