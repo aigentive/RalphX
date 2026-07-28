@@ -247,7 +247,7 @@ pub use task::{Task, TaskCategory};
 pub use task_context::{
     create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
     FollowupSessionSummary, ScopeDriftStatus, TaskContext, TaskDependencySummary,
-    TaskProposalSummary, ValidationCacheData,
+    TaskProposalSummary, ValidationCacheData, WorkerTaskView,
 };
 pub use task_metadata::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,

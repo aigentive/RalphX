@@ -19,7 +19,7 @@ fn sample_task_context() -> TaskContext {
     task.id = TaskId::from_string("task-1".to_string());
 
     TaskContext {
-        task,
+        task: task.into(),
         source_proposal: Some(crate::entities::TaskProposalSummary {
             id: TaskProposalId::from_string("proposal-1"),
             title: "proposal".to_string(),
