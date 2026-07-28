@@ -16,6 +16,7 @@ interface BulkArchiveConversationControlsProps {
   onCloseConfirmation: () => void;
   onConfirm: () => Promise<void>;
   onOpenConfirmation: () => void;
+  onMute: () => void;
   pending: boolean;
   selectedCount: number;
 }
@@ -26,6 +27,7 @@ export function BulkArchiveConversationControls({
   onCloseConfirmation,
   onConfirm,
   onOpenConfirmation,
+  onMute,
   pending,
   selectedCount,
 }: BulkArchiveConversationControlsProps) {
@@ -60,9 +62,19 @@ export function BulkArchiveConversationControls({
         </Button>
         <Button
           type="button"
-          variant="destructive"
           size="sm"
           className="h-7 px-2 text-xs"
+          onClick={onMute}
+          disabled={selectedCount === 0 || pending}
+        >
+          Mute
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs"
+          style={{ color: "var(--destructive)" }}
           onClick={onOpenConfirmation}
           disabled={selectedCount === 0 || pending}
         >

@@ -4,6 +4,7 @@
 pub mod active_plan_repository;
 pub mod activity_event_repository;
 pub mod agent_conversation_granola_note_repository;
+pub mod agent_conversation_mute_repository;
 pub mod agent_conversation_issue_repository;
 pub mod agent_conversation_jira_issue_repository;
 pub mod agent_conversation_linear_issue_repository;
@@ -74,6 +75,7 @@ pub use activity_event_repository::{
     ActivityEventFilter, ActivityEventPage, ActivityEventRepository,
 };
 pub use agent_conversation_granola_note_repository::AgentConversationGranolaNoteRepository;
+pub use agent_conversation_mute_repository::AgentConversationMuteRepository;
 pub use agent_conversation_issue_repository::{
     is_open_issue_status, AgentConversationIssueRepository,
 };

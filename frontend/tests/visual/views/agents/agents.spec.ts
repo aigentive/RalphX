@@ -1369,6 +1369,10 @@ async function seedAgentsScenario(
         pageParams: [0],
       },
     );
+    await queryClient.refetchQueries({
+      queryKey: ["agents", "sidebar-conversations", "inbox"],
+      type: "active",
+    });
   });
 }
 

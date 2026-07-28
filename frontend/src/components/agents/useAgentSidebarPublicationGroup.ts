@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import {
   chatApi,
+  type AgentSidebarAttentionLane,
   type AgentSidebarPublicationState,
   type AgentSidebarSort,
 } from "@/api/chat";
@@ -57,6 +58,57 @@ export function useAgentSidebarPublicationGroup({
       publicationState,
       archivedOnly,
       search,
+      pinnedConversationIds,
+      priorityConversationIds,
+      sort
+    ),
+  });
+}
+
+export function useAgentSidebarInboxGroup({
+  lane,
+  projectIds,
+  archivedOnly,
+  search,
+  publicationStates,
+  pinnedConversationIds,
+  priorityConversationIds = [],
+  sort,
+  enabled = true,
+  minimumRowCount = 0,
+  pageSize,
+}: {
+  lane: AgentSidebarAttentionLane;
+  projectIds: string[];
+  archivedOnly: boolean;
+  search: string;
+  publicationStates: AgentSidebarPublicationState[];
+  pinnedConversationIds: string[];
+  priorityConversationIds?: string[];
+  sort: AgentSidebarSort;
+  enabled?: boolean;
+  minimumRowCount?: number;
+  pageSize?: number;
+}) {
+  return useAgentSidebarGroup({
+    groupBy: "inbox",
+    groupKey: lane,
+    projectIds,
+    archivedOnly,
+    search,
+    publicationStates,
+    pinnedConversationIds,
+    priorityConversationIds,
+    sort,
+    enabled,
+    minimumRowCount,
+    ...(pageSize !== undefined ? { pageSize } : {}),
+    queryKey: agentSidebarConversationKeys.inboxGroup(
+      projectIds,
+      lane,
+      archivedOnly,
+      search,
+      publicationStates,
       pinnedConversationIds,
       priorityConversationIds,
       sort
