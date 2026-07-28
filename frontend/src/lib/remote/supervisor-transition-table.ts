@@ -414,9 +414,14 @@ export function presentationFor(
 /** `1s, 2s, 4s, 8s, 16s`, then clamped at 16 s forever. */
 export const RETRY_LADDER_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 
+/** The clamp. Named rather than derived so the "forever" half is explicit. */
+export const RETRY_LADDER_MAX_MS = 16_000;
+
 export function retryDelayMs(attempt: number): number {
-  const index = Math.max(0, Math.min(attempt, RETRY_LADDER_MS.length - 1));
-  return RETRY_LADDER_MS[index] ?? RETRY_LADDER_MS[RETRY_LADDER_MS.length - 1];
+  if (attempt <= 0) {
+    return RETRY_LADDER_MS[0];
+  }
+  return RETRY_LADDER_MS[attempt] ?? RETRY_LADDER_MAX_MS;
 }
 
 /** §6.5: one connect attempt gets 15 s end to end. */

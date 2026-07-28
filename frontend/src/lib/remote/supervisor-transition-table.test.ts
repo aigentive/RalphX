@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CONNECT_BUDGET_MS,
+  RETRY_LADDER_MAX_MS,
   RETRY_LADDER_MS,
   STABLE_PERIOD_MS,
   SUPERVISOR_EVENTS,
@@ -191,6 +192,7 @@ describe("retry ladder", () => {
     expect(retryDelayMs(4)).toBe(16_000);
     expect(retryDelayMs(5)).toBe(16_000);
     expect(retryDelayMs(500)).toBe(16_000);
+    expect(RETRY_LADDER_MAX_MS).toBe(RETRY_LADDER_MS[RETRY_LADDER_MS.length - 1]);
   });
 
   it("treats a negative attempt as the first rung rather than throwing", () => {
