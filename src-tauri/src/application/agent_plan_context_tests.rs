@@ -1,6 +1,6 @@
 use super::agent_plan_context::{
     admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
-    plan_reference_status, PlanApprovalLookup,
+    plan_bundle_composer_references, plan_reference_status, PlanApprovalLookup,
 };
 use crate::application::AppState;
 use crate::domain::entities::ideation::{PLAN_CONTRACT_V1, PLAN_CONTRACT_V2};
@@ -130,6 +130,53 @@ fn plan_reference_status_prefers_accepted_then_approved_then_draft() {
         .build();
     assert_eq!(plan_reference_status(&active, Some(&approval)), "approved");
     assert_eq!(plan_reference_status(&active, None), "draft");
+}
+
+#[tokio::test]
+async fn linked_edit_admission_preserves_references_without_a_workspace_but_direct_requires_a_plan()
+{
+    let state = AppState::new_sqlite_test();
+    let conversation_id = ChatConversationId::from_string("unlinked-edit-conversation".to_string());
+    let references = vec![unrelated_reference("review-1")];
+
+    let admitted = admit_linked_edit_plan_references(
+        &state,
+        &conversation_id,
+        references.clone(),
+        false,
+        None,
+    )
+    .await
+    .expect("ordinary sends without a workspace should preserve their references");
+    assert_eq!(admitted.len(), 1);
+    assert_eq!(admitted[0].artifact_id, "review-1");
+
+    let error = admit_linked_edit_plan_references(&state, &conversation_id, references, true, None)
+        .await
+        .expect_err("direct implementation must require a linked Edit workspace plan");
+    assert!(error.contains("active linked plan bundle"));
+}
+
+#[test]
+fn plan_bundle_references_fall_back_to_member_titles_and_keep_v1_overview_only() {
+    let session_id = crate::domain::entities::IdeationSessionId::from_string(
+        "fallback-plan-session".to_string(),
+    );
+    let mut overview =
+        Artifact::new_inline("   ", ArtifactType::Specification, "# Overview", "planner");
+    overview.metadata.version = 2;
+
+    let references = plan_bundle_composer_references(&session_id, &overview, None, "draft");
+
+    assert_eq!(references.len(), 1);
+    assert_eq!(references[0].kind, "plan");
+    assert_eq!(references[0].title.as_deref(), Some("Plan Overview"));
+    assert_eq!(
+        references[0].session_id.as_deref(),
+        Some("fallback-plan-session")
+    );
+    assert_eq!(references[0].version, Some(2));
+    assert_eq!(references[0].status.as_deref(), Some("draft"));
 }
 
 #[tokio::test]
