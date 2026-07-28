@@ -14,10 +14,12 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePublicationMetadataPhase, AgentWorkspacePublicationMetadataReceipt,
+    AgentWorkspacePublicationMetadataState, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -25,7 +27,9 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
-    AgentWorkspacePrTerminalSettlement,
+    AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
+    AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
+    AgentWorkspacePublicationUpdate,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -41,13 +45,33 @@ fn parse_datetime(value: &str) -> DateTime<Utc> {
     Utc::now()
 }
 
-fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversationWorkspace> {
+fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorkspace> {
     let mode: String = row.get("mode")?;
     let branch_mode: Option<String> = row.get("branch_mode").ok();
     let base_ref_kind: String = row.get("base_ref_kind")?;
     let status: String = row.get("status")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
+    let publication_metadata_phase = row
+        .get::<_, Option<String>>("publication_metadata_phase")?
+        .map(|value| {
+            AgentWorkspacePublicationMetadataPhase::from_str(&value).map_err(|error| {
+                AppError::Validation(format!(
+                    "invalid stored publication metadata phase: {error}"
+                ))
+            })
+        })
+        .transpose()?;
+    let publication_metadata_state = row
+        .get::<_, Option<String>>("publication_metadata_state")?
+        .map(|value| {
+            AgentWorkspacePublicationMetadataState::from_str(&value).map_err(|error| {
+                AppError::Validation(format!(
+                    "invalid stored publication metadata state: {error}"
+                ))
+            })
+        })
+        .transpose()?;
     let source_pr_number: Option<i64> = row.get("source_pr_number")?;
     let source_pr_head_ref: Option<String> = row.get("source_pr_head_ref")?;
     let source_pull_request = source_pr_number
@@ -94,6 +118,9 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         publication_pr_url: row.get("publication_pr_url")?,
         publication_pr_status: row.get("publication_pr_status")?,
         publication_push_status: row.get("publication_push_status")?,
+        publication_metadata_phase,
+        publication_metadata_state,
+        publication_metadata_attempt_id: row.get("publication_metadata_attempt_id")?,
         auto_publish_enabled: row.get("auto_publish_enabled")?,
         auto_publish_initial_pr_enabled: row.get("auto_publish_initial_pr_enabled")?,
         auto_publish_paused_pr_autofix_enabled: row
@@ -119,6 +146,233 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
     })
 }
 
+fn collect_workspaces(mut rows: rusqlite::Rows<'_>) -> AppResult<Vec<AgentConversationWorkspace>> {
+    let mut workspaces = Vec::new();
+    while let Some(row) = rows.next()? {
+        workspaces.push(row_to_workspace(row)?);
+    }
+    Ok(workspaces)
+}
+
+fn validate_publication_metadata_receipt_events(
+    conversation_id: &ChatConversationId,
+    attempt_id: &str,
+    events: &[AgentConversationWorkspacePublicationEvent],
+) -> AppResult<()> {
+    if events.iter().any(|event| {
+        event.conversation_id != *conversation_id || event.attempt_id.as_deref() != Some(attempt_id)
+    }) {
+        return Err(AppError::Validation(
+            "publication metadata receipt events must belong to the guarded attempt".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_publication_metadata_receipt(
+    receipt: &AgentWorkspacePublicationMetadataReceipt,
+) -> AppResult<()> {
+    if receipt.attempt_id.trim().is_empty() {
+        return Err(AppError::Validation(
+            "publication metadata receipt attempt id must not be empty".to_string(),
+        ));
+    }
+    if receipt.target_pr_number <= 0 {
+        return Err(AppError::Validation(
+            "publication metadata receipt target PR number must be positive".to_string(),
+        ));
+    }
+    for (label, value) in [
+        ("before authority", receipt.before_authority_sha256.as_str()),
+        ("before title", receipt.before_title_sha256.as_str()),
+        (
+            "before editable body",
+            receipt.before_editable_body_sha256.as_str(),
+        ),
+    ] {
+        if !is_lowercase_sha256(value) {
+            return Err(AppError::Validation(format!(
+                "publication metadata receipt {label} fingerprint must be lowercase SHA-256"
+            )));
+        }
+    }
+    for (label, value) in [
+        (
+            "before managed suffix",
+            receipt.before_managed_suffix_sha256.as_deref(),
+        ),
+        ("intended title", receipt.intended_title_sha256.as_deref()),
+        (
+            "intended editable body",
+            receipt.intended_editable_body_sha256.as_deref(),
+        ),
+    ] {
+        if value.is_some_and(|value| !is_lowercase_sha256(value)) {
+            return Err(AppError::Validation(format!(
+                "publication metadata receipt {label} fingerprint must be lowercase SHA-256"
+            )));
+        }
+    }
+    Ok(())
+}
+
+struct StoredPublicationMetadataReceipt {
+    attempt_id: Option<String>,
+    phase: Option<String>,
+    state: Option<String>,
+    target_pr_number: Option<i64>,
+    before_authority_sha256: Option<String>,
+    before_title_sha256: Option<String>,
+    before_editable_body_sha256: Option<String>,
+    before_managed_suffix_sha256: Option<String>,
+    intended_title_sha256: Option<String>,
+    intended_editable_body_sha256: Option<String>,
+    updated_at: Option<String>,
+}
+
+impl StoredPublicationMetadataReceipt {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            attempt_id: row.get(0)?,
+            phase: row.get(1)?,
+            state: row.get(2)?,
+            target_pr_number: row.get(3)?,
+            before_authority_sha256: row.get(4)?,
+            before_title_sha256: row.get(5)?,
+            before_editable_body_sha256: row.get(6)?,
+            before_managed_suffix_sha256: row.get(7)?,
+            intended_title_sha256: row.get(8)?,
+            intended_editable_body_sha256: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    }
+
+    fn decode(self) -> AppResult<Option<AgentWorkspacePublicationMetadataReceipt>> {
+        if self.attempt_id.is_none()
+            && self.phase.is_none()
+            && self.state.is_none()
+            && self.target_pr_number.is_none()
+            && self.before_authority_sha256.is_none()
+            && self.before_title_sha256.is_none()
+            && self.before_editable_body_sha256.is_none()
+            && self.before_managed_suffix_sha256.is_none()
+            && self.intended_title_sha256.is_none()
+            && self.intended_editable_body_sha256.is_none()
+            && self.updated_at.is_none()
+        {
+            return Ok(None);
+        }
+        let (
+            Some(attempt_id),
+            Some(phase),
+            Some(state),
+            Some(target_pr_number),
+            Some(before_authority_sha256),
+            Some(before_title_sha256),
+            Some(before_editable_body_sha256),
+            Some(updated_at),
+        ) = (
+            self.attempt_id,
+            self.phase,
+            self.state,
+            self.target_pr_number,
+            self.before_authority_sha256,
+            self.before_title_sha256,
+            self.before_editable_body_sha256,
+            self.updated_at,
+        )
+        else {
+            return Err(AppError::Validation(
+                "publication metadata receipt authority is incomplete".to_string(),
+            ));
+        };
+        let phase = AgentWorkspacePublicationMetadataPhase::from_str(&phase).map_err(|error| {
+            AppError::Validation(format!(
+                "invalid stored publication metadata phase: {error}"
+            ))
+        })?;
+        let state = AgentWorkspacePublicationMetadataState::from_str(&state).map_err(|error| {
+            AppError::Validation(format!(
+                "invalid stored publication metadata state: {error}"
+            ))
+        })?;
+        let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "invalid stored publication metadata receipt timestamp: {error}"
+                ))
+            })?
+            .with_timezone(&Utc);
+        let receipt = AgentWorkspacePublicationMetadataReceipt {
+            attempt_id,
+            phase,
+            state,
+            target_pr_number,
+            before_authority_sha256,
+            before_title_sha256,
+            before_editable_body_sha256,
+            before_managed_suffix_sha256: self.before_managed_suffix_sha256,
+            intended_title_sha256: self.intended_title_sha256,
+            intended_editable_body_sha256: self.intended_editable_body_sha256,
+            updated_at,
+        };
+        validate_publication_metadata_receipt(&receipt)?;
+        Ok(Some(receipt))
+    }
+}
+
+fn validate_publication_metadata_refresh(
+    refresh: &AgentWorkspacePublicationMetadataReceiptRefresh,
+) -> AppResult<()> {
+    validate_publication_metadata_receipt(&AgentWorkspacePublicationMetadataReceipt {
+        attempt_id: "refresh".to_string(),
+        phase: AgentWorkspacePublicationMetadataPhase::Prepared,
+        state: AgentWorkspacePublicationMetadataState::NotAttempted,
+        target_pr_number: refresh.target_pr_number,
+        before_authority_sha256: refresh.before_authority_sha256.clone(),
+        before_title_sha256: refresh.before_title_sha256.clone(),
+        before_editable_body_sha256: refresh.before_editable_body_sha256.clone(),
+        before_managed_suffix_sha256: refresh.before_managed_suffix_sha256.clone(),
+        intended_title_sha256: refresh.intended_title_sha256.clone(),
+        intended_editable_body_sha256: refresh.intended_editable_body_sha256.clone(),
+        updated_at: refresh.updated_at,
+    })
+}
+
+fn validate_publication_metadata_decision(
+    receipt: &AgentWorkspacePublicationMetadataReceipt,
+    decision: &AgentWorkspacePrMetadataDecision,
+) -> AppResult<()> {
+    let valid = match decision {
+        AgentWorkspacePrMetadataDecision::Preserve => {
+            receipt.intended_title_sha256.is_none()
+                && receipt.intended_editable_body_sha256.is_none()
+        }
+        AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown,
+        } => {
+            (title.is_some() || body_markdown.is_some())
+                && title.is_some() == receipt.intended_title_sha256.is_some()
+                && body_markdown.is_some() == receipt.intended_editable_body_sha256.is_some()
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "publication metadata decision does not match intended receipt fields".to_string(),
+        ))
+    }
+}
+
 fn row_to_publication_event(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AgentConversationWorkspacePublicationEvent> {
@@ -130,6 +384,7 @@ fn row_to_publication_event(
         status: row.get("status")?,
         summary: row.get("summary")?,
         classification: row.get("classification")?,
+        attempt_id: row.get("attempt_id")?,
         created_at: parse_datetime(&created_at),
     })
 }
@@ -763,12 +1018,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      WHERE project_id = ?1
                      ORDER BY created_at DESC",
                 )?;
-                let rows = stmt.query_map(rusqlite::params![project_id], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query(rusqlite::params![project_id])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -792,13 +1043,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND status = 'active'
                      ORDER BY updated_at DESC",
                 )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![project_id, branch_name], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query(rusqlite::params![project_id, branch_name])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -819,13 +1065,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      WHERE project_id = ?1 AND branch_name = ?2
                      ORDER BY created_at DESC",
                 )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![project_id, head_ref], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query(rusqlite::params![project_id, head_ref])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -929,8 +1170,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let source_task_id = source_task_id.to_string();
         let blocker_fingerprint = blocker_fingerprint.to_string();
         self.db
-            .query_optional(move |conn| {
-                conn.query_row(
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE followup_origin_conversation_id = ?1
                        AND followup_source_task_id = ?2
@@ -938,9 +1179,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND status = 'active'
                      ORDER BY updated_at DESC
                      LIMIT 1",
-                    rusqlite::params![origin_conversation_id, source_task_id, blocker_fingerprint],
-                    row_to_workspace,
-                )
+                )?;
+                let mut rows = stmt.query(rusqlite::params![
+                    origin_conversation_id,
+                    source_task_id,
+                    blocker_fingerprint
+                ])?;
+                rows.next()?.map(row_to_workspace).transpose()
             })
             .await
     }
@@ -979,15 +1224,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        )
                      ORDER BY created_at DESC",
                 )?;
-                let rows = stmt.query_map(
-                    rusqlite::params![project_id, retry_cutoff],
-                    row_to_workspace,
-                )?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query(rusqlite::params![project_id, retry_cutoff])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1181,12 +1419,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND COALESCE(workspace.publication_pr_status, '') NOT IN ('closed', 'merged')
                      ORDER BY workspace.updated_at DESC",
                 )?;
-                let rows = stmt.query_map([], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query([])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1222,12 +1456,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        )
                      ORDER BY updated_at DESC",
                 )?;
-                let rows = stmt.query_map([], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query([])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1244,12 +1474,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
                      ORDER BY updated_at DESC",
                 )?;
-                let rows = stmt.query_map([], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query([])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1266,17 +1492,35 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE status = 'active'
-                       AND publication_push_status IN ('refreshing', 'checking', 'committing', 'describing')
+                       AND publication_push_status IN ('refreshing', 'checking', 'committing', 'describing', 'pushing')
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
                        AND updated_at <= ?1
                      ORDER BY updated_at ASC",
                 )?;
-                let rows = stmt.query_map([cutoff], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query([cutoff])?;
+                collect_workspaces(rows)
+            })
+            .await
+    }
+
+    async fn list_active_pending_publication_metadata_receipt_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64))
+            .to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE status = 'active'
+                       AND publication_metadata_phase IN ('prepared', 'mutating', 'reconciling')
+                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                       AND publication_metadata_updated_at <= ?1
+                     ORDER BY publication_metadata_updated_at ASC, updated_at ASC",
+                )?;
+                let rows = stmt.query([cutoff])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1309,12 +1553,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      ORDER BY updated_at DESC
                      LIMIT ?1",
                 )?;
-                let rows = stmt.query_map(rusqlite::params![limit], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query(rusqlite::params![limit])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1345,12 +1585,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      ORDER BY updated_at DESC
                      LIMIT ?1",
                 )?;
-                let rows = stmt.query_map(rusqlite::params![limit], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query(rusqlite::params![limit])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1373,12 +1609,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      ORDER BY updated_at DESC
                      LIMIT ?1",
                 )?;
-                let rows = stmt.query_map(rusqlite::params![limit], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query(rusqlite::params![limit])?;
+                collect_workspaces(rows)
             })
             .await
     }
@@ -1489,6 +1721,571 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     ],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn claim_publication_metadata_receipt(
+        &self,
+        conversation_id: &ChatConversationId,
+        claim: AgentWorkspacePublicationMetadataReceiptClaim,
+    ) -> AppResult<bool> {
+        validate_publication_metadata_receipt(&claim.receipt)?;
+        validate_publication_metadata_decision(&claim.receipt, &claim.decision)?;
+        if claim.event.conversation_id != *conversation_id
+            || claim.event.attempt_id.as_deref() != Some(claim.receipt.attempt_id.as_str())
+        {
+            return Err(AppError::Validation(
+                "publication metadata receipt claim event must belong to the claimed attempt"
+                    .to_string(),
+            ));
+        }
+        if claim.receipt.phase != AgentWorkspacePublicationMetadataPhase::Prepared
+            || claim.receipt.state != AgentWorkspacePublicationMetadataState::NotAttempted
+        {
+            return Err(AppError::Validation(
+                "publication metadata receipt claim must start prepared and not_attempted"
+                    .to_string(),
+            ));
+        }
+        let conversation_id = conversation_id.as_str().to_string();
+        let receipt = claim.receipt;
+        let attempt_id = receipt.attempt_id.clone();
+        let (decision, title, body) = match claim.decision {
+            AgentWorkspacePrMetadataDecision::Preserve => ("preserve", None, None),
+            AgentWorkspacePrMetadataDecision::Patch {
+                title,
+                body_markdown,
+            } => ("patch", title, body_markdown),
+        };
+        let event = (
+            claim.event.id,
+            claim.event.conversation_id.as_str().to_string(),
+            claim.event.step,
+            claim.event.status,
+            claim.event.summary,
+            claim.event.classification,
+            claim.event.attempt_id,
+            claim.event.created_at.to_rfc3339(),
+        );
+        let claimed_at = receipt.updated_at.to_rfc3339();
+        let target_pr_number = receipt.target_pr_number;
+        self.db
+            .run(move |conn| {
+                let transaction = conn.unchecked_transaction()?;
+                let stored_pr_number = transaction
+                    .query_row(
+                        "SELECT publication_pr_number
+                         FROM agent_conversation_workspaces
+                         WHERE conversation_id = ?1",
+                        [&conversation_id],
+                        |row| row.get::<_, Option<i64>>(0),
+                    )
+                    .optional()?;
+                let Some(stored_pr_number) = stored_pr_number else {
+                    return Ok(false);
+                };
+                if stored_pr_number != Some(target_pr_number) {
+                    return Err(AppError::Validation(
+                        "publication metadata receipt target does not match the workspace PR"
+                            .to_string(),
+                    ));
+                }
+                let stored_receipt = transaction
+                    .query_row(
+                        "SELECT publication_metadata_attempt_id, publication_metadata_phase,
+                            publication_metadata_state, publication_metadata_target_pr_number,
+                            publication_metadata_before_authority_sha256,
+                            publication_metadata_before_title_sha256,
+                            publication_metadata_before_editable_body_sha256,
+                            publication_metadata_before_managed_suffix_sha256,
+                            publication_metadata_intended_title_sha256,
+                            publication_metadata_intended_editable_body_sha256,
+                            publication_metadata_updated_at
+                         FROM agent_conversation_workspaces
+                         WHERE conversation_id = ?1",
+                        [&conversation_id],
+                        StoredPublicationMetadataReceipt::from_row,
+                    )?
+                    .decode()?;
+                match stored_receipt {
+                    None => {}
+                    Some(receipt)
+                        if receipt.phase == AgentWorkspacePublicationMetadataPhase::Settled
+                            && receipt.state
+                                != AgentWorkspacePublicationMetadataState::Unknown => {}
+                    Some(receipt)
+                        if receipt.phase != AgentWorkspacePublicationMetadataPhase::Settled =>
+                    {
+                        return Ok(false);
+                    }
+                    Some(_) => {
+                        return Err(AppError::Validation(
+                            "publication metadata receipt authority is inconsistent".to_string(),
+                        ));
+                    }
+                }
+                let rows = transaction.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_metadata_phase = 'prepared',
+                         publication_metadata_state = 'not_attempted',
+                         publication_metadata_attempt_id = ?2,
+                         publication_metadata_target_pr_number = ?3,
+                         publication_metadata_before_authority_sha256 = ?4,
+                         publication_metadata_before_title_sha256 = ?5,
+                         publication_metadata_before_editable_body_sha256 = ?6,
+                         publication_metadata_before_managed_suffix_sha256 = ?7,
+                         publication_metadata_intended_title_sha256 = ?8,
+                         publication_metadata_intended_editable_body_sha256 = ?9,
+                         publication_metadata_updated_at = ?10,
+                         publication_pr_metadata_decision = ?11,
+                         publication_pr_title = ?12,
+                         publication_pr_body = ?13,
+                         publication_push_status = 'pushing',
+                         updated_at = ?10
+                     WHERE conversation_id = ?1
+                       AND publication_pr_number = ?3
+                       AND (
+                           publication_metadata_phase IS NULL
+                           OR publication_metadata_phase = 'settled'
+                       )",
+                    rusqlite::params![
+                        conversation_id,
+                        attempt_id,
+                        target_pr_number,
+                        receipt.before_authority_sha256,
+                        receipt.before_title_sha256,
+                        receipt.before_editable_body_sha256,
+                        receipt.before_managed_suffix_sha256,
+                        receipt.intended_title_sha256,
+                        receipt.intended_editable_body_sha256,
+                        claimed_at,
+                        decision,
+                        title,
+                        body,
+                    ],
+                )?;
+                if rows != 1 {
+                    return Ok(false);
+                }
+                transaction.execute(
+                    "INSERT INTO agent_conversation_workspace_publication_events (
+                        id, conversation_id, step, status, summary, classification, attempt_id, created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![
+                        event.0, event.1, event.2, event.3, event.4, event.5, event.6, event.7,
+                    ],
+                )?;
+                transaction.commit()?;
+                Ok(true)
+            })
+            .await
+    }
+
+    async fn compare_and_set_publication_metadata_receipt_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_attempt_id: &str,
+        expected_phase: AgentWorkspacePublicationMetadataPhase,
+        expected_state: AgentWorkspacePublicationMetadataState,
+        next_phase: AgentWorkspacePublicationMetadataPhase,
+        next_state: AgentWorkspacePublicationMetadataState,
+        refresh: Option<AgentWorkspacePublicationMetadataReceiptRefresh>,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        if let Some(refresh) = refresh.as_ref() {
+            validate_publication_metadata_refresh(refresh)?;
+            validate_publication_metadata_decision(
+                &AgentWorkspacePublicationMetadataReceipt {
+                    attempt_id: expected_attempt_id.to_string(),
+                    phase: next_phase,
+                    state: next_state,
+                    target_pr_number: refresh.target_pr_number,
+                    before_authority_sha256: refresh.before_authority_sha256.clone(),
+                    before_title_sha256: refresh.before_title_sha256.clone(),
+                    before_editable_body_sha256: refresh.before_editable_body_sha256.clone(),
+                    before_managed_suffix_sha256: refresh.before_managed_suffix_sha256.clone(),
+                    intended_title_sha256: refresh.intended_title_sha256.clone(),
+                    intended_editable_body_sha256: refresh.intended_editable_body_sha256.clone(),
+                    updated_at: refresh.updated_at,
+                },
+                &refresh.decision,
+            )?;
+        }
+        validate_publication_metadata_receipt_events(
+            conversation_id,
+            expected_attempt_id,
+            &events,
+        )?;
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_attempt_id = expected_attempt_id.to_string();
+        let expected_phase = expected_phase.to_string();
+        let expected_state = expected_state.to_string();
+        let next_phase = next_phase.to_string();
+        let next_state = next_state.to_string();
+        let (
+            has_refresh,
+            refresh_target_pr_number,
+            refresh_before_authority_sha256,
+            refresh_before_title_sha256,
+            refresh_before_editable_body_sha256,
+            refresh_before_managed_suffix_sha256,
+            refresh_intended_title_sha256,
+            refresh_intended_editable_body_sha256,
+            refresh_decision,
+            refresh_title,
+            refresh_body,
+            updated_at,
+        ) = match refresh {
+            Some(refresh) => {
+                let (decision, title, body) = match refresh.decision {
+                    AgentWorkspacePrMetadataDecision::Preserve => ("preserve", None, None),
+                    AgentWorkspacePrMetadataDecision::Patch {
+                        title,
+                        body_markdown,
+                    } => ("patch", title, body_markdown),
+                };
+                (
+                    true,
+                    Some(refresh.target_pr_number),
+                    Some(refresh.before_authority_sha256),
+                    Some(refresh.before_title_sha256),
+                    Some(refresh.before_editable_body_sha256),
+                    refresh.before_managed_suffix_sha256,
+                    refresh.intended_title_sha256,
+                    refresh.intended_editable_body_sha256,
+                    Some(decision),
+                    title,
+                    body,
+                    refresh.updated_at.to_rfc3339(),
+                )
+            }
+            None => (
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Utc::now().to_rfc3339(),
+            ),
+        };
+        let events = events
+            .into_iter()
+            .map(|event| {
+                (
+                    event.id,
+                    event.conversation_id.as_str().to_string(),
+                    event.step,
+                    event.status,
+                    event.summary,
+                    event.classification,
+                    event.attempt_id,
+                    event.created_at.to_rfc3339(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.db
+            .run(move |conn| {
+                let transaction = conn.unchecked_transaction()?;
+                let rows = transaction.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_metadata_phase = ?4,
+                         publication_metadata_state = ?5,
+                         publication_metadata_target_pr_number = CASE WHEN ?6 THEN ?7 ELSE publication_metadata_target_pr_number END,
+                         publication_metadata_before_authority_sha256 = CASE WHEN ?6 THEN ?8 ELSE publication_metadata_before_authority_sha256 END,
+                         publication_metadata_before_title_sha256 = CASE WHEN ?6 THEN ?9 ELSE publication_metadata_before_title_sha256 END,
+                         publication_metadata_before_editable_body_sha256 = CASE WHEN ?6 THEN ?10 ELSE publication_metadata_before_editable_body_sha256 END,
+                         publication_metadata_before_managed_suffix_sha256 = CASE WHEN ?6 THEN ?11 ELSE publication_metadata_before_managed_suffix_sha256 END,
+                         publication_metadata_intended_title_sha256 = CASE WHEN ?6 THEN ?12 ELSE publication_metadata_intended_title_sha256 END,
+                         publication_metadata_intended_editable_body_sha256 = CASE WHEN ?6 THEN ?13 ELSE publication_metadata_intended_editable_body_sha256 END,
+                         publication_pr_metadata_decision = CASE WHEN ?6 THEN ?14 ELSE publication_pr_metadata_decision END,
+                         publication_pr_title = CASE WHEN ?6 THEN ?15 ELSE publication_pr_title END,
+                         publication_pr_body = CASE WHEN ?6 THEN ?16 ELSE publication_pr_body END,
+                         publication_metadata_updated_at = ?17,
+                         updated_at = ?17
+                     WHERE conversation_id = ?1
+                       AND publication_metadata_attempt_id = ?2
+                       AND publication_metadata_phase = ?3
+                       AND publication_metadata_state = ?18",
+                    rusqlite::params![
+                        conversation_id,
+                        expected_attempt_id,
+                        expected_phase,
+                        next_phase,
+                        next_state,
+                        has_refresh,
+                        refresh_target_pr_number,
+                        refresh_before_authority_sha256,
+                        refresh_before_title_sha256,
+                        refresh_before_editable_body_sha256,
+                        refresh_before_managed_suffix_sha256,
+                        refresh_intended_title_sha256,
+                        refresh_intended_editable_body_sha256,
+                        refresh_decision,
+                        refresh_title,
+                        refresh_body,
+                        updated_at,
+                        expected_state,
+                    ],
+                )?;
+                if rows != 1 {
+                    return Ok(false);
+                }
+                for (
+                    id,
+                    event_conversation_id,
+                    step,
+                    status,
+                    summary,
+                    classification,
+                    attempt_id,
+                    created_at,
+                ) in events
+                {
+                    transaction.execute(
+                        "INSERT INTO agent_conversation_workspace_publication_events (
+                            id, conversation_id, step, status, summary, classification, attempt_id, created_at
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        rusqlite::params![
+                            id,
+                            event_conversation_id,
+                            step,
+                            status,
+                            summary,
+                            classification,
+                            attempt_id,
+                            created_at,
+                        ],
+                    )?;
+                }
+                transaction.commit()?;
+                Ok(true)
+            })
+            .await
+    }
+
+    async fn settle_publication_metadata_receipt_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_attempt_id: &str,
+        expected_phase: AgentWorkspacePublicationMetadataPhase,
+        expected_state: AgentWorkspacePublicationMetadataState,
+        next_phase: AgentWorkspacePublicationMetadataPhase,
+        next_state: AgentWorkspacePublicationMetadataState,
+        publication: AgentWorkspacePublicationUpdate,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        validate_publication_metadata_receipt_events(
+            conversation_id,
+            expected_attempt_id,
+            &events,
+        )?;
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_attempt_id = expected_attempt_id.to_string();
+        let expected_phase = expected_phase.to_string();
+        let expected_state = expected_state.to_string();
+        let next_phase = next_phase.to_string();
+        let next_state = next_state.to_string();
+        let terminal_pr_status =
+            matches!(publication.pr_status.as_deref(), Some("merged" | "closed"));
+        let updated_at = Utc::now().to_rfc3339();
+        let events = events
+            .into_iter()
+            .map(|event| {
+                (
+                    event.id,
+                    event.conversation_id.as_str().to_string(),
+                    event.step,
+                    event.status,
+                    event.summary,
+                    event.classification,
+                    event.attempt_id,
+                    event.created_at.to_rfc3339(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.db
+            .run(move |conn| {
+                let transaction = conn.unchecked_transaction()?;
+                let rows = transaction.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_pr_number = ?4,
+                         publication_pr_url = ?5,
+                         publication_pr_status = ?6,
+                         publication_push_status = ?7,
+                         publication_metadata_phase = ?8,
+                         publication_metadata_state = ?9,
+                         publication_metadata_updated_at = ?11,
+                         pr_supervision_status = CASE WHEN ?10 THEN NULL ELSE pr_supervision_status END,
+                         pr_supervision_summary = CASE WHEN ?10 THEN NULL ELSE pr_supervision_summary END,
+                         pr_supervision_updated_at = CASE WHEN ?10 THEN ?11 ELSE pr_supervision_updated_at END,
+                         updated_at = ?11
+                     WHERE conversation_id = ?1
+                       AND publication_metadata_attempt_id = ?2
+                       AND publication_metadata_phase = ?3
+                       AND publication_metadata_state = ?12",
+                    rusqlite::params![
+                        conversation_id,
+                        expected_attempt_id,
+                        expected_phase,
+                        publication.pr_number,
+                        publication.pr_url,
+                        publication.pr_status,
+                        publication.push_status,
+                        next_phase,
+                        next_state,
+                        terminal_pr_status,
+                        updated_at,
+                        expected_state,
+                    ],
+                )?;
+                if rows != 1 {
+                    return Ok(false);
+                }
+                for (
+                    id,
+                    event_conversation_id,
+                    step,
+                    status,
+                    summary,
+                    classification,
+                    attempt_id,
+                    created_at,
+                ) in events
+                {
+                    transaction.execute(
+                        "INSERT INTO agent_conversation_workspace_publication_events (
+                            id, conversation_id, step, status, summary, classification, attempt_id, created_at
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        rusqlite::params![
+                            id,
+                            event_conversation_id,
+                            step,
+                            status,
+                            summary,
+                            classification,
+                            attempt_id,
+                            created_at,
+                        ],
+                    )?;
+                }
+                transaction.commit()?;
+                Ok(true)
+            })
+            .await
+    }
+
+    async fn update_publication_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: &AgentWorkspacePublicationGuard,
+        publication: AgentWorkspacePublicationUpdate,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        if events
+            .iter()
+            .any(|event| event.conversation_id != *conversation_id)
+        {
+            return Err(AppError::Validation(
+                "publication events must belong to the workspace".to_string(),
+            ));
+        }
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_pr_number = expected.pr_number;
+        let expected_pr_url = expected.pr_url.clone();
+        let expected_pr_status = expected.pr_status.clone();
+        let expected_push_status = expected.push_status.clone();
+        let expected_attempt_id = expected.metadata_attempt_id.clone();
+        let expected_phase = expected.metadata_phase.map(|value| value.to_string());
+        let expected_state = expected.metadata_state.map(|value| value.to_string());
+        let terminal_pr_status =
+            matches!(publication.pr_status.as_deref(), Some("merged" | "closed"));
+        let updated_at = Utc::now().to_rfc3339();
+        let events = events
+            .into_iter()
+            .map(|event| {
+                (
+                    event.id,
+                    event.conversation_id.as_str().to_string(),
+                    event.step,
+                    event.status,
+                    event.summary,
+                    event.classification,
+                    event.attempt_id,
+                    event.created_at.to_rfc3339(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.db.run(move |conn| {
+            let transaction = conn.unchecked_transaction()?;
+            let rows = transaction.execute(
+                "UPDATE agent_conversation_workspaces
+                 SET publication_pr_number = ?2, publication_pr_url = ?3,
+                     publication_pr_status = ?4, publication_push_status = ?5,
+                     pr_supervision_status = CASE WHEN ?6 THEN NULL ELSE pr_supervision_status END,
+                     pr_supervision_summary = CASE WHEN ?6 THEN NULL ELSE pr_supervision_summary END,
+                     pr_supervision_updated_at = CASE WHEN ?6 THEN ?7 ELSE pr_supervision_updated_at END,
+                     updated_at = ?7
+                 WHERE conversation_id = ?1
+                   AND publication_pr_number IS ?8
+                   AND publication_pr_url IS ?9
+                   AND publication_pr_status IS ?10
+                   AND publication_push_status IS ?11
+                   AND publication_metadata_attempt_id IS ?12
+                   AND publication_metadata_phase IS ?13
+                   AND publication_metadata_state IS ?14",
+                rusqlite::params![conversation_id, publication.pr_number, publication.pr_url,
+                    publication.pr_status, publication.push_status, terminal_pr_status, updated_at,
+                    expected_pr_number, expected_pr_url, expected_pr_status, expected_push_status,
+                    expected_attempt_id, expected_phase, expected_state],
+            )?;
+            if rows != 1 { return Ok(false); }
+            for (id, event_conversation_id, step, status, summary, classification, attempt_id, created_at) in events {
+                transaction.execute(
+                    "INSERT INTO agent_conversation_workspace_publication_events
+                     (id, conversation_id, step, status, summary, classification, attempt_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![id, event_conversation_id, step, status, summary, classification, attempt_id, created_at],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(true)
+        }).await
+    }
+
+    async fn get_publication_metadata_receipt(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePublicationMetadataReceipt>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let values = conn
+                    .query_row(
+                        "SELECT publication_metadata_attempt_id, publication_metadata_phase,
+                    publication_metadata_state, publication_metadata_target_pr_number,
+                    publication_metadata_before_authority_sha256,
+                    publication_metadata_before_title_sha256,
+                    publication_metadata_before_editable_body_sha256,
+                    publication_metadata_before_managed_suffix_sha256,
+                    publication_metadata_intended_title_sha256,
+                    publication_metadata_intended_editable_body_sha256,
+                    publication_metadata_updated_at
+                 FROM agent_conversation_workspaces WHERE conversation_id = ?1",
+                        [conversation_id],
+                        StoredPublicationMetadataReceipt::from_row,
+                    )
+                    .optional()?;
+                let Some(values) = values else {
+                    return Ok(None);
+                };
+                values.decode()
             })
             .await
     }
@@ -2010,13 +2807,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let status = event.status;
         let summary = event.summary;
         let classification = event.classification;
+        let attempt_id = event.attempt_id;
         let created_at = event.created_at.to_rfc3339();
         self.db
             .run(move |conn| {
                 conn.execute(
                     "INSERT INTO agent_conversation_workspace_publication_events (
-                        id, conversation_id, step, status, summary, classification, created_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        id, conversation_id, step, status, summary, classification, attempt_id, created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     rusqlite::params![
                         id,
                         conversation_id,
@@ -2024,6 +2822,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         status,
                         summary,
                         classification,
+                        attempt_id,
                         created_at
                     ],
                 )?;
@@ -2536,12 +3335,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         AND COALESCE(source_pr_number, publication_pr_number) IS NOT NULL
                       ORDER BY updated_at DESC",
                 )?;
-                let rows = stmt.query_map([], row_to_workspace)?;
-                let mut workspaces = Vec::new();
-                for row in rows {
-                    workspaces.push(row?);
-                }
-                Ok(workspaces)
+                let rows = stmt.query([])?;
+                collect_workspaces(rows)
             })
             .await
     }

@@ -18,9 +18,10 @@ use super::settings::{
     REMOTE_PORT_ENV,
 };
 use super::{
-    allowed_app_origins, apply_exposure_mode, authenticated_remote_routes, auto_start_if_enabled,
-    remote_router, start_listener, stop_listener, RemoteListenerError, RemoteListenerHandle,
-    DESCRIPTOR_PATH, HEALTH_PATH, PAIR_PATH, PRE_AUTH_ALLOWLIST,
+    allowed_app_origins, apply_exposure_mode as apply_exposure_mode_with_app,
+    authenticated_remote_routes, auto_start_if_enabled as auto_start_if_enabled_with_app,
+    remote_router, start_listener as start_listener_with_app, stop_listener, RemoteListenerError,
+    RemoteListenerHandle, DESCRIPTOR_PATH, HEALTH_PATH, PAIR_PATH, PRE_AUTH_ALLOWLIST,
 };
 use crate::infrastructure::sqlite::DbConnection;
 use crate::infrastructure::tailscale::{TailscaleCommandRunner, TailscaleServeError};
@@ -30,6 +31,50 @@ use crate::utils::backend_endpoint::{
 };
 
 const TEST_APP_ORIGIN: &str = "tauri://localhost";
+
+fn test_app_handle() -> tauri::AppHandle {
+    tauri::Builder::default()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("test Wry app should build")
+        .handle()
+        .clone()
+}
+
+async fn start_listener(
+    handle: &RemoteListenerHandle,
+    store: &RemoteHostSettingsStore,
+    provider: &dyn super::settings::TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
+) -> Result<SocketAddr, RemoteListenerError> {
+    start_listener_with_app(&test_app_handle(), handle, store, provider, tailscale).await
+}
+
+async fn auto_start_if_enabled(
+    handle: &RemoteListenerHandle,
+    store: &RemoteHostSettingsStore,
+    provider: &dyn super::settings::TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
+) -> Result<Option<SocketAddr>, RemoteListenerError> {
+    auto_start_if_enabled_with_app(&test_app_handle(), handle, store, provider, tailscale).await
+}
+
+async fn apply_exposure_mode(
+    handle: &RemoteListenerHandle,
+    store: &RemoteHostSettingsStore,
+    provider: &dyn super::settings::TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
+    exposure_mode: RemoteExposureMode,
+) -> Result<super::settings::RemoteHostSettings, RemoteListenerError> {
+    apply_exposure_mode_with_app(
+        &test_app_handle(),
+        handle,
+        store,
+        provider,
+        tailscale,
+        exposure_mode,
+    )
+    .await
+}
 
 struct ConfiguredTailnetProvider;
 
@@ -102,6 +147,7 @@ fn descriptor_state() -> RemoteRouterState {
     RemoteRouterState::new(
         "11111111-2222-3333-4444-555555555555",
         super::auth_tests::in_memory_auth_context(),
+        test_app_handle(),
     )
 }
 

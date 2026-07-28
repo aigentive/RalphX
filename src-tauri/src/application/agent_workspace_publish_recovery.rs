@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_latest_exact_pr_autofix_run_for_pr, load_pr_autofix_attempt_decision,
     PrAutofixAttemptDecision,
 };
+use crate::application::agent_workspace_pr_metadata_reconciliation::AgentWorkspacePrMetadataReconciliationService;
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, claim_agent_workspace_repair,
     reconcile_active_agent_workspace_repair, restore_refreshed_agent_workspace_pr_fix_claim,
@@ -20,6 +22,7 @@ use crate::application::agent_workspace_review_publish_handoff::{
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
+    AgentWorkspacePublicationMetadataPhase,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
@@ -566,6 +569,27 @@ pub async fn recover_stale_transient_publish_statuses(
     let mut recovered = 0u32;
 
     for workspace in workspaces {
+        match workspace_repo
+            .get_publication_metadata_receipt(&workspace.conversation_id)
+            .await
+        {
+            Ok(_) => {}
+            Err(_) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    "Skipped stale transient publish recovery because metadata receipt authority is unreadable"
+                );
+                continue;
+            }
+        }
+        if has_nonterminal_publication_metadata_receipt(&workspace) {
+            tracing::info!(
+                conversation_id = workspace.conversation_id.as_str(),
+                metadata_phase = ?workspace.publication_metadata_phase,
+                "Skipped stale transient publish recovery because metadata receipt authority is nonterminal"
+            );
+            continue;
+        }
         let stuck_status = workspace
             .publication_push_status
             .clone()
@@ -601,6 +625,165 @@ pub async fn recover_stale_transient_publish_statuses(
     Ok(recovered)
 }
 
+fn has_nonterminal_metadata_receipt_phase(
+    receipt: &crate::domain::entities::AgentWorkspacePublicationMetadataReceipt,
+) -> bool {
+    has_nonterminal_metadata_phase(receipt.phase)
+}
+
+fn has_nonterminal_metadata_phase(phase: AgentWorkspacePublicationMetadataPhase) -> bool {
+    matches!(
+        phase,
+        AgentWorkspacePublicationMetadataPhase::Prepared
+            | AgentWorkspacePublicationMetadataPhase::Mutating
+            | AgentWorkspacePublicationMetadataPhase::Reconciling
+    )
+}
+
+fn has_nonterminal_publication_metadata_receipt(workspace: &AgentConversationWorkspace) -> bool {
+    workspace
+        .publication_metadata_phase
+        .is_some_and(has_nonterminal_metadata_phase)
+}
+
+/// Reconciles durable, unfinished existing-PR metadata receipts without retrying a mutation.
+///
+/// Receipt candidates are selected independently from generic stale recovery because receipt
+/// preparation owns `pushing`, which the generic stale writer must never downgrade.
+pub async fn recover_pending_agent_workspace_pr_metadata_receipts_for_state(
+    state: &AppState,
+    stale_older_than_secs: u64,
+) -> AppResult<u32> {
+    let workspaces = state
+        .agent_conversation_workspace_repo
+        .list_active_pending_publication_metadata_receipt_workspaces(stale_older_than_secs)
+        .await?;
+    let Some(github) = state.github_service.as_ref() else {
+        if workspaces
+            .iter()
+            .any(has_nonterminal_publication_metadata_receipt)
+        {
+            tracing::warn!(
+                candidate_count = workspaces.len(),
+                "Skipped pending PR metadata receipt recovery because GitHub is unavailable"
+            );
+        }
+        return Ok(0);
+    };
+
+    let service = AgentWorkspacePrMetadataReconciliationService::new(
+        &state.agent_conversation_workspace_repo,
+        github,
+    );
+    let mut reconciled = 0u32;
+    for workspace in workspaces {
+        let receipt = match state
+            .agent_conversation_workspace_repo
+            .get_publication_metadata_receipt(&workspace.conversation_id)
+            .await
+        {
+            Ok(Some(receipt)) if has_nonterminal_metadata_receipt_phase(&receipt) => receipt,
+            Ok(_) => continue,
+            Err(_) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    "Skipped pending PR metadata receipt recovery because receipt authority is unreadable"
+                );
+                continue;
+            }
+        };
+        let project = match state.project_repo.get_by_id(&workspace.project_id).await {
+            Ok(Some(project)) => project,
+            Ok(None) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    "Skipped pending PR metadata receipt recovery because its project is unavailable"
+                );
+                continue;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    "Skipped pending PR metadata receipt recovery because its project could not be loaded"
+                );
+                continue;
+            }
+        };
+        let working_directory = if receipt.phase == AgentWorkspacePublicationMetadataPhase::Prepared
+        {
+            None
+        } else {
+            match resolve_effective_agent_conversation_workspace_path(
+                &project,
+                &workspace,
+                state.plan_branch_repo.as_ref(),
+            )
+            .await
+            {
+                Ok(resolved) => Some(resolved.path),
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = workspace.conversation_id.as_str(),
+                        error = %error,
+                        "Skipped pending PR metadata receipt recovery because its workspace path is invalid"
+                    );
+                    continue;
+                }
+            }
+        };
+        let working_directory = working_directory
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(""));
+        match service
+            .recover(working_directory, &workspace.conversation_id)
+            .await
+        {
+            Ok(Some(outcome)) => {
+                if !matches!(
+                    outcome,
+                    crate::application::agent_workspace_pr_metadata_reconciliation::AgentWorkspacePrMetadataReconciliationOutcome::Unknown
+                        | crate::application::agent_workspace_pr_metadata_reconciliation::AgentWorkspacePrMetadataReconciliationOutcome::Stale
+                ) {
+                    reconciled += 1;
+                }
+                tracing::info!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    outcome = ?outcome,
+                    "Recovered pending PR metadata receipt without repeating a mutation"
+                );
+            }
+            Ok(None) => {}
+            Err(_) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    "Pending PR metadata receipt recovery failed closed"
+                );
+            }
+        }
+    }
+
+    Ok(reconciled)
+}
+
+pub async fn recover_pending_agent_workspace_pr_metadata_receipts_on_startup_for_state(
+    state: &AppState,
+) {
+    match recover_pending_agent_workspace_pr_metadata_receipts_for_state(state, 0).await {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                count,
+                "Recovered pending agent workspace PR metadata receipts on startup"
+            );
+        }
+        Ok(_) => {}
+        Err(_) => {
+            tracing::warn!(
+                "Failed to load pending agent workspace PR metadata receipts on startup"
+            );
+        }
+    }
+}
+
 pub async fn run_periodic_workspace_publish_recovery(state: AppState) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(120)).await;
@@ -609,6 +792,18 @@ pub async fn run_periodic_workspace_publish_recovery(state: AppState) {
             tracing::warn!(
                 error = %err,
                 "Periodic recovery: failed to recover stale needs_agent workspace repairs"
+            );
+        }
+
+        if let Err(err) = recover_pending_agent_workspace_pr_metadata_receipts_for_state(
+            &state,
+            STALE_TRANSIENT_STATUS_STALE_SECS,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                "Periodic recovery: failed to reconcile pending PR metadata receipts"
             );
         }
 

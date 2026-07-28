@@ -41,6 +41,7 @@ pub mod agent_workspace_continuation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
+pub(crate) mod agent_workspace_pr_metadata_reconciliation;
 pub(crate) mod agent_workspace_terminal_cleanup;
 #[cfg(test)]
 mod agent_workspace_terminal_cleanup_tests;
@@ -194,6 +195,7 @@ pub mod ready_task_scheduler;
 pub mod reconciliation;
 pub mod recovery_queue;
 pub mod remote_environment_service;
+pub mod remote_event_relay;
 pub mod resume_validator;
 pub mod review_issue_service;
 pub mod review_service;
@@ -370,6 +372,9 @@ pub use remote_environment_service::{
     RemoteEnvironmentError, RemoteEnvironmentReconcileReport, RemoteEnvironmentService,
     LOCAL_ENVIRONMENT_ID,
 };
+pub use remote_event_relay::{
+    NoopFrameSink, RemoteConnectOutcome, RemoteEventRelay, RemoteFrameSink, TauriFrameSink,
+};
 pub use resume_validator::{ResumeValidationResult, ResumeValidator};
 pub use review_issue_service::{CreateIssueInput, ReviewIssueService};
 pub use review_service::ReviewService;
@@ -430,6 +435,8 @@ mod agent_planning_session_titles_tests;
 mod agent_terminal_tests;
 #[cfg(test)]
 mod agent_workspace_external_pr_reconciliation_tests;
+#[cfg(test)]
+mod agent_workspace_pr_metadata_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;
 #[cfg(test)]

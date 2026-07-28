@@ -140,7 +140,7 @@ async fn approved_no_changes_rejects_empty_diff_without_explicit_no_code_metadat
 
 fn task_context_for(task: Task) -> TaskContext {
     TaskContext {
-        task,
+        task: task.into(),
         source_proposal: None,
         plan_artifact: None,
         blueprint_artifact: None,

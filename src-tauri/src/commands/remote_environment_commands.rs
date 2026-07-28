@@ -8,6 +8,7 @@
 //! trusted JS argument (P-26) — the `id` args below only SELECT a target, the
 //! service decides whether that target is authorized.
 
+use ralphx_remote_protocol::ClientFrame;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -15,6 +16,7 @@ use crate::application::remote_environment_service::{
     RemoteEnvironmentError, RemoteEnvironmentService, RemoteFetchCall, RemoteFetchOutcome,
     RemoteInvokeOutcome,
 };
+use crate::application::remote_event_relay::RemoteConnectOutcome;
 use crate::domain::entities::remote_environment::{RemoteEnvironment, RemoteEnvironmentStatus};
 use crate::AppState;
 
@@ -176,13 +178,15 @@ pub async fn set_active_environment(
         .map_err(to_command_error)
 }
 
-/// Opens the Rust-owned outbound connection for an environment (WS body lands in
-/// PR 2.3 — until then this returns `NOT_CONNECTED` after authorization).
+/// Opens the Rust-owned outbound event socket for an environment (§3.2): bearer →
+/// single-use ticket → dial → hello. The hello comes back as the outcome; the
+/// stream frames themselves arrive as local `remote:stream_frame` events. The
+/// socket — and the bearer/ticket — never reach JS (P-18).
 #[tauri::command]
 pub async fn remote_connect(
     input: RemoteEnvironmentIdInput,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<RemoteConnectOutcome, String> {
     service(&state)
         .connect(&input.id)
         .await
@@ -196,6 +200,31 @@ pub async fn remote_disconnect(
 ) -> Result<(), String> {
     service(&state)
         .disconnect(&input.id)
+        .await
+        .map_err(to_command_error)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStreamSendInput {
+    pub id: String,
+    /// Typed as `ClientFrame` on purpose — the deserializer bounds what can be sent
+    /// (`subscribe` / `cursorAck` / `heartbeatAck`); this is never a raw JSON
+    /// passthrough to the socket.
+    pub frame: ClientFrame,
+}
+
+/// Sends one protocol control frame on an environment's live event socket. The TS
+/// `NetworkEventBus` owns the cursor (`afterSeq`, `cursorAck`) and speaks through
+/// this command. Same authorization as `remote_connect` — background environments'
+/// sockets stay drivable (§6.4); data/command paths remain active-env-bound (P-26).
+#[tauri::command]
+pub async fn remote_stream_send(
+    input: RemoteStreamSendInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    service(&state)
+        .stream_send(&input.id, input.frame)
         .await
         .map_err(to_command_error)
 }

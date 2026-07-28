@@ -38,13 +38,21 @@ export function backendApiPath(endpoint: string): string {
   if (trimmed.length === 0) {
     throw new Error("Backend API endpoint must not be empty.");
   }
-  if (trimmed.includes("://") || trimmed.startsWith("//")) {
+  // The guards apply to the PATH only. Callers append an encoded query string to the same
+  // argument (`file-diff-page?path=…`), and query VALUES legitimately carry dots and colons —
+  // a workspace file named `notes..md` is not traversal, and rejecting it here would fail a
+  // fetch the pre-migration `fetch(backendApiUrl(e) + "?" + params)` served fine. A query can
+  // only ever be a query: it cannot climb out of `/api/`.
+  const queryStart = trimmed.indexOf("?");
+  const pathPart = queryStart === -1 ? trimmed : trimmed.slice(0, queryStart);
+  const query = queryStart === -1 ? "" : trimmed.slice(queryStart);
+  if (pathPart.includes("://") || pathPart.startsWith("//")) {
     throw new Error(`Invalid backend API endpoint: ${endpoint}`);
   }
-  if (trimmed.includes("..")) {
+  if (pathPart.includes("..")) {
     throw new Error(`Invalid backend API endpoint traversal: ${endpoint}`);
   }
-  return `/api/${trimmed.replace(/^\/+/, "")}`;
+  return `/api/${pathPart.replace(/^\/+/, "")}${query}`;
 }
 
 export function backendApiUrl(endpoint: string): string {

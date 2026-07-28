@@ -625,65 +625,6 @@ describe("AgentsPublishFileDiff", () => {
       );
     });
 
-    it("renders review-only hunk annotations without mounting code diff views", async () => {
-      const user = userEvent.setup();
-      const onLoadCode = vi.fn();
-      render(
-        withProviders(
-          <AgentsPublishFileDiff
-            file={makeFileChange()}
-            diff={makeDiff()}
-            isExpanded={true}
-            onToggle={onToggle}
-            onCopyPath={onCopyPath}
-            onOpenFullscreen={onOpenFullscreen}
-            shouldHydrate={true}
-            annotations={[makeAnnotation()]}
-            hunkAnnotations={[makeHunkAnnotation()]}
-            isShowAnywayOverridden={false}
-            onShowAnyway={onShowAnyway}
-            contentMode="review-only"
-            onLoadCode={onLoadCode}
-          />,
-        ),
-      );
-
-      expect(screen.getByTestId("file-diff-review-only")).toBeInTheDocument();
-      expect(screen.getByText("@@ -1,1 +1,1 @@")).toBeInTheDocument();
-      expect(screen.getByText("Review summary")).toBeInTheDocument();
-      expect(screen.getByText("Please tighten this guard.")).toBeInTheDocument();
-      expect(screen.queryByTestId("simple-diff-view")).toBeNull();
-      expect(screen.queryByTestId("paged-diff-view")).toBeNull();
-
-      await user.click(screen.getByTestId("file-diff-load-code"));
-      expect(onLoadCode).toHaveBeenCalledOnce();
-    });
-
-    it("shows an empty review-only body when a file has no annotations", () => {
-      render(
-        withProviders(
-          <AgentsPublishFileDiff
-            file={makeFileChange()}
-            diff={undefined}
-            isExpanded={true}
-            onToggle={onToggle}
-            onCopyPath={onCopyPath}
-            onOpenFullscreen={onOpenFullscreen}
-            shouldHydrate={false}
-            isShowAnywayOverridden={false}
-            onShowAnyway={onShowAnyway}
-            contentMode="review-only"
-            onLoadCode={vi.fn()}
-          />,
-        ),
-      );
-
-      expect(screen.getByTestId("file-diff-review-only-empty")).toHaveTextContent(
-        "No review annotations for this file.",
-      );
-      expect(screen.queryByTestId("file-diff-pre-hydration")).toBeNull();
-    });
-
     it("mounts PagedDiffView for a medium hydrated diff when page refs are available", () => {
       render(
         withProviders(

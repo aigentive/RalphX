@@ -67,8 +67,9 @@ use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::domain::repositories::RemoteSessionRepository;
 use crate::error::AppError;
-use crate::infrastructure::sqlite::SqliteRemoteEventLogRepository;
+use crate::infrastructure::sqlite::{SqliteRemoteAccessRepository, SqliteRemoteEventLogRepository};
 use crate::infrastructure::tailscale::{
     RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
@@ -98,6 +99,7 @@ pub(crate) const WS_TICKET_PATH: &str = "/remote/v1/auth/ws-ticket";
 /// machines (§6.1 "host revoke (best-effort) → Keychain delete → row delete", P-27).
 pub(crate) const REVOKE_PATH: &str = "/remote/v1/auth/revoke";
 pub(crate) const SESSION_PATH: &str = "/remote/v1/session";
+pub(crate) const INVOKE_PATH: &str = "/remote/v1/invoke";
 pub(crate) const HEALTH_PATH: &str = "/health";
 
 /// Routes reachable before the bearer check.
@@ -338,6 +340,10 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
             get(health_handler).options(remote_preflight_handler),
         )
         .route(
+            INVOKE_PATH,
+            post(invoke::invoke_handler).options(remote_preflight_handler),
+        )
+        .route(
             ws::WS_EVENTS_PATH,
             get(ws::ws_events_handler).options(remote_preflight_handler),
         )
@@ -403,6 +409,7 @@ pub(crate) fn remote_error_response(
 /// Ordering is deliberate: refuse → bind → persist → spawn. A refused or failed bind never
 /// leaves `enabled = true` behind, and a failed persist releases the socket.
 pub(crate) async fn start_listener(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -494,10 +501,11 @@ pub(crate) async fn start_listener(
     let (stopped_tx, stopped) = oneshot::channel();
     let auth =
         RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
-    let mut state = RemoteRouterState::new(settings.environment_id.as_str(), auth)
-        // Installed at app setup, not here: the listener toggle governs network exposure only, so
-        // a restart of the listener must not restart the stream (P-15, P-23).
-        .with_stream(handle.stream());
+    let mut state =
+        RemoteRouterState::new(settings.environment_id.as_str(), auth, app_handle.clone())
+            // Installed at app setup, not here: the listener toggle governs network exposure only, so
+            // a restart of the listener must not restart the stream (P-15, P-23).
+            .with_stream(handle.stream());
     if let Some(sink) = handle.lifecycle_sink() {
         state = state.with_lifecycle_sink(sink);
     }
@@ -574,6 +582,7 @@ pub(crate) async fn stop_listener(
 /// A restart that gets refused leaves remote access disabled rather than silently listening on
 /// the previous address.
 pub(crate) async fn apply_exposure_mode(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -590,7 +599,7 @@ pub(crate) async fn apply_exposure_mode(
         return Ok(settings);
     }
 
-    match start_listener(handle, store, provider, tailscale).await {
+    match start_listener(app_handle, handle, store, provider, tailscale).await {
         Ok(_) => Ok(store.get_or_create().await?),
         Err(error) => {
             tracing::error!(
@@ -605,6 +614,7 @@ pub(crate) async fn apply_exposure_mode(
 
 /// Startup auto-start. Never mints the settings row: an absent row means nothing listens.
 pub(crate) async fn auto_start_if_enabled(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -618,9 +628,53 @@ pub(crate) async fn auto_start_if_enabled(
         tracing::debug!("Remote host mode is disabled; remote listener stays off");
         return Ok(None);
     }
-    start_listener(handle, store, provider, tailscale)
+    start_listener(app_handle, handle, store, provider, tailscale)
         .await
         .map(Some)
+}
+
+/// Closes `remote_sessions` rows that a previous process left open.
+///
+/// The graceful paths close their own rows (`SessionGuard` on socket close, `stop_listener` on
+/// disable). A crash, force quit, or power loss closes nothing, and every one of those rows keeps
+/// showing up in the pane's "connections currently open against this Mac" list forever — the owner
+/// can only clear them one disconnect at a time. Startup is the one moment where the classification
+/// is unambiguous: no socket has been admitted yet in this process, so every open row belongs to a
+/// dead one. Live completion and startup recovery therefore terminalise the same way.
+pub(crate) async fn close_orphaned_remote_sessions_from_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<crate::AppState>() else {
+        tracing::warn!("AppState is unavailable; skipping remote session reconciliation");
+        return;
+    };
+    let store = RemoteHostSettingsStore::from_db(state.db.clone());
+    // Same `get()` gate as capture installation: an unconfigured host has no sessions to reconcile,
+    // and a read must never mint the row that defines "configured".
+    match store.get().await {
+        Ok(Some(_)) => {}
+        Ok(None) => return,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "Reading remote host settings failed; skipping remote session reconciliation"
+            );
+            return;
+        }
+    }
+
+    let sessions = SqliteRemoteAccessRepository::from_db(state.db.clone());
+    match sessions
+        .close_all(&crate::remote_server::auth::now_timestamp())
+        .await
+    {
+        Ok(0) => {}
+        Ok(closed) => tracing::info!(
+            closed,
+            "Closed remote session rows left open by a previous process"
+        ),
+        Err(error) => {
+            tracing::error!(%error, "Closing remote session rows from a previous process failed")
+        }
+    }
 }
 
 /// Installs the capture bank + durable sequencer + pruner when host mode is **configured**.
@@ -696,6 +750,7 @@ pub(crate) async fn auto_start_remote_listener_from_handle(app_handle: &tauri::A
     let handle = remote_listener_handle(app_handle);
 
     match auto_start_if_enabled(
+        app_handle,
         &handle,
         &store,
         &TailscaleSelfAddressProvider,

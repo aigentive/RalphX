@@ -14,7 +14,6 @@ import type {
 } from "@/api/remote-host";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatRelativeTime } from "@/lib/formatters";
@@ -25,7 +24,6 @@ export interface RemoteSessionListProps {
   devices: RemoteDeviceView[] | null;
   sessions: RemoteSessionView[] | null;
   auditEntries: RemoteAuditEntry[] | null;
-  auditUnavailable: boolean;
   onDisconnect: (sessionId: string) => void;
 }
 
@@ -39,7 +37,6 @@ export function RemoteSessionList({
   devices,
   sessions,
   auditEntries,
-  auditUnavailable,
   onDisconnect,
 }: RemoteSessionListProps) {
   const deviceNames = new Map(
@@ -108,13 +105,7 @@ export function RemoteSessionList({
           <p className="text-xs font-medium text-[var(--text-secondary)] mb-2">
             Recent activity
           </p>
-          {auditUnavailable ? (
-            <NoticeBanner tone="neutral" testId="remote-audit-unavailable">
-              The remote audit log has no host-local read surface yet (PR 1.2
-              follow-up). Entries are being recorded and will appear here once it
-              lands.
-            </NoticeBanner>
-          ) : auditEntries === null ? (
+          {auditEntries === null ? (
             <RemoteAccessSkeletonRows rows={1} />
           ) : auditEntries.length === 0 ? (
             <p className="text-xs text-[var(--text-muted)]">No activity yet.</p>

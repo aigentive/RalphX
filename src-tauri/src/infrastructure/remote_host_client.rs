@@ -35,6 +35,8 @@ pub const REMOTE_PAIR_PATH: &str = "/remote/v1/auth/pair";
 pub const REMOTE_SESSION_PATH: &str = "/remote/v1/session";
 /// Self-revocation route used by the staged remove machine (best-effort).
 pub const REMOTE_REVOKE_PATH: &str = "/remote/v1/auth/revoke";
+/// Single-use WS ticket mint (mirrors `remote_server::WS_TICKET_PATH`, §3.2).
+pub const REMOTE_WS_TICKET_PATH: &str = "/remote/v1/auth/ws-ticket";
 
 /// Wire request for `POST /remote/v1/auth/pair` (§4.2, C-11: camelCase).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +189,9 @@ pub struct HyperRemoteHostClient {
     dispatch_timeout: Duration,
 }
 
-fn install_rustls_crypto_provider() {
+/// Installs the aws-lc-rs rustls provider exactly once. `pub(crate)` because the
+/// outbound WS client (`remote_ws_client`) must set the same default before dialing.
+pub(crate) fn install_rustls_crypto_provider() {
     static INSTALL_PROVIDER: std::sync::Once = std::sync::Once::new();
     INSTALL_PROVIDER.call_once(|| {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();

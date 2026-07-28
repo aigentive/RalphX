@@ -14,14 +14,13 @@
 //!
 //! # Soundness limits (stated, because the audit is a floor and not a proof)
 //!
-//! The graph is **name-keyed**: a node is a function/method *name*, and every definition of
-//! that name unions into one node. This is a deliberate over-approximation and it is exactly
-//! what makes dyn-dispatch safe here — `Arc<dyn AgenticClient>::send_message`, the mock, and
-//! every concrete impl collapse into the same node, so a trait-object edge is never lost.
-//! The cost is false positives (an unrelated `send_message` on another type is also an edge).
-//! Over-approximation is the correct direction: the audit output is a CI-enforced *subset* of
-//! the shipped `AgentControl` set, so a false positive costs a ledger row, while a false
-//! negative would cost an unclassified spawn path.
+//! Definitions are keyed by source-qualified identity (`file::Type::method` or
+//! `file::::free_fn`). A method call resolves to every production definition having that
+//! method name, preserving conservative trait/dyn dispatch without unioning their bodies
+//! into one generic-name node. Calls originating in clean-architecture infrastructure
+//! repositories/services are leaves, and registered Tauri commands do not compose other
+//! registered commands. Residual multi-target method dispatch is intentionally retained as
+//! a reviewable over-approximation.
 //!
 //! Sinks are **cut points** — traversal stops when it reaches one. Without that, every
 //! command that touches `TaskTransitionService` would inherit the entry-action spawn graph
@@ -50,6 +49,7 @@ pub const TRANSITION_SINKS: &[&str] = &[
     "transition_task_corrective",
     "transition_task_corrective_with_exit",
     "apply_corrective_transition",
+    "transition_to_stopped_with_context",
 ];
 
 /// Scheduler activation sinks — reaching any of these arms the Ready→Executing spawn loop.
@@ -136,6 +136,14 @@ pub struct LoopRoot {
 pub struct CallGraph {
     pub nodes: BTreeMap<String, FnNode>,
     pub loop_roots: Vec<LoopRoot>,
+    definitions: BTreeMap<String, BTreeSet<String>>,
+    definition_arities: BTreeMap<String, usize>,
+    definition_owners: BTreeMap<String, String>,
+    definition_methods: BTreeMap<String, bool>,
+    node_files: BTreeMap<String, String>,
+    registered_commands: BTreeSet<String>,
+    /// Conservative call sites that still resolve to multiple same-name, same-arity definitions.
+    pub unresolved_dispatch: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Result of expanding a set of roots through the graph, stopping at sinks.
@@ -149,6 +157,16 @@ pub struct Closure {
 impl CallGraph {
     pub fn build(files: &[(String, String)]) -> Self {
         let mut graph = CallGraph::default();
+        let registered = files
+            .iter()
+            .find(|(path, _)| path == "commands/registry.rs")
+            .map(|(_, source)| {
+                parse_registered_command_names(source)
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        graph.registered_commands = registered.clone();
         for (path, source) in files {
             let Ok(parsed) = syn::parse_file(source) else {
                 // A file this crate cannot parse would silently shrink the graph, so it is a
@@ -158,6 +176,15 @@ impl CallGraph {
             let mut visitor = FileVisitor::new(path, &mut graph);
             visitor.visit_file(&parsed);
         }
+        let mut loop_ids = BTreeMap::<String, usize>::new();
+        for root in &mut graph.loop_roots {
+            let duplicate = loop_ids.entry(root.id.clone()).or_default();
+            if *duplicate > 0 {
+                root.id = format!("{}~{}", root.id, duplicate);
+            }
+            *duplicate += 1;
+        }
+        graph.resolve_dispatch(&registered);
         graph
     }
 
@@ -165,11 +192,110 @@ impl CallGraph {
         self.nodes.entry(name.to_string()).or_default()
     }
 
+    fn resolve_dispatch(&mut self, registered: &BTreeSet<String>) {
+        let definitions = self.definitions.clone();
+        let definition_arities = self.definition_arities.clone();
+        let definition_owners = self.definition_owners.clone();
+        let definition_methods = self.definition_methods.clone();
+        let node_files = self.node_files.clone();
+        let mut unresolved_dispatch = BTreeMap::<String, BTreeSet<String>>::new();
+        for (node_name, node) in &mut self.nodes {
+            let source_file = node_files.get(node_name).map(String::as_str).unwrap_or("");
+            if is_architecture_leaf(source_file) {
+                node.callees.clear();
+                continue;
+            }
+            let source_is_command = source_file.starts_with("commands/");
+            let unresolved = std::mem::take(&mut node.callees);
+            for callee in unresolved {
+                let Some((kind, bare, arity, owner)) = parse_pending_call(&callee) else {
+                    continue;
+                };
+                if source_is_command && registered.contains(bare) {
+                    continue;
+                }
+                if all_cut_sinks().contains(bare) {
+                    continue;
+                }
+                if let Some(targets) = definitions.get(bare) {
+                    let resolved = dispatch_candidates(
+                        targets,
+                        arity,
+                        owner,
+                        kind,
+                        &definition_arities,
+                        &definition_owners,
+                        &definition_methods,
+                    );
+                    if resolved.len() > 1 {
+                        unresolved_dispatch
+                            .entry(format!("{node_name} -> {bare}/{arity}"))
+                            .or_default()
+                            .extend(resolved.iter().cloned());
+                    }
+                    node.callees.extend(resolved);
+                }
+            }
+        }
+        for root in &mut self.loop_roots {
+            let unresolved = std::mem::take(&mut root.callees);
+            for callee in unresolved {
+                let Some((kind, bare, arity, owner)) = parse_pending_call(&callee) else {
+                    continue;
+                };
+                if all_cut_sinks().contains(bare) {
+                    continue;
+                }
+                if let Some(targets) = definitions.get(bare) {
+                    let resolved = dispatch_candidates(
+                        targets,
+                        arity,
+                        owner,
+                        kind,
+                        &definition_arities,
+                        &definition_owners,
+                        &definition_methods,
+                    );
+                    if resolved.len() > 1 {
+                        unresolved_dispatch
+                            .entry(format!("{} -> {bare}/{arity}", root.id))
+                            .or_default()
+                            .extend(resolved.iter().cloned());
+                    }
+                    root.callees.extend(resolved);
+                }
+            }
+        }
+        self.unresolved_dispatch = unresolved_dispatch;
+    }
+
+    pub fn roots_named(&self, name: &str) -> BTreeSet<String> {
+        let definitions = self.definitions.get(name).cloned().unwrap_or_default();
+        if !self.registered_commands.contains(name) {
+            return definitions;
+        }
+        definitions
+            .into_iter()
+            .filter(|node| {
+                self.node_files
+                    .get(node)
+                    .is_some_and(|file| file.starts_with("commands/"))
+            })
+            .collect()
+    }
+
     /// Expands `roots` transitively, stopping at (but recording) sinks.
     pub fn closure(&self, roots: impl IntoIterator<Item = String>) -> Closure {
         let sinks = all_cut_sinks();
         let mut result = Closure::default();
-        let mut queue: VecDeque<String> = roots.into_iter().collect();
+        let mut queue = VecDeque::new();
+        for root in roots {
+            if self.nodes.contains_key(&root) {
+                queue.push_back(root);
+            } else {
+                queue.extend(self.roots_named(&root));
+            }
+        }
         while let Some(name) = queue.pop_front() {
             if !result.visited.insert(name.clone()) {
                 continue;
@@ -248,7 +374,7 @@ struct FileVisitor<'a> {
     file: String,
     graph: &'a mut CallGraph,
     fn_stack: Vec<String>,
-    loop_ordinal: usize,
+    impl_stack: Vec<String>,
 }
 
 impl<'a> FileVisitor<'a> {
@@ -257,7 +383,7 @@ impl<'a> FileVisitor<'a> {
             file: file.to_string(),
             graph,
             fn_stack: Vec::new(),
-            loop_ordinal: 0,
+            impl_stack: Vec::new(),
         }
     }
 
@@ -289,8 +415,27 @@ impl<'a> FileVisitor<'a> {
         self.graph.node_mut(&current).sink_hits.insert(hit);
     }
 
-    fn enter_fn(&mut self, name: String) {
+    fn enter_fn(&mut self, bare_name: String, arity: usize, is_method: bool) {
+        let owner = self
+            .impl_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| ":".to_string());
+        let name = format!("{}::{}::{}", self.file, owner, bare_name);
         self.graph.node_mut(&name);
+        self.graph
+            .definitions
+            .entry(bare_name)
+            .or_default()
+            .insert(name.clone());
+        self.graph
+            .node_files
+            .insert(name.clone(), self.file.clone());
+        self.graph.definition_arities.insert(name.clone(), arity);
+        self.graph.definition_owners.insert(name.clone(), owner);
+        self.graph
+            .definition_methods
+            .insert(name.clone(), is_method);
         self.fn_stack.push(name);
     }
 
@@ -305,12 +450,11 @@ impl<'a> FileVisitor<'a> {
         args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
     ) {
         let enclosing = self.current_fn().unwrap_or("<file-scope>").to_string();
-        self.loop_ordinal += 1;
-        let id = format!("{}::{}#{}", self.file, enclosing, self.loop_ordinal);
         let mut body = BodyScan::default();
         for arg in args {
             body.visit_expr(arg);
         }
+        let id = stable_loop_id(&self.file, &enclosing, &body);
         self.graph.loop_roots.push(LoopRoot {
             id,
             file: self.file.clone(),
@@ -319,6 +463,95 @@ impl<'a> FileVisitor<'a> {
             callees: body.callees,
             sink_hits: body.sink_hits,
         });
+    }
+}
+
+fn stable_loop_id(file: &str, enclosing: &str, body: &BodyScan) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in body
+        .callees
+        .iter()
+        .chain(body.sink_hits.iter().map(|hit| &hit.sink))
+        .chain(body.identity_tokens.iter())
+        .flat_map(|value| value.bytes().chain(std::iter::once(0)))
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{file}::{enclosing}@{hash:08x}")
+}
+
+fn is_architecture_leaf(file: &str) -> bool {
+    file.starts_with("domain/")
+        || file.starts_with("infrastructure/sqlite/")
+        || file.starts_with("infrastructure/services/")
+        || file.starts_with("infrastructure/memory/")
+        || file == "infrastructure/remote_host_client.rs"
+        // Remote settings is a persistence adapter: its generic `get_or_create`/`execute`
+        // calls cannot enter application workflows. Keeping it opaque prevents same-arity
+        // dispatch from inventing a settings -> agent-workflow edge.
+        || file == "remote_server/settings.rs"
+}
+
+fn pending_call(kind: &str, name: &str, arity: usize, owner: &str) -> String {
+    format!("{kind}|{name}|{arity}|{owner}")
+}
+
+fn parse_pending_call(call: &str) -> Option<(&str, &str, usize, &str)> {
+    let mut parts = call.split('|');
+    let kind = parts.next()?;
+    let name = parts.next()?;
+    let arity = parts.next()?.parse().ok()?;
+    let owner = parts.next()?;
+    (parts.next().is_none()).then_some((kind, name, arity, owner))
+}
+
+fn dispatch_candidates(
+    targets: &BTreeSet<String>,
+    arity: usize,
+    owner: &str,
+    kind: &str,
+    definition_arities: &BTreeMap<String, usize>,
+    definition_owners: &BTreeMap<String, String>,
+    definition_methods: &BTreeMap<String, bool>,
+) -> BTreeSet<String> {
+    let call_wants_method =
+        kind == "method" || owner.chars().next().is_some_and(char::is_uppercase);
+    let kind_matching: BTreeSet<String> = targets
+        .iter()
+        .filter(|target| definition_methods.get(*target) == Some(&call_wants_method))
+        .cloned()
+        .collect();
+    let matching: BTreeSet<String> = kind_matching
+        .iter()
+        .filter(|target| definition_arities.get(*target) == Some(&arity))
+        .cloned()
+        .collect();
+    let arity_filtered = if matching.is_empty() {
+        &kind_matching
+    } else {
+        &matching
+    };
+    if owner.is_empty() {
+        return arity_filtered.clone();
+    }
+    let owner_matching: BTreeSet<String> = arity_filtered
+        .iter()
+        .filter(|target| {
+            definition_owners.get(*target).is_some_and(|candidate| {
+                candidate == owner || candidate.ends_with(&format!("::{owner}"))
+            })
+        })
+        .cloned()
+        .collect();
+    if owner_matching.is_empty() {
+        if call_wants_method {
+            BTreeSet::new()
+        } else {
+            arity_filtered.clone()
+        }
+    } else {
+        owner_matching
     }
 }
 
@@ -392,6 +625,17 @@ fn internal_status_targets(
     scan.targets
 }
 
+fn transition_targets(
+    name: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> BTreeSet<String> {
+    let mut targets = internal_status_targets(args);
+    if name == "transition_to_stopped_with_context" {
+        targets.insert("Stopped".to_string());
+    }
+    targets
+}
+
 #[derive(Default)]
 struct StatusScan {
     targets: BTreeSet<String>,
@@ -418,19 +662,22 @@ impl<'ast> Visit<'ast> for StatusScan {
 struct BodyScan {
     callees: BTreeSet<String>,
     sink_hits: BTreeSet<SinkHit>,
+    identity_tokens: BTreeSet<String>,
 }
 
 impl BodyScan {
     fn note(
         &mut self,
+        kind: &str,
         name: &str,
         args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
     ) {
-        self.callees.insert(name.to_string());
+        self.callees
+            .insert(pending_call(kind, name, args.len(), ""));
         if all_cut_sinks().contains(name) {
             self.sink_hits.insert(SinkHit {
                 sink: name.to_string(),
-                targets: internal_status_targets(args),
+                targets: transition_targets(name, args),
             });
         }
     }
@@ -440,7 +687,7 @@ impl<'ast> Visit<'ast> for BodyScan {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = node.func.as_ref() {
             if let Some(name) = path_last_segment(&path.path) {
-                self.note(&name, &node.args);
+                self.note("call", &name, &node.args);
             }
         }
         syn::visit::visit_expr_call(self, node);
@@ -448,7 +695,7 @@ impl<'ast> Visit<'ast> for BodyScan {
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let name = node.method.to_string();
-        self.note(&name, &node.args);
+        self.note("method", &name, &node.args);
         if is_agent_spawn_method(&name, &node.args) {
             self.sink_hits.insert(SinkHit {
                 sink: AGENT_SPAWN_SINK.to_string(),
@@ -456,6 +703,16 @@ impl<'ast> Visit<'ast> for BodyScan {
             });
         }
         syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        self.identity_tokens.insert(path_string(node));
+        syn::visit::visit_path(self, node);
+    }
+
+    fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+        self.identity_tokens.insert(node.value());
+        syn::visit::visit_lit_str(self, node);
     }
 }
 
@@ -471,16 +728,32 @@ impl<'ast, 'a> Visit<'ast> for FileVisitor<'a> {
         if has_cfg_test(&node.attrs) {
             return;
         }
-        self.enter_fn(node.sig.ident.to_string());
+        self.enter_fn(node.sig.ident.to_string(), node.sig.inputs.len(), false);
         syn::visit::visit_block(self, &node.block);
         self.leave_fn();
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+        let owner = match node.self_ty.as_ref() {
+            syn::Type::Path(path) => path_string(&path.path),
+            _ => "<impl>".to_string(),
+        };
+        self.impl_stack.push(owner);
+        syn::visit::visit_item_impl(self, node);
+        self.impl_stack.pop();
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
         if has_cfg_test(&node.attrs) {
             return;
         }
-        self.enter_fn(node.sig.ident.to_string());
+        let arity = node
+            .sig
+            .inputs
+            .iter()
+            .filter(|input| !matches!(input, syn::FnArg::Receiver(_)))
+            .count();
+        self.enter_fn(node.sig.ident.to_string(), arity, true);
         syn::visit::visit_block(self, &node.block);
         self.leave_fn();
     }
@@ -491,10 +764,18 @@ impl<'ast, 'a> Visit<'ast> for FileVisitor<'a> {
                 self.record_loop_root(kind, &node.args);
             }
             if let Some(name) = path_last_segment(&path.path) {
-                self.record_callee(&name);
+                let owner = path
+                    .path
+                    .segments
+                    .iter()
+                    .rev()
+                    .nth(1)
+                    .map(|segment| segment.ident.to_string())
+                    .unwrap_or_default();
+                self.record_callee(&pending_call("call", &name, node.args.len(), &owner));
                 self.record_token(path_string(&path.path));
                 if all_cut_sinks().contains(name.as_str()) {
-                    let targets = internal_status_targets(&node.args);
+                    let targets = transition_targets(&name, &node.args);
                     self.record_sink_hit(SinkHit {
                         sink: name,
                         targets,
@@ -507,13 +788,13 @@ impl<'ast, 'a> Visit<'ast> for FileVisitor<'a> {
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let name = node.method.to_string();
-        self.record_callee(&name);
+        self.record_callee(&pending_call("method", &name, node.args.len(), ""));
         self.record_token(name.clone());
         if name == "listen_any" || name == "listen_global" {
             self.record_loop_root("listen_any", &node.args);
         }
         if all_cut_sinks().contains(name.as_str()) {
-            let targets = internal_status_targets(&node.args);
+            let targets = transition_targets(&name, &node.args);
             self.record_sink_hit(SinkHit {
                 sink: name.clone(),
                 targets,
@@ -595,13 +876,22 @@ fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("tests" | "testing")
+            ) {
+                continue;
+            }
             collect_rs_files(root, &path, out);
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "mocks.rs" {
+        if !name.ends_with(".rs")
+            || name.ends_with("_tests.rs")
+            || matches!(name, "tests.rs" | "mocks.rs")
+        {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(&path) else {

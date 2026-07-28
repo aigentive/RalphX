@@ -1448,7 +1448,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
     let task_branch = task.task_branch.clone();
     let worktree_path = task.worktree_path.clone();
     Ok(TaskContext {
-        task,
+        task: task.into(),
         source_proposal,
         plan_artifact,
         blueprint_artifact,

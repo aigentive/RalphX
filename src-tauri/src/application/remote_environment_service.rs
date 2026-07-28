@@ -19,9 +19,10 @@
 
 use std::sync::Arc;
 
-use ralphx_remote_protocol::{ErrorCode, Scope, PROTOCOL_VERSION};
+use ralphx_remote_protocol::{ClientFrame, ErrorCode, Scope, PROTOCOL_VERSION};
 use tokio::sync::RwLock;
 
+use crate::application::remote_event_relay::{RemoteConnectOutcome, RemoteEventRelay};
 use crate::domain::entities::remote_environment::{
     RemoteEnvironment, RemoteEnvironmentId, RemoteEnvironmentStatus,
 };
@@ -30,8 +31,9 @@ use crate::domain::services::{SecretStore, SecretStoreError};
 use crate::error::AppError;
 use crate::infrastructure::remote_host_client::{
     InvokeWireRequest, PairWireRequest, RemoteFetchRequest, RemoteHostClient,
-    RemoteHostClientError, RemoteHttpResponse, REMOTE_DESCRIPTOR_PATH,
+    RemoteHostClientError, RemoteHttpResponse, REMOTE_DESCRIPTOR_PATH, REMOTE_WS_TICKET_PATH,
 };
+use crate::infrastructure::remote_ws_client::RemoteWsError;
 
 /// The always-present local environment identity (§6.4). It has no supervisor, no
 /// registry row, and never accepts remote proxy calls.
@@ -47,8 +49,9 @@ const DEFAULT_REQUESTED_SCOPES: &[Scope] = &[Scope::UiRead, Scope::UiOperate];
 /// Typed failures of the remote environment surface (rule 5: no string matching).
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteEnvironmentError {
-    /// Transport is not wired yet — the outbound HTTP invoke path and WS land in
-    /// PR 2.2/2.3. Authorization already ran when this is returned.
+    /// Kept for IPC-code stability (`NOT_CONNECTED`); since PR 2.3 the live
+    /// stream surface reports a missing session as `Unreachable` instead, so the
+    /// supervisor's retry taxonomy stays single-sourced.
     #[error("remote transport is not connected")]
     NotConnected,
     #[error("environment {requested} is not the active environment ({active})")]
@@ -233,6 +236,9 @@ pub struct RemoteEnvironmentService {
     repo: Arc<dyn RemoteEnvironmentRepository>,
     secret_store: Arc<dyn SecretStore>,
     host_client: Arc<dyn RemoteHostClient>,
+    /// The outbound event-stream sessions (PR 2.3). The relay owns sockets; this
+    /// service owns AUTHORIZATION over them.
+    relay: Arc<RemoteEventRelay>,
     /// Rust-side mirror of the frontend `environmentStore` identity (§6.4).
     /// The ONLY writer is `set_active_environment`; proxy authorization reads it.
     active_environment_id: RwLock<String>,
@@ -243,11 +249,13 @@ impl RemoteEnvironmentService {
         repo: Arc<dyn RemoteEnvironmentRepository>,
         secret_store: Arc<dyn SecretStore>,
         host_client: Arc<dyn RemoteHostClient>,
+        relay: Arc<RemoteEventRelay>,
     ) -> Self {
         Self {
             repo,
             secret_store,
             host_client,
+            relay,
             active_environment_id: RwLock::new(LOCAL_ENVIRONMENT_ID.to_string()),
         }
     }
@@ -648,12 +656,17 @@ impl RemoteEnvironmentService {
     }
 
     // ------------------------------------------------------------------
-    // Proxy command surface (stubs; transport lands in PR 2.2/2.3)
+    // Event stream (PR 2.3): connect / disconnect / stream_send
     // ------------------------------------------------------------------
 
-    /// Opens the outbound WS for `id`. The socket body lands in PR 2.3; the stub
-    /// still enforces that only a registered, usable environment can be connected.
-    pub async fn connect(&self, id: &str) -> Result<(), RemoteEnvironmentError> {
+    /// Requires a registered `active` row and rejects `"local"` — the shared guard
+    /// of the stream surface. Deliberately NOT active-env-bound: §6.4 keeps
+    /// background environments' sockets alive for health/liveness, and the
+    /// supervisor connects them exactly like the active one.
+    async fn usable_stream_target(
+        &self,
+        id: &str,
+    ) -> Result<RemoteEnvironment, RemoteEnvironmentError> {
         if id == LOCAL_ENVIRONMENT_ID {
             return Err(RemoteEnvironmentError::LocalEnvironment);
         }
@@ -668,11 +681,54 @@ impl RemoteEnvironmentService {
                 env.status.as_str(),
             ));
         }
-        Err(RemoteEnvironmentError::NotConnected)
+        Ok(env)
+    }
+
+    /// Opens the outbound WS for `id`: bearer → single-use ticket → dial → hello.
+    ///
+    /// The hello's `protocolVersion` is relayed VERBATIM, not gated here. §3.2
+    /// negotiation is `minClientProtocol`-based, and only the descriptor carries
+    /// that field — this side has just the pairing-time snapshot, so any Rust-side
+    /// equality/ordering gate would false-block a legitimately upgraded host. The
+    /// TS supervisor owns the `blocked` decision (§6.5) with the descriptor in
+    /// hand; the P-10 lying-descriptor check lives there.
+    pub async fn connect(
+        &self,
+        id: &str,
+    ) -> Result<RemoteConnectOutcome, RemoteEnvironmentError> {
+        let env = self.usable_stream_target(id).await?;
+        let token = self.bearer_for(&env).await?;
+        let ticket = self.mint_ws_ticket(&env, &token).await?;
+        let outcome = self
+            .relay
+            .connect(env.id.as_str(), &env.base_url, &ticket)
+            .await
+            .map_err(stream_error)?;
+        if outcome.protocol_version != env.protocol_version {
+            tracing::warn!(
+                environment = env.id.as_str(),
+                stored = env.protocol_version,
+                hello = outcome.protocol_version,
+                "Host protocol version differs from the paired row; the supervisor owns the skew decision (§6.5)"
+            );
+        }
+        // Best-effort bookkeeping only — a connected stream must not fail over a
+        // timestamp write.
+        let timestamp = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S+00:00")
+            .to_string();
+        if let Err(error) = self.repo.touch_last_connected(&env.id, &timestamp).await {
+            tracing::warn!(
+                environment = env.id.as_str(),
+                %error,
+                "Recording last_connected_at failed (best-effort)"
+            );
+        }
+        Ok(outcome)
     }
 
     /// Closes the outbound WS for `id`. Disconnecting an unconnected environment
-    /// is idempotent success; the socket teardown body lands in PR 2.3.
+    /// is idempotent success.
     pub async fn disconnect(&self, id: &str) -> Result<(), RemoteEnvironmentError> {
         if id == LOCAL_ENVIRONMENT_ID {
             return Err(RemoteEnvironmentError::LocalEnvironment);
@@ -681,7 +737,87 @@ impl RemoteEnvironmentService {
             .get(&RemoteEnvironmentId::from_string(id))
             .await?
             .ok_or_else(|| RemoteEnvironmentError::UnknownEnvironment(id.to_string()))?;
+        self.relay.disconnect(id);
         Ok(())
+    }
+
+    /// Sends one protocol control frame (`subscribe` / `cursorAck` / `heartbeatAck`)
+    /// on the environment's live event socket.
+    ///
+    /// Same authorization shape as `connect`/`disconnect`, deliberately NOT
+    /// `authorize_proxy_target` (P-26 stays on data/command paths): background
+    /// environments keep live sockets for health/liveness, and an active-env gate
+    /// here would kill every background supervisor's stream. The frames this path
+    /// carries are typed protocol control only, on a socket the Rust proxy already
+    /// owns and whose bytes never reach JS unrelayed — a compromised renderer can at
+    /// most nudge a retention lease on a stream it was already receiving; it cannot
+    /// read new data, invoke commands, or reach a host the user never paired.
+    pub async fn stream_send(
+        &self,
+        id: &str,
+        frame: ClientFrame,
+    ) -> Result<(), RemoteEnvironmentError> {
+        self.usable_stream_target(id).await?;
+        self.relay.send(id, frame).map_err(stream_error)
+    }
+
+    /// Mints a single-use WS ticket on the host (`POST /remote/v1/auth/ws-ticket`).
+    ///
+    /// 401/403 stay typed — they are the supervisor's `blocked` entries. Any other
+    /// non-2xx and any unparsable body is `Unreachable`: never a silent empty
+    /// ticket, never a retry-looking success.
+    async fn mint_ws_ticket(
+        &self,
+        env: &RemoteEnvironment,
+        token: &str,
+    ) -> Result<String, RemoteEnvironmentError> {
+        let response = self
+            .host_client
+            .fetch(
+                &env.base_url,
+                token,
+                &RemoteFetchRequest {
+                    path: REMOTE_WS_TICKET_PATH.to_string(),
+                    method: "POST".to_string(),
+                    headers: vec![("content-type".to_string(), "application/json".to_string())],
+                    body: Some("{}".to_string()),
+                },
+            )
+            .await
+            .map_err(transport_error)?;
+        match response.status {
+            401 => Err(RemoteEnvironmentError::Transport {
+                code: ErrorCode::RemoteUnauthorized,
+                message: "host refused this device's credential for the event stream"
+                    .to_string(),
+            }),
+            403 => Err(RemoteEnvironmentError::Transport {
+                code: ErrorCode::RemoteForbidden,
+                message: "this device's scopes do not permit the event stream".to_string(),
+            }),
+            status if !(200..300).contains(&status) => Err(RemoteEnvironmentError::Unreachable(
+                format!("ws ticket mint answered {status}"),
+            )),
+            _ => {
+                let wire: WsTicketWire =
+                    serde_json::from_str(&response.body).map_err(|error| {
+                        RemoteEnvironmentError::Unreachable(format!(
+                            "ws ticket response unparsable: {error}"
+                        ))
+                    })?;
+                if wire.ticket.is_empty() {
+                    return Err(RemoteEnvironmentError::Unreachable(
+                        "host answered with an empty ws ticket".to_string(),
+                    ));
+                }
+                tracing::debug!(
+                    environment = env.id.as_str(),
+                    expires_in_secs = wire.expires_in_secs,
+                    "Minted a remote WS ticket"
+                );
+                Ok(wire.ticket)
+            }
+        }
     }
 
     /// Forwards one command invoke to the active environment (§6.3).
@@ -827,12 +963,18 @@ fn validate_remote_fetch_path(path: &str) -> Result<String, RemoteEnvironmentErr
             "protocol-relative path is not addressable on the paired host: {path}"
         )));
     }
-    if trimmed.contains("://") {
+    // Shape guards apply to the PATH half only, exactly as the local transport's
+    // `backendApiPath` splits it. Query VALUES are caller data — workspace file paths, commit
+    // shas — that legitimately contain dots and colons; rejecting them here would make a file
+    // named `notes..md` fetchable locally and not remotely, which is the parity the transport
+    // exists to guarantee. A query cannot escape the mounted path either way.
+    let path_part = trimmed.split('?').next().unwrap_or(trimmed);
+    if path_part.contains("://") {
         return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
             "absolute URL is not a host path: {path}"
         )));
     }
-    if trimmed.contains("..") {
+    if path_part.contains("..") {
         return Err(RemoteEnvironmentError::InvalidFetchRequest(format!(
             "path traversal is not permitted: {path}"
         )));
@@ -877,6 +1019,41 @@ fn validate_remote_fetch_headers(
         out.push((lower, value.clone()));
     }
     Ok(out)
+}
+
+/// Wire response of `POST /remote/v1/auth/ws-ticket` (host: `WsTicketResponse`,
+/// camelCase on the wire).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WsTicketWire {
+    ticket: String,
+    expires_in_secs: i64,
+}
+
+/// Maps outbound-WS failures into the transport taxonomy.
+///
+/// `Rejected{401|403}` are the supervisor's `blocked` entries and stay typed;
+/// everything else — including protocol violations — is `Unreachable`, which the
+/// supervisor treats as retryable. Retry itself never lives here (A-5: the TS
+/// supervisor is the sole retry owner).
+fn stream_error(error: RemoteWsError) -> RemoteEnvironmentError {
+    match error {
+        RemoteWsError::Rejected {
+            status: 401,
+            message,
+        } => RemoteEnvironmentError::Transport {
+            code: ErrorCode::RemoteUnauthorized,
+            message,
+        },
+        RemoteWsError::Rejected {
+            status: 403,
+            message,
+        } => RemoteEnvironmentError::Transport {
+            code: ErrorCode::RemoteForbidden,
+            message,
+        },
+        other => RemoteEnvironmentError::Unreachable(other.short_reason()),
+    }
 }
 
 /// Maps a client→host wire failure into the transport taxonomy.

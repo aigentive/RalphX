@@ -2055,6 +2055,9 @@ export interface AgentConversationWorkspace {
   publicationPrUrl: string | null;
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
+  publicationMetadataAttemptId: string | null;
+  publicationMetadataPhase: AgentWorkspacePublicationMetadataPhase | null;
+  publicationMetadataState: AgentWorkspacePublicationMetadataState | null;
   autoPublishEnabled?: boolean;
   autoPublishInitialPrEnabled?: boolean;
   autoPublishPausedPrAutofixEnabled?: boolean | null;
@@ -2070,6 +2073,20 @@ export interface AgentConversationWorkspace {
   createdAt: string;
   updatedAt: string;
 }
+
+export type AgentWorkspacePublicationMetadataPhase =
+  | "prepared"
+  | "mutating"
+  | "reconciling"
+  | "settled";
+
+export type AgentWorkspacePublicationMetadataState =
+  | "not_attempted"
+  | "applied"
+  | "not_applied"
+  | "unknown"
+  | "reconciled"
+  | "conflicted";
 
 export type WorkspaceOpenTargetKind = "editor" | "terminal" | "fileManager";
 
@@ -2197,6 +2214,7 @@ export interface AgentConversationWorkspacePublicationEvent {
   status: string;
   summary: string;
   classification: string | null;
+  attemptId: string | null;
   createdAt: string;
 }
 
@@ -2587,6 +2605,24 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
+  publication_metadata_attempt_id: z.string().nullable().optional().default(null),
+  publication_metadata_phase: z
+    .enum(["prepared", "mutating", "reconciling", "settled"])
+    .nullable()
+    .optional()
+    .default(null),
+  publication_metadata_state: z
+    .enum([
+      "not_attempted",
+      "applied",
+      "not_applied",
+      "unknown",
+      "reconciled",
+      "conflicted",
+    ])
+    .nullable()
+    .optional()
+    .default(null),
   auto_publish_enabled: z.boolean().optional().default(true),
   auto_publish_initial_pr_enabled: z.boolean().optional().default(false),
   auto_publish_paused_pr_autofix_enabled: z
@@ -2647,6 +2683,7 @@ const AgentConversationWorkspacePublicationEventResponseSchema = z.object({
   status: z.string(),
   summary: z.string(),
   classification: z.string().nullable(),
+  attempt_id: z.string().nullable().optional().default(null),
   created_at: z.string(),
 });
 const AgentConversationWorkspacePublicationEventListResponseSchema = z.array(
@@ -3157,6 +3194,9 @@ function transformAgentConversationWorkspace(
     publicationPrUrl: raw.publication_pr_url,
     publicationPrStatus: raw.publication_pr_status,
     publicationPushStatus: raw.publication_push_status,
+    publicationMetadataAttemptId: raw.publication_metadata_attempt_id,
+    publicationMetadataPhase: raw.publication_metadata_phase,
+    publicationMetadataState: raw.publication_metadata_state,
     autoPublishEnabled: raw.auto_publish_enabled,
     autoPublishInitialPrEnabled: raw.auto_publish_initial_pr_enabled,
     autoPublishPausedPrAutofixEnabled:
@@ -3369,6 +3409,7 @@ function transformAgentConversationWorkspacePublicationEvent(
     status: raw.status,
     summary: raw.summary,
     classification: raw.classification,
+    attemptId: raw.attempt_id,
     createdAt: raw.created_at,
   };
 }

@@ -13,6 +13,7 @@ pub mod linear_client;
 pub mod login_shell_env;
 pub mod memory;
 pub mod remote_host_client;
+pub mod remote_ws_client;
 pub mod services;
 pub mod secret_store;
 pub mod sqlite;
@@ -34,6 +35,9 @@ pub use granola_client::HyperGranolaApiClient;
 pub use linear_client::HyperLinearApiClient;
 pub use remote_host_client::{
     HyperRemoteHostClient, RemoteHostClient, RemoteHostClientError, UnavailableRemoteHostClient,
+};
+pub use remote_ws_client::{
+    RemoteWsClient, RemoteWsConnection, RemoteWsError, TungsteniteRemoteWsClient,
 };
 pub use services::GhCliGithubService;
 pub use sqlite::{get_default_db_path, open_connection, open_memory_connection, run_migrations};

@@ -12,7 +12,7 @@ use crate::infrastructure::tailscale::{
 };
 use crate::remote_server::endpoints::{advertised_endpoints, AdvertisedEndpoint};
 use crate::remote_server::settings::{
-    RemoteExposureMode, RemoteHostSettings, RemoteHostSettingsStore,
+    RemoteExposureMode, RemoteHostSettings, RemoteHostSettingsStore, DEFAULT_REMOTE_PORT,
 };
 use crate::remote_server::{
     apply_exposure_mode, remote_listener_handle, start_listener, stop_listener,
@@ -109,6 +109,25 @@ async fn advertised_endpoints_for_status(
     )
 }
 
+/// The status a host that has never configured remote access reports.
+///
+/// Synthesised rather than minted: "configured" IS the presence of the settings row (§3.4), and a
+/// configured host installs capture + the durable sequencer + the pruner on every subsequent boot.
+/// Merely reading the status — which the Remote Access pane does on mount — must not buy that.
+fn unconfigured_status() -> RemoteListenerStatus {
+    RemoteListenerStatus {
+        enabled: false,
+        exposure_mode: RemoteExposureMode::Serve,
+        port: DEFAULT_REMOTE_PORT,
+        environment_id: String::new(),
+        running: false,
+        bind_address: None,
+        serve_active: false,
+        serve_degraded_reason: None,
+        serve_degraded_kind: None,
+    }
+}
+
 /// Enables remote host mode and binds the listener for the persisted exposure mode.
 #[tauri::command]
 pub async fn start_remote_listener(
@@ -118,6 +137,7 @@ pub async fn start_remote_listener(
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
     start_listener(
+        &app,
         &handle,
         &store,
         &TailscaleSelfAddressProvider,
@@ -125,6 +145,12 @@ pub async fn start_remote_listener(
     )
     .await
     .map_err(|error| error.to_string())?;
+    // P-23: app setup installs capture + the sequencer only when the settings row ALREADY exists,
+    // so a first-ever enable would otherwise run the whole process with no stream — every WS
+    // subscribe answering 503 and nothing captured — until the app restarted. `start_listener`
+    // has just minted the row, and the install is idempotent (OnceLock), so this is the seam that
+    // makes "host mode configured ⇒ capture records" true in the configuring process too.
+    crate::remote_server::install_remote_stream_from_handle(&app).await;
     let settings = store.get_or_create().await.map_err(|e| e.to_string())?;
     Ok(listener_status(settings, &handle).await)
 }
@@ -154,6 +180,7 @@ pub async fn set_remote_exposure_mode(
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
     let settings = apply_exposure_mode(
+        &app,
         &handle,
         &store,
         &TailscaleSelfAddressProvider,
@@ -165,7 +192,7 @@ pub async fn set_remote_exposure_mode(
     Ok(listener_status(settings, &handle).await)
 }
 
-/// Reads the current listener status without changing it.
+/// Reads the current listener status without changing it — including without CONFIGURING it.
 #[tauri::command]
 pub async fn get_remote_listener_status(
     state: State<'_, AppState>,
@@ -173,7 +200,9 @@ pub async fn get_remote_listener_status(
 ) -> Result<RemoteListenerStatus, String> {
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
-    let settings = store.get_or_create().await.map_err(|e| e.to_string())?;
+    let Some(settings) = store.get().await.map_err(|e| e.to_string())? else {
+        return Ok(unconfigured_status());
+    };
     Ok(listener_status(settings, &handle).await)
 }
 
@@ -185,7 +214,12 @@ pub async fn list_remote_advertised_endpoints(
 ) -> Result<Vec<AdvertisedEndpoint>, String> {
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
-    let settings = store.get_or_create().await.map_err(|e| e.to_string())?;
+    // `get()`, not `get_or_create()`: a read from the pane must not configure host mode. An
+    // unconfigured host has no listener either, so the empty answer is the same one it gives when
+    // the row exists and nothing is bound.
+    let Some(settings) = store.get().await.map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
     let bound_address = handle.bound_address().await;
     if bound_address.is_none() {
         return Ok(Vec::new());

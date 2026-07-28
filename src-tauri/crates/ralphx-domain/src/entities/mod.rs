@@ -104,7 +104,9 @@ pub use agent_conversation_workspace::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspacePublicationMetadataPhase,
+    AgentWorkspacePublicationMetadataReceipt, AgentWorkspacePublicationMetadataState,
+    AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewFixerSnapshot,
     AgentWorkspaceReviewHunkAnnotation,
@@ -247,7 +249,7 @@ pub use task::{Task, TaskCategory};
 pub use task_context::{
     create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
     FollowupSessionSummary, ScopeDriftStatus, TaskContext, TaskDependencySummary,
-    TaskProposalSummary, ValidationCacheData,
+    TaskProposalSummary, ValidationCacheData, WorkerTaskView,
 };
 pub use task_metadata::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
