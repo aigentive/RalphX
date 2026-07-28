@@ -54,7 +54,16 @@ pub(super) fn in_memory_auth_context() -> RemoteAuthContext {
 }
 
 fn router_for(context: &RemoteAuthContext) -> Router {
-    authenticated_remote_routes(RemoteRouterState::new(TEST_ENVIRONMENT_ID, context.clone()))
+    let app_handle = tauri::Builder::default()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("test Wry app should build")
+        .handle()
+        .clone();
+    authenticated_remote_routes(RemoteRouterState::new(
+        TEST_ENVIRONMENT_ID,
+        context.clone(),
+        app_handle,
+    ))
 }
 
 async fn body_json(response: Response) -> Value {

@@ -93,6 +93,7 @@ pub(crate) const WS_TICKET_PATH: &str = "/remote/v1/auth/ws-ticket";
 /// machines (§6.1 "host revoke (best-effort) → Keychain delete → row delete", P-27).
 pub(crate) const REVOKE_PATH: &str = "/remote/v1/auth/revoke";
 pub(crate) const SESSION_PATH: &str = "/remote/v1/session";
+pub(crate) const INVOKE_PATH: &str = "/remote/v1/invoke";
 pub(crate) const HEALTH_PATH: &str = "/health";
 
 /// Routes reachable before the bearer check.
@@ -291,6 +292,10 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
             HEALTH_PATH,
             get(health_handler).options(remote_preflight_handler),
         )
+        .route(
+            INVOKE_PATH,
+            post(invoke::invoke_handler).options(remote_preflight_handler),
+        )
         .fallback(remote_fallback_handler)
         // Layers apply outermost-last: trust headers are stripped before anything else
         // runs, then pre-auth flood control, then the bearer check.
@@ -353,6 +358,7 @@ pub(crate) fn remote_error_response(
 /// Ordering is deliberate: refuse → bind → persist → spawn. A refused or failed bind never
 /// leaves `enabled = true` behind, and a failed persist releases the socket.
 pub(crate) async fn start_listener(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -447,6 +453,7 @@ pub(crate) async fn start_listener(
     let router = remote_router(RemoteRouterState::new(
         settings.environment_id.as_str(),
         auth,
+        app_handle.clone(),
     ));
 
     tauri::async_runtime::spawn(async move {
@@ -520,6 +527,7 @@ pub(crate) async fn stop_listener(
 /// A restart that gets refused leaves remote access disabled rather than silently listening on
 /// the previous address.
 pub(crate) async fn apply_exposure_mode(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -536,7 +544,7 @@ pub(crate) async fn apply_exposure_mode(
         return Ok(settings);
     }
 
-    match start_listener(handle, store, provider, tailscale).await {
+    match start_listener(app_handle, handle, store, provider, tailscale).await {
         Ok(_) => Ok(store.get_or_create().await?),
         Err(error) => {
             tracing::error!(
@@ -551,6 +559,7 @@ pub(crate) async fn apply_exposure_mode(
 
 /// Startup auto-start. Never mints the settings row: an absent row means nothing listens.
 pub(crate) async fn auto_start_if_enabled(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -564,7 +573,7 @@ pub(crate) async fn auto_start_if_enabled(
         tracing::debug!("Remote host mode is disabled; remote listener stays off");
         return Ok(None);
     }
-    start_listener(handle, store, provider, tailscale)
+    start_listener(app_handle, handle, store, provider, tailscale)
         .await
         .map(Some)
 }
@@ -582,6 +591,7 @@ pub(crate) async fn auto_start_remote_listener_from_handle(app_handle: &tauri::A
     let handle = remote_listener_handle(app_handle);
 
     match auto_start_if_enabled(
+        app_handle,
         &handle,
         &store,
         &TailscaleSelfAddressProvider,

@@ -27,13 +27,19 @@ pub(crate) const MIN_CLIENT_PROTOCOL: u32 = PROTOCOL_VERSION;
 pub(crate) struct RemoteRouterState {
     environment_id: Arc<str>,
     auth: Arc<RemoteAuthContext>,
+    app_handle: tauri::AppHandle,
 }
 
 impl RemoteRouterState {
-    pub(crate) fn new(environment_id: impl Into<Arc<str>>, auth: RemoteAuthContext) -> Self {
+    pub(crate) fn new(
+        environment_id: impl Into<Arc<str>>,
+        auth: RemoteAuthContext,
+        app_handle: tauri::AppHandle,
+    ) -> Self {
         Self {
             environment_id: environment_id.into(),
             auth: Arc::new(auth),
+            app_handle,
         }
     }
 
@@ -43,6 +49,10 @@ impl RemoteRouterState {
 
     pub(crate) fn auth(&self) -> &RemoteAuthContext {
         &self.auth
+    }
+
+    pub(crate) fn app_handle(&self) -> &tauri::AppHandle {
+        &self.app_handle
     }
 }
 

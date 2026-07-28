@@ -118,6 +118,7 @@ pub async fn start_remote_listener(
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
     start_listener(
+        &app,
         &handle,
         &store,
         &TailscaleSelfAddressProvider,
@@ -154,6 +155,7 @@ pub async fn set_remote_exposure_mode(
     let store = settings_store(&state);
     let handle = remote_listener_handle(&app);
     let settings = apply_exposure_mode(
+        &app,
         &handle,
         &store,
         &TailscaleSelfAddressProvider,
