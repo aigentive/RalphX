@@ -175,7 +175,7 @@ describe("remote environment", () => {
 
     expect(response.ok).toBe(false);
     expect(response.status).toBe(422);
-    expect(response.statusText).toBe("Unprocessable Entity");
+    expect(response.statusText).toBe("Unprocessable Content");
     await expect(response.json()).resolves.toEqual({ error: "bad input" });
   });
 
