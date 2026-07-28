@@ -515,6 +515,42 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         command: "get_valid_transitions",
         policy: policy(RiskClass::Read, NONE, "state-machine metadata read"),
     },
+    // PR 3.1-b batch 1 — the 2.7 reconnect gate reads. Hand audit (detectors a/b/c all
+    // silent, asserted by the calibration lists in `capability_ledger_tests`):
+    //
+    // * `list_pending_permission_gates` → `PermissionState::get_pending_info_strict`, which
+    //   reads the pending repository and the in-memory pending map and returns their union.
+    //   It resolves no CLI path (c), writes no `InternalStatus` (a), and touches none of the
+    //   spawn-triggering state surface (b). The `_strict` suffix is the fail-closed half of
+    //   the pair: it propagates a repository error instead of collapsing to an empty list,
+    //   so registering it cannot turn a read failure into "no gates are open".
+    // * `list_pending_question_gates` → `QuestionState::get_pending_info_strict`, the same
+    //   shape over the question gate surface.
+    //
+    // Both sit BELOW their `permission_commands`/`question_commands` module default
+    // (AgentControl), so each needs a structural reason rather than a judgement call: the
+    // module default is conservative because those modules also carry
+    // `resolve_permission_request`/`resolve_user_question`, which authorize or steer a LIVE
+    // tool call. These two only enumerate what is already pending — they answer no gate and
+    // change no agent's authority.
+    CommandOverride {
+        command: "list_pending_permission_gates",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pending permission-gate enumeration: fail-closed read of the pending repository \
+             plus the in-memory gate map; resolves no gate and arms no scheduling",
+        ),
+    },
+    CommandOverride {
+        command: "list_pending_question_gates",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pending question-gate enumeration: fail-closed read of the pending repository \
+             plus the in-memory gate map; answers no question and arms no scheduling",
+        ),
+    },
     // Detector (c) finding: the advertised-endpoint listing resolves the Tailscale CLI, so it
     // spawns a process. `SpawnsProcess` is expressible only under `Elevated`; the previous
     // `Read` row was the same under-labelling shape as the `list_projects` mislabel.

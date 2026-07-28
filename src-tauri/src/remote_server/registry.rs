@@ -657,6 +657,38 @@ crate::remote_commands! {
     },
 
     // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 1 — the 2.7 reconnect gate reads, at `ui:read`.
+    //
+    // These are the flag-on precondition for remote P-21: a client that reconnects while a
+    // permission or question gate is open learns about it ONLY through these two reads, and
+    // `pending-gate-reconcile.ts` treats `REMOTE_COMMAND_UNAVAILABLE` as "cannot
+    // reconcile". Their `get_pending_info_strict` targets are the fail-closed halves of the
+    // pair — a repository error propagates instead of collapsing into an empty gate list,
+    // which is what makes them safe to expose: the remote client can never be told "no
+    // gates are open" because a read failed.
+    //
+    // Both are enumerations, not resolutions. The sibling commands that ANSWER a gate
+    // (`resolve_permission_request`, `resolve_user_question`,
+    // `approve_permission_request`) stay at `AgentControl` — see the overrides below.
+    // -----------------------------------------------------------------------------------
+    "list_pending_permission_gates"
+        => crate::commands::permission_commands::list_pending_permission_gates {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_pending_question_gates"
+        => crate::commands::question_commands::list_pending_question_gates {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
     // PR 1.5-A — `ui:operate`: watch + brakes + inert edits, and NOTHING that can start,
     // resume, restart, or steer an agent. This is the default pairing's entire mutating
     // surface (the "viewer with brakes" boundary, §3.3/§4.3).

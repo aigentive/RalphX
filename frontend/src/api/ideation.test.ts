@@ -624,19 +624,6 @@ describe("ideationApi.dependencies", () => {
     mockInvoke.mockReset();
   });
 
-  describe("add", () => {
-    it("should call add_proposal_dependency with proposal_id and depends_on_id", async () => {
-      mockInvoke.mockResolvedValue(undefined);
-
-      await ideationApi.dependencies.add("proposal-1", "proposal-2");
-
-      expect(mockInvoke).toHaveBeenCalledWith("add_proposal_dependency", {
-        proposalId: "proposal-1",
-        dependsOnId: "proposal-2",
-      });
-    });
-  });
-
   describe("remove", () => {
     it("should call remove_proposal_dependency", async () => {
       mockInvoke.mockResolvedValue(undefined);

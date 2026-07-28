@@ -326,22 +326,17 @@ const BATCHES = [
     id: "X1",
     title: "Orphan invokes — no local handler exists",
     modules: [],
-    commands: [
-      "add_proposal_dependency",
-      "create_child_session",
-      "delete_project",
-      "delete_task",
-      "get_parent_session_context",
-    ],
-    why: "Five gap names are absent from `src-tauri/src/commands/registry.rs` `generate_handler!` AND from the ledger (which is exhaustive over it). They cannot be registered remotely because they do not exist as Tauri commands locally: these invokes fail at runtime TODAY, on this Mac, with no remote environment involved. P-11 cannot reach zero while they are invoked, and no remote decision resolves them — each needs a delete-the-call-site or add-the-handler call. This is a live-defect finding, not a remote-coverage item.",
+    commands: [],
+    why: "RESOLVED in PR 3.1-b. Five gap names were absent from `src-tauri/src/commands/registry.rs` `generate_handler!` AND from the ledger (which is exhaustive over it), so every call rejected at runtime with no remote environment involved. The reachability audit found none of the five was wired to any component or event handler — the wrappers were dead code kept alive only by their own unit tests — so all five were resolved by DELETING the call site rather than by minting host authority the product does not use. This batch is now empty and stays here as the record of that call.",
     work: [
-      "`add_proposal_dependency` — no backend fn at all (`ideation_commands_dependencies.rs` defines only `remove_proposal_dependency`, `get_proposal_dependencies`, `get_proposal_dependents`, `analyze_dependencies*`). The sibling `remove_proposal_dependency` IS registered. Callers: `api/ideation.ts:512`, `api/proposal.ts`.",
-      "`create_child_session` / `get_parent_session_context` — exist only as HTTP handlers (`http_server/handlers/session_linking/`), never as `#[tauri::command]`. Callers: `api/ideation.ts:305,327`. Either add the command wrappers or move the callers to the HTTP seam.",
-      "`delete_project` (`project_commands.rs:394`) / `delete_task` (`task_commands/mutation.rs:298`) — the fns exist but are not in `generate_handler!`. Callers: `api/projects.ts:193`, `api/tasks.ts:266`. Note P-17c denies `delete_*` remotely regardless, so registering them locally does NOT make them remote-eligible; they would become manifest dispositions.",
-      "Whatever the call, land it as its own fix with a regression test; do not resolve an orphan by adding a local-only row (that would hide a broken call site behind a remote reason).",
+      "`add_proposal_dependency` — deleted at both call sites (`api/ideation.ts` `dependencies.add`, `api/proposal.ts` `addProposalDependency`) plus the `addDependency` mutation in `hooks/useDependencyGraph.ts`. Its owning hook `useDependencyMutations` had no consumer at all: the UI reads the dependency graph and never writes edges, so there was no product asymmetry to fix by adding the missing command.",
+      "`create_child_session` / `get_parent_session_context` — deleted from `api/ideation.ts` (zero callers, zero tests). The capability is not lost: both are live HTTP routes (`POST /api/create_child_session`, `GET /api/parent_session_context/:session_id`), which is how the backend actually reaches them.",
+      "`delete_project` — deleted from `api/projects.ts`; `projectsApi.archive` is the live removal path.",
+      "`delete_task` — deleted from `api/tasks.ts` and `hooks/useTaskMutation.ts`; it was already `@deprecated Use cleanupTask instead`, and every component destructures `cleanupTaskMutation`.",
+      "Regression guard: `frontend/src/api/orphan-invokes.test.ts` asserts each wrapper stays absent while its surviving sibling (`remove`, `getChildren`, `archive`, `cleanupTask`) stays present, so the test cannot pass by the namespace disappearing.",
     ],
-    gate: "Each of the five is either deleted at the call site or backed by a registered handler with a test; the P-11 scan sees zero orphans.",
-  },
+    gate: "Each of the five is deleted at the call site with a regression test; the P-11 scan sees zero orphans.",
+  }
 ];
 
 // ---------------------------------------------------------------------------

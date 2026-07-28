@@ -161,6 +161,78 @@ describe("chat attachments", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The SECOND attachment renderer.
+//
+// 2.6 hardened `MessageAttachments` only. `ChatAttachmentGallery` called
+// `convertFileSrc(attachment.filePath)` with no environment branch, so the gallery
+// surface rendered broken images under a remote environment while the message surface
+// rendered placeholders — the same host path, two different answers. The PR 3.1-a census
+// surfaced this as a live gap; these rows are the gallery half of the 2.6 negative.
+//
+// The composer's OWN in-flight picks are deliberately still previewed: those are
+// `URL.createObjectURL` blobs for a file the user selected on THIS device, which is not a
+// host-filesystem assumption and stays valid remotely.
+// ---------------------------------------------------------------------------
+
+describe("chat attachment gallery", () => {
+  const hostImage = {
+    id: "gallery-att-1",
+    fileName: "diagram.png",
+    fileSize: 4096,
+    mimeType: "image/png",
+    filePath: "/Users/host/Desktop/diagram.png",
+  };
+
+  async function renderGallery(attachment: unknown = hostImage) {
+    const { ChatAttachmentGallery } = await import(
+      "@/components/Chat/ChatAttachmentGallery"
+    );
+    return render(
+      withTooltips(<ChatAttachmentGallery attachments={[attachment as never]} />),
+    );
+  }
+
+  it("local: previews a host-path image through convertFileSrc", async () => {
+    await renderGallery();
+
+    expect(convertFileSrcMock).toHaveBeenCalledWith(
+      "/Users/host/Desktop/diagram.png",
+    );
+    expect(
+      screen.getByTestId("chat-attachment-image-preview"),
+    ).toBeInTheDocument();
+  });
+
+  it("remote: never calls convertFileSrc for a host-path image", async () => {
+    setEnvironment("remote");
+    await renderGallery();
+
+    expect(convertFileSrcMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("chat-attachment-image-preview")).toBeNull();
+    // The card still renders — the attachment is not hidden, only its preview is.
+    expect(screen.getByTestId("attachment-card")).toBeInTheDocument();
+    expect(screen.getByText("diagram.png")).toBeInTheDocument();
+  });
+
+  it("remote: an already-resolved previewUrl is still honoured", async () => {
+    setEnvironment("remote");
+    await renderGallery({
+      id: "gallery-att-2",
+      fileName: "resolved.png",
+      fileSize: 512,
+      mimeType: "image/png",
+      previewUrl: "https://example.invalid/resolved.png",
+    });
+
+    expect(convertFileSrcMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("chat-attachment-image-preview")).toHaveAttribute(
+      "src",
+      "https://example.invalid/resolved.png",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Workspace Open menu — editor / file-manager / built-in terminal
 // ---------------------------------------------------------------------------
 

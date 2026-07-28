@@ -399,3 +399,195 @@ async fn the_router_admits_a_registered_command_the_device_does_hold_scope_for()
         json!({"ok": true, "result": {"status": "ok"}})
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 1 — the 2.7 pending-gate reads (`ui:read`)
+//
+// `list_pending_permission_gates` / `list_pending_question_gates` are the reconnect
+// rehydration reads the 2.7 lane added. Without them registered, a remote client that
+// reconnects mid-gate has no way to learn a gate is open: `pending-gate-reconcile.ts`
+// treats `REMOTE_COMMAND_UNAVAILABLE` as "cannot reconcile". Registering them at `Read` is
+// the flag-on precondition for remote P-21.
+// ---------------------------------------------------------------------------------------
+
+/// A mock app whose managed `AppState` carries the live permission/question gate state.
+///
+/// `create_mock_app` manages nothing, so a dispatch through it would fail for the wrong
+/// reason — the parity rows below would then prove nothing about the gate state.
+fn app_with_gate_state() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
+}
+
+const GATE_READS: [&str; 2] = [
+    "list_pending_permission_gates",
+    "list_pending_question_gates",
+];
+
+/// P-4 parity — the dispatched payload is byte-identical to the direct local IPC call, with
+/// a NON-EMPTY gate registered so an all-empty response cannot fake the equality.
+#[tokio::test]
+async fn p4_parity_for_the_pending_gate_reads_over_a_populated_state() {
+    use tauri::Manager;
+
+    let app = app_with_gate_state();
+    let state = app.state::<crate::application::AppState>();
+
+    state
+        .permission_state
+        .register(crate::application::PendingPermissionInfo {
+            request_id: "gate-permission-1".to_string(),
+            tool_name: "mcp__ralphx__get_task_context".to_string(),
+            tool_input: json!({"task_id": "task-1"}),
+            context: Some("Needs task context".to_string()),
+            agent_type: Some("worker".to_string()),
+            task_id: Some("task-1".to_string()),
+            context_type: Some("task".to_string()),
+            context_id: Some("task-1".to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+        .await;
+    state
+        .question_state
+        .register(
+            "gate-question-1".to_string(),
+            "22222222-2222-2222-2222-222222222222".to_string(),
+            "Continue?".to_string(),
+            None,
+            vec![],
+            false,
+        )
+        .await;
+
+    let direct_permissions = crate::commands::permission_commands::list_pending_permission_gates(
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("the direct permission-gate read succeeds");
+    let direct_questions = crate::commands::question_commands::list_pending_question_gates(
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("the direct question-gate read succeeds");
+
+    assert_eq!(
+        direct_permissions.len(),
+        1,
+        "the fixture must be non-empty, or parity over an empty list proves nothing"
+    );
+    assert_eq!(
+        direct_questions.len(),
+        1,
+        "question fixture must be non-empty"
+    );
+
+    for (command, direct) in [
+        (
+            "list_pending_permission_gates",
+            registry::serialize_ok(&direct_permissions).unwrap(),
+        ),
+        (
+            "list_pending_question_gates",
+            registry::serialize_ok(&direct_questions).unwrap(),
+        ),
+    ] {
+        let dispatched = registry::dispatch(app.handle(), &[Scope::UiRead], command, &json!({}))
+            .await
+            .unwrap_or_else(|error| panic!("`{command}` must dispatch: {error:?}"));
+        assert_eq!(
+            dispatched,
+            DispatchOutcome::Ok(direct),
+            "`{command}` remote dispatch must be byte-identical to the local IPC call"
+        );
+    }
+}
+
+/// Both take no arguments — an argument-bearing call must not become an unavailable command,
+/// and extra client-supplied keys must be ignored rather than smuggled in.
+#[tokio::test]
+async fn the_pending_gate_reads_ignore_client_supplied_arguments() {
+    let app = app_with_gate_state();
+
+    for command in GATE_READS {
+        let dispatched = registry::dispatch(
+            app.handle(),
+            &[Scope::UiRead],
+            command,
+            &json!({"projectId": "smuggled", "limit": 9000}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("`{command}` must ignore surplus args: {error:?}"));
+        assert_eq!(dispatched, DispatchOutcome::Ok(json!([])));
+    }
+}
+
+/// Scope negative — the gate reads sit at `Read`, so every OTHER scope is insufficient and
+/// an empty grant authorizes neither.
+#[tokio::test]
+async fn the_pending_gate_reads_are_refused_below_ui_read() {
+    let app = app_with_gate_state();
+
+    for command in GATE_READS {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered on the facade"));
+        assert_eq!(
+            spec.class,
+            RiskClass::Read,
+            "`{command}` is a pure in-memory/repository gate read"
+        );
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` carries no capability; a Read row with capabilities is a mislabel"
+        );
+
+        for insufficient in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let refused = registry::dispatch(app.handle(), &insufficient, command, &json!({}))
+                .await
+                .expect_err("a grant without ui:read must not reach the gate read");
+            assert_eq!(
+                refused.code,
+                ErrorCode::RemoteForbidden,
+                "`{command}` under {insufficient:?} must be FORBIDDEN, not unavailable"
+            );
+        }
+    }
+}
+
+/// The router-level admission both 2.7 clients actually take.
+#[tokio::test]
+async fn a_ui_read_device_reaches_the_pending_gate_reads_over_the_router() {
+    let context = in_memory_auth_context();
+    let (token, _) = pair_device_with_scopes(
+        &context,
+        "gate-reader",
+        RemoteScopeSet::from_scopes([Scope::UiRead]),
+    )
+    .await;
+
+    for command in GATE_READS {
+        let app = app_with_gate_state();
+        let response = router_with_real_registry(&context, app.handle().clone())
+            .oneshot(invoke_request(&token, command, json!({})))
+            .await
+            .expect("invoke request should complete");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "`{command}` must be reachable for a ui:read device"
+        );
+        assert_eq!(
+            response_json(response).await,
+            json!({"ok": true, "result": []}),
+            "`{command}` returns the empty gate list on a fresh host"
+        );
+    }
+}

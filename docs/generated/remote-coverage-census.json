@@ -3,19 +3,19 @@
   "generatedBy": "scripts/generate-remote-coverage-census.mjs",
   "purpose": "PR 3.1 work manifest: every P-11-unclassified invoke command name, grouped into module-scoped work batches with a recommended registration order. A census and a plan — it registers nothing and decides no final class.",
   "scan": {
-    "invokedCommands": 501,
+    "invokedCommands": 498,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "unclassified": 447,
-    "line": "PASS: remote transport drift — 501 invoke command name(s), 0 dynamic, 0 seam bypasses; 447 unclassified (baseline, → 0 in PR 3.1)."
+    "unclassified": 442,
+    "line": "PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 442 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
-    "invokedCommandNames": 501,
-    "remoteRegistered": 25,
+    "invokedCommandNames": 498,
+    "remoteRegistered": 27,
     "localOnlyRows": 29,
     "ledgerRows": 540,
-    "unclassified": 447,
-    "assignedToBatches": 447,
+    "unclassified": 442,
+    "assignedToBatches": 442,
     "batches": 14
   },
   "dispositionModel": {
@@ -42,7 +42,6 @@
   },
   "dispositionTotals": {
     "registerCandidate": 283,
-    "orphan": 5,
     "v1DeferredElevated": 26,
     "hostDeniedSpawn": 49,
     "hostDeniedClass": 84
@@ -1415,39 +1414,22 @@
       "id": "X1",
       "order": 14,
       "title": "Orphan invokes — no local handler exists",
-      "rationale": "Five gap names are absent from `src-tauri/src/commands/registry.rs` `generate_handler!` AND from the ledger (which is exhaustive over it). They cannot be registered remotely because they do not exist as Tauri commands locally: these invokes fail at runtime TODAY, on this Mac, with no remote environment involved. P-11 cannot reach zero while they are invoked, and no remote decision resolves them — each needs a delete-the-call-site or add-the-handler call. This is a live-defect finding, not a remote-coverage item.",
+      "rationale": "RESOLVED in PR 3.1-b. Five gap names were absent from `src-tauri/src/commands/registry.rs` `generate_handler!` AND from the ledger (which is exhaustive over it), so every call rejected at runtime with no remote environment involved. The reachability audit found none of the five was wired to any component or event handler — the wrappers were dead code kept alive only by their own unit tests — so all five were resolved by DELETING the call site rather than by minting host authority the product does not use. This batch is now empty and stays here as the record of that call.",
       "work": [
-        "`add_proposal_dependency` — no backend fn at all (`ideation_commands_dependencies.rs` defines only `remove_proposal_dependency`, `get_proposal_dependencies`, `get_proposal_dependents`, `analyze_dependencies*`). The sibling `remove_proposal_dependency` IS registered. Callers: `api/ideation.ts:512`, `api/proposal.ts`.",
-        "`create_child_session` / `get_parent_session_context` — exist only as HTTP handlers (`http_server/handlers/session_linking/`), never as `#[tauri::command]`. Callers: `api/ideation.ts:305,327`. Either add the command wrappers or move the callers to the HTTP seam.",
-        "`delete_project` (`project_commands.rs:394`) / `delete_task` (`task_commands/mutation.rs:298`) — the fns exist but are not in `generate_handler!`. Callers: `api/projects.ts:193`, `api/tasks.ts:266`. Note P-17c denies `delete_*` remotely regardless, so registering them locally does NOT make them remote-eligible; they would become manifest dispositions.",
-        "Whatever the call, land it as its own fix with a regression test; do not resolve an orphan by adding a local-only row (that would hide a broken call site behind a remote reason)."
+        "`add_proposal_dependency` — deleted at both call sites (`api/ideation.ts` `dependencies.add`, `api/proposal.ts` `addProposalDependency`) plus the `addDependency` mutation in `hooks/useDependencyGraph.ts`. Its owning hook `useDependencyMutations` had no consumer at all: the UI reads the dependency graph and never writes edges, so there was no product asymmetry to fix by adding the missing command.",
+        "`create_child_session` / `get_parent_session_context` — deleted from `api/ideation.ts` (zero callers, zero tests). The capability is not lost: both are live HTTP routes (`POST /api/create_child_session`, `GET /api/parent_session_context/:session_id`), which is how the backend actually reaches them.",
+        "`delete_project` — deleted from `api/projects.ts`; `projectsApi.archive` is the live removal path.",
+        "`delete_task` — deleted from `api/tasks.ts` and `hooks/useTaskMutation.ts`; it was already `@deprecated Use cleanupTask instead`, and every component destructures `cleanupTaskMutation`.",
+        "Regression guard: `frontend/src/api/orphan-invokes.test.ts` asserts each wrapper stays absent while its surviving sibling (`remove`, `getChildren`, `archive`, `cleanupTask`) stays present, so the test cannot pass by the namespace disappearing."
       ],
-      "gate": "Each of the five is either deleted at the call site or backed by a registered handler with a test; the P-11 scan sees zero orphans.",
-      "commandCount": 5,
-      "modules": [
-        "<no ledger entry>"
-      ],
-      "dispositionCounts": {
-        "orphan": 5
-      },
+      "gate": "Each of the five is deleted at the call site with a regression test; the P-11 scan sees zero orphans.",
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
       "registerCandidates": 0,
-      "nonRegistering": 5,
-      "commandsByModule": {
-        "<no ledger entry>": [
-          "add_proposal_dependency",
-          "create_child_session",
-          "delete_project",
-          "delete_task",
-          "get_parent_session_context"
-        ]
-      },
-      "commands": [
-        "add_proposal_dependency",
-        "create_child_session",
-        "delete_project",
-        "delete_task",
-        "get_parent_session_context"
-      ]
+      "nonRegistering": 0,
+      "commandsByModule": {},
+      "commands": []
     }
   ],
   "commands": [
@@ -1505,15 +1487,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "add_proposal_dependency",
-      "batch": "X1",
-      "module": null,
-      "ledgerClass": null,
-      "capabilities": [],
-      "disposition": "orphan",
-      "ledgerReason": null
     },
     {
       "command": "add_ticket_comment",
@@ -2066,15 +2039,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "create_child_session",
-      "batch": "X1",
-      "module": null,
-      "ledgerClass": null,
-      "capabilities": [],
-      "disposition": "orphan",
-      "ledgerReason": null
-    },
-    {
       "command": "create_cross_project_session",
       "batch": "B4",
       "module": "ideation_commands",
@@ -2207,15 +2171,6 @@
       "ledgerReason": "deletes a durable entity"
     },
     {
-      "command": "delete_project",
-      "batch": "X1",
-      "module": null,
-      "ledgerClass": null,
-      "capabilities": [],
-      "disposition": "orphan",
-      "ledgerReason": null
-    },
-    {
       "command": "delete_queued_agent_message",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -2225,15 +2180,6 @@
       ],
       "disposition": "hostDeniedClass",
       "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "delete_task",
-      "batch": "X1",
-      "module": null,
-      "ledgerClass": null,
-      "capabilities": [],
-      "disposition": "orphan",
-      "ledgerReason": null
     },
     {
       "command": "delete_task_proposal",
@@ -3532,15 +3478,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_parent_session_context",
-      "batch": "X1",
-      "module": null,
-      "ledgerClass": null,
-      "capabilities": [],
-      "disposition": "orphan",
-      "ledgerReason": null
     },
     {
       "command": "get_pending_permissions",

@@ -60,15 +60,6 @@ export function useTaskMutation(projectId: string) {
     },
   });
 
-  /** @deprecated Use cleanupTaskMutation instead */
-  const deleteMutation = useMutation({
-    mutationFn: (taskId: string) => api.tasks.delete(taskId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: taskKeys.list(projectId) });
-      queryClient.invalidateQueries({ queryKey: infiniteTaskKeys.all });
-    },
-  });
-
   const moveMutation = useMutation({
     mutationFn: ({ taskId, toStatus }: { taskId: string; toStatus: string }) =>
       api.tasks.move(taskId, toStatus),
@@ -273,7 +264,6 @@ export function useTaskMutation(projectId: string) {
   return {
     createMutation,
     updateMutation,
-    deleteMutation,
     moveMutation,
     archiveMutation,
     restoreMutation,

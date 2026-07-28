@@ -185,49 +185,6 @@ describe("useTaskMutation", () => {
     });
   });
 
-  describe("deleteMutation", () => {
-    it("should delete a task", async () => {
-      vi.mocked(api.tasks.delete).mockResolvedValue(true);
-
-      const { result } = renderHook(() => useTaskMutation("project-1"), {
-        wrapper,
-      });
-
-      await act(async () => {
-        result.current.deleteMutation.mutate("task-1");
-      });
-
-      await waitFor(() => {
-        expect(result.current.deleteMutation.isSuccess).toBe(true);
-      });
-
-      expect(api.tasks.delete).toHaveBeenCalledWith("task-1");
-      expect(result.current.deleteMutation.data).toBe(true);
-    });
-
-    it("should invalidate queries on delete success", async () => {
-      vi.mocked(api.tasks.delete).mockResolvedValue(true);
-
-      const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-      const { result } = renderHook(() => useTaskMutation("project-1"), {
-        wrapper,
-      });
-
-      await act(async () => {
-        result.current.deleteMutation.mutate("task-1");
-      });
-
-      await waitFor(() => {
-        expect(result.current.deleteMutation.isSuccess).toBe(true);
-      });
-
-      expect(invalidateQueriesSpy).toHaveBeenCalledWith({
-        queryKey: ["tasks", "list", "project-1"],
-      });
-    });
-  });
-
   describe("moveMutation", () => {
     it("should move a task to a new status", async () => {
       const movedTask = createMockTask({ internalStatus: "ready" });
