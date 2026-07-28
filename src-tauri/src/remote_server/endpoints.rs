@@ -23,7 +23,23 @@ use crate::remote_server::ws::{NoopLifecycleSink, SessionLifecycleSink};
 ///
 /// Host acceptance policy, not protocol shape — it lives here rather than in the protocol
 /// crate so a host can tighten it without a protocol revision.
-pub(crate) const MIN_CLIENT_PROTOCOL: u32 = PROTOCOL_VERSION;
+///
+/// # Raising this is a deliberate compatibility cut (owner decision R1)
+///
+/// This constant is **independent of [`PROTOCOL_VERSION`] on purpose**. It was previously
+/// written `= PROTOCOL_VERSION`, which made every version bump silently a hard cutover: the
+/// day `PROTOCOL_VERSION` became 2, every shipped v1 client — including the mobile app the
+/// cross-spec contract is written for — would be refused at the descriptor gate, because
+/// `RemoteEnvironmentService::pairing_descriptor` refuses when
+/// `descriptor.min_client_protocol > client PROTOCOL_VERSION`. That is the opposite of R-7's
+/// additive-only evolution rule.
+///
+/// So: bumping `PROTOCOL_VERSION` must NOT touch this value. Raising it drops support for
+/// every client below the new floor and requires a spec note recording which clients are being
+/// cut and why. `min_client_protocol_is_pinned_independently_of_the_protocol_version` and
+/// `an_old_client_still_pairs_with_a_host_whose_protocol_version_advanced` fail if this is
+/// re-aliased.
+pub(crate) const MIN_CLIENT_PROTOCOL: u32 = 1;
 
 /// Shared state for the remote router.
 ///

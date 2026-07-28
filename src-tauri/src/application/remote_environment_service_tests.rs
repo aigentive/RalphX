@@ -2571,3 +2571,64 @@ async fn pair_refuses_a_host_older_than_the_client_floor() {
         .all(|call| !matches!(call, RecordedHostCall::Pair { .. })));
     assert!(f.repo.list().await.expect("list").is_empty());
 }
+
+/// Owner decision R1 — an already-shipped client still pairs with a host that moved on.
+///
+/// This is the behaviour the independent `MIN_CLIENT_PROTOCOL` floor exists to protect, and
+/// the reason the alias was a latent compatibility cut rather than a style problem.
+///
+/// The host here has ADVANCED: it speaks `PROTOCOL_VERSION + 1`. Its floor stayed pinned at 1
+/// because nobody deliberately dropped v1 clients. This client is a v1 client. §3.2's
+/// contradiction gate must let it through — additive evolution (R-7).
+///
+/// The second half is the falsifier: with the OLD aliased definition the same host would have
+/// published `min_client_protocol = PROTOCOL_VERSION + 1`, and the identical client would be
+/// refused. Without it this test would pass on both the fixed and the broken constant.
+#[tokio::test]
+async fn an_old_client_still_pairs_with_a_host_whose_protocol_version_advanced() {
+    let f = fixture();
+    {
+        let mut descriptor_slot = f.host.descriptor.lock().expect("mock");
+        let mut advanced = descriptor("env-1");
+        advanced.protocol_version = PROTOCOL_VERSION + 1;
+        // The pinned floor: raising it is a deliberate act, and nobody performed one.
+        advanced.min_client_protocol = 1;
+        *descriptor_slot = Ok(advanced);
+    }
+
+    f.service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("a v1 client must still pair with a host that advanced additively");
+
+    let rows = f.repo.list().await.expect("list");
+    assert_eq!(rows.len(), 1, "pairing must have produced a row");
+
+    // Falsifier: re-alias the floor to the host's version and the SAME client is now refused.
+    let g = fixture();
+    {
+        let mut descriptor_slot = g.host.descriptor.lock().expect("mock");
+        let mut aliased = descriptor("env-1");
+        aliased.protocol_version = PROTOCOL_VERSION + 1;
+        aliased.min_client_protocol = PROTOCOL_VERSION + 1;
+        *descriptor_slot = Ok(aliased);
+    }
+    let error = g
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect_err("an aliased floor cuts this client off");
+    assert!(
+        matches!(
+            error,
+            RemoteEnvironmentError::VersionSkew { host_min_client, .. }
+                if host_min_client == PROTOCOL_VERSION + 1
+        ),
+        "the aliased floor must refuse via the skew gate, which is exactly the compatibility \
+         cut MIN_CLIENT_PROTOCOL is pinned to avoid"
+    );
+    assert!(
+        g.repo.list().await.expect("list").is_empty(),
+        "the refusal must leave no row behind"
+    );
+}
