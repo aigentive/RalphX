@@ -1565,6 +1565,46 @@
       "target": "crate::commands::task_commands::query::get_task_agent_workspace"
     },
     {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_steps",
+      "pins": [],
+      "target": "crate::commands::task_step_commands::get_task_steps"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_step_progress",
+      "pins": [],
+      "target": "crate::commands::task_step_commands::get_step_progress"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_execution_settings",
+      "pins": [],
+      "target": "crate::commands::execution_commands::get_execution_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_global_execution_settings",
+      "pins": [],
+      "target": "crate::commands::execution_commands::get_global_execution_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_active_project",
+      "pins": [],
+      "target": "crate::commands::execution_commands::get_active_project"
+    },
+    {
       "argumentSensitive": true,
       "capabilities": [],
       "class": "operate",
@@ -3061,14 +3101,12 @@
       "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_steps",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "task-step read: `task_step_repo.get_by_task` mapped to responses",
+      "registered": true
     },
     {
       "capabilities": [
@@ -3091,14 +3129,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_step_progress",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "step-progress read: `task_step_repo.get_by_task` summarised in process",
+      "registered": true
     },
     {
       "capabilities": [
@@ -3911,14 +3947,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_execution_settings",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "execution-settings read: `execution_settings_repo.get_settings`; reads the quota and changes none",
+      "registered": true
     },
     {
       "capabilities": [
@@ -3941,24 +3975,20 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_active_project",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "active-project read: clones the in-memory `ActiveProjectState` id; the WRITE half (`set_active_project`) syncs the scheduler quota and stays AgentControl",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_global_execution_settings",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "global execution-settings read: `global_execution_settings_repo.get_settings`",
+      "registered": true
     },
     {
       "capabilities": [

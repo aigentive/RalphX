@@ -6,7 +6,7 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 435 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 431 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
@@ -14,10 +14,10 @@ PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names in `frontend/src` | 498 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 34 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 39 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 540 | `docs/generated/remote-commands.json` |
-| **Unclassified — the 3.1 gap** | **435** | `scripts/remote-transport-drift-baseline.json` |
+| **Unclassified — the 3.1 gap** | **431** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
 
@@ -25,22 +25,22 @@ The gap is not 447 registrations. Routing each name mechanically through the led
 
 | Disposition | Count | Rule |
 |---|---|---|
-| register-candidate | 276 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
+| register-candidate | 272 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
 | host-denied (class: denied) | 84 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 49 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 26 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**159 of the 435 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
+**159 of the 431 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
 
-**276 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
+**272 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
 
 ## 3. Recommended batch order
 
 | # | Batch | Title | Cmds | Register-candidates | Not registering | Modules |
 |---|---|---|---|---|---|---|
 | 1 | `B0` | P-11 third-disposition mechanism (prerequisite, no registrations) | 0 | 0 | 0 | 0 |
-| 2 | `B1` | Task core — lifecycle, steps, execution, gates | 36 | 35 | 1 | 5 |
+| 2 | `B1` | Task core — lifecycle, steps, execution, gates | 32 | 31 | 1 | 5 |
 | 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 56 | 53 | 3 | 6 |
 | 4 | `B3` | Review, QA, merge pipeline, validation | 31 | 31 | 0 | 4 |
 | 5 | `B4` | Ideation, plans, methodology, workflow | 64 | 63 | 1 | 5 |
@@ -75,7 +75,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 2. `B1` — Task core — lifecycle, steps, execution, gates
 
-**Commands:** 36 · **Register-candidates:** 35 · **Risk classes:** register-candidate 35 · host-denied (class: denied) 1
+**Commands:** 32 · **Register-candidates:** 31 · **Risk classes:** register-candidate 31 · host-denied (class: denied) 1
 
 **Why here:** The 1.5-A surface already registered the neighbouring commands (`move_task`, `unblock_task`, `answer_user_question`, the brakes), so the injection table, the `authz:` predicate shape and the P-4 parity rows for these argument shapes are proven on this exact module family. Lowest parity risk, highest reuse — the right batch to shake out the per-batch harness before it meets 41-command modules.
 
@@ -89,11 +89,11 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 <details><summary>Members by module</summary>
 
-- **`execution_commands`** (13) — `get_execution_settings`, `get_execution_status`, `get_global_execution_settings`, `get_running_processes`, `pause_execution`, `recover_task_execution`, `resolve_recovery_prompt`, `restart_task`, `resume_execution`, `set_active_project`, `stop_execution`, `update_execution_settings`, `update_global_execution_settings`
+- **`execution_commands`** (11) — `get_execution_status`, `get_running_processes`, `pause_execution`, `recover_task_execution`, `resolve_recovery_prompt`, `restart_task`, `resume_execution`, `set_active_project`, `stop_execution`, `update_execution_settings`, `update_global_execution_settings`
 - **`permission_commands`** (2) — `get_pending_permissions`, `resolve_permission_request`
 - **`question_commands`** (2) — `get_pending_questions`, `resolve_user_question`
 - **`task_commands`** (12) — `archive_task`, `archive_tasks_in_group`, `cancel_tasks_in_group`, `cleanup_task`, `cleanup_tasks_in_group`, `pause_execution_plan`, `restore_task`, `resume_execution_plan`, `resume_task`, `resume_tasks_in_group`, `retry_branch_update`, `stop_execution_plan`
-- **`task_step_commands`** (7) — `complete_step`, `fail_step`, `get_step_progress`, `get_task_steps`, `reorder_task_steps`, `skip_step`, `start_step`
+- **`task_step_commands`** (5) — `complete_step`, `fail_step`, `reorder_task_steps`, `skip_step`, `start_step`
 
 </details>
 
@@ -434,9 +434,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Check | Result |
 |---|---|
 | Drift scan passes | yes (this file is not emitted otherwise) |
-| Scan unclassified count == baseline size | 435 == 435 |
-| Every gap command in exactly one batch | 435 / 435 |
-| Disposition totals sum to the gap | 435 == 435 |
+| Scan unclassified count == baseline size | 431 == 431 |
+| Every gap command in exactly one batch | 431 / 431 |
+| Disposition totals sum to the gap | 431 == 431 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.

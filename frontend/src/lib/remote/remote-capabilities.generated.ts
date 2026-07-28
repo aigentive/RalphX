@@ -86,13 +86,37 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
+  "get_active_project": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_archived_count": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
     pins: [],
   },
+  "get_execution_settings": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_global_execution_settings": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_session_task_history_availability": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_step_progress": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -117,6 +141,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_task_state_transitions": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_task_steps": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
