@@ -62,6 +62,12 @@ pub mod dedup;
 mod dedup_tests;
 // --- end PR 1.5-C block ---
 
+// --- PR 1.5-B: curated fetch-route remount (one contiguous block) ---
+pub mod fetch_remount;
+#[cfg(test)]
+mod fetch_remount_tests;
+// --- end PR 1.5-B block ---
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -329,6 +335,45 @@ pub(crate) fn remote_router(state: RemoteRouterState) -> Router {
 /// Exposed so tests can prove the auth slot itself lets `OPTIONS` through instead of relying
 /// on the CORS layer short-circuiting preflight ahead of it.
 pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
+    let base: Router = base_remote_routes().with_state(state.clone());
+
+    // The curated `/api` remount (PR 1.5-B). Merged BEFORE the fallback and the auth stack, so
+    // remounted routes sit inside the same trust-header stripping, rate limiting and bearer
+    // check as every other authenticated route, and an unlisted `/api` path still lands on the
+    // 404 fallback. Absent or unbuildable shared state mounts NOTHING — never a fresh AppState.
+    let router = match state.remount() {
+        Some(shared) => match fetch_remount::remount_router(shared) {
+            Ok(build) => base.merge(build.router),
+            Err(error) => {
+                tracing::error!(%error, "remote fetch remount refused to build; /api stays unmounted");
+                base
+            }
+        },
+        None => {
+            tracing::warn!(
+                "shared :3847 AppState is not managed; remote fetch remount stays unmounted"
+            );
+            base
+        }
+    };
+
+    router
+        .fallback(remote_fallback_handler)
+        // Layers apply outermost-last: trust headers are stripped before anything else
+        // runs, then pre-auth flood control, then the bearer check.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            authenticate_remote_request,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            enforce_auth_endpoint_rate_limit,
+        ))
+        .layer(middleware::from_fn(strip_trust_headers))
+}
+
+/// The listener's own routes, before the remount merge and the auth stack.
+fn base_remote_routes() -> Router<RemoteRouterState> {
     Router::new()
         .route(
             DESCRIPTOR_PATH,
@@ -384,19 +429,6 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
             ws::WS_EVENTS_PATH,
             get(ws::ws_events_handler).options(remote_preflight_handler),
         )
-        .fallback(remote_fallback_handler)
-        // Layers apply outermost-last: trust headers are stripped before anything else
-        // runs, then pre-auth flood control, then the bearer check.
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            authenticate_remote_request,
-        ))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            enforce_auth_endpoint_rate_limit,
-        ))
-        .layer(middleware::from_fn(strip_trust_headers))
-        .with_state(state)
 }
 
 fn remote_cors_layer() -> CorsLayer {
@@ -559,6 +591,19 @@ pub(crate) async fn start_listener(
         }
         Err(error) => {
             tracing::error!(%error, "app data dir unavailable; remote attachments stay disabled");
+        }
+    }
+    // R-8: reuse the EXACT `Arc<AppState>` :3847 serves from. If `server_boot` never managed it
+    // the curated `/api` remount stays unmounted — a fresh clone here would recreate precisely
+    // the invoke-vs-fetch divergence the newtype exists to eliminate.
+    match app_handle.try_state::<Arc<crate::remote_server::fetch_remount::SharedHttpAppState>>() {
+        Some(shared) => {
+            state = state.with_remount(Arc::clone(shared.inner()));
+        }
+        None => {
+            tracing::error!(
+                "shared :3847 AppState is not managed; remote fetch remount stays unmounted"
+            );
         }
     }
     if let Some(sink) = handle.lifecycle_sink() {
