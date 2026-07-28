@@ -148,7 +148,7 @@ const markdownComponents = {
 // ============================================================================
 
 export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEditorProps) {
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("artifactEdit");
   // Get initial content
   const initialContent = plan.content.type === "inline" ? plan.content.text : "";
 

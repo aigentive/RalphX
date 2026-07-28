@@ -13,7 +13,7 @@
  * Design spec: specs/design/refined-studio-patterns.md
  */
 
-import { useAgentGate } from "@/hooks/useAgentGate";
+import { useAgentGate, useFieldGate } from "@/hooks/useAgentGate";
 import { useState, useCallback, type FormEvent } from "react";
 import { UpdateTaskSchema, type Task, type UpdateTask } from "@/types/task";
 import { ACTIVE_STATUSES } from "@/types/status";
@@ -76,7 +76,10 @@ export function TaskEditForm({
    * inputs are disabled, so neither the form nor a stale state value can smuggle a
    * title change into an otherwise-inert priority edit.
    */
-  const agentGate = useAgentGate();
+  // `update_task` is `class: operate`; the manifest's `conditional_capabilities`
+  // escalates only `title`/`description` to agent control, so the gate is per-field.
+  const agentGate = useFieldGate("update_task", "title");
+  const stepGate = useAgentGate("stepCreate");
 
   const handleSubmit = useCallback(
     (e: FormEvent) => {
@@ -205,7 +208,7 @@ export function TaskEditForm({
               type="button"
               onClick={handleAddStep}
               disabled={
-                isSaving || isAddingStep || agentGate.gated || !newStepTitle.trim()
+                isSaving || isAddingStep || stepGate.gated || !newStepTitle.trim()
               }
               className="h-10 px-3 rounded-lg text-[0.8125rem] font-medium shrink-0 flex items-center justify-center gap-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{

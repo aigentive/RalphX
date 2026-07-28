@@ -310,7 +310,7 @@ export function TaskBoard({
    * reads as a bug, while a card that will not pick up reads as "not allowed here",
    * which the column hint then names.
    */
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("taskMove");
   const dragDisabled = readOnly || agentGate.gated;
 
   // Distance-based activation - drag starts after moving 8px

@@ -51,7 +51,7 @@ export function useQuestionInput({
   submitAnswer,
   handleSend,
 }: UseQuestionInputParams) {
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("questionAnswer");
   const [selectedOptions, setSelectedOptions] = useState<Set<number>>(new Set());
   const [questionInputValue, setQuestionInputValue] = useState("");
 

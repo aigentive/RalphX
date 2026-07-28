@@ -15,7 +15,13 @@
  */
 
 import { useEnvironmentStore } from "@/stores/environmentStore";
-import { resolveAgentGate, type AgentGateState } from "@/lib/remote/agent-gate";
+import {
+  resolveAffordanceGate,
+  resolveAgentGate,
+  resolveFieldGate,
+  type AgentGateState,
+  type AgentGatedAffordance,
+} from "@/lib/remote/agent-gate";
 
 /** The live confirmed scopes for the active environment; `null` when unconfirmed. */
 export function useActiveEffectiveScopes(): readonly string[] | null {
@@ -24,22 +30,43 @@ export function useActiveEffectiveScopes(): readonly string[] | null {
   );
 }
 
+function useIsRemote(): boolean {
+  return useEnvironmentStore((state) => {
+    const entry = state.environments.find(
+      (candidate) => candidate.id === state.activeEnvironmentId
+    );
+    return (entry?.kind ?? "remote") !== "local";
+  });
+}
+
 /**
- * Whether agent-steering affordances must be disabled, and the copy to explain it.
+ * Whether an affordance must be disabled, and the copy to explain it.
+ *
+ * Pass the affordance name wherever one exists: it is the only way to distinguish
+ * `unavailable` (the host does not expose this op remotely — no host setting helps)
+ * from `gated` (the host can grant `ui:agent`). Omitting it falls back to the
+ * scope-only answer, which is correct but always says "enable it on the host".
  *
  * Local environments are never gated. Remote environments are gated unless the live
  * confirmed scopes include `ui:agent` — including when they have never been
  * confirmed, which reads as "unknown", not "unrestricted".
  */
-export function useAgentGate(): AgentGateState {
-  return useEnvironmentStore((state) => {
-    const entry = state.environments.find(
-      (candidate) => candidate.id === state.activeEnvironmentId
-    );
-    const isRemote = (entry?.kind ?? "remote") !== "local";
-    return resolveAgentGate(
-      isRemote,
-      state.effectiveScopes[state.activeEnvironmentId] ?? null
-    );
-  });
+export function useAgentGate(affordance?: AgentGatedAffordance): AgentGateState {
+  const isRemote = useIsRemote();
+  const scopes = useActiveEffectiveScopes();
+  return affordance === undefined
+    ? resolveAgentGate(isRemote, scopes)
+    : resolveAffordanceGate(affordance, isRemote, scopes);
+}
+
+/**
+ * Field-level gate for an argument-sensitive op (today: `update_task`).
+ *
+ * Lets a form lock the fields that need `ui:agent` while leaving the inert ones
+ * editable, matching what the host will actually enforce.
+ */
+export function useFieldGate(command: string, field: string): AgentGateState {
+  const isRemote = useIsRemote();
+  const scopes = useActiveEffectiveScopes();
+  return resolveFieldGate(command, field, isRemote, scopes);
 }

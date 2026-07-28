@@ -519,7 +519,7 @@ function UnblockWarningCard({
     },
   });
 
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("taskUnblock");
 
   const handleUnblock = useCallback(async () => {
     const confirmed = await confirm({

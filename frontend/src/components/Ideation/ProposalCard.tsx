@@ -75,7 +75,7 @@ export const ProposalCard = React.memo(function ProposalCard({
   isSelected = false,
   onDelete,
 }: ProposalCardProps) {
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("proposalEdit");
   const [isDepsExpanded, setIsDepsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const effectivePriority = proposal.userPriority ?? proposal.suggestedPriority;

@@ -102,7 +102,7 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
   onDelete,
   onNavigateToTask,
 }: ProposalDetailSheetProps) {
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("proposalEdit");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const handleKeyDown = useCallback(

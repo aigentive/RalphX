@@ -1,11 +1,13 @@
 /**
- * Derivation, staleness, and boundary tests for the `ui:agent` gate.
+ * Derivation, staleness, and boundary tests for the remote capability model
+ * (manifest schemaVersion 2).
  *
- * These are the tests that make the gate trustworthy without a human re-reading 540
- * manifest rows: they re-derive the set from the manifest at test time and compare it
- * to the checked-in mirror, they prove the derivation refuses to produce a smaller
- * set when the input is degraded, and they cross-check both hand-maintained lists
- * (the affordance mapping and the inert exemptions) against the manifest.
+ * These are the tests that make the gate trustworthy without a human re-reading the
+ * manifest: they re-derive the model from it at test time and compare to the
+ * checked-in mirror, they prove the derivation refuses to produce a smaller or more
+ * permissive model when the input is degraded, and they cross-check both
+ * hand-maintained lists (the affordance mapping and the inert exemptions) against the
+ * manifest's own classification.
  */
 
 import { readFileSync } from "node:fs";
@@ -13,17 +15,21 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  AGENT_CONTROL_COMMANDS,
-  AGENT_CONTROL_COMMAND_NAMES,
+  AGENT_CONTROL_DISABLED_HINT,
   AGENT_GATED_AFFORDANCES,
   INERT_AFFORDANCES,
-  INERT_AFFORDANCE_COMMANDS,
+  INERT_AFFORDANCE_OPS,
+  REMOTE_CONDITIONAL_CAPABILITIES,
+  REMOTE_FACADE_OPS,
+  REMOTE_MANIFEST_SCHEMA_VERSION,
+  REMOTE_UNAVAILABLE_HINT,
   UI_AGENT_SCOPE,
-  isAgentControlCommand,
+  isRemotelyAvailable,
   remoteErrorBannerProps,
+  resolveAffordanceGate,
   resolveAgentGate,
+  resolveFieldGate,
 } from "./agent-gate";
-import { AGENT_CONTROL_MANIFEST_SCHEMA_VERSION } from "./agent-control-commands.generated";
 import { RemoteTransportError } from "./transport-errors";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
@@ -35,96 +41,95 @@ function readManifest(): Manifest {
   return JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as Manifest;
 }
 
-async function derive(manifest: unknown): Promise<readonly string[]> {
-  const module = await import(
-    "../../../../scripts/lib/agent-control-derivation.mjs"
-  );
-  return (module.deriveGatedCommands as (m: unknown) => readonly string[])(manifest);
+async function derivation() {
+  return await import("../../../../scripts/lib/agent-control-derivation.mjs");
 }
+
+async function derive(manifest: unknown) {
+  const module = await derivation();
+  return (
+    module.deriveRemoteCapabilityModel as (m: unknown) => {
+      schemaVersion: number;
+      ops: Array<{ command: string; opClass: string }>;
+      conditionals: Array<{ command: string; fields: string[] }>;
+    }
+  )(manifest);
+}
+
+const GRANTED = ["ui:read", "ui:operate", UI_AGENT_SCOPE];
+const DEFAULT_PAIRED = ["ui:read", "ui:operate"];
 
 // ---------------------------------------------------------------------------
 // The mirror actually mirrors
 // ---------------------------------------------------------------------------
 
-describe("gated command derivation", () => {
+describe("capability model derivation", () => {
   it("matches the checked-in mirror (catches a stale generated file)", async () => {
-    const derived = await derive(readManifest());
-    expect([...AGENT_CONTROL_COMMANDS]).toEqual([...derived]);
+    const model = await derive(readManifest());
+    expect(Object.keys(REMOTE_FACADE_OPS).sort()).toEqual(
+      model.ops.map((op) => op.command).sort()
+    );
+    for (const op of model.ops) {
+      expect(REMOTE_FACADE_OPS[op.command]?.opClass, op.command).toBe(op.opClass);
+    }
   });
 
   it("records the manifest schema version it was generated from", () => {
-    expect(AGENT_CONTROL_MANIFEST_SCHEMA_VERSION).toBe(
-      readManifest().schemaVersion
-    );
+    expect(REMOTE_MANIFEST_SCHEMA_VERSION).toBe(readManifest().schemaVersion);
   });
 
-  it("is a strict superset of the contract's floor-only union", () => {
-    // The contract specified `agent_control_floor ∪ declared_memberships`. Against
-    // this manifest that is 111 commands while 327 rows are classified
-    // `class: "agentControl"`, so the contract's union under-gates steering by 261
-    // commands. The derivation widens; this asserts it never NARROWS.
-    const manifest = readManifest();
-    const floorUnion = new Set([
-      ...(manifest.agent_control_floor as string[]),
-      ...(manifest.declared_memberships as ReadonlyArray<{ command: string }>).map(
-        (row) => row.command
-      ),
+  it("mirrors the conditional capability for update_task", () => {
+    expect(REMOTE_CONDITIONAL_CAPABILITIES["update_task"]?.fields).toEqual([
+      "title",
+      "description",
     ]);
-    for (const command of floorUnion) {
-      expect(AGENT_CONTROL_COMMAND_NAMES.has(command), command).toBe(true);
-    }
-    expect(AGENT_CONTROL_COMMANDS.length).toBeGreaterThan(floorUnion.size);
   });
 
-  it("gates every command the ledger classifies as agentControl", () => {
-    const ledger = readManifest().ledger as ReadonlyArray<{
-      command: string;
-      class: string;
-    }>;
-    const missing = ledger
-      .filter((row) => row.class === "agentControl")
-      .map((row) => row.command)
-      .filter((command) => !AGENT_CONTROL_COMMAND_NAMES.has(command));
-    expect(missing).toEqual([]);
-  });
-
-  it("never gates an operate-class or read-class command", () => {
-    // The viewer-with-brakes floor: widening the set must not swallow the brakes or
-    // the read surface a paired device is always allowed.
-    const ledger = readManifest().ledger as ReadonlyArray<{
-      command: string;
-      class: string;
-    }>;
-    const swallowed = ledger
-      .filter((row) => row.class === "operate" || row.class === "read")
-      .map((row) => row.command)
-      .filter((command) => AGENT_CONTROL_COMMAND_NAMES.has(command));
-    expect(swallowed).toEqual([]);
-  });
-
-  it("pins the floor anchors from the contract", () => {
-    for (const anchor of [
+  it("classifies the facade ops the boundary depends on", () => {
+    // Steering ops the host DOES expose.
+    for (const command of [
       "move_task",
-      "inject_task",
-      "resume_automation",
-      "approve_permission_request",
-      "resolve_user_question",
-      "answer_user_question",
       "unblock_task",
+      "approve_task_for_review",
+      "approve_permission_request",
+      "answer_user_question",
+      "resume_automation",
     ]) {
-      expect(isAgentControlCommand(anchor)).toBe(true);
+      expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("agentControl");
+    }
+    // Brakes and inert work the default pairing keeps.
+    for (const command of [
+      "pause_task",
+      "block_task",
+      "stop_task",
+      "pause_tasks_in_group",
+      "deny_permission_request",
+      "create_task",
+      "update_task",
+    ]) {
+      expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("operate");
+    }
+  });
+
+  it("treats an unregistered command as unavailable, not scope-forbidden", () => {
+    // Derived from ABSENCE. These three are detector-c process-launch rejections
+    // today; the assertion is about the mechanism, not the names.
+    for (const command of [
+      "resume_task",
+      "apply_proposals_to_kanban",
+      "set_agent_conversation_workspace_auto_publish",
+    ]) {
+      expect(isRemotelyAvailable(command), command).toBe(false);
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Fail closed — a degraded manifest must never yield a SMALLER gated set
+// Fail closed — a degraded manifest must never yield a more permissive model
 // ---------------------------------------------------------------------------
 
 describe("derivation fails closed", () => {
   it("throws when the manifest file is missing", async () => {
-    // The loader, pointed at a path that does not exist: the mirror generator must
-    // abort rather than emit an empty (= nothing gated) set.
     const { execFileSync } = await import("node:child_process");
     expect(() =>
       execFileSync(
@@ -138,38 +143,73 @@ describe("derivation fails closed", () => {
     ).toThrow(/manifest is missing/);
   });
 
-  it("throws rather than returning an empty set for a non-object manifest", async () => {
+  it("throws for a non-object manifest", async () => {
     await expect(derive(null)).rejects.toThrow(/not an object/);
+  });
+
+  it("throws on an UNKNOWN schemaVersion rather than assuming the newest", async () => {
+    // The important one: a v3 manifest could add an op class or pin shape this
+    // consumer would mis-read as permissive, so it must refuse rather than guess.
+    const manifest = readManifest();
+    manifest.schemaVersion = 3;
+    await expect(derive(manifest)).rejects.toThrow(/schemaVersion 3 is not supported/);
+  });
+
+  it("throws on a missing schemaVersion", async () => {
+    const manifest = readManifest();
+    delete manifest.schemaVersion;
+    await expect(derive(manifest)).rejects.toThrow(/no numeric schemaVersion/);
   });
 
   it("throws when any coverage flag is not complete", async () => {
     for (const flag of ["detectorA", "detectorB", "agentConsumedContent"]) {
       const manifest = readManifest();
       manifest.coverage = { ...(manifest.coverage as object), [flag]: "pending" };
-      await expect(derive(manifest)).rejects.toThrow(
-        new RegExp(`coverage\\.${flag}`)
-      );
+      await expect(derive(manifest)).rejects.toThrow(new RegExp(`coverage\\.${flag}`));
     }
   });
 
-  it("throws when the coverage block is absent entirely", async () => {
-    const manifest = readManifest();
-    delete manifest.coverage;
-    await expect(derive(manifest)).rejects.toThrow(/no coverage block/);
+  it("throws when facade_ops is empty or has no agent-control op", async () => {
+    const empty = readManifest();
+    empty.facade_ops = [];
+    empty.conditional_capabilities = [];
+    await expect(derive(empty)).rejects.toThrow(/empty/);
+
+    const noSteering = readManifest();
+    noSteering.facade_ops = [
+      { command: "list_tasks", class: "read", pins: [], capabilities: [] },
+    ];
+    noSteering.conditional_capabilities = [];
+    await expect(derive(noSteering)).rejects.toThrow(/no agentControl ops/);
   });
 
-  it("throws when the derived union would be empty", async () => {
+  it("throws on an unknown op class", async () => {
     const manifest = readManifest();
-    manifest.agent_control_floor = [];
-    manifest.declared_memberships = [];
-    manifest.ledger = [];
-    await expect(derive(manifest)).rejects.toThrow(/empty/);
+    manifest.facade_ops = [
+      { command: "mystery_op", class: "superuser", pins: [], capabilities: [] },
+    ];
+    manifest.conditional_capabilities = [];
+    await expect(derive(manifest)).rejects.toThrow(/unknown class/);
   });
 
-  it("throws when declared_memberships rows lose their command field", async () => {
+  it("throws when a conditional names a command that is not a facade op", async () => {
     const manifest = readManifest();
-    manifest.declared_memberships = [{ reason: "steering-question" }];
-    await expect(derive(manifest)).rejects.toThrow(/no string command/);
+    manifest.conditional_capabilities = [
+      { command: "not_an_op", capability: "x", condition: "conditional: title" },
+    ];
+    await expect(derive(manifest)).rejects.toThrow(/not a facade op/);
+  });
+
+  it("refuses to infer an empty field set from an unparseable condition", async () => {
+    // An empty field list would read downstream as "no fields are restricted".
+    const { parseConditionFields } = await derivation();
+    const parse = parseConditionFields as (condition: unknown) => string[];
+    expect(() => parse("who knows")).toThrow(/no "conditional: <fields>" head/);
+    expect(() => parse("conditional:   — discharged")).toThrow(/lists no fields/);
+    expect(parse("conditional: title,description — discharged by x")).toEqual([
+      "title",
+      "description",
+    ]);
   });
 });
 
@@ -177,29 +217,42 @@ describe("derivation fails closed", () => {
 // Staleness guard on the hand-maintained mapping table
 // ---------------------------------------------------------------------------
 
-describe("affordance mapping stays aligned with the manifest", () => {
-  it("names only commands the manifest classifies as agent-control", () => {
-    const unmapped: string[] = [];
-    for (const [affordance, commands] of Object.entries(AGENT_GATED_AFFORDANCES)) {
-      for (const command of commands) {
-        if (!AGENT_CONTROL_COMMAND_NAMES.has(command)) {
-          unmapped.push(`${affordance} -> ${command}`);
-        }
-      }
+describe("affordance mapping", () => {
+  it("maps every affordance to a non-empty command name", () => {
+    for (const [affordance, command] of Object.entries(AGENT_GATED_AFFORDANCES)) {
+      expect(command.length, affordance).toBeGreaterThan(0);
     }
-    // A host-side rename lands here as a red test instead of an ungated button.
-    expect(unmapped).toEqual([]);
   });
 
-  it("covers every affordance with at least one command", () => {
-    for (const [affordance, commands] of Object.entries(AGENT_GATED_AFFORDANCES)) {
-      expect(commands.length, affordance).toBeGreaterThan(0);
+  it("names facade ops, not the underlying command, for pinned splits", () => {
+    // `resolve_permission_request` is split by the facade into two pinned ops; an
+    // affordance naming the raw command would gate deny along with approve.
+    expect(AGENT_GATED_AFFORDANCES.permissionApprove).toBe(
+      "approve_permission_request"
+    );
+    expect(INERT_AFFORDANCE_OPS.permissionDeny).toEqual([
+      "deny_permission_request",
+    ]);
+    expect(REMOTE_FACADE_OPS["approve_permission_request"]?.pins).toContainEqual(
+      expect.objectContaining({ field: "decision", value: "allow" })
+    );
+    expect(REMOTE_FACADE_OPS["deny_permission_request"]?.pins).toContainEqual(
+      expect.objectContaining({ field: "decision", value: "deny" })
+    );
+  });
+
+  it("resolves every affordance to a defined state under a default pairing", () => {
+    for (const affordance of Object.keys(
+      AGENT_GATED_AFFORDANCES
+    ) as Array<keyof typeof AGENT_GATED_AFFORDANCES>) {
+      const state = resolveAffordanceGate(affordance, true, DEFAULT_PAIRED);
+      expect(["gated", "unavailable"], affordance).toContain(state.status);
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// A6 / R6-M1 — the inert list is closed, and no note surface is in it
+// A6 / R6-M1 — the inert list is closed and manifest-backed
 // ---------------------------------------------------------------------------
 
 describe("inert exemption list", () => {
@@ -214,72 +267,40 @@ describe("inert exemption list", () => {
     ]);
   });
 
-  it("declares an argument constraint for every gated command it exempts", () => {
-    // The honest version of "the inert list must not intersect the gated set". Two
-    // A6 surfaces genuinely share a command with a steering action, so the rule is
-    // not "no intersection" but "no UNEXPLAINED intersection": an inert row that
-    // exempts a gated command must say which argument restriction makes it safe.
-    const unexplained: string[] = [];
-    for (const [affordance, row] of Object.entries(INERT_AFFORDANCE_COMMANDS)) {
-      for (const command of row.commands) {
-        if (AGENT_CONTROL_COMMAND_NAMES.has(command) && row.argumentConstraint === null) {
-          unexplained.push(`${affordance} -> ${command}`);
+  it("names only ops the manifest serves under read or operate", () => {
+    // Manifest-backed now: no hand-written justification is trusted.
+    const escalated: string[] = [];
+    for (const [affordance, commands] of Object.entries(INERT_AFFORDANCE_OPS)) {
+      for (const command of commands) {
+        const op = REMOTE_FACADE_OPS[command];
+        expect(op, `${affordance} -> ${command}`).toBeDefined();
+        if (op !== undefined && op.opClass === "agentControl") {
+          escalated.push(`${affordance} -> ${command}`);
         }
       }
     }
-    expect(unexplained).toEqual([]);
-  });
-
-  it("keeps the manifest's own authority-reducing commands unconstrained-safe", () => {
-    // Cross-check against the manifest's `authority_reducing_exemptions` table: every
-    // command it lists must be absent from the gated set, so the brakes never depend
-    // on our argument-constraint reasoning.
-    const exemptions = readManifest().authority_reducing_exemptions as ReadonlyArray<{
-      kind?: string;
-      command?: string;
-    }>;
-    const ledgerCommands = new Set(
-      (readManifest().ledger as ReadonlyArray<{ command: string }>).map(
-        (row) => row.command
-      )
-    );
-    const commandExemptions = exemptions
-      .filter((row) => row.kind === "command" && typeof row.command === "string")
-      .map((row) => row.command as string)
-      // `deny_permission_request` is a declared BRANCH, not a registered command.
-      .filter((command) => ledgerCommands.has(command));
-
-    expect(commandExemptions.length).toBeGreaterThan(0);
-    for (const command of commandExemptions) {
-      expect(AGENT_CONTROL_COMMAND_NAMES.has(command), command).toBe(false);
-    }
+    expect(escalated).toEqual([]);
   });
 
   it("contains no note-writing surface (R6-M1)", () => {
     for (const affordance of INERT_AFFORDANCES) {
       expect(affordance.toLowerCase()).not.toContain("note");
     }
-    for (const row of Object.values(INERT_AFFORDANCE_COMMANDS)) {
-      for (const command of row.commands) {
+    for (const commands of Object.values(INERT_AFFORDANCE_OPS)) {
+      for (const command of commands) {
         expect(command).not.toContain("note");
       }
     }
   });
 
-  it("keeps every note-writing command out of the inert set", () => {
-    // `add_task_note` does not exist in this manifest revision, so R6-M1's literal
-    // anchor is asserted conditionally and its INTENT is asserted over whatever note
-    // commands the manifest actually carries: a note surface is agent-control or
-    // outright denied, never inert.
-    const manifest = readManifest();
-    const ledger = manifest.ledger as ReadonlyArray<{
+  it("keeps every note-writing command out of the remote operate surface", () => {
+    // `add_task_note` does not exist in this manifest, so R6-M1's literal anchor is
+    // asserted conditionally and its INTENT over whatever note commands exist: a note
+    // surface is never served under a scope a default-paired device holds.
+    const ledger = readManifest().ledger as ReadonlyArray<{
       command: string;
       class: string;
     }>;
-    const inertCommands = new Set(
-      Object.values(INERT_AFFORDANCE_COMMANDS).flatMap((row) => [...row.commands])
-    );
-
     const noteWriters = ledger.filter(
       (row) =>
         row.command.includes("note") &&
@@ -289,48 +310,111 @@ describe("inert exemption list", () => {
     expect(noteWriters.length).toBeGreaterThan(0);
 
     for (const row of noteWriters) {
-      expect(inertCommands.has(row.command), row.command).toBe(false);
-      expect(["agentControl", "denied"], row.command).toContain(row.class);
+      const op = REMOTE_FACADE_OPS[row.command];
+      if (op !== undefined) {
+        expect(op.opClass, row.command).toBe("agentControl");
+      }
     }
 
-    if (AGENT_CONTROL_COMMAND_NAMES.has("add_task_note")) {
-      expect(isAgentControlCommand("add_task_note")).toBe(true);
+    const addTaskNote = REMOTE_FACADE_OPS["add_task_note"];
+    if (addTaskNote !== undefined) {
+      expect(addTaskNote.opClass).toBe("agentControl");
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Gate resolution — scope truth, including the fail-closed cases
+// Three-state resolution
 // ---------------------------------------------------------------------------
 
-describe("resolveAgentGate", () => {
-  it("never gates a local environment", () => {
-    expect(resolveAgentGate(false, null)).toEqual({ gated: false, reason: null });
-    expect(resolveAgentGate(false, [])).toEqual({ gated: false, reason: null });
+describe("resolveAffordanceGate", () => {
+  it("never gates a local environment, even for an unavailable op", () => {
+    expect(resolveAffordanceGate("taskResume", false, null).status).toBe("enabled");
+    expect(resolveAffordanceGate("chatSend", false, null).status).toBe("enabled");
   });
 
-  it("enables when the live scopes include ui:agent", () => {
-    const gate = resolveAgentGate(true, ["ui:read", "ui:operate", UI_AGENT_SCOPE]);
-    expect(gate.gated).toBe(false);
+  it("reports an unregistered op as unavailable regardless of scopes", () => {
+    // The load-bearing distinction: granting ui:agent does NOT make it appear, so
+    // the copy must not send the user to a host switch.
+    for (const scopes of [null, DEFAULT_PAIRED, GRANTED]) {
+      const state = resolveAffordanceGate("taskResume", true, scopes);
+      expect(state.status).toBe("unavailable");
+      expect(state.reason).toBe(REMOTE_UNAVAILABLE_HINT);
+      expect(state.reason).not.toBe(AGENT_CONTROL_DISABLED_HINT);
+    }
   });
 
-  it("gates a default-paired remote environment", () => {
-    const gate = resolveAgentGate(true, ["ui:read", "ui:operate"]);
-    expect(gate.gated).toBe(true);
-    expect(gate.reason).toBe(
-      "Agent control is off for this device — enable it on the host."
+  it("gates a registered agent-control op when ui:agent is absent", () => {
+    const state = resolveAffordanceGate("taskMove", true, DEFAULT_PAIRED);
+    expect(state.status).toBe("gated");
+    expect(state.reason).toBe(AGENT_CONTROL_DISABLED_HINT);
+  });
+
+  it("enables a registered agent-control op when ui:agent is granted", () => {
+    expect(resolveAffordanceGate("taskMove", true, GRANTED).status).toBe("enabled");
+    expect(resolveAffordanceGate("taskApprove", true, GRANTED).status).toBe(
+      "enabled"
     );
   });
 
   it("gates when introspection has never confirmed a set", () => {
-    // `null` is "unknown", not "empty" — optimism here would authorize steering on
-    // a connection whose scopes were never proven.
-    expect(resolveAgentGate(true, null).gated).toBe(true);
-    expect(resolveAgentGate(true, undefined).gated).toBe(true);
+    expect(resolveAffordanceGate("taskMove", true, null).status).toBe("gated");
+    expect(resolveAffordanceGate("taskMove", true, undefined).status).toBe("gated");
+    expect(resolveAffordanceGate("taskMove", true, []).status).toBe("gated");
   });
 
-  it("gates on an empty confirmed set", () => {
-    expect(resolveAgentGate(true, []).gated).toBe(true);
+  it("gates the content half of update_task while the op itself is operate", () => {
+    expect(REMOTE_FACADE_OPS["update_task"]?.opClass).toBe("operate");
+    expect(resolveAffordanceGate("taskEditContent", true, DEFAULT_PAIRED).status).toBe(
+      "gated"
+    );
+    expect(resolveAffordanceGate("taskEditContent", true, GRANTED).status).toBe(
+      "enabled"
+    );
+  });
+});
+
+describe("resolveFieldGate", () => {
+  it("locks the conditional fields and leaves the inert ones editable", () => {
+    for (const field of ["title", "description"]) {
+      expect(
+        resolveFieldGate("update_task", field, true, DEFAULT_PAIRED).status,
+        field
+      ).toBe("gated");
+    }
+    for (const field of ["category", "priority"]) {
+      expect(
+        resolveFieldGate("update_task", field, true, DEFAULT_PAIRED).status,
+        field
+      ).toBe("enabled");
+    }
+  });
+
+  it("unlocks the conditional fields once ui:agent is granted", () => {
+    expect(resolveFieldGate("update_task", "title", true, GRANTED).status).toBe(
+      "enabled"
+    );
+  });
+
+  it("is inert on local", () => {
+    expect(resolveFieldGate("update_task", "title", false, null).status).toBe(
+      "enabled"
+    );
+  });
+
+  it("reports an unavailable op as unavailable, not field-gated", () => {
+    expect(
+      resolveFieldGate("resume_task", "title", true, GRANTED).status
+    ).toBe("unavailable");
+  });
+});
+
+describe("resolveAgentGate (scope-only fallback)", () => {
+  it("answers the broad question without an affordance", () => {
+    expect(resolveAgentGate(false, null).status).toBe("enabled");
+    expect(resolveAgentGate(true, DEFAULT_PAIRED).status).toBe("gated");
+    expect(resolveAgentGate(true, GRANTED).status).toBe("enabled");
+    expect(resolveAgentGate(true, null).status).toBe("gated");
   });
 });
 
@@ -346,17 +430,16 @@ describe("remoteErrorBannerProps", () => {
       environmentId: "env-remote",
     });
 
-  it("maps REMOTE_FORBIDDEN to the gate explanation", () => {
+  it("maps REMOTE_FORBIDDEN to the scope explanation", () => {
     const props = remoteErrorBannerProps(build("REMOTE_FORBIDDEN"));
     expect(props?.tone).toBe("error");
-    expect(props?.body).toBe(
-      "Agent control is off for this device — enable it on the host."
-    );
+    expect(props?.body).toBe(AGENT_CONTROL_DISABLED_HINT);
   });
 
-  it("maps REMOTE_COMMAND_UNAVAILABLE to a host-capability message", () => {
+  it("maps REMOTE_COMMAND_UNAVAILABLE to the availability explanation", () => {
     const props = remoteErrorBannerProps(build("REMOTE_COMMAND_UNAVAILABLE"));
     expect(props?.title).toBe("Unavailable on this host");
+    expect(props?.body).toBe(REMOTE_UNAVAILABLE_HINT);
   });
 
   it("passes REMOTE_UNAUTHORIZED through untouched (2.7 owns it)", () => {

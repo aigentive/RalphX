@@ -34,7 +34,7 @@ export function StepList({ taskId, editable = false, hideCompletionNotes = false
   const { data: steps, isLoading, isError } = useTaskSteps(taskId);
   const { skip: skipStep } = useStepMutations(taskId);
   // Skipping a step re-plans work in flight — `ui:agent` (2.6-b).
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("stepSkip");
 
   // Loading state
   if (isLoading) {

@@ -1,91 +1,115 @@
 /**
- * The `ui:agent` capability gate (PR 2.6-b).
+ * Remote affordance availability (PR 2.6-b), against manifest schemaVersion 2.
  *
  * Under the viewer-with-brakes boundary (Fixed Decision 12) a default-paired remote
  * environment can watch and it can STOP things — deny, stop, pause, block, edit
  * category/priority, create a Backlog task. Everything that steers an agent forward
  * needs the `ui:agent` scope the host grants explicitly.
  *
- * Three rules shape this module:
+ * ## Three states, not two
  *
- * 1. **The gated SET is never hand-maintained.** It comes from
- *    `docs/generated/remote-commands.json` via the checked-in mirror
- *    (`agent-control-commands.generated.ts`, Decision 1). A hand list would drift
- *    from the host's own classification the first time a command was renamed, and
- *    the failure mode of that drift is silently ungating a steering command.
- * 2. **What IS hand-maintained is the affordance↔command mapping** — which UI
- *    surface fronts which command — and the closed inert exemption list, because
- *    those are claims about this codebase's UI, not about the host's command table.
- *    Both are guarded by tests that cross-check them against the manifest.
- * 3. **Unknown scope state gates closed.** `null` effective scopes means the
- *    supervisor has never confirmed a set (Fixed Decision 2); it is not an empty
- *    grant to be optimistic about.
+ * The manifest's `facade_ops` table (schema v2) is the set of operations the host
+ * actually exposes remotely. That makes two failure modes distinct, and conflating
+ * them produces actively misleading UI:
  *
- * Note the asymmetry with 2.6-a: host-impossible affordances HIDE, permission-gated
- * affordances DISABLE. A hidden control says "this can never work here"; a disabled
- * one with this module's hint says "someone can turn this on", which is true.
+ * - `unavailable` — the command is not in `facade_ops`. No scope grant reaches it;
+ *   telling the user to "enable it on the host" points at a switch that will not
+ *   help. Derived from ABSENCE, never from a name list: three commands are
+ *   unregistered today as detector-c process-launch rejections, and that set moves
+ *   with the host, so hardcoding them would rot silently.
+ * - `gated` — the op exists and is `class: agentControl`, but the live confirmed
+ *   scopes lack `ui:agent`. This one IS fixable on the host, and says so.
+ * - `enabled` — reachable and authorized (or the environment is local).
+ *
+ * ## Argument-level cases
+ *
+ * Some ops carry both a steering and an inert action. `update_task` is
+ * `class: operate` but `conditional_capabilities` escalates `title`/`description` to
+ * agent control; `resolve_permission_request` is split by the facade into pinned
+ * `approve_permission_request` / `deny_permission_request` ops. So affordances name
+ * the FACADE OP they front, not the underlying Tauri command, and the field-level
+ * case is resolved by `resolveFieldGate`. Gating either command wholesale would take
+ * the brakes away from every default-paired device.
+ *
+ * Unknown scope state gates closed: `null` effective scopes means the supervisor has
+ * never confirmed a set (Fixed Decision 2), not an empty grant to be optimistic about.
  */
 
 import {
-  AGENT_CONTROL_COMMAND_NAMES,
-  AGENT_CONTROL_COMMANDS,
-} from "@/lib/remote/agent-control-commands.generated";
+  REMOTE_CONDITIONAL_CAPABILITIES,
+  REMOTE_FACADE_OPS,
+  REMOTE_MANIFEST_SCHEMA_VERSION,
+  type RemoteFacadeOp,
+} from "@/lib/remote/remote-capabilities.generated";
 import {
   isRemoteTransportError,
   type RemoteTransportError,
 } from "@/lib/remote/transport-errors";
 
-export { AGENT_CONTROL_COMMANDS, AGENT_CONTROL_COMMAND_NAMES };
+export {
+  REMOTE_FACADE_OPS,
+  REMOTE_CONDITIONAL_CAPABILITIES,
+  REMOTE_MANIFEST_SCHEMA_VERSION,
+};
 
 /** The scope that authorizes agent steering (`api/remote-host.ts` schema). */
 export const UI_AGENT_SCOPE = "ui:agent";
 
-/** Exact copy for a gated control's tooltip. Fixed by contract — do not reword. */
+/** Exact copy for a scope-gated control. Fixed by contract — do not reword. */
 export const AGENT_CONTROL_DISABLED_HINT =
   "Agent control is off for this device — enable it on the host.";
 
+/**
+ * Copy for an op the host does not expose remotely at all. Deliberately does NOT
+ * suggest a host setting: there is no switch that turns this on.
+ */
+export const REMOTE_UNAVAILABLE_HINT =
+  "This action runs only on the host — it is not available remotely.";
+
 // ---------------------------------------------------------------------------
-// Affordance ↦ command mapping (hand-maintained; guarded by tests)
+// Affordance ↦ facade op mapping (hand-maintained; guarded by tests)
 // ---------------------------------------------------------------------------
 
 /**
  * Every UI surface this PR gates, named after the affordance rather than the
- * component, plus the command(s) it ultimately dispatches.
+ * component, mapped to the facade op it fronts.
  *
- * The commands are here so the mapping is FALSIFIABLE: a test asserts each one is
- * present in the manifest union, which turns a host-side rename into a red test
- * instead of a silently ungated button.
+ * These are FACADE op names, which is why `permissionApprove` maps to
+ * `approve_permission_request` rather than `resolve_permission_request` — the facade
+ * splits that command by its pinned `decision` argument.
+ *
+ * An affordance whose op is absent from `REMOTE_FACADE_OPS` resolves to
+ * `unavailable`. That is not an error and no test asserts membership: absence is the
+ * signal, and several affordances are legitimately unavailable today.
  */
 export const AGENT_GATED_AFFORDANCES = {
-  agentComposerSend: ["send_agent_message"],
-  chatSend: ["send_agent_message"],
-  startConversation: ["start_agent_conversation", "create_agent_conversation"],
-  permissionApprove: ["approve_permission_request"],
-  questionAnswer: ["resolve_user_question", "answer_user_question"],
-  taskMove: ["move_task"],
-  taskApprove: ["approve_task_for_review"],
-  taskResume: ["resume_task", "restart_task", "resume_tasks_in_group"],
-  taskUnblock: ["unblock_task"],
-  applyProposals: ["apply_proposals_to_kanban"],
-  taskEditContent: ["update_task"],
-  stepMutations: ["create_task_step", "update_task_step", "skip_step"],
-  proposalEdit: ["update_task_proposal"],
-  automationControl: [
-    "trigger_automation_run_now",
-    "restart_automation",
-    "resume_automation",
-  ],
-} as const satisfies Record<string, readonly string[]>;
+  agentComposerSend: "send_agent_message",
+  chatSend: "send_agent_message",
+  startConversation: "start_agent_conversation",
+  permissionApprove: "approve_permission_request",
+  questionAnswer: "answer_user_question",
+  taskMove: "move_task",
+  taskApprove: "approve_task_for_review",
+  taskResume: "resume_task",
+  taskUnblock: "unblock_task",
+  applyProposals: "apply_proposals_to_kanban",
+  taskEditContent: "update_task",
+  stepCreate: "create_task_step",
+  stepUpdate: "update_task_step",
+  stepSkip: "skip_step",
+  proposalEdit: "update_task_proposal",
+  artifactEdit: "update_artifact",
+  automationResume: "resume_automation",
+  automationRunNow: "trigger_automation_run_now",
+  automationRestart: "restart_automation",
+} as const satisfies Record<string, string>;
 
 export type AgentGatedAffordance = keyof typeof AGENT_GATED_AFFORDANCES;
 
 /**
  * The closed inert exemption list (A6) — surfaces that stay fully operable under a
  * default-paired remote environment because they only ever REDUCE authority or create
- * un-armed work.
- *
- * Closed means closed: adding a row is a boundary change (Fixed Decision 12), and the
- * derivation test asserts the list is exactly this set.
+ * un-armed work. Closed means closed: adding a row is a boundary change.
  */
 export const INERT_AFFORDANCES = [
   "permissionDeny",
@@ -98,95 +122,127 @@ export const INERT_AFFORDANCES = [
 
 export type InertAffordance = (typeof INERT_AFFORDANCES)[number];
 
-export interface InertAffordanceRow {
-  /** The command(s) the affordance dispatches. */
-  readonly commands: readonly string[];
-  /**
-   * The ARGUMENT restriction that makes this affordance authority-reducing, when the
-   * command it dispatches is not authority-reducing on its own. `null` means the
-   * command is unconditionally safe and the manifest agrees.
-   *
-   * This field exists because the boundary is not always command-shaped. Two A6
-   * surfaces share a command with a steering action — `resolve_permission_request`
-   * carries both allow and deny, `create_task` can target any column — so exempting
-   * the COMMAND would hand the remote device the steering half too. Recording the
-   * constraint here makes the narrower exemption reviewable instead of implicit, and
-   * the test below refuses any inert row that is in the gated set WITHOUT one.
-   */
-  readonly argumentConstraint: string | null;
-}
-
-export const INERT_AFFORDANCE_COMMANDS = {
-  permissionDeny: {
-    commands: ["resolve_permission_request"],
-    argumentConstraint:
-      'decision must be "deny"; the allow branch is gated (declared_memberships: approve_permission_request)',
-  },
-  stop: {
-    commands: ["stop_task", "stop_execution", "stop_agent"],
-    // `stop_task` is manifest `class: operate`; the two process-level stops are
-    // classified agentControl conservatively but can only ever halt work.
-    argumentConstraint: "halt-only; no target state other than stopped",
-  },
-  pause: {
-    commands: ["pause_task", "pause_tasks_in_group", "pause_execution"],
-    argumentConstraint: "halt-only; no target state other than paused",
-  },
-  block: {
-    commands: ["block_task"],
-    argumentConstraint: null,
-  },
-  taskEditCategoryPriority: {
-    // Shares `update_task` with title/description editing, which IS gated: the
-    // category/priority fields do not feed agent-consumed content.
-    commands: ["update_task"],
-    argumentConstraint:
-      "diff may contain only category and/or priority; title and description are gated",
-  },
-  backlogCreate: {
-    commands: ["create_task"],
-    argumentConstraint:
-      "target column must be draft or backlog; creating into an armed column is gated",
-  },
-} as const satisfies Record<InertAffordance, InertAffordanceRow>;
+/**
+ * Facade ops backing the inert affordances.
+ *
+ * Every one of these must resolve to `class: read | operate` — never `agentControl`.
+ * The manifest now makes that checkable, which is why the cross-check test asserts
+ * the CLASS rather than trusting a hand-written justification.
+ */
+export const INERT_AFFORDANCE_OPS = {
+  permissionDeny: ["deny_permission_request"],
+  stop: ["stop_task"],
+  pause: ["pause_task", "pause_tasks_in_group"],
+  block: ["block_task"],
+  taskEditCategoryPriority: ["update_task"],
+  backlogCreate: ["create_task"],
+} as const satisfies Record<InertAffordance, readonly string[]>;
 
 // ---------------------------------------------------------------------------
-// Gate evaluation
+// Resolution
 // ---------------------------------------------------------------------------
+
+export type AgentGateStatus = "enabled" | "gated" | "unavailable";
 
 export interface AgentGateState {
-  /** `true` when the affordance must be disabled and explained. */
+  readonly status: AgentGateStatus;
+  /** `true` when the affordance must be disabled — gated OR unavailable. */
   readonly gated: boolean;
-  /** Tooltip/aria copy when gated, `null` otherwise. */
+  /** Tooltip/aria copy when disabled, `null` when enabled. */
   readonly reason: string | null;
 }
 
-const ENABLED: AgentGateState = { gated: false, reason: null };
+const ENABLED: AgentGateState = { status: "enabled", gated: false, reason: null };
 const GATED: AgentGateState = {
+  status: "gated",
   gated: true,
   reason: AGENT_CONTROL_DISABLED_HINT,
 };
+const UNAVAILABLE: AgentGateState = {
+  status: "unavailable",
+  gated: true,
+  reason: REMOTE_UNAVAILABLE_HINT,
+};
+
+function hasAgentScope(scopes: readonly string[] | null | undefined): boolean {
+  return scopes !== null && scopes !== undefined && scopes.includes(UI_AGENT_SCOPE);
+}
+
+/** The facade op backing a command name, or `null` when it is not exposed remotely. */
+export function facadeOpFor(command: string): RemoteFacadeOp | null {
+  return REMOTE_FACADE_OPS[command] ?? null;
+}
 
 /**
- * Resolves the gate for the active environment.
+ * Resolves one affordance for the active environment.
  *
+ * @param affordance the A3 row being rendered
  * @param isRemoteEnvironment whether the ACTIVE environment is remote
- * @param effectiveScopes the LIVE confirmed scopes for it — `null`/`undefined` when
+ * @param effectiveScopes the LIVE confirmed scopes — `null`/`undefined` when
  *   introspection has never succeeded, which gates closed. The pair-time
  *   `remote.scopes` snapshot must never be passed here.
+ */
+export function resolveAffordanceGate(
+  affordance: AgentGatedAffordance,
+  isRemoteEnvironment: boolean,
+  effectiveScopes: readonly string[] | null | undefined
+): AgentGateState {
+  if (!isRemoteEnvironment) return ENABLED;
+
+  const command = AGENT_GATED_AFFORDANCES[affordance];
+  const op = facadeOpFor(command);
+  if (op === null) return UNAVAILABLE;
+
+  // `update_task` is `class: operate` overall; the content fields escalate it. A
+  // caller naming `taskEditContent` is asking about the escalated half.
+  if (affordance === "taskEditContent") {
+    return hasAgentScope(effectiveScopes) ? ENABLED : GATED;
+  }
+
+  if (op.opClass !== "agentControl") return ENABLED;
+  return hasAgentScope(effectiveScopes) ? ENABLED : GATED;
+}
+
+/**
+ * Resolves the scope-only question: "may this device steer at all?"
+ *
+ * For surfaces that have no single backing op, or where the caller only needs the
+ * broad answer. It cannot distinguish `unavailable`, so prefer
+ * `resolveAffordanceGate` wherever an affordance name exists.
  */
 export function resolveAgentGate(
   isRemoteEnvironment: boolean,
   effectiveScopes: readonly string[] | null | undefined
 ): AgentGateState {
   if (!isRemoteEnvironment) return ENABLED;
-  if (effectiveScopes === null || effectiveScopes === undefined) return GATED;
-  return effectiveScopes.includes(UI_AGENT_SCOPE) ? ENABLED : GATED;
+  return hasAgentScope(effectiveScopes) ? ENABLED : GATED;
 }
 
-/** Whether a raw command name requires `ui:agent`, per the generated manifest set. */
-export function isAgentControlCommand(command: string): boolean {
-  return AGENT_CONTROL_COMMAND_NAMES.has(command);
+/**
+ * Whether a specific FIELD of an argument-sensitive op needs `ui:agent`.
+ *
+ * Drives the task-edit form: title/description lock while category/priority stay
+ * live, matching what the host's `update_task_authz` will actually enforce.
+ */
+export function resolveFieldGate(
+  command: string,
+  field: string,
+  isRemoteEnvironment: boolean,
+  effectiveScopes: readonly string[] | null | undefined
+): AgentGateState {
+  if (!isRemoteEnvironment) return ENABLED;
+  if (facadeOpFor(command) === null) return UNAVAILABLE;
+
+  const conditional = REMOTE_CONDITIONAL_CAPABILITIES[command];
+  if (conditional === undefined || !conditional.fields.includes(field)) {
+    return ENABLED;
+  }
+  return hasAgentScope(effectiveScopes) ? ENABLED : GATED;
+}
+
+/** Whether an op is reachable remotely at all. */
+export function isRemotelyAvailable(command: string): boolean {
+  return facadeOpFor(command) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +282,7 @@ export function remoteErrorBannerProps(
       return {
         tone: "error",
         title: "Unavailable on this host",
-        body: "The host does not offer this action remotely.",
+        body: REMOTE_UNAVAILABLE_HINT,
       };
     default:
       return null;

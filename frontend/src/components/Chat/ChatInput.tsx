@@ -302,7 +302,7 @@ export function ChatInput({
 
   // Allow typing and queueing/sending when agent is alive (generating or waiting), but not in read-only mode
   // Sending a chat message steers the agent — `ui:agent` required (2.6-b).
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("chatSend");
   const isDisabled = isReadOnly || agentGate.gated || (isSending && !isAgentAlive);
   const canSend =
     value.trim().length > 0 &&

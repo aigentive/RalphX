@@ -77,7 +77,7 @@ export function PermissionDialog() {
   const [requests, setRequests] = useState<PermissionRequest[]>([]);
   // D8: track WHICH request is being resolved, not just a boolean
   const [resolvingId, setResolvingId] = useState<string | null>(null);
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("permissionApprove");
   const eventBus = useEventBus();
   const currentRequest = requests[0];
 

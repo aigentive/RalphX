@@ -651,7 +651,7 @@ export function AgentsAutomationPanel({
    * Declared before the loading/error early returns: hooks must run in the same
    * order on every render.
    */
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("automationResume");
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
   const queryClient = useQueryClient();

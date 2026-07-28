@@ -245,7 +245,7 @@ function ActionButtonsCard({
     }
   };
 
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("taskApprove");
 
   const handleApprove = useCallback(async () => {
     const confirmed = await confirm({

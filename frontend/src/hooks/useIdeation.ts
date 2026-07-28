@@ -258,7 +258,7 @@ export function useResetAndReaccept() {
   // Reset-and-reaccept deletes tasks and re-applies proposals as fresh work — it
   // both destroys and ARMS, so it is agent steering (2.6-b). Gated inside the
   // mutationFn so no caller can dispatch it by holding a stale `mutate` reference.
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("applyProposals");
 
   return useMutation<void, Error, ResetAndReacceptInput>({
     mutationFn: async ({ sessionId, proposalIds }) => {

@@ -470,7 +470,7 @@ export function AgentComposerSurface({
    * string means one disabled-explanation path, and the keyboard submit at the top
    * of `handleSend` is gated by the same value as the button.
    */
-  const agentGate = useAgentGate();
+  const agentGate = useAgentGate("agentComposerSend");
   const effectiveSendDisabledReason = agentGate.reason ?? sendDisabledReason;
   const canSubmit =
     hasSubmittableValue &&

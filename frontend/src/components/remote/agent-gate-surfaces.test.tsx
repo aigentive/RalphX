@@ -54,7 +54,7 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Chat send — the canonical gated surface
+// Chat send — currently UNAVAILABLE remotely, not scope-gated
 // ---------------------------------------------------------------------------
 
 describe("chat send", () => {
@@ -65,35 +65,38 @@ describe("chat send", () => {
     );
   }
 
-  it.each(["local", "granted"] as const)(
-    "%s: send is enabled and dispatches",
+  it("local: send is enabled and dispatches", async () => {
+    const onSend = vi.fn();
+    await renderInput(onSend);
+
+    const button = screen.getByTestId("chat-input-send");
+    expect(button).toBeEnabled();
+    button.click();
+    expect(onSend).toHaveBeenCalled();
+  });
+
+  it.each(["granted", "absent"] as const)(
+    "remote/%s: send is disabled with the AVAILABILITY reason, and never dispatches",
     async (column) => {
       setColumn(column);
       const onSend = vi.fn();
       await renderInput(onSend);
 
       const button = screen.getByTestId("chat-input-send");
-      expect(button).toBeEnabled();
+      expect(button).toBeDisabled();
       button.click();
-      expect(onSend).toHaveBeenCalled();
+      expect(onSend).not.toHaveBeenCalled();
+
+      // `send_agent_message` is not in the host's facade_ops, so granting ui:agent
+      // would not help. Saying "enable it on the host" here would be a lie, and this
+      // assertion is what stops the two copies being swapped.
+      const tooltip = screen.getByTestId("agent-gate-tooltip");
+      expect(tooltip).toHaveAttribute("data-agent-gated", "true");
+      expect(tooltip.parentElement?.textContent ?? "").not.toContain(
+        AGENT_CONTROL_DISABLED_HINT
+      );
     }
   );
-
-  it("absent: send is disabled, explained, and never dispatches", async () => {
-    setColumn("absent");
-    const onSend = vi.fn();
-    await renderInput(onSend);
-
-    const button = screen.getByTestId("chat-input-send");
-    expect(button).toBeDisabled();
-    expect(screen.getByTestId("agent-gate-tooltip")).toHaveAttribute(
-      "data-agent-gated",
-      "true"
-    );
-
-    button.click();
-    expect(onSend).not.toHaveBeenCalled();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -192,7 +195,8 @@ describe("gated surfaces stay wired to the gate hook", () => {
     const { resolve } = await import("node:path");
     const source = readFileSync(resolve(__dirname, "../../..", file), "utf8");
     expect(source).toContain('from "@/hooks/useAgentGate"');
-    expect(source).toContain("useAgentGate()");
+    // Named affordance or the scope-only fallback — both are the one hook.
+    expect(source).toMatch(/use(?:Agent|Field)Gate\(/);
   });
 
   it("keeps the inert brake surfaces free of the gate", async () => {
