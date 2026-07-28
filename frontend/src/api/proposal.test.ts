@@ -7,7 +7,6 @@ import {
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,
-  addProposalDependency,
   removeProposalDependency,
   analyzeDependencies,
   applyProposalsToKanban,
@@ -315,31 +314,6 @@ describe("assessAllPriorities", () => {
   });
 });
 
-describe("addProposalDependency", () => {
-  beforeEach(() => {
-    mockInvoke.mockReset();
-  });
-
-  it("should call add_proposal_dependency with both IDs", async () => {
-    mockInvoke.mockResolvedValue(undefined);
-
-    await addProposalDependency("proposal-1", "proposal-2");
-
-    expect(mockInvoke).toHaveBeenCalledWith("add_proposal_dependency", {
-      proposalId: "proposal-1",
-      dependsOnId: "proposal-2",
-    });
-  });
-
-  it("should propagate errors on self-dependency", async () => {
-    mockInvoke.mockRejectedValue(new Error("Self-dependency not allowed"));
-
-    await expect(addProposalDependency("p1", "p1")).rejects.toThrow(
-      "Self-dependency not allowed"
-    );
-  });
-});
-
 describe("removeProposalDependency", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -525,13 +499,12 @@ describe("proposalApi namespace", () => {
     expect(proposalApi.reorderProposals).toBe(reorderProposals);
     expect(proposalApi.assessProposalPriority).toBe(assessProposalPriority);
     expect(proposalApi.assessAllPriorities).toBe(assessAllPriorities);
-    expect(proposalApi.addProposalDependency).toBe(addProposalDependency);
     expect(proposalApi.removeProposalDependency).toBe(removeProposalDependency);
     expect(proposalApi.analyzeDependencies).toBe(analyzeDependencies);
     expect(proposalApi.applyProposalsToKanban).toBe(applyProposalsToKanban);
   });
 
-  it("should have 10 functions", () => {
-    expect(Object.keys(proposalApi)).toHaveLength(10);
+  it("should have 9 functions", () => {
+    expect(Object.keys(proposalApi)).toHaveLength(9);
   });
 });

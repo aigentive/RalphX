@@ -186,13 +186,6 @@ export const projectsApi = {
     ),
 
   /**
-   * Delete a project
-   * @param projectId The project ID
-   */
-  delete: (projectId: string) =>
-    typedInvoke("delete_project", { id: projectId }, z.void()),
-
-  /**
    * Read the project's fixed pull request template file.
    * @param projectId The project ID
    * @returns Exact file content, or null when the template is absent

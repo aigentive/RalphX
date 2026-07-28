@@ -13,9 +13,7 @@ import {
   DependencyGraphResponseSchema,
   ApplyProposalsResultResponseSchema,
   RestartImplementationResultResponseSchema,
-  CreateChildSessionResponseSchema,
   LatestChildSessionIdResponseSchema,
-  ParentSessionContextResponseSchema,
   VerificationResponseSchema,
   SessionListResponseSchema,
 } from "./ideation.schemas";
@@ -29,8 +27,6 @@ import {
   transformApplyResult,
   transformRestartImplementationResult,
   transformIdeationSettings,
-  transformCreateChildSession,
-  transformParentSessionContext,
 } from "./ideation.transforms";
 import {
   ExecutionTaskAgentWorkspaceSchema,
@@ -54,10 +50,7 @@ import type {
   UpdateProposalInput,
   ApplyProposalsInput,
   IdeationAnalysisBaseSelection,
-  CreateChildSessionResponse,
   LatestChildSessionIdResponse,
-  ParentSessionContextResponse,
-  CreateChildSessionInput,
   VerificationStatusResponse,
 } from "./ideation.types";
 
@@ -296,42 +289,6 @@ export const ideationApi = {
     },
 
     /**
-     * Create a child session linked to this parent session
-     * @param input Child session creation parameters
-     * @returns The created child session with optional parent context
-     */
-    createChild: async (input: CreateChildSessionInput): Promise<CreateChildSessionResponse> => {
-      const raw = await typedInvoke(
-        "create_child_session",
-        {
-          input: {
-            parent_session_id: input.parentSessionId,
-            title: input.title,
-            description: input.description,
-            inherit_context: input.inheritContext,
-          },
-        },
-        CreateChildSessionResponseSchema
-      );
-      return transformCreateChildSession(raw);
-    },
-
-    /**
-     * Get the parent session context for a child session
-     * Includes parent metadata, plan content, and proposals summary
-     * @param sessionId The child session ID
-     * @returns Parent session context or null if session has no parent
-     */
-    getParentContext: async (sessionId: string): Promise<ParentSessionContextResponse | null> => {
-      const raw = await typedInvoke(
-        "get_parent_session_context",
-        { session_id: sessionId },
-        ParentSessionContextResponseSchema.nullable()
-      );
-      return raw ? transformParentSessionContext(raw) : null;
-    },
-
-    /**
      * Get all child sessions of this session
      * @param sessionId The parent session ID
      * @returns Array of child sessions
@@ -503,18 +460,6 @@ export const ideationApi = {
    * Proposal dependency operations
    */
   dependencies: {
-    /**
-     * Add a dependency between proposals
-     * @param proposalId The proposal that depends on another
-     * @param dependsOnId The proposal that is depended on
-     */
-    add: async (proposalId: string, dependsOnId: string): Promise<void> => {
-      await invoke("add_proposal_dependency", {
-        proposalId,
-        dependsOnId,
-      });
-    },
-
     /**
      * Remove a dependency between proposals
      * @param proposalId The proposal that depends on another

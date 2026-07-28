@@ -65,20 +65,16 @@ interface DependencyInput {
 /**
  * Hook for dependency management mutations
  *
- * @returns Object with mutation functions for adding/removing dependencies
+ * @returns Object with mutation functions for removing dependencies
+ *
+ * Adding a dependency is deliberately absent: no `add_proposal_dependency` Tauri command
+ * has ever existed, so the former `addDependency` mutation failed at runtime on every
+ * call. Proposal dependencies are authored by agents through the backend, and the UI reads
+ * the graph rather than writing edges.
  *
  * @example
  * ```tsx
- * const { addDependency, removeDependency } = useDependencyMutations();
- *
- * // Add a dependency
- * const handleAdd = async () => {
- *   await addDependency.mutateAsync({
- *     proposalId: "proposal-2",
- *     dependsOnId: "proposal-1",
- *   });
- *   toast.success("Dependency added");
- * };
+ * const { removeDependency } = useDependencyMutations();
  *
  * // Remove a dependency
  * const handleRemove = async () => {
@@ -92,25 +88,6 @@ interface DependencyInput {
  */
 export function useDependencyMutations() {
   const queryClient = useQueryClient();
-
-  const addDependency = useMutation<void, Error, DependencyInput>({
-    mutationFn: ({ proposalId, dependsOnId }) =>
-      ideationApi.dependencies.add(proposalId, dependsOnId),
-    onSuccess: () => {
-      // Invalidate all dependency graphs (we don't know the session from the mutation)
-      queryClient.invalidateQueries({
-        queryKey: dependencyKeys.graphs(),
-      });
-      // Also invalidate proposals since they may show dependency info
-      queryClient.invalidateQueries({
-        queryKey: proposalKeys.lists(),
-      });
-      // And session data
-      queryClient.invalidateQueries({
-        queryKey: ideationKeys.sessionDetails(),
-      });
-    },
-  });
 
   const removeDependency = useMutation<void, Error, DependencyInput>({
     mutationFn: ({ proposalId, dependsOnId }) =>
@@ -132,7 +109,6 @@ export function useDependencyMutations() {
   });
 
   return {
-    addDependency,
     removeDependency,
   };
 }

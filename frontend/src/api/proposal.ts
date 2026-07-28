@@ -341,21 +341,6 @@ export async function assessAllPriorities(
 }
 
 /**
- * Add a dependency between proposals
- * @param proposalId The proposal that depends on another
- * @param dependsOnId The proposal that is depended on
- */
-export async function addProposalDependency(
-  proposalId: string,
-  dependsOnId: string
-): Promise<void> {
-  await invoke("add_proposal_dependency", {
-    proposalId,
-    dependsOnId,
-  });
-}
-
-/**
  * Remove a dependency between proposals
  * @param proposalId The proposal that depends on another
  * @param dependsOnId The proposal that is depended on
@@ -422,7 +407,6 @@ export const proposalApi = {
   reorderProposals,
   assessProposalPriority,
   assessAllPriorities,
-  addProposalDependency,
   removeProposalDependency,
   analyzeDependencies,
   applyProposalsToKanban,

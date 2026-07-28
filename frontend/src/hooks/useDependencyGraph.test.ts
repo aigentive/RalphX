@@ -194,51 +194,6 @@ describe("useDependencyGraph", () => {
 });
 
 describe("useDependencyMutations", () => {
-  describe("addDependency", () => {
-    beforeEach(() => {
-      vi.clearAllMocks();
-    });
-
-    afterEach(() => {
-      vi.resetAllMocks();
-    });
-
-    it("should add a dependency successfully", async () => {
-      vi.mocked(ideationApi.dependencies.add).mockResolvedValueOnce(undefined);
-
-      const { result } = renderHook(() => useDependencyMutations(), {
-        wrapper: createWrapper(),
-      });
-
-      await act(async () => {
-        await result.current.addDependency.mutateAsync({
-          proposalId: "proposal-2",
-          dependsOnId: "proposal-1",
-        });
-      });
-
-      expect(ideationApi.dependencies.add).toHaveBeenCalledWith("proposal-2", "proposal-1");
-    });
-
-    it("should handle add dependency error", async () => {
-      const error = new Error("Failed to add dependency");
-      vi.mocked(ideationApi.dependencies.add).mockRejectedValueOnce(error);
-
-      const { result } = renderHook(() => useDependencyMutations(), {
-        wrapper: createWrapper(),
-      });
-
-      await expect(
-        act(async () => {
-          await result.current.addDependency.mutateAsync({
-            proposalId: "proposal-2",
-            dependsOnId: "proposal-1",
-          });
-        })
-      ).rejects.toThrow("Failed to add dependency");
-    });
-  });
-
   describe("removeDependency", () => {
     beforeEach(() => {
       vi.clearAllMocks();
