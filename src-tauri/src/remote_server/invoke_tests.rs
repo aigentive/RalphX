@@ -1058,3 +1058,255 @@ async fn the_b1_step_and_execution_reads_are_refused_below_ui_read() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 3 — the Operate brakes (`ui:operate`)
+//
+// Three halting ops, reclassified from the conservative `AgentControl` module default. The
+// asymmetry they close is concrete: before this batch a paired device could watch execution
+// it had no way to stop.
+//
+// `archive_tasks_in_group` was audited alongside them and REFUSED. Its absence is asserted
+// here, not merely omitted — see `bulk_archive_is_not_a_brake_and_stays_unregistered` in
+// `capability_ledger_tests` for the reason.
+// ---------------------------------------------------------------------------------------
+
+const BATCH3_BRAKES: [&str; 3] = ["pause_execution", "stop_execution", "cancel_tasks_in_group"];
+
+/// A mock app carrying every state the brakes are injected with.
+fn app_with_brake_state() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .manage(std::sync::Arc::new(
+            crate::commands::execution_commands::ActiveProjectState::new(),
+        ))
+        .manage(std::sync::Arc::new(
+            crate::commands::execution_commands::ExecutionState::default(),
+        ))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
+}
+
+/// P-4 parity for the two global brakes.
+///
+/// Both are idempotent — pausing an already-paused runtime is a no-op — and their response
+/// carries no clock-derived field, so the direct local IPC call and the facade dispatch must
+/// produce byte-identical payloads. This is a genuine mutating-op parity row, not a Read one:
+/// the direct call performs the halt and the dispatch performs it again.
+#[tokio::test]
+async fn p4_parity_for_the_batch3_execution_brakes() {
+    use tauri::Manager;
+
+    for (command, expected_halt_mode) in
+        [("pause_execution", "paused"), ("stop_execution", "stopped")]
+    {
+        let app = app_with_brake_state();
+        let execution_state =
+            app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>();
+
+        // Non-vacuity: the runtime must start UNPAUSED, or "parity after halting" would be
+        // satisfied by a command that does nothing at all.
+        assert!(
+            !execution_state.is_paused(),
+            "the fixture must start unpaused for `{command}` parity to mean anything"
+        );
+
+        let direct = match command {
+            "pause_execution" => crate::commands::execution_commands::pause_execution(
+                None,
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ActiveProjectState>>(),
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>(),
+                app.state::<crate::application::AppState>(),
+            )
+            .await
+            .expect("direct pause succeeds"),
+            _ => crate::commands::execution_commands::stop_execution(
+                None,
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ActiveProjectState>>(),
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>(),
+                app.state::<crate::application::AppState>(),
+            )
+            .await
+            .expect("direct stop succeeds"),
+        };
+
+        // The effect actually happened, and it is the HALTING direction.
+        assert!(
+            direct.status.is_paused,
+            "`{command}` must leave the runtime paused"
+        );
+        assert_eq!(
+            direct.status.halt_mode, expected_halt_mode,
+            "`{command}` must record its own halt mode"
+        );
+        assert!(
+            !direct.status.can_start_task,
+            "`{command}` must leave the runtime unable to start work"
+        );
+
+        let outcome = registry::dispatch(
+            &app.handle().clone(),
+            &[Scope::UiOperate],
+            command,
+            &json!({"projectId": null}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:operate: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(registry::serialize_ok(&direct).unwrap()),
+            "P-4 parity mismatch for `{command}`"
+        );
+    }
+}
+
+/// The load-bearing hand-trace, pinned.
+///
+/// `pause_execution` and `stop_execution` open with `sync_quota_from_project` — the runtime
+/// scheduler-quota write that disqualified `set_active_project` in batch 2. Registering them
+/// is only sound because the quota is inert while halted. Both halves are asserted:
+///
+/// 1. **Behavioural** — the pause flag dominates any quota, however large.
+/// 2. **Structural** — the one production path that clears the pause flag re-syncs the quota
+///    before it does, so a quota raised while halting cannot survive into a scheduling window.
+#[test]
+fn the_brake_quota_write_is_dominated_by_the_pause_flag() {
+    let execution_state = crate::commands::execution_commands::ExecutionState::default();
+
+    // A quota far above any real configuration, exactly what a hostile `projectId` argument
+    // could select by naming a project whose persisted settings are large.
+    execution_state.set_max_concurrent(10_000);
+    execution_state.set_project_ideation_max(10_000);
+    assert!(
+        execution_state.can_start_task(),
+        "calibration: an unpaused runtime with headroom must be able to start work, or the \
+         assertion below would pass against a permanently-false gate"
+    );
+
+    execution_state.pause();
+    assert!(
+        !execution_state.can_start_task(),
+        "the pause flag must dominate the quota; if it does not, a brake that raises the \
+         quota is a scheduler-arming op"
+    );
+    assert!(
+        !execution_state.can_start_any_execution_context(),
+        "the scheduler entry gate must also be dominated by the pause flag"
+    );
+    assert!(
+        !execution_state.can_start_ideation(0, 0, 0, 10_000, 10_000, false, false),
+        "the ideation gate must also be dominated by the pause flag, even with every headroom \
+         argument set generously"
+    );
+
+    // Structural half: `resume()` is the only way back, and it must be preceded by a re-sync.
+    let lifecycle = include_str!("../commands/execution_commands/lifecycle.rs");
+    let resume_sites = lifecycle.matches("execution_state.resume()").count();
+    assert_eq!(
+        resume_sites, 1,
+        "a second production caller of ExecutionState::resume appeared in lifecycle.rs; the \
+         brake registration assumes exactly one ungating path, which re-syncs the quota first"
+    );
+    let resume_at = lifecycle
+        .find("execution_state.resume()")
+        .expect("the resume call site exists");
+    let sync_at = lifecycle
+        .find("sync_quota_from_project")
+        .expect("resume_execution re-syncs the quota");
+    assert!(
+        sync_at < resume_at,
+        "the quota re-sync must precede the pause-flag clear, or a quota raised during a \
+         remote halt could arm the scheduler on resume"
+    );
+}
+
+/// Scope negative — no grant weaker than (or sideways from) `ui:operate` reaches a brake,
+/// and `ui:operate` is genuinely required rather than incidentally sufficient.
+#[tokio::test]
+async fn the_batch3_brakes_are_refused_below_ui_operate() {
+    let app = app_with_brake_state();
+
+    for command in BATCH3_BRAKES {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(
+            spec.class,
+            RiskClass::Operate,
+            "`{command}` must be an Operate row"
+        );
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` must carry no capability; an Operate row cannot express one"
+        );
+        assert!(spec.pins.is_empty(), "`{command}` declares no pinned field");
+
+        for scopes in [
+            vec![],
+            vec![Scope::UiRead],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiRead, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let error = registry::dispatch(&app.handle().clone(), &scopes, command, &json!({}))
+                .await
+                .expect_err("insufficient scope must be refused");
+            assert_eq!(
+                error.code,
+                ErrorCode::RemoteForbidden,
+                "`{command}` admitted {scopes:?}"
+            );
+        }
+    }
+
+    // The refused sibling. Its absence is the audit's finding, so it is asserted at the
+    // facade too: no scope, including the full v1 set, reaches it.
+    for scopes in [
+        vec![Scope::UiRead],
+        vec![Scope::UiOperate],
+        vec![Scope::UiAgent],
+        vec![Scope::UiElevated],
+        vec![
+            Scope::UiRead,
+            Scope::UiOperate,
+            Scope::UiAgent,
+            Scope::UiElevated,
+        ],
+    ] {
+        let error = registry::dispatch(
+            &app.handle().clone(),
+            &scopes,
+            "archive_tasks_in_group",
+            &json!({"groupKind": "status", "groupId": "ready", "projectId": "p"}),
+        )
+        .await
+        .expect_err("archive_tasks_in_group must stay unreachable");
+        assert_eq!(
+            error.code,
+            ErrorCode::RemoteCommandUnavailable,
+            "archive_tasks_in_group became reachable at {scopes:?}"
+        );
+    }
+}
+
+/// The bulk cancel needs the Wry handle, so under a mock runtime it must fail CLOSED.
+///
+/// This is the `(host_app_handle)` contract: a missing handle is a host fault, never a reason
+/// to take a degraded path that cancels without emitting lifecycle events.
+#[tokio::test]
+async fn the_bulk_cancel_brake_fails_closed_without_a_host_handle() {
+    let app = app_with_brake_state();
+
+    let error = registry::dispatch(
+        &app.handle().clone(),
+        &[Scope::UiOperate],
+        "cancel_tasks_in_group",
+        &json!({"groupKind": "status", "groupId": "ready", "projectId": "p"}),
+    )
+    .await
+    .expect_err("a missing host handle must not be substituted");
+    assert_eq!(
+        error.code,
+        ErrorCode::RemoteInternalError,
+        "cancel_tasks_in_group degraded instead of failing closed"
+    );
+}

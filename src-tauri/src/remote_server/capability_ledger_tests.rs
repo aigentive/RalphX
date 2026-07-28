@@ -2272,3 +2272,227 @@ fn detector_a_root_exceptions_are_not_stale() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 3 — the Operate-brakes probe.
+//
+// Batch 2 §5 pre-scoped four halting candidates out of the `B1` remainder. This probe is the
+// mechanical first half of their audit: it prints detectors (a)/(b)/(c)/(d) plus the live
+// ledger row for each, so the reclassification below starts from measured output rather than
+// from batch 2's recollection of it. Detector silence is necessary, never sufficient — the
+// `set_active_project` exclusion in batch 2 was a detector-silent command disqualified only by
+// hand-tracing, and this batch repeats that discipline against `sync_quota_from_project`.
+// ---------------------------------------------------------------------------------------
+#[test]
+#[ignore = "calibration probe"]
+fn probe_operate_brakes_audit() {
+    const CANDIDATES: &[&str] = &[
+        "pause_execution",
+        "stop_execution",
+        "cancel_tasks_in_group",
+        "archive_tasks_in_group",
+        // Registered siblings, as calibration: the probe must reproduce the known-good rows.
+        "pause_task",
+        "stop_task",
+        "pause_tasks_in_group",
+        // Batch 2's recorded exclusion, as negative calibration.
+        "set_active_project",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b =
+        spawn_triggering_writers(&graph, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+    let detector_d = agent_consumed_content_writers(
+        &graph,
+        commands.into_iter(),
+        AGENT_CONSUMED_CONTENT_WRITE_SURFACE,
+    );
+
+    for (command, module) in &rows {
+        if !CANDIDATES.contains(&command.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let d = detector_d.contains_key(command);
+        let t = tokens_reach_any(&closure.tokens, TRANSITION_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-BRAKES {module} {command} a={a} b={b} c={c} d={d} transition={t} \
+             class={:?} caps={:?} registered={} reason={:?}",
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+            row.reason,
+        );
+    }
+}
+
+/// The batch-3 brakes are REVIEWED rows, not inherited module defaults.
+///
+/// Batch 1 could not register anything because every candidate sat at the conservative
+/// `task_commands` / `execution_commands` default. A row that merely "looks classified" while
+/// still carrying that default reason is exactly the condition that blocked it, so the reason
+/// string is asserted to have moved — and the module defaults are asserted NOT to have, since
+/// these are exceptions and not a verdict on modules that still hold `move_task`,
+/// `unblock_task`, `inject_task`, `restart_task` and the execution-plan controls.
+#[test]
+fn batch3_brake_reclassifications_are_reviewed_rather_than_module_defaults() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in ["pause_execution", "stop_execution", "cancel_tasks_in_group"] {
+        let module = rows.get(command).expect("brake is a live command");
+        let row = policy_for(command, module).expect("brake is ledgered");
+
+        assert_eq!(
+            row.class,
+            RiskClass::Operate,
+            "`{command}` must be ledgered Operate"
+        );
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` must carry no capability; `Operate` permits none, so a non-empty set \
+             here is the under-labelling signature"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        assert!(
+            row.reason.contains("authority-reducing"),
+            "`{command}` must record WHY it sits below its module default"
+        );
+        assert!(
+            find_spec(command).is_some(),
+            "`{command}` is reclassified but not registered"
+        );
+
+        // The exemption is what licenses the drop below the module default, and it must carry
+        // file-anchored evidence rather than a bare claim.
+        let exemption = AUTHORITY_REDUCING_EXEMPTIONS
+            .iter()
+            .find(|entry| entry.kind == "command" && entry.subject == command)
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{command}` sits below its module default with no \
+                                       authority-reducing exemption"
+                )
+            });
+        assert_eq!(exemption.scope, "ui:operate");
+        assert!(
+            exemption.rationale.contains(".rs"),
+            "`{command}` exemption must carry file-anchored evidence"
+        );
+    }
+
+    // The modules stay conservative. If either default ever drops, these three stop being
+    // exceptions and the audit that justified them no longer applies.
+    for module in ["execution_commands", "task_commands"] {
+        let default = MODULE_DEFAULTS
+            .iter()
+            .find(|entry| entry.module == module)
+            .expect("module has a default");
+        assert_eq!(
+            default.policy.class,
+            RiskClass::AgentControl,
+            "`{module}` default weakened; the batch-3 brakes were registered as EXCEPTIONS to it"
+        );
+    }
+}
+
+/// The refusal, pinned.
+///
+/// `archive_tasks_in_group` is the batch-3 counterpart of batch 2's `set_active_project`: it
+/// audits detector-silent, sits in the same module as the bulk brakes, takes the same
+/// `(groupKind, groupId, projectId)` argument shape, and is NOT a brake.
+///
+/// Archiving writes `archived_at` and emits an event. That is all. There is no
+/// `InternalStatus::Archived`, so the ledger's `Archived` transition-target exemption never
+/// reaches this command, and the probe shows it as the only candidate in the cluster with NO
+/// transition sink at all. An Executing task that is archived keeps its agent process, keeps
+/// its execution slot, disappears from every reconciliation query (which filter
+/// `archived_at IS NULL`), and can no longer be recovered — `transition_task` refuses archived
+/// tasks outright. Authority-OBSCURING, not authority-reducing.
+///
+/// Without this test, "it is a bulk group op in a module whose bulk group ops are registered"
+/// could later be treated as sufficient grounds.
+#[test]
+fn bulk_archive_is_not_a_brake_and_stays_unregistered() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+    let module = rows
+        .get("archive_tasks_in_group")
+        .expect("archive_tasks_in_group is a live command");
+    let row = policy_for("archive_tasks_in_group", module).expect("ledgered");
+
+    assert_eq!(
+        row.class,
+        RiskClass::AgentControl,
+        "archive_tasks_in_group must stay at its conservative module default"
+    );
+    assert!(
+        find_spec("archive_tasks_in_group").is_none(),
+        "archive_tasks_in_group was registered; it hides running agents instead of stopping them"
+    );
+    assert!(
+        !AUTHORITY_REDUCING_EXEMPTIONS
+            .iter()
+            .any(|entry| entry.kind == "command" && entry.subject == "archive_tasks_in_group"),
+        "archive_tasks_in_group must never acquire an authority-reducing exemption"
+    );
+
+    // The structural reason, asserted against the source rather than remembered in a comment:
+    // the bulk archive never reaches the state machine, while its registered siblings do.
+    let mutation = include_str!("../commands/task_commands/mutation.rs");
+    let archive_body = mutation
+        .split("pub async fn archive_tasks_in_group")
+        .nth(1)
+        .expect("archive_tasks_in_group is defined in mutation.rs")
+        .split("\npub async fn ")
+        .next()
+        .expect("the body is delimited by the next command");
+    assert!(
+        !archive_body.contains("transition_task"),
+        "archive_tasks_in_group now transitions; re-run the audit — the refusal rested on it \
+         writing archived_at without quiescing the task"
+    );
+    assert!(
+        !archive_body.contains("running_agent_registry"),
+        "archive_tasks_in_group now touches the agent registry; re-run the audit"
+    );
+
+    let cancel_body = mutation
+        .split("pub async fn cancel_tasks_in_group")
+        .nth(1)
+        .expect("cancel_tasks_in_group is defined in mutation.rs")
+        .split("\npub async fn ")
+        .next()
+        .expect("the body is delimited by the next command");
+    assert!(
+        cancel_body.contains("InternalStatus::Cancelled"),
+        "calibration: the registered bulk brake must still transition to Cancelled, or the \
+         contrast this refusal rests on has evaporated"
+    );
+    assert!(
+        cancel_body.contains("is_terminal"),
+        "calibration: the registered bulk brake must still skip already-terminal tasks"
+    );
+
+    // And there is no `Archived` status for the transition-target exemption to have covered.
+    assert!(
+        "cancelled"
+            .parse::<crate::domain::entities::InternalStatus>()
+            .is_ok(),
+        "calibration: `cancelled` must parse, or the negative below proves nothing about \
+         `archived` specifically"
+    );
+    assert!(
+        "archived"
+            .parse::<crate::domain::entities::InternalStatus>()
+            .is_err(),
+        "an InternalStatus::Archived appeared; the `Archived` transition-target exemption may \
+         now genuinely apply and this refusal must be re-audited"
+    );
+}

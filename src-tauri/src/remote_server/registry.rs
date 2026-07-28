@@ -904,6 +904,65 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 3 — the Operate brakes, at `ui:operate`.
+    //
+    // Until this batch a paired device could WATCH execution it had no way to stop: the
+    // per-task brakes (`pause_task`, `stop_task`, `block_task`) were registered but the
+    // global halt and the bulk cancel were not. All three below move the system strictly
+    // toward less autonomous work.
+    //
+    // `pause_execution` / `stop_execution` open with `sync_quota_from_project`, the runtime
+    // scheduler-quota write that disqualified `set_active_project` in batch 2. They are safe
+    // where it was not, for a reason that is tested rather than asserted: the quota is written
+    // and then IMMEDIATELY dominated by the pause flag, `can_start_task` short-circuits on
+    // `is_paused()` before reading any quota, and the single production path that clears the
+    // pause flag (`resume_execution`) re-syncs the quota before it does. A quota raised while
+    // halting can therefore never arm the scheduler.
+    //
+    // `archive_tasks_in_group` is deliberately ABSENT — see the ledger comment; it hides
+    // running agents instead of stopping them.
+    // -----------------------------------------------------------------------------------
+    "pause_execution" => crate::commands::execution_commands::pause_execution {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (active_project_state),
+            (execution_state),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "stop_execution" => crate::commands::execution_commands::stop_execution {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (active_project_state),
+            (execution_state),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "cancel_tasks_in_group"
+        => crate::commands::task_commands::mutation::cancel_tasks_in_group {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg group_kind: String),
+            (arg group_id: String),
+            (arg project_id: String),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // The deny half of the dual-decision `resolve_permission_request`. The raw command is
     // NEVER registered; `decision` is server-pinned, so a client sending `"allow"` still denies.
     "deny_permission_request" => crate::commands::permission_commands::resolve_permission_request {
