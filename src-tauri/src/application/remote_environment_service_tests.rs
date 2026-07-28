@@ -8,11 +8,16 @@ use async_trait::async_trait;
 use ralphx_remote_protocol::{EnvironmentDescriptor, Scope, PROTOCOL_VERSION};
 
 use super::*;
+use crate::application::remote_event_relay::NoopFrameSink;
 use crate::domain::entities::remote_environment::RemoteEnvironmentStatus;
 use crate::infrastructure::memory::{MemoryRemoteEnvironmentRepository, MemorySecretStore};
 use crate::infrastructure::remote_host_client::{
     MockRemoteHostClient, PairWireResponse, RecordedHostCall, RemoteHostClientError,
 };
+use crate::infrastructure::remote_ws_client::{
+    MockRemoteWsClient, MockRemoteWsConnection, MockRemoteWsHandle, RemoteWsClient,
+};
+use ralphx_remote_protocol::ServerFrame;
 
 const HOST_URL: &str = "https://mac-studio.tailnet.ts.net";
 const HOST_URL_DIRECT: &str = "http://100.101.102.103:3849";
@@ -42,6 +47,8 @@ struct Fixture {
     repo: Arc<MemoryRemoteEnvironmentRepository>,
     secrets: Arc<MemorySecretStore>,
     host: Arc<MockRemoteHostClient>,
+    ws: Arc<MockRemoteWsClient>,
+    relay: Arc<RemoteEventRelay>,
     service: RemoteEnvironmentService,
 }
 
@@ -52,19 +59,35 @@ fn fixture() -> Fixture {
     ))
 }
 
+/// A relay over a scripted mock socket, for services that never dial in a test.
+fn test_relay() -> Arc<RemoteEventRelay> {
+    Arc::new(RemoteEventRelay::new(
+        Arc::new(MockRemoteWsClient::new()),
+        Arc::new(NoopFrameSink),
+    ))
+}
+
 fn fixture_with_host(host: MockRemoteHostClient) -> Fixture {
     let repo = Arc::new(MemoryRemoteEnvironmentRepository::new());
     let secrets = Arc::new(MemorySecretStore::new());
     let host = Arc::new(host);
+    let ws = Arc::new(MockRemoteWsClient::new());
+    let relay = Arc::new(RemoteEventRelay::new(
+        Arc::clone(&ws) as Arc<dyn RemoteWsClient>,
+        Arc::new(NoopFrameSink),
+    ));
     let service = RemoteEnvironmentService::new(
         Arc::clone(&repo) as Arc<dyn crate::domain::repositories::RemoteEnvironmentRepository>,
         Arc::clone(&secrets) as Arc<dyn crate::domain::services::SecretStore>,
         Arc::clone(&host) as Arc<dyn crate::infrastructure::remote_host_client::RemoteHostClient>,
+        Arc::clone(&relay),
     );
     Fixture {
         repo,
         secrets,
         host,
+        ws,
+        relay,
         service,
     }
 }
@@ -903,6 +926,7 @@ async fn remove_keeps_the_pending_delete_row_when_the_keychain_delete_fails() {
         Arc::clone(&repo) as _,
         Arc::clone(&secrets) as _,
         Arc::clone(&host) as _,
+        test_relay(),
     );
 
     let env = service
@@ -1070,6 +1094,7 @@ async fn reconciler_defers_pending_add_when_the_keychain_read_errors() {
         Arc::clone(&repo) as _,
         Arc::new(UnreadableSecretStore) as _,
         Arc::clone(&host) as _,
+        test_relay(),
     );
     let env = repo
         .upsert_paired(crate::domain::repositories::UpsertPairedEnvironment {
@@ -1171,8 +1196,33 @@ async fn reconciler_leaves_active_rows_untouched() {
 }
 
 // ============================================================================
-// Proxy stubs: connect/disconnect
+// Event stream (PR 2.3): connect / disconnect / stream_send
 // ============================================================================
+
+fn stream_hello(protocol_version: u32) -> ServerFrame {
+    ServerFrame::Hello {
+        protocol_version,
+        environment_id: "env-1".to_string(),
+        stream_epoch: "epoch-1".to_string(),
+        server_version: "0.81.0".to_string(),
+        max_seq: 42,
+        heartbeat_secs: 20,
+    }
+}
+
+/// Scripts the two-step happy path: a 200 ticket mint and a socket whose first
+/// frame is `hello`.
+fn script_stream_success(f: &Fixture, protocol_version: u32) -> MockRemoteWsHandle {
+    f.host
+        .script_fetch(200, r#"{"ticket":"tick-1","expiresInSecs":60}"#);
+    let (connection, handle) = MockRemoteWsConnection::scripted();
+    handle
+        .inbound
+        .send(Ok(stream_hello(protocol_version)))
+        .expect("scripted hello should queue");
+    f.ws.script_connection(connection);
+    handle
+}
 
 #[tokio::test]
 async fn connect_requires_a_registered_active_environment() {
@@ -1182,16 +1232,279 @@ async fn connect_requires_a_registered_active_environment() {
         f.service.connect("nope").await,
         Err(RemoteEnvironmentError::UnknownEnvironment(_))
     ));
+    assert!(matches!(
+        f.service.connect(LOCAL_ENVIRONMENT_ID).await,
+        Err(RemoteEnvironmentError::LocalEnvironment)
+    ));
+    // Authorization runs BEFORE any network effect: no ticket mint, no dial.
+    assert!(f.host.recorded_calls().is_empty());
+    assert!(f.ws.dialed_urls().is_empty());
+}
 
+#[tokio::test]
+async fn connect_mints_a_ticket_and_returns_the_hello_outcome() {
+    let f = fixture();
     let env = f
         .service
         .pair(HOST_URL, "rxp_code", "Mac Studio")
         .await
         .expect("pairing should succeed");
-    // Transport is a stub until PR 2.3; the typed error proves authorization ran.
-    assert!(matches!(
-        f.service.connect(env.id.as_str()).await,
-        Err(RemoteEnvironmentError::NotConnected)
-    ));
+    let _handle = script_stream_success(&f, PROTOCOL_VERSION);
+
+    let outcome = f
+        .service
+        .connect(env.id.as_str())
+        .await
+        .expect("connect should succeed");
+
+    // The outcome is keyed to the registry ROW, not the host's self-reported id.
+    assert_eq!(outcome.environment_id, env.id.as_str());
+    assert_eq!(outcome.host_environment_id, "env-1");
+    assert_eq!(outcome.stream_epoch, "epoch-1");
+    assert_eq!(outcome.max_seq, 42);
+    assert_eq!(outcome.protocol_version, PROTOCOL_VERSION);
+    assert!(f.relay.is_connected(env.id.as_str()));
+
+    // The ticket was minted with the STORED bearer against the ws-ticket route…
+    let minted = f
+        .host
+        .recorded_calls()
+        .into_iter()
+        .find_map(|call| match call {
+            RecordedHostCall::Fetch { token, request, .. } => Some((token, request)),
+            _ => None,
+        })
+        .expect("the host should have seen one ticket mint");
+    assert_eq!(minted.0, TOKEN);
+    assert_eq!(
+        minted.1.path,
+        crate::infrastructure::remote_host_client::REMOTE_WS_TICKET_PATH
+    );
+    assert_eq!(minted.1.method, "POST");
+    // …and the dialed URL is the wss form of the base URL carrying that ticket.
+    assert_eq!(
+        f.ws.dialed_urls(),
+        vec!["wss://mac-studio.tailnet.ts.net/remote/v1/events?ticket=tick-1".to_string()]
+    );
+    // Best-effort bookkeeping recorded the connect.
+    let row = f
+        .repo
+        .get(&env.id)
+        .await
+        .expect("get")
+        .expect("row exists");
+    assert!(row.last_connected_at.is_some());
+}
+
+/// 401/403 on the ticket mint are the supervisor's `blocked` entries; they must
+/// stay typed and must stop the dial.
+#[tokio::test]
+async fn a_refused_ticket_mint_is_typed_and_never_dials() {
+    for (status, expected) in [(401, "REMOTE_UNAUTHORIZED"), (403, "REMOTE_FORBIDDEN")] {
+        let f = fixture();
+        let env = f
+            .service
+            .pair(HOST_URL, "rxp_code", "Mac Studio")
+            .await
+            .expect("pairing should succeed");
+        f.host.script_fetch(status, "no");
+
+        let error = f
+            .service
+            .connect(env.id.as_str())
+            .await
+            .expect_err("a refused ticket must fail");
+        assert_eq!(error.code(), expected, "status {status}");
+        assert!(f.ws.dialed_urls().is_empty(), "no ticket, no dial");
+        assert!(!f.relay.is_connected(env.id.as_str()));
+    }
+}
+
+/// A ticket body that does not parse is `Unreachable` — never a silent empty
+/// ticket smuggled into the dial URL.
+#[tokio::test]
+async fn an_unparsable_ticket_body_is_unreachable() {
+    let f = fixture();
+    let env = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("pairing should succeed");
+    f.host.script_fetch(200, r#"{"ok":true,"result":null}"#);
+
+    let error = f
+        .service
+        .connect(env.id.as_str())
+        .await
+        .expect_err("an unparsable ticket body must fail");
+    assert_eq!(error.code(), "REMOTE_UNREACHABLE");
+    assert!(f.ws.dialed_urls().is_empty());
+}
+
+/// A refused WS handshake keeps its auth typing so the supervisor blocks instead
+/// of retrying a dead credential.
+#[tokio::test]
+async fn a_rejected_ws_handshake_maps_to_the_auth_taxonomy() {
+    let f = fixture();
+    let env = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("pairing should succeed");
+    f.host
+        .script_fetch(200, r#"{"ticket":"tick-1","expiresInSecs":60}"#);
+    f.ws
+        .script_error(crate::infrastructure::remote_ws_client::RemoteWsError::Rejected {
+            status: 403,
+            message: "scope refused".to_string(),
+        });
+
+    let error = f
+        .service
+        .connect(env.id.as_str())
+        .await
+        .expect_err("a rejected handshake must fail");
+    assert_eq!(error.code(), "REMOTE_FORBIDDEN");
+    assert!(!f.relay.is_connected(env.id.as_str()));
+}
+
+/// The hello version is relayed VERBATIM, never gated in Rust: negotiation is
+/// `minClientProtocol`-based and only the descriptor carries that field, so a
+/// Rust-side gate against the pairing-time snapshot would false-block a
+/// legitimately upgraded host. The TS supervisor owns the `blocked` decision
+/// (§6.5) with the descriptor in hand.
+#[tokio::test]
+async fn a_hello_version_that_differs_from_the_stored_row_still_connects() {
+    let f = fixture();
+    let env = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("pairing should succeed");
+    let _handle = script_stream_success(&f, PROTOCOL_VERSION + 1);
+
+    let outcome = f
+        .service
+        .connect(env.id.as_str())
+        .await
+        .expect("a newer host hello must not be blocked in Rust");
+    assert_eq!(
+        outcome.protocol_version,
+        PROTOCOL_VERSION + 1,
+        "the hello version reaches TS verbatim for the supervisor's gate"
+    );
+    assert!(
+        f.relay.is_connected(env.id.as_str()),
+        "the socket survives; the skew decision belongs to the supervisor"
+    );
+}
+
+#[tokio::test]
+async fn disconnect_tears_the_session_down_and_is_idempotent_when_unconnected() {
+    let f = fixture();
+    let env = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("pairing should succeed");
+    let _handle = script_stream_success(&f, PROTOCOL_VERSION);
+    f.service
+        .connect(env.id.as_str())
+        .await
+        .expect("connect should succeed");
+
+    f.service
+        .disconnect(env.id.as_str())
+        .await
+        .expect("disconnect should succeed");
+    assert!(!f.relay.is_connected(env.id.as_str()));
+    // Idempotent: disconnecting an unconnected environment stays success.
     assert!(f.service.disconnect(env.id.as_str()).await.is_ok());
+}
+
+#[tokio::test]
+async fn stream_send_reaches_the_live_socket() {
+    let f = fixture();
+    let env = f
+        .service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("pairing should succeed");
+    let mut handle = script_stream_success(&f, PROTOCOL_VERSION);
+    f.service
+        .connect(env.id.as_str())
+        .await
+        .expect("connect should succeed");
+
+    f.service
+        .stream_send(
+            env.id.as_str(),
+            ralphx_remote_protocol::ClientFrame::Subscribe {
+                after_seq: 42,
+                stream_epoch: "epoch-1".to_string(),
+            },
+        )
+        .await
+        .expect("stream_send should reach the live session");
+
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(5), handle.outbound.recv())
+        .await
+        .expect("the frame should arrive in time")
+        .expect("the outbound channel should stay open");
+    assert_eq!(
+        sent,
+        ralphx_remote_protocol::ClientFrame::Subscribe {
+            after_seq: 42,
+            stream_epoch: "epoch-1".to_string(),
+        }
+    );
+}
+
+/// The stream surface shares `connect`'s guards — local and unknown targets are
+/// refused, and NO active-environment binding applies: background environments
+/// keep their sockets (and their `subscribe`/`cursorAck` frames) alive (§6.4).
+#[tokio::test]
+async fn stream_send_uses_the_stream_guards_not_the_active_binding() {
+    let f = fixture();
+    let (a, b) = two_paired_environments(&f).await;
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activating A should succeed");
+
+    assert!(matches!(
+        f.service
+            .stream_send(
+                LOCAL_ENVIRONMENT_ID,
+                ralphx_remote_protocol::ClientFrame::CursorAck { seq: 1 },
+            )
+            .await,
+        Err(RemoteEnvironmentError::LocalEnvironment)
+    ));
+    assert!(matches!(
+        f.service
+            .stream_send(
+                "nope",
+                ralphx_remote_protocol::ClientFrame::CursorAck { seq: 1 },
+            )
+            .await,
+        Err(RemoteEnvironmentError::UnknownEnvironment(_))
+    ));
+
+    // BACKGROUND environment: the control frame is authorized (no active-env gate)
+    // and fails only because no session is live — as `Unreachable`, which the
+    // supervisor retries, never `NotActiveEnvironment`, which it would block on.
+    let error = f
+        .service
+        .stream_send(
+            &b,
+            ralphx_remote_protocol::ClientFrame::CursorAck { seq: 1 },
+        )
+        .await
+        .expect_err("no live session for B");
+    assert_eq!(error.code(), "REMOTE_UNREACHABLE");
+    assert!(
+        !matches!(error, RemoteEnvironmentError::NotActiveEnvironment { .. }),
+        "background environments' stream control must not be active-env-gated"
+    );
 }

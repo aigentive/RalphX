@@ -90,6 +90,9 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 hyper-rustls = "0.27"
 rustls = "0.23"
+# 0.24 pinned: axum's ws feature already locks tokio-tungstenite 0.24, so the outbound
+# client (PR 2.3) reuses it instead of introducing a second tungstenite in the lock.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 hmac = "0.12"
 http-body-util = "0.1"
 portable-pty = "0.8"

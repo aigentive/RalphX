@@ -195,6 +195,7 @@ pub mod ready_task_scheduler;
 pub mod reconciliation;
 pub mod recovery_queue;
 pub mod remote_environment_service;
+pub mod remote_event_relay;
 pub mod resume_validator;
 pub mod review_issue_service;
 pub mod review_service;
@@ -370,6 +371,9 @@ pub use recovery_queue::{ProcessSummary, RecoveryItem, RecoveryPriority, Recover
 pub use remote_environment_service::{
     RemoteEnvironmentError, RemoteEnvironmentReconcileReport, RemoteEnvironmentService,
     LOCAL_ENVIRONMENT_ID,
+};
+pub use remote_event_relay::{
+    NoopFrameSink, RemoteConnectOutcome, RemoteEventRelay, RemoteFrameSink, TauriFrameSink,
 };
 pub use resume_validator::{ResumeValidationResult, ResumeValidator};
 pub use review_issue_service::{CreateIssueInput, ReviewIssueService};

@@ -579,6 +579,7 @@ impl AppState {
 
     fn production_remote_environment_service(
         shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+        app_handle: &AppHandle,
     ) -> Arc<RemoteEnvironmentService> {
         let host_client: Arc<dyn crate::infrastructure::RemoteHostClient> =
             match crate::infrastructure::HyperRemoteHostClient::new() {
@@ -593,6 +594,12 @@ impl AppState {
                     ))
                 }
             };
+        // Constructing the relay spawns nothing (rule 17): sessions are spawned from
+        // the async `connect` path only. Frames land on the webview's local bus.
+        let relay = Arc::new(crate::application::RemoteEventRelay::new(
+            Arc::new(crate::infrastructure::TungsteniteRemoteWsClient::new()),
+            Arc::new(crate::application::TauriFrameSink(app_handle.clone())),
+        ));
         Arc::new(RemoteEnvironmentService::new(
             Arc::new(
                 crate::infrastructure::sqlite::SqliteRemoteEnvironmentRepository::from_shared(
@@ -601,6 +608,7 @@ impl AppState {
             ),
             Arc::new(MacosKeychainSecretStore::new()),
             host_client,
+            relay,
         ))
     }
 
@@ -610,6 +618,10 @@ impl AppState {
             Arc::new(MemorySecretStore::new()),
             Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
                 "remote host client is not wired in tests",
+            )),
+            Arc::new(crate::application::RemoteEventRelay::new(
+                Arc::new(crate::infrastructure::remote_ws_client::MockRemoteWsClient::new()),
+                Arc::new(crate::application::NoopFrameSink),
             )),
         ))
     }
@@ -1348,7 +1360,10 @@ impl AppState {
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            remote_environment_service: Self::production_remote_environment_service(&shared_conn),
+            remote_environment_service: Self::production_remote_environment_service(
+                &shared_conn,
+                &app_handle,
+            ),
             atlassian_integration_service: Self::production_atlassian_integration_service(
                 &shared_conn,
             ),
