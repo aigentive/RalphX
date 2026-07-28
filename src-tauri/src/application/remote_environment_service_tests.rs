@@ -92,6 +92,113 @@ fn fixture_with_host(host: MockRemoteHostClient) -> Fixture {
     }
 }
 
+struct FailingRemoteEnvironmentRepository {
+    inner: Arc<MemoryRemoteEnvironmentRepository>,
+    fail_list: bool,
+    fail_get: bool,
+    fail_set_status: bool,
+    fail_delete: bool,
+}
+
+impl FailingRemoteEnvironmentRepository {
+    fn new(inner: Arc<MemoryRemoteEnvironmentRepository>) -> Self {
+        Self {
+            inner,
+            fail_list: false,
+            fail_get: false,
+            fail_set_status: false,
+            fail_delete: false,
+        }
+    }
+
+    fn database_error<T>() -> crate::error::AppResult<T> {
+        Err(crate::error::AppError::Database("boom".to_string()))
+    }
+}
+
+#[async_trait]
+impl crate::domain::repositories::RemoteEnvironmentRepository
+    for FailingRemoteEnvironmentRepository
+{
+    async fn upsert_paired(
+        &self,
+        params: crate::domain::repositories::UpsertPairedEnvironment,
+    ) -> crate::error::AppResult<RemoteEnvironment> {
+        self.inner.upsert_paired(params).await
+    }
+
+    async fn get(
+        &self,
+        id: &crate::domain::entities::remote_environment::RemoteEnvironmentId,
+    ) -> crate::error::AppResult<Option<RemoteEnvironment>> {
+        if self.fail_get {
+            Self::database_error()
+        } else {
+            self.inner.get(id).await
+        }
+    }
+
+    async fn get_by_environment_id(
+        &self,
+        environment_id: &str,
+    ) -> crate::error::AppResult<Option<RemoteEnvironment>> {
+        self.inner.get_by_environment_id(environment_id).await
+    }
+
+    async fn list(&self) -> crate::error::AppResult<Vec<RemoteEnvironment>> {
+        if self.fail_list {
+            Self::database_error()
+        } else {
+            self.inner.list().await
+        }
+    }
+
+    async fn set_status(
+        &self,
+        id: &crate::domain::entities::remote_environment::RemoteEnvironmentId,
+        status: RemoteEnvironmentStatus,
+    ) -> crate::error::AppResult<()> {
+        if self.fail_set_status {
+            Self::database_error()
+        } else {
+            self.inner.set_status(id, status).await
+        }
+    }
+
+    async fn delete(
+        &self,
+        id: &crate::domain::entities::remote_environment::RemoteEnvironmentId,
+    ) -> crate::error::AppResult<()> {
+        if self.fail_delete {
+            Self::database_error()
+        } else {
+            self.inner.delete(id).await
+        }
+    }
+
+    async fn touch_last_connected(
+        &self,
+        id: &crate::domain::entities::remote_environment::RemoteEnvironmentId,
+        timestamp: &str,
+    ) -> crate::error::AppResult<()> {
+        self.inner.touch_last_connected(id, timestamp).await
+    }
+}
+
+fn service_with_repo(
+    repo: Arc<dyn crate::domain::repositories::RemoteEnvironmentRepository>,
+) -> RemoteEnvironmentService {
+    RemoteEnvironmentService::new(
+        repo,
+        Arc::new(MemorySecretStore::new()),
+        Arc::new(MockRemoteHostClient::new(
+            descriptor("env-1"),
+            pair_response("env-1"),
+        )),
+        test_relay(),
+    )
+}
+
 // Trait methods on the concrete test doubles resolve through the imports the
 // service module already provides via `use super::*` (RemoteEnvironmentRepository,
 // SecretStore) — no extra trait imports needed here.
@@ -99,6 +206,138 @@ fn fixture_with_host(host: MockRemoteHostClient) -> Fixture {
 // ============================================================================
 // Pairing against the mock host
 // ============================================================================
+
+#[test]
+fn every_remote_environment_error_has_its_stable_code() {
+    let cases = vec![
+        (RemoteEnvironmentError::NotConnected, "NOT_CONNECTED"),
+        (
+            RemoteEnvironmentError::NotActiveEnvironment {
+                requested: "a".into(),
+                active: "b".into(),
+            },
+            "REMOTE_FORBIDDEN",
+        ),
+        (
+            RemoteEnvironmentError::UnknownEnvironment("a".into()),
+            "REMOTE_COMMAND_UNAVAILABLE",
+        ),
+        (
+            RemoteEnvironmentError::EnvironmentNotUsable("a".into(), "pending_add"),
+            "REMOTE_COMMAND_UNAVAILABLE",
+        ),
+        (RemoteEnvironmentError::LocalEnvironment, "REMOTE_FORBIDDEN"),
+        (
+            RemoteEnvironmentError::InvalidUrl("bad".into()),
+            "INVALID_PAIRING_URL",
+        ),
+        (
+            RemoteEnvironmentError::VersionSkew {
+                host_min_client: 2,
+                client: 1,
+            },
+            "REMOTE_VERSION_MISMATCH",
+        ),
+        (
+            RemoteEnvironmentError::IdentityMismatch {
+                descriptor: "a".into(),
+                response: "b".into(),
+            },
+            "HOST_IDENTITY_MISMATCH",
+        ),
+        (
+            RemoteEnvironmentError::PairRejected("bad".into()),
+            "PAIRING_REJECTED",
+        ),
+        (
+            RemoteEnvironmentError::Unreachable("offline".into()),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            RemoteEnvironmentError::Transport {
+                code: ralphx_remote_protocol::ErrorCode::RemoteRequestIdReused,
+                message: "duplicate".into(),
+            },
+            "REMOTE_REQUEST_ID_REUSED",
+        ),
+        (
+            RemoteEnvironmentError::InvalidFetchRequest("bad".into()),
+            "REMOTE_COMMAND_UNAVAILABLE",
+        ),
+        (
+            RemoteEnvironmentError::MissingCredential("a".into()),
+            "REMOTE_UNAUTHORIZED",
+        ),
+        (
+            RemoteEnvironmentError::Secret(SecretStoreError::Unavailable("locked".into())),
+            "SECRET_STORE_UNAVAILABLE",
+        ),
+        (
+            RemoteEnvironmentError::Db(crate::error::AppError::Database("boom".into())),
+            "DATABASE_ERROR",
+        ),
+    ];
+
+    for (error, expected) in cases {
+        assert_eq!(error.code(), expected, "{error:?}");
+    }
+}
+
+#[tokio::test]
+async fn database_read_failures_fail_closed_or_propagate_by_contract() {
+    let list_inner = Arc::new(MemoryRemoteEnvironmentRepository::new());
+    let mut list_repo = FailingRemoteEnvironmentRepository::new(list_inner);
+    list_repo.fail_list = true;
+    let list_service = service_with_repo(Arc::new(list_repo));
+    assert_eq!(
+        list_service.reconcile_on_startup().await,
+        RemoteEnvironmentReconcileReport::default()
+    );
+
+    let get_inner = Arc::new(MemoryRemoteEnvironmentRepository::new());
+    let mut get_repo = FailingRemoteEnvironmentRepository::new(get_inner);
+    get_repo.fail_get = true;
+    let get_service = service_with_repo(Arc::new(get_repo));
+    assert!(matches!(
+        get_service.set_active_environment("env-id").await,
+        Err(RemoteEnvironmentError::Db(_))
+    ));
+    assert!(matches!(
+        get_service
+            .fetch("env-id", RemoteFetchCall::get(REMOTE_HEALTH_PATH))
+            .await,
+        Err(RemoteEnvironmentError::Db(_))
+    ));
+}
+
+#[tokio::test]
+async fn reconcile_defers_when_a_required_row_delete_fails() {
+    for status in [
+        RemoteEnvironmentStatus::PendingAdd,
+        RemoteEnvironmentStatus::PendingDelete,
+    ] {
+        let inner = Arc::new(MemoryRemoteEnvironmentRepository::new());
+        let env = inner
+            .upsert_paired(crate::domain::repositories::UpsertPairedEnvironment {
+                environment_id: format!("env-{status:?}"),
+                name: "Mac".to_string(),
+                url: HOST_URL.to_string(),
+                scopes: vec![Scope::UiRead],
+                protocol_version: PROTOCOL_VERSION,
+            })
+            .await
+            .expect("seed");
+        inner.set_status(&env.id, status).await.expect("status");
+        let mut repo = FailingRemoteEnvironmentRepository::new(Arc::clone(&inner));
+        repo.fail_delete = true;
+        let service = service_with_repo(Arc::new(repo));
+
+        let report = service.reconcile_on_startup().await;
+
+        assert_eq!(report.deferred, vec![env.id.as_str().to_string()]);
+        assert!(inner.get(&env.id).await.expect("get").is_some());
+    }
+}
 
 #[tokio::test]
 async fn pair_success_lands_an_active_row_with_the_token_in_the_secret_store() {
@@ -329,10 +568,7 @@ async fn two_paired_environments(f: &Fixture) -> (String, String) {
         .pair("https://mini.tailnet.ts.net", "rxp_code2", "Mac mini")
         .await
         .expect("pair B");
-    (
-        env_a.id.as_str().to_string(),
-        env_b.id.as_str().to_string(),
-    )
+    (env_a.id.as_str().to_string(), env_b.id.as_str().to_string())
 }
 
 #[tokio::test]
@@ -365,7 +601,8 @@ async fn invoke_for_the_active_environment_dispatches_with_the_stored_bearer() {
         .set_active_environment(&a)
         .await
         .expect("activating A should succeed");
-    f.host.script_invoke(200, r#"{"ok":true,"result":{"status":"ok"}}"#);
+    f.host
+        .script_invoke(200, r#"{"ok":true,"result":{"status":"ok"}}"#);
 
     let outcome = f
         .service
@@ -428,7 +665,10 @@ async fn a_host_command_error_is_not_a_transport_error() {
 async fn a_bare_result_body_is_read_as_success() {
     let f = fixture();
     let (a, _b) = two_paired_environments(&f).await;
-    f.service.set_active_environment(&a).await.expect("activate");
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
     f.host.script_invoke(200, r#"[{"id":"task-1"}]"#);
 
     let outcome = f
@@ -450,11 +690,19 @@ async fn a_bare_result_body_is_read_as_success() {
 #[tokio::test]
 async fn host_error_bodies_map_to_their_taxonomy_codes() {
     let cases: &[(u16, &str, &str)] = &[
-        (404, "REMOTE_COMMAND_UNAVAILABLE", "REMOTE_COMMAND_UNAVAILABLE"),
+        (
+            404,
+            "REMOTE_COMMAND_UNAVAILABLE",
+            "REMOTE_COMMAND_UNAVAILABLE",
+        ),
         (403, "REMOTE_FORBIDDEN", "REMOTE_FORBIDDEN"),
         (401, "REMOTE_UNAUTHORIZED", "REMOTE_UNAUTHORIZED"),
         (426, "REMOTE_VERSION_MISMATCH", "REMOTE_VERSION_MISMATCH"),
-        (409, "REMOTE_REQUEST_IN_PROGRESS", "REMOTE_REQUEST_IN_PROGRESS"),
+        (
+            409,
+            "REMOTE_REQUEST_IN_PROGRESS",
+            "REMOTE_REQUEST_IN_PROGRESS",
+        ),
         (409, "REMOTE_REQUEST_ID_REUSED", "REMOTE_REQUEST_ID_REUSED"),
         (504, "REMOTE_TIMEOUT_UNKNOWN", "REMOTE_TIMEOUT_UNKNOWN"),
         (502, "REMOTE_UNREACHABLE", "REMOTE_UNREACHABLE"),
@@ -462,7 +710,10 @@ async fn host_error_bodies_map_to_their_taxonomy_codes() {
     for (status, body_code, expected) in cases {
         let f = fixture();
         let (a, _b) = two_paired_environments(&f).await;
-        f.service.set_active_environment(&a).await.expect("activate");
+        f.service
+            .set_active_environment(&a)
+            .await
+            .expect("activate");
         f.host.script_invoke(
             *status,
             format!(r#"{{"code":"{body_code}","message":"nope"}}"#),
@@ -473,7 +724,11 @@ async fn host_error_bodies_map_to_their_taxonomy_codes() {
             .invoke(&a, "req-1", "list_tasks", serde_json::json!({}))
             .await
             .expect_err("a host refusal is a transport error");
-        assert_eq!(error.code(), *expected, "status {status} / body {body_code}");
+        assert_eq!(
+            error.code(),
+            *expected,
+            "status {status} / body {body_code}"
+        );
     }
 }
 
@@ -483,7 +738,10 @@ async fn host_error_bodies_map_to_their_taxonomy_codes() {
 async fn an_untyped_host_refusal_maps_by_status() {
     let f = fixture();
     let (a, _b) = two_paired_environments(&f).await;
-    f.service.set_active_environment(&a).await.expect("activate");
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
     f.host.script_invoke(403, "forbidden");
 
     let error = f
@@ -501,7 +759,10 @@ async fn an_untyped_host_refusal_maps_by_status() {
 async fn a_dispatch_timeout_is_an_unknown_outcome_not_unreachable() {
     let f = fixture();
     let (a, _b) = two_paired_environments(&f).await;
-    f.service.set_active_environment(&a).await.expect("activate");
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
     f.host
         .script_invoke_error(RemoteHostClientError::Timeout("no answer after 30s".into()));
 
@@ -519,7 +780,10 @@ async fn a_dispatch_timeout_is_an_unknown_outcome_not_unreachable() {
 async fn a_missing_bearer_fails_closed_before_any_request() {
     let f = fixture();
     let (a, _b) = two_paired_environments(&f).await;
-    f.service.set_active_environment(&a).await.expect("activate");
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
     let env = f
         .repo
         .get(&crate::domain::entities::remote_environment::RemoteEnvironmentId::from_string(&a))
@@ -560,7 +824,10 @@ async fn unsafe_fetch_targets_are_refused_before_a_bearer_is_read() {
     for path in cases {
         let f = fixture();
         let (a, _b) = two_paired_environments(&f).await;
-        f.service.set_active_environment(&a).await.expect("activate");
+        f.service
+            .set_active_environment(&a)
+            .await
+            .expect("activate");
 
         let error = f
             .service
@@ -586,7 +853,10 @@ async fn unsafe_fetch_targets_are_refused_before_a_bearer_is_read() {
 async fn only_allowlisted_headers_are_forwarded() {
     let f = fixture();
     let (a, _b) = two_paired_environments(&f).await;
-    f.service.set_active_environment(&a).await.expect("activate");
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
 
     let error = f
         .service
@@ -613,7 +883,10 @@ async fn only_allowlisted_headers_are_forwarded() {
 async fn a_non_success_fetch_status_is_returned_not_raised() {
     let f = fixture();
     let (a, _b) = two_paired_environments(&f).await;
-    f.service.set_active_environment(&a).await.expect("activate");
+    f.service
+        .set_active_environment(&a)
+        .await
+        .expect("activate");
     f.host.script_fetch(422, r#"{"error":"bad input"}"#);
 
     let outcome = f
@@ -632,7 +905,10 @@ async fn fetch_auth_refusals_lift_into_the_taxonomy() {
     for (status, expected) in [(401, "REMOTE_UNAUTHORIZED"), (403, "REMOTE_FORBIDDEN")] {
         let f = fixture();
         let (a, _b) = two_paired_environments(&f).await;
-        f.service.set_active_environment(&a).await.expect("activate");
+        f.service
+            .set_active_environment(&a)
+            .await
+            .expect("activate");
         f.host.script_fetch(status, "no");
 
         let error = f
@@ -677,9 +953,7 @@ async fn descriptor_probe_for_a_background_environment_succeeds() {
         .service
         .fetch(
             &b,
-            RemoteFetchCall::get(
-                crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH,
-            ),
+            RemoteFetchCall::get(crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH),
         )
         .await
         .expect("health probe for a background env must be allowed");
@@ -766,9 +1040,7 @@ async fn invoke_is_refused_while_the_active_environment_is_mid_re_pair() {
         .service
         .fetch(
             env.id.as_str(),
-            RemoteFetchCall::get(
-                crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH,
-            ),
+            RemoteFetchCall::get(crate::infrastructure::remote_host_client::REMOTE_DESCRIPTOR_PATH),
         )
         .await;
 
@@ -1131,10 +1403,7 @@ async fn reconciler_completes_a_pending_delete_with_revoke_then_secret_then_row(
 
     let report = f.service.reconcile_on_startup().await;
 
-    assert_eq!(
-        report.completed_removals,
-        vec![env.id.as_str().to_string()]
-    );
+    assert_eq!(report.completed_removals, vec![env.id.as_str().to_string()]);
     assert!(f.host.recorded_calls().iter().any(|call| matches!(
         call,
         RecordedHostCall::Revoke { token, .. } if token == TOKEN
@@ -1160,10 +1429,7 @@ async fn reconciler_deletes_a_pending_delete_row_whose_secret_is_already_gone() 
 
     let report = f.service.reconcile_on_startup().await;
 
-    assert_eq!(
-        report.completed_removals,
-        vec![env.id.as_str().to_string()]
-    );
+    assert_eq!(report.completed_removals, vec![env.id.as_str().to_string()]);
     assert!(f.repo.get(&env.id).await.expect("get").is_none());
     // No orphaned valid bearer anywhere: nothing was in the secret store.
 }
@@ -1420,6 +1686,405 @@ async fn disconnect_tears_the_session_down_and_is_idempotent_when_unconnected() 
     assert!(!f.relay.is_connected(env.id.as_str()));
     // Idempotent: disconnecting an unconnected environment stays success.
     assert!(f.service.disconnect(env.id.as_str()).await.is_ok());
+}
+
+#[test]
+fn fetch_validation_rejects_every_unsafe_shape() {
+    for path in [
+        "//host/path",
+        "/http://host/path",
+        "/a/../b",
+        "/two words",
+        "/x\ny",
+    ] {
+        assert!(matches!(
+            validate_remote_fetch_path(path),
+            Err(RemoteEnvironmentError::InvalidFetchRequest(_))
+        ));
+    }
+    assert!(matches!(
+        validate_remote_fetch_method("TRACE"),
+        Err(RemoteEnvironmentError::InvalidFetchRequest(_))
+    ));
+    for headers in [
+        vec![("authorization".to_string(), "secret".to_string())],
+        vec![(
+            "content-type".to_string(),
+            "text/plain\ninjected".to_string(),
+        )],
+    ] {
+        assert!(matches!(
+            validate_remote_fetch_headers(&headers),
+            Err(RemoteEnvironmentError::InvalidFetchRequest(_))
+        ));
+    }
+}
+
+#[test]
+fn transport_failures_map_to_stable_codes() {
+    let cases = [
+        (
+            RemoteHostClientError::Timeout("late".into()),
+            "REMOTE_TIMEOUT_UNKNOWN",
+        ),
+        (
+            RemoteHostClientError::Unreachable("offline".into()),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            RemoteHostClientError::Rejected {
+                status: 422,
+                message: "reused".into(),
+            },
+            "REMOTE_REQUEST_ID_REUSED",
+        ),
+        (
+            RemoteHostClientError::InvalidResponse("bad".into()),
+            "REMOTE_VERSION_MISMATCH",
+        ),
+    ];
+    for (error, expected) in cases {
+        assert_eq!(transport_error(error).code(), expected);
+    }
+}
+
+#[test]
+fn every_untyped_status_maps_to_the_expected_code() {
+    for (status, expected) in [
+        (401, "REMOTE_UNAUTHORIZED"),
+        (403, "REMOTE_FORBIDDEN"),
+        (404, "REMOTE_COMMAND_UNAVAILABLE"),
+        (501, "REMOTE_COMMAND_UNAVAILABLE"),
+        (408, "REMOTE_TIMEOUT_UNKNOWN"),
+        (504, "REMOTE_TIMEOUT_UNKNOWN"),
+        (409, "REMOTE_REQUEST_IN_PROGRESS"),
+        (422, "REMOTE_REQUEST_ID_REUSED"),
+        (426, "REMOTE_VERSION_MISMATCH"),
+        (505, "REMOTE_VERSION_MISMATCH"),
+        (599, "REMOTE_UNREACHABLE"),
+    ] {
+        let error = transport_error(RemoteHostClientError::Rejected {
+            status,
+            message: "refused".into(),
+        });
+        assert_eq!(error.code(), expected, "status {status}");
+    }
+}
+
+#[test]
+fn invoke_envelopes_preserve_results_errors_and_null_defaults() {
+    for (body, expected) in [
+        (
+            r#"{"ok":false,"error":{"code":"bad"}}"#,
+            RemoteInvokeOutcome::CommandError {
+                error: serde_json::json!({"code": "bad"}),
+            },
+        ),
+        (
+            r#"{"ok":false}"#,
+            RemoteInvokeOutcome::CommandError {
+                error: serde_json::Value::Null,
+            },
+        ),
+        (
+            r#"{"ok":true,"result":{"id":1}}"#,
+            RemoteInvokeOutcome::Ok {
+                result: serde_json::json!({"id": 1}),
+            },
+        ),
+        (
+            r#"{"ok":true}"#,
+            RemoteInvokeOutcome::Ok {
+                result: serde_json::Value::Null,
+            },
+        ),
+        (
+            r#"{"plain":"body"}"#,
+            RemoteInvokeOutcome::Ok {
+                result: serde_json::json!({"plain": "body"}),
+            },
+        ),
+    ] {
+        assert_eq!(
+            parse_invoke_response(RemoteHttpResponse {
+                status: 200,
+                body: body.to_string(),
+            })
+            .expect("valid success response"),
+            expected
+        );
+    }
+
+    let error = parse_invoke_response(RemoteHttpResponse {
+        status: 200,
+        body: "not-json".to_string(),
+    })
+    .expect_err("an invalid success body is a version mismatch");
+    assert_eq!(error.code(), "REMOTE_VERSION_MISMATCH");
+}
+
+#[test]
+fn pairing_url_and_pairing_wire_errors_cover_every_rejection() {
+    for url in ["not a url", "ftp://host/path", "http:/missing-host"] {
+        assert!(
+            validate_pairing_url(url).is_err(),
+            "{url:?} must not reach pairing"
+        );
+    }
+    assert!(client_device_name().starts_with("RalphX Desktop "));
+
+    for (error, expected_code) in [
+        (
+            descriptor_error(RemoteHostClientError::Unreachable("offline".into())),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            descriptor_error(RemoteHostClientError::Timeout("late".into())),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            descriptor_error(RemoteHostClientError::Rejected {
+                status: 503,
+                message: "busy".into(),
+            }),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            descriptor_error(RemoteHostClientError::InvalidResponse("bad json".into())),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            pair_error(RemoteHostClientError::Unreachable("offline".into())),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            pair_error(RemoteHostClientError::Timeout("late".into())),
+            "REMOTE_UNREACHABLE",
+        ),
+        (
+            pair_error(RemoteHostClientError::Rejected {
+                status: 409,
+                message: "used".into(),
+            }),
+            "PAIRING_REJECTED",
+        ),
+        (
+            pair_error(RemoteHostClientError::InvalidResponse("bad json".into())),
+            "PAIRING_REJECTED",
+        ),
+    ] {
+        assert_eq!(error.code(), expected_code);
+    }
+}
+
+#[tokio::test]
+async fn active_environment_success_and_stub_guard_matrix() {
+    let f = fixture();
+    assert!(matches!(
+        f.service.connect(LOCAL_ENVIRONMENT_ID).await,
+        Err(RemoteEnvironmentError::LocalEnvironment)
+    ));
+    assert!(matches!(
+        f.service.disconnect(LOCAL_ENVIRONMENT_ID).await,
+        Err(RemoteEnvironmentError::LocalEnvironment)
+    ));
+    assert!(matches!(
+        f.service.disconnect("missing").await,
+        Err(RemoteEnvironmentError::UnknownEnvironment(_))
+    ));
+
+    let pending = seed_husk(&f).await;
+    assert!(matches!(
+        f.service.connect(pending.id.as_str()).await,
+        Err(RemoteEnvironmentError::EnvironmentNotUsable(..))
+    ));
+
+    f.repo
+        .set_status(&pending.id, RemoteEnvironmentStatus::Active)
+        .await
+        .expect("activate row");
+    f.service
+        .set_active_environment(pending.id.as_str())
+        .await
+        .expect("active row may become authoritative");
+    assert_eq!(f.service.active_environment_id().await, pending.id.as_str());
+}
+
+#[tokio::test]
+async fn re_pair_succeeds_when_replaced_token_revoke_fails() {
+    let f = fixture();
+    f.service
+        .pair(HOST_URL, "rxp_code", "Mac Studio")
+        .await
+        .expect("first pair");
+    *f.host.pair_response.lock().expect("mock") = Ok(PairWireResponse {
+        device_token: "rxd_replacement".to_string(),
+        ..pair_response("env-1")
+    });
+    *f.host.revoke_response.lock().expect("mock") = Err(RemoteHostClientError::Unreachable(
+        "old host offline".into(),
+    ));
+
+    let repaired = f
+        .service
+        .pair(HOST_URL_DIRECT, "rxp_code2", "Mac Studio")
+        .await
+        .expect("best-effort cleanup cannot fail the completed re-pair");
+    assert_eq!(repaired.status, RemoteEnvironmentStatus::Active);
+    assert_eq!(
+        f.secrets
+            .get_secret(&repaired.token_secret_ref)
+            .await
+            .expect("secret read")
+            .as_deref(),
+        Some("rxd_replacement")
+    );
+}
+
+#[tokio::test]
+async fn reconciler_defers_when_activation_write_fails() {
+    let inner = Arc::new(MemoryRemoteEnvironmentRepository::new());
+    let env = inner
+        .upsert_paired(crate::domain::repositories::UpsertPairedEnvironment {
+            environment_id: "env-pending".to_string(),
+            name: "Pending".to_string(),
+            url: HOST_URL.to_string(),
+            scopes: vec![Scope::UiRead],
+            protocol_version: PROTOCOL_VERSION,
+        })
+        .await
+        .expect("seed");
+    let secrets = Arc::new(MemorySecretStore::new());
+    secrets
+        .put_secret(&env.token_secret_ref, TOKEN)
+        .await
+        .expect("seed secret");
+    let repo = Arc::new(FailingRemoteEnvironmentRepository {
+        fail_set_status: true,
+        ..FailingRemoteEnvironmentRepository::new(Arc::clone(&inner))
+    });
+    let service = RemoteEnvironmentService::new(
+        repo,
+        secrets,
+        Arc::new(MockRemoteHostClient::new(
+            descriptor("env-pending"),
+            pair_response("env-pending"),
+        )),
+        test_relay(),
+    );
+
+    let report = service.reconcile_on_startup().await;
+    assert_eq!(report.deferred, vec![env.id.as_str().to_string()]);
+    assert_eq!(
+        inner
+            .get(&env.id)
+            .await
+            .expect("row")
+            .expect("exists")
+            .status,
+        RemoteEnvironmentStatus::PendingAdd
+    );
+}
+
+#[tokio::test]
+async fn reconciler_pending_delete_defers_each_destructive_failure() {
+    let inner = Arc::new(MemoryRemoteEnvironmentRepository::new());
+    let repo = Arc::new(FailingRemoteEnvironmentRepository {
+        fail_delete: true,
+        ..FailingRemoteEnvironmentRepository::new(Arc::clone(&inner))
+    });
+    let secrets = Arc::new(MemorySecretStore::new());
+    let host = Arc::new(MockRemoteHostClient::new(
+        descriptor("env-delete"),
+        pair_response("env-delete"),
+    ));
+    let service = RemoteEnvironmentService::new(
+        Arc::clone(&repo) as _,
+        Arc::clone(&secrets) as _,
+        Arc::clone(&host) as _,
+        test_relay(),
+    );
+    let env = inner
+        .upsert_paired(crate::domain::repositories::UpsertPairedEnvironment {
+            environment_id: "env-delete".to_string(),
+            name: "Delete".to_string(),
+            url: HOST_URL.to_string(),
+            scopes: vec![Scope::UiRead],
+            protocol_version: PROTOCOL_VERSION,
+        })
+        .await
+        .expect("seed");
+    inner
+        .set_status(&env.id, RemoteEnvironmentStatus::PendingDelete)
+        .await
+        .expect("pending delete");
+    secrets
+        .put_secret(&env.token_secret_ref, TOKEN)
+        .await
+        .expect("seed secret");
+    *host.revoke_response.lock().expect("mock") =
+        Err(RemoteHostClientError::Unreachable("offline".into()));
+
+    let report = service.reconcile_on_startup().await;
+    assert_eq!(report.deferred, vec![env.id.as_str().to_string()]);
+    assert!(inner.get(&env.id).await.expect("row").is_some());
+    assert!(
+        secrets
+            .get_secret(&env.token_secret_ref)
+            .await
+            .expect("secret read")
+            .is_none(),
+        "row deletion was attempted only after the secret was deleted"
+    );
+
+    let secretless_retry = service.reconcile_on_startup().await;
+    assert_eq!(secretless_retry.deferred, vec![env.id.as_str().to_string()]);
+}
+
+#[tokio::test]
+async fn reconciler_keeps_pending_delete_row_when_secret_delete_fails() {
+    let repo = Arc::new(MemoryRemoteEnvironmentRepository::new());
+    let inner_secrets = Arc::new(MemorySecretStore::new());
+    let secrets = Arc::new(FailingDeleteSecretStore {
+        inner: Arc::clone(&inner_secrets),
+        fail_delete: StdMutex::new(true),
+    });
+    let host = Arc::new(MockRemoteHostClient::new(
+        descriptor("env-delete"),
+        pair_response("env-delete"),
+    ));
+    let service = RemoteEnvironmentService::new(
+        Arc::clone(&repo) as _,
+        Arc::clone(&secrets) as _,
+        Arc::clone(&host) as _,
+        test_relay(),
+    );
+    let env = repo
+        .upsert_paired(crate::domain::repositories::UpsertPairedEnvironment {
+            environment_id: "env-delete".to_string(),
+            name: "Delete".to_string(),
+            url: HOST_URL.to_string(),
+            scopes: vec![Scope::UiRead],
+            protocol_version: PROTOCOL_VERSION,
+        })
+        .await
+        .expect("seed");
+    repo.set_status(&env.id, RemoteEnvironmentStatus::PendingDelete)
+        .await
+        .expect("pending delete");
+    inner_secrets
+        .put_secret(&env.token_secret_ref, TOKEN)
+        .await
+        .expect("seed secret");
+
+    let report = service.reconcile_on_startup().await;
+    assert_eq!(report.deferred, vec![env.id.as_str().to_string()]);
+    assert!(repo.get(&env.id).await.expect("row").is_some());
+    assert!(inner_secrets
+        .get_secret(&env.token_secret_ref)
+        .await
+        .expect("secret read")
+        .is_some());
 }
 
 #[tokio::test]
