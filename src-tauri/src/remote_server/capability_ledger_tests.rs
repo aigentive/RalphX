@@ -1707,6 +1707,60 @@ fn b1_sibling_getters_that_audit_dirty_stay_above_read() {
 
 #[test]
 #[ignore = "calibration probe"]
+fn probe_chat_send_trio_sink_paths() {
+    const SUBJECTS: &[&str] = &[
+        "send_agent_message",
+        "start_agent_conversation",
+        "send_chat_message",
+        "create_agent_conversation",
+        "start_automation",
+        "resume_automation",
+        "finalize_automation",
+        "stop_automation",
+        "pause_automation",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+    let modules = rows.into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in SUBJECTS {
+        let Some(module) = modules.get(*command) else {
+            eprintln!("PROBE-TRIO {command} NOT-IN-CENSUS");
+            continue;
+        };
+        let closure = graph.closure([command.to_string()]);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-TRIO {command} module={module} a={} b={} c={} class={:?} caps={:?}",
+            closure_is_arming(&closure),
+            detector_b.contains(*command),
+            tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            row.class,
+            row.capabilities,
+        );
+        for sinks in [
+            ("STEER", &super::authority_audit::STEER_SINKS[..]),
+            ("SCHEDULER", &super::authority_audit::SCHEDULER_SINKS[..]),
+            ("TRANSITION", &super::authority_audit::TRANSITION_SINKS[..]),
+            ("LAUNCH", PROCESS_LAUNCH_SINKS),
+        ] {
+            let hits = closure
+                .tokens
+                .iter()
+                .filter(|t| tokens_reach_any(&std::iter::once((*t).clone()).collect(), sinks.1))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !hits.is_empty() {
+                eprintln!("PROBE-TRIO   {command} {} -> {hits:?}", sinks.0);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "calibration probe"]
 fn probe_b1_module_batch_audit() {
     const B1_MODULES: &[&str] = &[
         "execution_commands",
