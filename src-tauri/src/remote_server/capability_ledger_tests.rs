@@ -2496,3 +2496,103 @@ fn bulk_archive_is_not_a_brake_and_stays_unregistered() {
          now genuinely apply and this refusal must be re-audited"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 3 — census `B2` reconnaissance probe.
+//
+// `B2` is the census's highest-risk batch: 51 register-candidates across six modules, and it
+// contains both the detector-(a) steer sink (`send_agent_message`) and the workspace-publish
+// `git push` surface. This probe is the mechanical first half only. It registers nothing and
+// decides nothing; it exists so the batch that takes `B2` starts from measured detector output
+// instead of from the census's prose.
+// ---------------------------------------------------------------------------------------
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b2_module_batch_audit() {
+    const B2_MODULES: &[&str] = &[
+        "agent_composer_commands",
+        "agent_model_commands",
+        "agent_sidebar_commands",
+        "conversation_folder_reference_commands",
+        "conversation_stats_commands",
+        "unified_chat_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b =
+        spawn_triggering_writers(&graph, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+    let detector_d = agent_consumed_content_writers(
+        &graph,
+        commands.into_iter(),
+        AGENT_CONSUMED_CONTENT_WRITE_SURFACE,
+    );
+
+    for (command, module) in &rows {
+        if !B2_MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let d = detector_d.contains_key(command);
+        let t = tokens_reach_any(&closure.tokens, TRANSITION_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B2 {module} {command} a={a} b={b} c={c} d={d} transition={t} class={:?} registered={}",
+            row.class,
+            find_spec(command).is_some(),
+        );
+    }
+}
+
+/// The `B2` stats reclassifications are reviewed rows, and the module stays conservative.
+#[test]
+fn b2_stats_reclassifications_are_reviewed_rather_than_module_defaults() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in [
+        "get_agent_conversation_stats",
+        "get_project_chat_usage_stats",
+        "get_task_chat_usage_stats",
+        "get_insights_chat_usage_stats",
+    ] {
+        let module = rows.get(command).expect("stats command is live");
+        assert_eq!(
+            module, "conversation_stats_commands",
+            "`{command}` moved module; re-run the audit"
+        );
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Read);
+        assert!(row.capabilities.is_empty());
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        // The fail-open shape is what kept two batch-1 candidates unregistered. Each reason
+        // records that this cluster does not have it.
+        assert!(
+            row.reason.contains("propagates read errors"),
+            "`{command}` must record that its reads fail closed"
+        );
+        assert!(find_spec(command).is_some());
+    }
+
+    let default = MODULE_DEFAULTS
+        .iter()
+        .find(|entry| entry.module == "conversation_stats_commands")
+        .expect("module has a default");
+    assert_eq!(
+        default.policy.class,
+        RiskClass::AgentControl,
+        "the module default weakened; these four were registered as EXCEPTIONS to it"
+    );
+
+    // `unified_chat_commands` is emphatically untouched by this batch.
+    let chat_default = MODULE_DEFAULTS
+        .iter()
+        .find(|entry| entry.module == "unified_chat_commands")
+        .expect("module has a default");
+    assert_eq!(chat_default.policy.class, RiskClass::AgentControl);
+}

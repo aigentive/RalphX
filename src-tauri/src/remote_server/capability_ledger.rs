@@ -919,6 +919,52 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     // -------------------------------------------------------------------------------------
+    // PR 3.1-b batch 3 — census `B2`, the conversation-stats read cluster.
+    //
+    // `B2` is the census's highest-risk batch and this is deliberately the smallest complete
+    // module in it. All four audit detector-silent on (a)/(b)/(c)/(d), and each body was
+    // hand-traced to repository reads whose errors are propagated with `map_err(...)?` rather
+    // than collapsed into an empty result — the `get_pending_permissions` fail-open shape that
+    // kept two batch-1 candidates unregistered does not appear here.
+    //
+    // The payloads are token/cost AGGREGATES — usage totals, coverage counts and per-harness,
+    // per-model and per-effort buckets. No message text, no prompt, no tool input. This is a
+    // usage-reporting surface, not the transcript surface; the transcript reads stay at the
+    // module default and are the next batch's problem.
+    CommandOverride {
+        command: "get_agent_conversation_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "aggregates conversation/message/run repository reads into usage totals; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_project_chat_usage_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "project-scoped usage aggregation over repository reads; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_chat_usage_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "task-scoped usage aggregation over repository reads; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_insights_chat_usage_stats",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "project-or-all-projects usage aggregation over repository reads; propagates read errors",
+        ),
+    },
+
+    // -------------------------------------------------------------------------------------
     // PR 3.1-b batch 3 — the Operate brakes.
     //
     // Batch 2 registered the `B1` reads and left the module defaults at `AgentControl`. These

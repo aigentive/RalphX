@@ -680,6 +680,24 @@ async fn seed_b1_tasks(app: &tauri::App<tauri::test::MockRuntime>) -> (String, S
     .await
     .expect("seeding the second task succeeds");
 
+    // A real dependency edge: task two is blocked by task one.
+    //
+    // Without it the dependency-graph parity row was both weaker and flaky. Weaker because
+    // `edges` was empty, so nothing proved the facade reproduced edge data at all. Flaky
+    // because with two unconnected tasks the critical path is a tie between two single-node
+    // paths, and the command breaks that tie by whatever order the underlying `HashMap`
+    // iteration produced — two calls of the same command genuinely disagreed. With the edge
+    // the graph has one longest path, so `critical_path`, `tier`, `in_degree` and `out_degree`
+    // are all uniquely determined and asserted exactly.
+    app.state::<crate::application::AppState>()
+        .task_dependency_repo
+        .add_dependency(
+            &crate::domain::entities::TaskId::from_string(second.id.clone()),
+            &crate::domain::entities::TaskId::from_string(first.id.clone()),
+        )
+        .await
+        .expect("seeding the dependency edge succeeds");
+
     (first.id, second.id)
 }
 
@@ -690,7 +708,7 @@ async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
     use tauri::Manager;
 
     let app = app_with_task_state();
-    let (task_id, _other) = seed_b1_tasks(&app).await;
+    let (task_id, other_task_id) = seed_b1_tasks(&app).await;
 
     let direct_archived = crate::commands::task_commands::query::get_archived_count(
         B1_FIXTURE_PROJECT.to_string(),
@@ -760,6 +778,19 @@ async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
         2,
         "dependency graph must carry both seeded tasks"
     );
+    // The seeded edge must actually be visible, or the parity row proves nothing about edge
+    // data — and the critical path must be the unique two-node path rather than a coin flip.
+    assert_eq!(
+        direct_graph.edges.len(),
+        1,
+        "the seeded dependency edge must appear in the graph"
+    );
+    assert_eq!(direct_graph.critical_path.len(), 2);
+    assert_eq!(
+        direct_graph.critical_path,
+        vec![task_id.clone(), other_task_id.clone()],
+        "the critical path must run blocker -> blocked, deterministically"
+    );
     // The remaining four reads are empty-by-construction over a freshly seeded fixture
     // (no archived task, no review-status task, no recorded status history, and therefore no
     // timeline event). Their parity rows below are consequently weaker than the two above,
@@ -814,12 +845,45 @@ async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
         let outcome = registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
             .await
             .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        let DispatchOutcome::Ok(facade) = outcome else {
+            panic!("`{command}` returned a business error: {outcome:?}");
+        };
         assert_eq!(
-            outcome,
-            DispatchOutcome::Ok(direct),
+            canonicalize_unordered_collections(facade),
+            canonicalize_unordered_collections(direct),
             "P-4 parity mismatch for `{command}`"
         );
     }
+}
+
+/// Sorts the payload arrays whose order is not part of any command's contract.
+///
+/// `get_task_dependency_graph` builds its node list from `task_repo.get_by_project`, which
+/// promises no ordering — the in-memory repository iterates a `HashMap`, so two calls in the
+/// same process can legitimately return the same nodes in different orders. Asserting raw
+/// equality made this parity row intermittently red (observed repeatedly while landing batch
+/// 3) while proving nothing the command guarantees.
+///
+/// This canonicalizes rather than skips: the node and edge SETS must still match exactly, and
+/// every other field is compared untouched. A facade that dropped, added or reshaped a node
+/// still fails. What is deliberately no longer asserted is an ordering neither the local IPC
+/// path nor the facade ever promised.
+///
+/// `critical_path` is deliberately NOT canonicalized here. It was the other half of the flake,
+/// and canonicalizing it would have hidden something real: over the ORIGINAL fixture — two
+/// unconnected tasks — the command picked one of two tied single-node paths arbitrarily, so
+/// two calls genuinely disagreed about which task was critical. The fix is in the fixture,
+/// which now seeds a real dependency edge and therefore has a uniquely determined critical
+/// path, so the field is asserted exactly.
+fn canonicalize_unordered_collections(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        for field in ["nodes", "edges"] {
+            if let Some(Value::Array(items)) = object.get_mut(field) {
+                items.sort_by_key(|item| item.to_string());
+            }
+        }
+    }
+    value
 }
 
 /// Scope negative — no grant weaker than (or sideways from) `ui:read` reaches these reads.
@@ -1637,4 +1701,163 @@ async fn p4_parity_for_the_r3_mutating_trio_deny_permission_request() {
         DispatchOutcome::Err(registry::serialize_ok(&direct_error).unwrap()),
         "the error envelope must match the direct call's error payload"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 3 — census `B2`, the conversation-stats read cluster (`ui:read`)
+//
+// Four aggregate reads, the smallest complete module in the census's highest-risk batch.
+// What is ABSENT is the finding: the transcript reads (`get_agent_conversation`,
+// `get_agent_conversation_messages_page`, `get_agent_conversation_timeline_page`) all fire
+// detector (a), and the workspace/publish surface fires (a), (b) and (c) together. They stay
+// at the module default, asserted below.
+// ---------------------------------------------------------------------------------------
+
+const B2_STATS_READS: [&str; 4] = [
+    "get_agent_conversation_stats",
+    "get_project_chat_usage_stats",
+    "get_task_chat_usage_stats",
+    "get_insights_chat_usage_stats",
+];
+
+/// P-4 parity for the stats cluster.
+#[tokio::test]
+async fn p4_parity_for_the_b2_stats_reads() {
+    use tauri::Manager;
+
+    let app = app_with_task_state();
+    seed_r3_task(&app).await;
+
+    let direct_conversation =
+        crate::commands::conversation_stats_commands::get_agent_conversation_stats(
+            "no-such-conversation".to_string(),
+            app.state::<crate::application::AppState>(),
+        )
+        .await
+        .expect("direct conversation-stats read succeeds");
+    let direct_project =
+        crate::commands::conversation_stats_commands::get_project_chat_usage_stats(
+            R3_FIXTURE_PROJECT.to_string(),
+            app.state::<crate::application::AppState>(),
+        )
+        .await
+        .expect("direct project-usage read succeeds");
+    let direct_task = crate::commands::conversation_stats_commands::get_task_chat_usage_stats(
+        R3_FIXTURE_TASK.to_string(),
+        app.state::<crate::application::AppState>(),
+    )
+    .await
+    .expect("direct task-usage read succeeds");
+    let direct_insights =
+        crate::commands::conversation_stats_commands::get_insights_chat_usage_stats(
+            None,
+            app.state::<crate::application::AppState>(),
+        )
+        .await
+        .expect("direct insights-usage read succeeds");
+
+    // Non-vacuity is recorded honestly rather than manufactured. A mock `AppState` carries no
+    // chat conversations, so three of these are legitimately zero-valued and the fourth is a
+    // genuine `None`. What the rows below prove is ENVELOPE parity — that the facade
+    // reproduces the scope identity and the full aggregate shape, not merely "nothing". The
+    // load-bearing guarantee for these four is the scope negative that follows.
+    assert!(
+        direct_conversation.is_none(),
+        "an unknown conversation must read as None, not as an error"
+    );
+    assert_eq!(
+        direct_project.scope_type, "project",
+        "the project row must identify its own scope"
+    );
+    assert_eq!(direct_project.scope_id, R3_FIXTURE_PROJECT);
+    assert_eq!(direct_task.scope_type, "task");
+    assert_eq!(direct_insights.scope_type, "all_projects");
+
+    for (command, args, direct) in [
+        (
+            "get_agent_conversation_stats",
+            json!({"conversationId": "no-such-conversation"}),
+            registry::serialize_ok(&direct_conversation).unwrap(),
+        ),
+        (
+            "get_project_chat_usage_stats",
+            json!({"projectId": R3_FIXTURE_PROJECT}),
+            registry::serialize_ok(&direct_project).unwrap(),
+        ),
+        (
+            "get_task_chat_usage_stats",
+            json!({"taskId": R3_FIXTURE_TASK}),
+            registry::serialize_ok(&direct_task).unwrap(),
+        ),
+        (
+            "get_insights_chat_usage_stats",
+            json!({"projectId": null}),
+            registry::serialize_ok(&direct_insights).unwrap(),
+        ),
+    ] {
+        let outcome = registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
+            .await
+            .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(direct),
+            "P-4 parity mismatch for `{command}`"
+        );
+    }
+}
+
+/// Scope negative, plus the standing absence of the detector-positive `B2` siblings.
+#[tokio::test]
+async fn the_b2_stats_reads_are_refused_below_ui_read() {
+    let app = app_with_task_state();
+
+    for command in B2_STATS_READS {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(
+            spec.class,
+            RiskClass::Read,
+            "`{command}` must be a Read row"
+        );
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` must carry no capability; a Read row with one is the under-labelling \
+             signature itself"
+        );
+
+        for scopes in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let error = registry::dispatch(&app.handle().clone(), &scopes, command, &json!({}))
+                .await
+                .expect_err("insufficient scope must be refused");
+            assert_eq!(
+                error.code,
+                ErrorCode::RemoteForbidden,
+                "`{command}` admitted {scopes:?}"
+            );
+        }
+    }
+
+    // The detector-positive `B2` siblings stay unreachable. These are the transcript and
+    // workspace/publish reads a later batch must audit on their own evidence; registering the
+    // stats module must not be mistaken for having cleared the module family.
+    for command in [
+        "get_agent_conversation",
+        "get_agent_conversation_messages_page",
+        "get_agent_conversation_timeline_page",
+        "get_agent_conversation_workspace",
+        "list_agent_sidebar_conversations",
+        "send_agent_message",
+        "start_agent_conversation",
+    ] {
+        assert!(
+            registry::find_spec(command).is_none(),
+            "`{command}` fires at least one authority detector and must stay unregistered"
+        );
+    }
 }

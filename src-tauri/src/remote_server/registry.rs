@@ -822,6 +822,51 @@ crate::remote_commands! {
     },
 
     // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 3 — census `B2`, the conversation-stats read cluster, at `ui:read`.
+    //
+    // The smallest complete module in the census's highest-risk batch. Detectors (a)/(b)/(c)
+    // and (d) are silent on all four; bodies hand-traced to repository reads with propagated
+    // errors. Payloads are token/cost AGGREGATES only — no message text, prompt, or tool
+    // input — so this is the usage-reporting surface, not the transcript surface.
+    //
+    // The rest of `B2` is NOT here and the probe says why: `get_agent_conversation`,
+    // `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` all
+    // fire detector (a), and the workspace/publish surface fires (a), (b) and (c) together.
+    // -----------------------------------------------------------------------------------
+    "get_agent_conversation_stats"
+        => crate::commands::conversation_stats_commands::get_agent_conversation_stats {
+        class: Read,
+        caps: [],
+        params: [(arg conversation_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_project_chat_usage_stats"
+        => crate::commands::conversation_stats_commands::get_project_chat_usage_stats {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_chat_usage_stats"
+        => crate::commands::conversation_stats_commands::get_task_chat_usage_stats {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_insights_chat_usage_stats"
+        => crate::commands::conversation_stats_commands::get_insights_chat_usage_stats {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
     // PR 1.5-A — `ui:operate`: watch + brakes + inert edits, and NOTHING that can start,
     // resume, restart, or steer an agent. This is the default pairing's entire mutating
     // surface (the "viewer with brakes" boundary, §3.3/§4.3).
