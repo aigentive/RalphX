@@ -8983,12 +8983,19 @@ mod agent_workspace_send_tests {
         let state = AppState::new_test();
         let context_id = "task-interactive-run-id";
         let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
-        let conversation_id = conversation.id.as_str().to_string();
+        let conversation_id = conversation.id;
+        let run = AgentRun::new(conversation_id);
+        let run_id = run.id.as_str().to_string();
         state
             .chat_conversation_repo
             .create(conversation)
             .await
             .expect("conversation should persist");
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("active run should persist");
 
         let mut child = tokio::process::Command::new("cat")
             .stdin(std::process::Stdio::piped())
@@ -9000,15 +9007,22 @@ mod agent_workspace_send_tests {
         let interactive_key = InteractiveProcessKey::new("task", context_id);
         state
             .interactive_process_registry
-            .register(interactive_key.clone(), stdin)
+            .register_with_metadata(
+                interactive_key.clone(),
+                stdin,
+                InteractiveProcessMetadata {
+                    agent_run_id: Some(run_id.clone()),
+                    ..Default::default()
+                },
+            )
             .await;
         state
             .running_agent_registry
             .register(
                 RunningAgentKey::new("task", context_id),
                 0,
-                conversation_id.clone(),
-                "run-original-process".to_string(),
+                conversation_id.as_str().to_string(),
+                run_id.clone(),
                 None,
                 None,
             )
@@ -9032,9 +9046,9 @@ mod agent_workspace_send_tests {
             .await;
         let _ = child.kill().await;
 
-        assert_eq!(result.conversation_id, conversation_id);
+        assert_eq!(result.conversation_id, conversation_id.as_str());
         assert_eq!(
-            result.agent_run_id, "run-original-process",
+            result.agent_run_id, run_id,
             "Gate 1 sends must not invent a run id that terminal events cannot match"
         );
     }
