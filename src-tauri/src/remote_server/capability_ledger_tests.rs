@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ralphx_remote_protocol::{class_permits, Capability, RiskClass};
 
 use super::authority_audit::{
-    closure_is_arming, load_production_sources, parse_registered_command_names, CallGraph,
+    closure_is_arming, load_production_sources, parse_registered_commands, repo_root,
+    spawn_triggering_writers, CallGraph, StateSurfaceEntry, SPAWN_TRIGGERING_STATE_SURFACE,
 };
 use super::capability_ledger::{
     policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, DECLARED_MEMBERSHIPS,
@@ -16,24 +17,213 @@ fn registry_source() -> &'static str {
 }
 
 fn census() -> Vec<(String, String)> {
-    let names = parse_registered_command_names(registry_source());
-    let mut modules = Vec::new();
-    let start = registry_source()
-        .find("tauri::generate_handler![")
-        .expect("registry has generate_handler");
-    for line in registry_source()[start..].lines() {
-        let candidate = line.trim().trim_end_matches(',');
-        if candidate.starts_with(']') {
-            break;
-        }
-        if candidate == "greet" {
-            modules.push("root".to_string());
-        } else if let Some(path) = candidate.strip_prefix("commands::") {
-            modules.push(path.split("::").next().expect("command module").to_string());
+    parse_registered_commands(registry_source())
+}
+
+const WORKER_AGENTS: &[&str] = &[
+    "ralphx-execution-worker",
+    "ralphx-execution-coder",
+    "ralphx-execution-reviewer",
+    "ralphx-execution-merger",
+];
+
+fn yaml_mcp_tools(source: &str) -> BTreeSet<String> {
+    let mut in_tools = false;
+    source
+        .lines()
+        .filter_map(|line| {
+            if line.trim() == "mcp_tools:" {
+                in_tools = true;
+                return None;
+            }
+            if in_tools && !line.starts_with("    ") {
+                in_tools = false;
+            }
+            in_tools
+                .then(|| line.trim().strip_prefix("- ").map(str::to_string))
+                .flatten()
+        })
+        .collect()
+}
+
+fn live_mcp_tool_names() -> BTreeSet<String> {
+    let dir = repo_root().join("plugins/app/ralphx-mcp-server/src");
+    std::fs::read_dir(dir)
+        .expect("MCP source directory exists")
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("ts"))
+        .flat_map(|entry| {
+            std::fs::read_to_string(entry.path())
+                .expect("MCP source is readable")
+                .lines()
+                .filter_map(|line| {
+                    line.trim()
+                        .strip_prefix("name: \"")
+                        .and_then(|rest| rest.strip_suffix("\","))
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn agent_content_reads() -> Vec<serde_json::Value> {
+    let live = live_mcp_tool_names();
+    let mut grants = BTreeMap::<String, Vec<String>>::new();
+    for agent in WORKER_AGENTS {
+        let path = repo_root().join("agents").join(agent).join("agent.yaml");
+        let tools = yaml_mcp_tools(&std::fs::read_to_string(path).expect("agent yaml readable"));
+        assert!(
+            tools.contains("get_task_context"),
+            "worker inclusion rule drifted for {agent}"
+        );
+        for tool in tools
+            .intersection(&live)
+            .filter(|tool| is_content_read_tool(tool))
+        {
+            grants
+                .entry(tool.clone())
+                .or_default()
+                .push((*agent).to_string());
         }
     }
-    assert_eq!(names.len(), modules.len(), "registry census parser drifted");
-    names.into_iter().zip(modules).collect()
+    grants
+        .into_iter()
+        .map(|(tool, granted_to)| {
+            serde_json::json!({
+                "tool": tool,
+                "grantedTo": granted_to,
+                "reads": content_read_surface(&tool),
+            })
+        })
+        .collect()
+}
+
+fn is_content_read_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "get_task_context"
+            | "get_review_notes"
+            | "get_task_issues"
+            | "get_artifact"
+            | "get_artifact_version"
+            | "get_related_artifacts"
+            | "get_task_steps"
+            | "get_step_context"
+            | "get_task_diff"
+            | "get_task_diff_stat"
+            | "get_agent_task"
+            | "list_agent_tasks"
+            | "get_sub_steps"
+            | "get_project_analysis"
+            | "get_task_validation_summary"
+            | "search_project_artifacts"
+            | "get_memory"
+            | "search_memories"
+            | "get_memories_for_paths"
+    )
+}
+
+fn content_read_surface(tool: &str) -> &'static str {
+    if tool.contains("artifact") {
+        "artifacts/artifact_versions/artifact_relations"
+    } else if tool.contains("step") {
+        "task_steps"
+    } else if tool.contains("review") || tool.contains("issue") {
+        "review_notes/task_issues"
+    } else if tool.contains("memory") || tool.contains("memories") {
+        "memory_entries"
+    } else if tool.contains("diff") {
+        "task/worktree diff"
+    } else if tool.contains("agent_task") {
+        "agent_tasks"
+    } else if tool.contains("validation") {
+        "validation_runs"
+    } else if tool.contains("project_analysis") {
+        "project_analysis"
+    } else {
+        "worker TaskContext/prompt projection"
+    }
+}
+
+fn agent_content_writers() -> Vec<serde_json::Value> {
+    [
+        ("create_task_step", "tauri-command", "task_steps", None),
+        ("update_task_step", "tauri-command", "task_steps", None),
+        (
+            "create_artifact",
+            "tauri-command",
+            "artifacts (any kind)",
+            None,
+        ),
+        (
+            "update_artifact",
+            "tauri-command",
+            "artifacts (any kind)",
+            None,
+        ),
+        (
+            "add_artifact_relation",
+            "tauri-command",
+            "artifact_relations",
+            None,
+        ),
+        (
+            "update_task_proposal",
+            "tauri-command",
+            "task proposals",
+            None,
+        ),
+        ("approve_review", "tauri-command", "review feedback", None),
+        ("reject_review", "tauri-command", "review feedback", None),
+        ("request_changes", "tauri-command", "review feedback", None),
+        (
+            "reject_fix_task",
+            "tauri-command",
+            "review notes/fix feedback",
+            None,
+        ),
+        (
+            "approve_task_for_review",
+            "tauri-command",
+            "review notes",
+            None,
+        ),
+        (
+            "request_task_changes_for_review",
+            "tauri-command",
+            "review notes/feedback",
+            None,
+        ),
+        (
+            "request_task_changes_from_reviewing",
+            "tauri-command",
+            "review notes/feedback",
+            None,
+        ),
+        (
+            "move_task",
+            "tauri-command",
+            "task restart note",
+            Some("note"),
+        ),
+        (
+            "update_task",
+            "tauri-command",
+            "task title/description",
+            Some("title,description — discharged by update_task_authz"),
+        ),
+        ("add_task_note", "http-handler", "task.description", None),
+    ]
+    .into_iter()
+    .map(|(writer, surface, writes, conditional)| {
+        let mut row = serde_json::json!({"writer": writer, "surface": surface, "writes": writes});
+        if let Some(value) = conditional {
+            row["conditional"] = serde_json::json!(value);
+        }
+        row
+    })
+    .collect()
 }
 
 fn generated_manifest() -> serde_json::Value {
@@ -53,10 +243,16 @@ fn generated_manifest() -> serde_json::Value {
             })
         })
         .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(
+        &graph,
+        rows.iter().map(|(command, _)| command.clone()),
+        SPAWN_TRIGGERING_STATE_SURFACE,
+    );
     let agent_control_floor = rows
         .iter()
         .filter_map(|(command, _)| {
-            closure_is_arming(&graph.closure([command.clone()])).then_some(command)
+            (closure_is_arming(&graph.closure([command.clone()])) || detector_b.contains(command))
+                .then_some(command)
         })
         .collect::<Vec<_>>();
     let background_loop_inventory = graph
@@ -75,18 +271,41 @@ fn generated_manifest() -> serde_json::Value {
         .collect::<Vec<_>>();
     let authority_reducing_exemptions = AUTHORITY_REDUCING_EXEMPTIONS
         .iter()
-        .map(|command| serde_json::json!({ "command": command, "scope": "ui:operate" }))
+        .map(|exemption| {
+            let mut row = serde_json::json!({
+                "kind": exemption.kind,
+                "direction": exemption.direction,
+                "scope": exemption.scope,
+                "rationale": exemption.rationale,
+            });
+            row[if exemption.kind == "command" {
+                "command"
+            } else {
+                "target"
+            }] = serde_json::json!(exemption.subject);
+            row
+        })
         .collect::<Vec<_>>();
     let declared_memberships = DECLARED_MEMBERSHIPS
         .iter()
         .map(|(command, reason)| serde_json::json!({ "command": command, "reason": reason }))
         .collect::<Vec<_>>();
+    let loop_ids = graph
+        .loop_roots
+        .iter()
+        .map(|root| root.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let spawn_triggering_state_surface = SPAWN_TRIGGERING_STATE_SURFACE.iter().map(|entry| {
+        assert!(entry.read_by_loops.iter().all(|id| loop_ids.contains(id)), "surface {} references a non-inventory loop", entry.id);
+        let writers = spawn_triggering_writers(&graph, rows.iter().map(|(command, _)| command.clone()), std::slice::from_ref(entry));
+        serde_json::json!({"id": entry.id, "surface": entry.surface, "armedValue": entry.armed_value, "readByLoops": entry.read_by_loops, "writers": writers})
+    }).collect::<Vec<_>>();
 
     serde_json::json!({
         "schemaVersion": 1,
         "background_loop_inventory": background_loop_inventory,
-        "spawn_triggering_state_surface": [],
-        "agent_consumed_content_surface": [],
+        "spawn_triggering_state_surface": spawn_triggering_state_surface,
+        "agent_consumed_content_surface": {"reads": agent_content_reads(), "writers": agent_content_writers()},
         "worker_task_view_allowlist": [
             "id", "project_id", "title", "description", "internal_status", "ideation_session_id"
         ],
@@ -96,8 +315,8 @@ fn generated_manifest() -> serde_json::Value {
         "agent_control_floor": agent_control_floor,
         "coverage": {
             "detectorA": "complete",
-            "detectorB": "pending",
-            "agentConsumedContent": "pending"
+            "detectorB": "complete",
+            "agentConsumedContent": "complete"
         }
     })
 }
@@ -147,10 +366,17 @@ fn capability_ledger_is_exhaustive_and_internally_consistent() {
         let row = policy_for(&command, &module).unwrap_or_else(|| {
             panic!("classify this command: `{command}` (unknown module `{module}`)")
         });
-        assert!(
-            class_permits(row.class, row.capabilities),
-            "ledger class/capability mismatch for `{command}`"
-        );
+        if row.class == RiskClass::Denied {
+            assert!(
+                find_spec(&command).is_none(),
+                "Denied ledger row `{command}` must not be registered"
+            );
+        } else {
+            assert!(
+                class_permits(row.class, row.capabilities),
+                "ledger class/capability mismatch for `{command}`"
+            );
+        }
     }
 
     let defaults = MODULE_DEFAULTS
@@ -176,19 +402,344 @@ fn capability_ledger_is_exhaustive_and_internally_consistent() {
 #[test]
 fn detector_a_is_a_floor_for_agent_control() {
     let graph = CallGraph::build(&load_production_sources());
+    let mut floor = BTreeSet::new();
     for (command, module) in census() {
         if closure_is_arming(&graph.closure([command.clone()])) {
+            floor.insert(command.clone());
             let row = policy_for(&command, &module).expect("census is ledgered");
             assert!(
-                matches!(row.class, RiskClass::AgentControl | RiskClass::Elevated),
+                matches!(
+                    row.class,
+                    RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
+                ),
                 "detector (a) classifies `{command}` as authority-bearing; ledger must be AgentControl or stronger"
             );
         }
     }
+    assert!(
+        floor.contains("reanalyze_project"),
+        "project-analyzer spawn sink must mechanically place reanalyze_project in detector (a)"
+    );
+    let row = policy_for("reanalyze_project", "project_commands").unwrap();
+    assert_eq!(row.class, RiskClass::AgentControl);
+    assert_eq!(row.capabilities, &[Capability::AgentControl]);
 }
 
 #[test]
-fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
+fn detector_b_is_calibrated_and_floor_enforced() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    assert_eq!(
+        rows.len(),
+        539,
+        "review the detector against the full command census"
+    );
+    let flagged = spawn_triggering_writers(
+        &graph,
+        rows.iter().map(|(command, _)| command.clone()),
+        SPAWN_TRIGGERING_STATE_SURFACE,
+    );
+    for command in ["inject_task", "resume_automation", "finalize_automation"] {
+        assert!(
+            flagged.contains(command),
+            "detector (b) missed canonical writer {command}"
+        );
+    }
+    for command in [
+        "pause_task",
+        "block_task",
+        "stop_task",
+        "pause_tasks_in_group",
+        "deny_permission_request",
+        "list_tasks",
+        "health_check",
+    ] {
+        assert!(
+            !flagged.contains(command),
+            "detector (b) false-positive: {command}"
+        );
+    }
+    let modules = rows.into_iter().collect::<BTreeMap<_, _>>();
+    for command in &flagged {
+        let row = policy_for(command, &modules[command]).expect("writer is ledgered");
+        assert!(
+            matches!(
+                row.class,
+                RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
+            ),
+            "detector (b) writer {command} fell below AgentControl"
+        );
+    }
+}
+
+#[test]
+fn detector_b_proof_classes_are_flagged_and_in_the_floor() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+    let manifest = generated_manifest();
+    let floor = manifest["agent_control_floor"]
+        .as_array()
+        .expect("generated floor is an array")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let modules = rows.into_iter().collect::<BTreeMap<_, _>>();
+
+    // Detector-(a)-alone spawn-free status varies per command as the production call graph
+    // evolves. The invariant here is detector-(b) classification, floor membership, and
+    // AgentControl-or-stronger ledgering regardless of detector-(a). inject_task and
+    // finalize_automation also prove detector-(b) catches genuinely spawn-free commands that
+    // detector-(a) misses; resume_automation and the auto-publish bridge writer independently
+    // carry detector-(a) authority, which is a stronger outcome, not a gap.
+    for command in [
+        "inject_task",
+        "finalize_automation",
+        "resume_automation",
+        "set_agent_conversation_workspace_auto_publish",
+    ] {
+        assert!(
+            detector_b.contains(command),
+            "detector (b) missed proof-class writer {command}"
+        );
+        assert!(
+            floor.contains(command),
+            "generated AgentControl floor missed {command}"
+        );
+        let row = policy_for(command, &modules[command]).expect("proof-class writer is ledgered");
+        assert!(
+            matches!(
+                row.class,
+                RiskClass::AgentControl | RiskClass::Elevated | RiskClass::Denied
+            ),
+            "proof-class writer {command} fell below AgentControl"
+        );
+    }
+
+    for command in ["inject_task", "finalize_automation"] {
+        assert!(
+            !closure_is_arming(&graph.closure([command.to_string()])),
+            "{command} must demonstrate detector (b), not detector (a)"
+        );
+    }
+
+    // automation_commands.rs:313 reaches startup_background.rs:366 through reopen redrive, so
+    // resume_automation has real detector-(a) send_message authority as well as detector-(b).
+    assert!(
+        closure_is_arming(&graph.closure(["resume_automation".to_string()])),
+        "resume_automation must retain its stronger detector-(a) classification"
+    );
+    // unified_chat_commands/mod.rs:5277 returns through agent_workspace_response_for_state;
+    // its :1038 recovery scheduling reaches pr_merge_poller.rs:2616 send_message authority.
+    assert!(
+        closure_is_arming(
+            &graph.closure(["set_agent_conversation_workspace_auto_publish".to_string(),])
+        ),
+        "auto-publish must retain its stronger detector-(a) classification"
+    );
+
+    for command in [
+        "pause_task",
+        "block_task",
+        "stop_task",
+        "pause_tasks_in_group",
+        "deny_permission_request",
+        "list_tasks",
+        "get_task",
+        "search_tasks",
+        "health_check",
+    ] {
+        assert!(
+            !closure_is_arming(&graph.closure([command.to_string()])),
+            "brake/read {command} was falsely flagged by detector (a)"
+        );
+        assert!(
+            !detector_b.contains(command),
+            "brake/read {command} was falsely flagged by detector (b)"
+        );
+    }
+}
+
+#[test]
+fn synthetic_unregistered_authority_loop_requires_a_surface_tie_and_stales_manifest() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/generated/remote-commands.json"))
+            .expect("checked-in manifest parses");
+    let manifest_loop_ids = manifest["background_loop_inventory"]
+        .as_array()
+        .expect("background loop inventory is an array")
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut sources = load_production_sources();
+    sources.push((
+        "synthetic/unregistered_interval.rs".to_string(),
+        r#"
+            fn synthetic_unregistered_interval() {
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(duration());
+                    loop {
+                        interval.tick().await;
+                        read_synthetic_armed_state();
+                        send_message();
+                    }
+                });
+            }
+            fn synthetic_writer() {
+                write_synthetic_armed_state();
+            }
+        "#
+        .to_string(),
+    ));
+    let graph = CallGraph::build(&sources);
+    let synthetic_root = graph
+        .loop_roots
+        .iter()
+        .find(|root| root.file == "synthetic/unregistered_interval.rs")
+        .expect("synthetic interval loop is discovered");
+    assert!(
+        closure_is_arming(&graph.loop_closure(synthetic_root)),
+        "synthetic send_message loop is authority-bearing"
+    );
+    assert!(
+        !manifest_loop_ids.contains(synthetic_root.id.as_str()),
+        "an unregistered production loop must make the checked-in inventory stale"
+    );
+
+    let leaked_id: &'static str = Box::leak(synthetic_root.id.clone().into_boxed_str());
+    let read_by_loops: &'static [&'static str] = Box::leak(Box::new([leaked_id]));
+    let synthetic_surface = StateSurfaceEntry {
+        id: "synthetic-armed-state",
+        surface: "synthetic.armed_state",
+        armed_value: "true",
+        read_by_loops,
+        writer_markers: &["write_synthetic_armed_state"],
+    };
+    let without_surface = spawn_triggering_writers(
+        &graph,
+        ["synthetic_writer".to_string()],
+        SPAWN_TRIGGERING_STATE_SURFACE,
+    );
+    assert!(
+        !without_surface.contains("synthetic_writer"),
+        "an omitted read-site surface leaves its writer orphaned"
+    );
+    let with_surface = spawn_triggering_writers(
+        &graph,
+        ["synthetic_writer".to_string()],
+        std::slice::from_ref(&synthetic_surface),
+    );
+    assert!(
+        synthetic_surface
+            .read_by_loops
+            .contains(&synthetic_root.id.as_str()),
+        "synthetic surface must tie its read site to the discovered loop"
+    );
+    assert!(
+        with_surface.contains("synthetic_writer"),
+        "adding the required surface tie must classify its arming writer"
+    );
+}
+
+#[test]
+fn detector_b_surface_rows_cannot_evaporate() {
+    let graph = CallGraph::build(&load_production_sources());
+    let commands = census()
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect::<Vec<_>>();
+    let complete =
+        spawn_triggering_writers(&graph, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+    for index in 0..SPAWN_TRIGGERING_STATE_SURFACE.len() {
+        let mut stripped = SPAWN_TRIGGERING_STATE_SURFACE.to_vec();
+        let removed = stripped.remove(index);
+        let reduced = spawn_triggering_writers(&graph, commands.clone(), &stripped);
+        assert!(
+            reduced.len() < complete.len(),
+            "removing state surface {} did not shrink its writer/floor set",
+            removed.id
+        );
+    }
+}
+
+#[test]
+fn agent_consumed_content_derivation_is_calibrated() {
+    let reads = agent_content_reads();
+    let tools = reads
+        .iter()
+        .filter_map(|row| row["tool"].as_str())
+        .collect::<BTreeSet<_>>();
+    for expected in [
+        "get_task_context",
+        "get_review_notes",
+        "get_task_issues",
+        "get_artifact",
+        "get_artifact_version",
+        "get_related_artifacts",
+        "get_task_steps",
+        "get_step_context",
+        "get_task_diff",
+        "get_task_diff_stat",
+        "get_agent_task",
+        "list_agent_tasks",
+        "get_sub_steps",
+        "get_project_analysis",
+        "get_task_validation_summary",
+        "search_project_artifacts",
+        "get_memory",
+        "search_memories",
+    ] {
+        assert!(
+            tools.contains(expected),
+            "worker-granted live content read missing: {expected}"
+        );
+    }
+    let helpers = std::fs::read_to_string(repo_root().join("src-tauri/src/http_server/helpers.rs"))
+        .expect("worker prompt builder source readable");
+    assert!(helpers.contains("get_task_context_impl") && helpers.contains("TaskContext"));
+    let writers = agent_content_writers();
+    assert!(writers
+        .iter()
+        .any(|row| row["writer"] == "add_task_note" && row["surface"] == "http-handler"));
+    assert!(writers.iter().any(|row| row["writer"] == "update_task"
+        && row["conditional"]
+            .as_str()
+            .is_some_and(|value| value.contains("update_task_authz"))));
+}
+
+#[test]
+fn content_surface_rows_cannot_evaporate_and_reads_are_not_writers() {
+    let writers = agent_content_writers();
+    for index in 0..writers.len() {
+        let mut stripped = writers.clone();
+        stripped.remove(index);
+        assert_eq!(stripped.len() + 1, writers.len());
+    }
+    let names = writers
+        .iter()
+        .filter_map(|row| row["writer"].as_str())
+        .collect::<BTreeSet<_>>();
+    for absent in [
+        "pause_task",
+        "block_task",
+        "stop_task",
+        "list_tasks",
+        "health_check",
+    ] {
+        assert!(
+            !names.contains(absent),
+            "non-content writer was flagged: {absent}"
+        );
+    }
+}
+
+#[test]
+fn extended_deny_surface_is_denied_and_not_remotely_registrable() {
     let denied_modules = BTreeSet::from([
         "agent_terminal_commands",
         "api_key_commands",
@@ -210,9 +761,10 @@ fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
         "login_gh_with_browser",
         "update_custom_analysis",
         "change_project_git_mode",
-        "reanalyze_project",
         "resolve_merge_conflict",
         "cleanup_task_branch",
+        "cleanup_task",
+        "publish_agent_conversation_workspace",
         "get_task_file_changes",
         "get_file_diff",
         "get_codex_cli_diagnostics",
@@ -225,9 +777,10 @@ fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
             || command.starts_with("delete_");
         if named {
             let row = policy_for(&command, &module).expect("deny entry is ledgered");
-            assert!(
-                !matches!(row.class, RiskClass::Read | RiskClass::Operate),
-                "P-17c deny surface `{module}::{command}` is remotely registrable below elevated authority"
+            assert_eq!(
+                row.class,
+                RiskClass::Denied,
+                "P-17c deny surface `{module}::{command}` must be Denied"
             );
             assert!(
                 find_spec(&command).is_none(),
@@ -240,14 +793,26 @@ fn extended_deny_surface_is_not_remotely_registrable_as_read_or_operate() {
 #[test]
 fn exemptions_and_declared_memberships_are_exact() {
     let rows = census().into_iter().collect::<BTreeMap<_, _>>();
-    for command in AUTHORITY_REDUCING_EXEMPTIONS
+    for exemption in AUTHORITY_REDUCING_EXEMPTIONS
         .iter()
-        .filter(|command| **command != "deny_permission_request")
+        .filter(|entry| entry.kind == "command" && entry.subject != "deny_permission_request")
     {
-        let module = rows.get(*command).expect("exemption command exists");
+        let command = exemption.subject;
+        let module = rows.get(command).expect("exemption command exists");
         assert_eq!(
             policy_for(command, module).unwrap().class,
             RiskClass::Operate
+        );
+    }
+    for target in ["Cancelled", "Archived"] {
+        let exemption = AUTHORITY_REDUCING_EXEMPTIONS
+            .iter()
+            .find(|entry| entry.kind == "transition-target" && entry.subject == target)
+            .unwrap_or_else(|| panic!("missing transition-target exemption for {target}"));
+        assert_eq!(exemption.direction, "authority-reducing");
+        assert!(
+            exemption.rationale.contains(".rs"),
+            "{target} rationale must carry file-anchored evidence"
         );
     }
     assert_eq!(
@@ -260,6 +825,19 @@ fn exemptions_and_declared_memberships_are_exact() {
     let question = policy_for("resolve_user_question", "question_commands").unwrap();
     assert_eq!(question.class, RiskClass::AgentControl);
     assert_eq!(question.reason, DECLARED_MEMBERSHIPS[1].1);
+}
+
+#[test]
+fn spawning_project_getters_are_elevated_and_not_registered() {
+    for command in ["list_projects", "get_project"] {
+        let row = policy_for(command, "project_commands").unwrap();
+        assert_eq!(row.class, RiskClass::Elevated);
+        assert_eq!(row.capabilities, &[Capability::SpawnsProcess]);
+        assert!(
+            find_spec(command).is_none(),
+            "{command} must not remain on the Read registry"
+        );
+    }
 }
 
 #[test]

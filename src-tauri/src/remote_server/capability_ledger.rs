@@ -26,8 +26,23 @@ pub struct CommandOverride {
     pub policy: LedgerPolicy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthorityReducingExemption {
+    pub subject: &'static str,
+    pub kind: &'static str,
+    pub direction: &'static str,
+    pub scope: &'static str,
+    pub rationale: &'static str,
+}
+
 const NONE: &[Capability] = &[];
 const AGENT: &[Capability] = &[Capability::AgentControl];
+const SEEDS_STATE: &[Capability] = &[Capability::SeedsSpawnTriggeringState];
+const MUTATES_CONTENT: &[Capability] = &[Capability::MutatesAgentConsumedContent];
+const AGENT_AND_CONTENT: &[Capability] = &[
+    Capability::AgentControl,
+    Capability::MutatesAgentConsumedContent,
+];
 const PROCESS: &[Capability] = &[Capability::SpawnsProcess];
 const CREDENTIALS: &[Capability] = &[Capability::TouchesCredentials];
 const PTY: &[Capability] = &[Capability::PtyControl];
@@ -70,6 +85,17 @@ const fn elevated_default(
     }
 }
 
+const fn denied_default(
+    module: &'static str,
+    capabilities: &'static [Capability],
+    reason: &'static str,
+) -> ModuleDefault {
+    ModuleDefault {
+        module,
+        policy: policy(RiskClass::Denied, capabilities, reason),
+    }
+}
+
 /// Every module in the live registry must have exactly one default here.
 pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("root"),
@@ -84,21 +110,21 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("agent_plan_commands"),
     agent_default("agent_profile_commands"),
     agent_default("agent_sidebar_commands"),
-    elevated_default("agent_terminal_commands", PTY, "terminal PTY control"),
-    elevated_default("api_key_commands", CREDENTIALS, "credential surface"),
+    denied_default("agent_terminal_commands", PTY, "terminal PTY control"),
+    denied_default("api_key_commands", CREDENTIALS, "credential surface"),
     agent_default("artifact_commands"),
-    elevated_default(
+    denied_default(
         "atlassian_commands",
         CREDENTIALS,
         "integration credential surface",
     ),
     agent_default("automation_commands"),
-    elevated_default(
+    denied_default(
         "chat_attachment_commands",
         PATH,
         "attachment filesystem surface",
     ),
-    elevated_default(
+    denied_default(
         "clickup_commands",
         CREDENTIALS,
         "integration credential surface",
@@ -112,7 +138,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     ),
     elevated_default("diff_commands", PROCESS, "diff getters may spawn git"),
     agent_default("execution_commands"),
-    elevated_default(
+    denied_default(
         "external_mcp_commands",
         CREDENTIALS,
         "external MCP credential surface",
@@ -127,19 +153,19 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
         PROCESS,
         "GitHub CLI/network process authority",
     ),
-    elevated_default(
+    denied_default(
         "granola_commands",
         CREDENTIALS,
         "integration credential surface",
     ),
-    elevated_default(
+    denied_default(
         "harness_provider_commands",
         FUTURE_PROCESS,
         "configures future provider process authority",
     ),
     agent_default("health"),
     agent_default("ideation_commands"),
-    elevated_default(
+    denied_default(
         "linear_commands",
         CREDENTIALS,
         "integration credential surface",
@@ -163,7 +189,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
         PROCESS,
         "project git/gh and deferred shell authority",
     ),
-    elevated_default(
+    denied_default(
         "provider_cli_management_commands",
         PROCESS,
         "provider CLI installer surface",
@@ -202,7 +228,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("task_commands"),
     agent_default("task_context_commands"),
     agent_default("task_step_commands"),
-    elevated_default(
+    denied_default(
         "test_data_commands",
         DELETE,
         "test-data mutation is never remotely operable",
@@ -217,7 +243,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("update_channel_commands"),
     agent_default("validation_commands"),
     agent_default("workflow_commands"),
-    elevated_default(
+    denied_default(
         "workspace_open_commands",
         PROCESS,
         "opens workspace in an external process",
@@ -227,19 +253,251 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
 
 /// Narrow decisions which differ from their module default.
 pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
+    CommandOverride {
+        command: "inject_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "detector-b: seeds internal_status=Ready consumed by the ready-task scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "resume_automation",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "detector-b: restores Active automation consumed by the automation scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "finalize_automation",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "detector-b: completes automation arming state consumed by the automation scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "create_task_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: creates worker-consumed task step",
+        ),
+    },
+    CommandOverride {
+        command: "update_task_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: updates worker-consumed task step",
+        ),
+    },
+    CommandOverride {
+        command: "create_artifact",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: creates worker-consumed artifact of any kind",
+        ),
+    },
+    CommandOverride {
+        command: "update_artifact",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: updates worker-consumed artifact of any kind",
+        ),
+    },
+    CommandOverride {
+        command: "add_artifact_relation",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: changes worker-consumed artifact relations",
+        ),
+    },
+    CommandOverride {
+        command: "update_task_proposal",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: updates worker-consumed task proposal",
+        ),
+    },
+    CommandOverride {
+        command: "approve_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "reject_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "request_changes",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "reject_fix_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed fix feedback",
+        ),
+    },
+    CommandOverride {
+        command: "approve_task_for_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review note",
+        ),
+    },
+    CommandOverride {
+        command: "request_task_changes_for_review",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "request_task_changes_from_reviewing",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "content-surface: writes worker-consumed review feedback",
+        ),
+    },
+    CommandOverride {
+        command: "move_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-a plus content-surface: restart note is worker-consumed",
+        ),
+    },
+    CommandOverride {
+        command: "switch_git_origin_to_ssh",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "changes repository origin authentication",
+        ),
+    },
+    CommandOverride {
+        command: "setup_gh_git_auth",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "configures git credential authority",
+        ),
+    },
+    CommandOverride {
+        command: "login_gh_with_browser",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "starts interactive GitHub authentication",
+        ),
+    },
+    CommandOverride {
+        command: "update_custom_analysis",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "executes the canonical deferred shell-authority shape",
+        ),
+    },
+    CommandOverride {
+        command: "change_project_git_mode",
+        policy: policy(RiskClass::Denied, PROCESS, "changes project git authority"),
+    },
+    CommandOverride {
+        command: "get_git_branches",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns git over project-controlled state",
+        ),
+    },
+    CommandOverride {
+        command: "resolve_merge_conflict",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "destructive merge-conflict resolution",
+        ),
+    },
+    CommandOverride {
+        command: "cleanup_task_branch",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "destructive task branch cleanup",
+        ),
+    },
+    CommandOverride {
+        command: "cleanup_task",
+        policy: policy(RiskClass::Denied, AGENT, "destructive task cleanup"),
+    },
+    CommandOverride {
+        command: "publish_agent_conversation_workspace",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "publishes an agent conversation workspace",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_file_changes",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns git for task file changes",
+        ),
+    },
+    CommandOverride {
+        command: "get_file_diff",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns git for an arbitrary file diff",
+        ),
+    },
+    CommandOverride {
+        command: "get_codex_cli_diagnostics",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns the Codex CLI for diagnostics",
+        ),
+    },
+    CommandOverride {
+        command: "build_agent_issue_report",
+        policy: policy(
+            RiskClass::Denied,
+            PROCESS,
+            "spawns diagnostic report tooling",
+        ),
+    },
     // Audited read-only registrations plus the two Wry-monomorphic reads which cannot yet be
     // registered through `remote_commands!` (facade runtime genericity; deferred to PR 3.1).
     CommandOverride {
         command: "health_check",
         policy: policy(RiskClass::Read, NONE, "pure health read"),
-    },
-    CommandOverride {
-        command: "list_projects",
-        policy: policy(RiskClass::Read, NONE, "project read"),
-    },
-    CommandOverride {
-        command: "get_project",
-        policy: policy(RiskClass::Read, NONE, "project read"),
     },
     CommandOverride {
         command: "list_tasks",
@@ -322,6 +580,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "authority-restoring transition",
         ),
     },
+    CommandOverride {
+        command: "reanalyze_project",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "spawns the project-analyzer agent",
+        ),
+    },
     // Declared memberships not inferable from transition/process sinks.
     CommandOverride {
         command: "resolve_permission_request",
@@ -337,12 +603,56 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     },
 ];
 
-pub const AUTHORITY_REDUCING_EXEMPTIONS: &[&str] = &[
-    "pause_task",
-    "block_task",
-    "stop_task",
-    "pause_tasks_in_group",
-    "deny_permission_request",
+pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
+    AuthorityReducingExemption {
+        subject: "pause_task",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Paused",
+    },
+    AuthorityReducingExemption {
+        subject: "block_task",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Blocked",
+    },
+    AuthorityReducingExemption {
+        subject: "stop_task",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Stopped",
+    },
+    AuthorityReducingExemption {
+        subject: "pause_tasks_in_group",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "transitions only to Paused",
+    },
+    AuthorityReducingExemption {
+        subject: "deny_permission_request",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "denies a live tool call",
+    },
+    AuthorityReducingExemption {
+        subject: "Cancelled",
+        kind: "transition-target",
+        direction: "authority-reducing",
+        scope: "transition-target",
+        rationale: "domain/state_machine/transition_handler/mod.rs on_exit stops pollers for Cancelled; on_enter_states/mod.rs has no Cancelled entry action",
+    },
+    AuthorityReducingExemption {
+        subject: "Archived",
+        kind: "transition-target",
+        direction: "authority-reducing",
+        scope: "transition-target",
+        rationale: "domain/state_machine/transition_handler/on_enter_states/mod.rs has no Archived entry action and application reconciliation does not scan Archived tasks",
+    },
 ];
 
 pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
@@ -360,7 +670,7 @@ pub fn policy_for(command: &str, module: &str) -> Option<LedgerPolicy> {
     }
     if command.starts_with("delete_") {
         return Some(policy(
-            RiskClass::Elevated,
+            RiskClass::Denied,
             DELETE,
             "deletes a durable entity",
         ));

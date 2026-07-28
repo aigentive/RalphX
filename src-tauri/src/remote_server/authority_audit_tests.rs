@@ -1,5 +1,171 @@
 use super::authority_audit::*;
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use syn::visit::Visit;
+
+#[test]
+fn registered_command_parser_handles_layout_variants() {
+    let source = r#"
+        pub fn handlers() {
+            tauri::generate_handler![
+                commands::alpha::one, commands::beta::two,
+                commands::gamma::three, // inline explanation
+                #[cfg(debug_assertions)]
+                commands::delta::four,
+                greet,
+            ]
+        }
+    "#;
+
+    assert_eq!(
+        parse_registered_commands(source),
+        vec![
+            ("one".to_string(), "alpha".to_string()),
+            ("two".to_string(), "beta".to_string()),
+            ("three".to_string(), "gamma".to_string()),
+            ("four".to_string(), "delta".to_string()),
+            ("greet".to_string(), "root".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn registered_command_parser_panics_with_the_malformed_segment() {
+    let source = r#"
+        tauri::generate_handler![
+            commands::alpha::good,
+            commands::broken::bad(),
+        ]
+    "#;
+
+    let panic = std::panic::catch_unwind(|| parse_registered_commands(source))
+        .expect_err("malformed census segment must fail closed");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("panic has a string message");
+    assert!(
+        message.contains("commands::broken::bad()"),
+        "panic must name the malformed segment: {message}"
+    );
+}
+
+#[test]
+fn method_spawn_and_listen_shapes_are_inventory_roots_with_body_authority() {
+    let source = r#"
+        fn roots(handle: Handle, app: App) {
+            handle.spawn(async { send_message(); });
+            handle.spawn_blocking(|| send_message());
+            app.listen("event", move |_| { send_message(); });
+        }
+        fn inert(handle: Handle, app: App) {
+            handle.spawn(async { inspect(); });
+            handle.spawn_blocking(|| inspect());
+            app.listen("event", move |_| { inspect(); });
+        }
+    "#;
+    let graph = CallGraph::build(&[("synthetic.rs".to_string(), source.to_string())]);
+
+    let authoritative = graph
+        .loop_roots
+        .iter()
+        .filter(|root| root.enclosing_fn.ends_with("::roots"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        authoritative.len(),
+        3,
+        "spawn, spawn_blocking, and listen must each be discovered"
+    );
+    assert!(
+        authoritative
+            .iter()
+            .all(|root| closure_is_arming(&graph.loop_closure(root))),
+        "each send_message body must be authority-bearing"
+    );
+
+    let inert = graph
+        .loop_roots
+        .iter()
+        .filter(|root| root.enclosing_fn.ends_with("::inert"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inert.len(),
+        3,
+        "inert forms must still be present in the inventory"
+    );
+    assert!(
+        inert
+            .iter()
+            .all(|root| !closure_is_arming(&graph.loop_closure(root))),
+        "inert bodies must not acquire authority"
+    );
+}
+
+#[test]
+fn agent_spawner_shape_is_mutually_exclusive_with_method_loop_spawn() {
+    let source = r#"fn shapes(spawner: Spawner, handle: Handle, id: Id) {
+            spawner.spawn("worker", id);
+            handle.spawn(async { send_message(); });
+        }"#;
+    let file = syn::parse_file(source).unwrap();
+    let mut calls = Vec::new();
+    struct MethodCollector<'a>(&'a mut Vec<syn::ExprMethodCall>);
+    impl<'ast> syn::visit::Visit<'ast> for MethodCollector<'_> {
+        fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+            self.0.push(node.clone());
+            syn::visit::visit_expr_method_call(self, node);
+        }
+    }
+    MethodCollector(&mut calls).visit_file(&file);
+
+    assert!(is_agent_spawn_method(
+        &calls[0].method.to_string(),
+        &calls[0].args
+    ));
+    assert!(!is_method_background_spawn(
+        &calls[0].method.to_string(),
+        &calls[0].args
+    ));
+    assert!(!is_agent_spawn_method(
+        &calls[1].method.to_string(),
+        &calls[1].args
+    ));
+    assert!(is_method_background_spawn(
+        &calls[1].method.to_string(),
+        &calls[1].args
+    ));
+
+    let graph = CallGraph::build(&[("synthetic.rs".to_string(), source.to_string())]);
+    assert_eq!(
+        graph.loop_roots.len(),
+        1,
+        "AgentSpawner string-first call must not be double-counted as a loop"
+    );
+}
+
+#[test]
+fn failed_rearms_while_cancelled_and_archived_remain_halting() {
+    let hit = |target: &str| SinkHit {
+        sink: "transition_task".to_string(),
+        targets: BTreeSet::from([target.to_string()]),
+    };
+
+    assert_eq!(
+        verdict_for(&hit("Failed")),
+        HitVerdict::Arming,
+        "Failed is scanned by execution reconciliation and auto-retries to Ready"
+    );
+    assert_eq!(
+        verdict_for(&hit("Cancelled")),
+        HitVerdict::Halting,
+        "Cancelled stops pollers and has no on-enter spawn action"
+    );
+    assert_eq!(
+        verdict_for(&hit("Archived")),
+        HitVerdict::Halting,
+        "Archived has no task on-enter action or reconciliation scan"
+    );
+}
 
 fn trace(graph: &CallGraph, root: &str) -> Option<Vec<String>> {
     let sinks: BTreeSet<String> = TRANSITION_SINKS

@@ -68,6 +68,11 @@ pub const STEER_SINKS: &[&str] = &["send_message", "send_stdin_message", "write_
 /// renamed field or a trait object still trips it.
 pub const AGENT_SPAWN_SINK: &str = "<agent-spawner::spawn>";
 
+/// Fixed project-analyzer process entry point. This is intentionally an exact free-function
+/// name match: reaching it means the command starts an agent process, while unrelated process
+/// helpers remain outside detector (a).
+pub const AGENT_PROCESS_SPAWN_SINKS: &[&str] = &["spawn_project_analyzer"];
+
 /// `InternalStatus` targets that ARM or re-enter scheduling → classify.
 pub const ARMING_TRANSITION_TARGETS: &[&str] = &[
     "Ready",
@@ -77,23 +82,19 @@ pub const ARMING_TRANSITION_TARGETS: &[&str] = &[
     "QaTesting",
     "QaPrep",
     "PendingReview",
+    "Failed",
 ];
 
 /// `InternalStatus` targets that only halt/park → authority-reducing, exempt.
-pub const HALTING_TRANSITION_TARGETS: &[&str] = &[
-    "Paused",
-    "Blocked",
-    "Stopped",
-    "Failed",
-    "Cancelled",
-    "Archived",
-];
+pub const HALTING_TRANSITION_TARGETS: &[&str] =
+    &["Paused", "Blocked", "Stopped", "Cancelled", "Archived"];
 
 fn all_cut_sinks() -> BTreeSet<&'static str> {
     TRANSITION_SINKS
         .iter()
         .chain(SCHEDULER_SINKS.iter())
         .chain(STEER_SINKS.iter())
+        .chain(AGENT_PROCESS_SPAWN_SINKS.iter())
         .copied()
         .collect()
 }
@@ -154,6 +155,47 @@ pub struct Closure {
     pub sink_hits: BTreeSet<SinkHit>,
 }
 
+/// Persisted state read by an authority-bearing background loop as a spawn/steer predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateSurfaceEntry {
+    pub id: &'static str,
+    pub surface: &'static str,
+    pub armed_value: &'static str,
+    pub read_by_loops: &'static [&'static str],
+    pub writer_markers: &'static [&'static str],
+}
+
+/// Detector-(b)'s mechanically matched command writers.
+pub fn spawn_triggering_writers(
+    graph: &CallGraph,
+    commands: impl IntoIterator<Item = String>,
+    surface: &[StateSurfaceEntry],
+) -> BTreeSet<String> {
+    commands
+        .into_iter()
+        .filter(|command| {
+            let tokens = &graph.closure([command.clone()]).tokens;
+            surface.iter().any(|entry| {
+                entry
+                    .writer_markers
+                    .iter()
+                    .any(|marker| tokens.contains(*marker))
+            })
+        })
+        .collect()
+}
+
+/// Derived from the read sites reached by the settled authority-bearing loop inventory.
+pub const SPAWN_TRIGGERING_STATE_SURFACE: &[StateSurfaceEntry] = &[
+    StateSurfaceEntry { id: "ready-task", surface: "tasks.internal_status", armed_value: "Ready", read_by_loops: &["application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f"], writer_markers: &["inject_task", "restart_terminal_task_to_ready"] },
+    StateSurfaceEntry { id: "pending-review-freshness", surface: "tasks.internal_status + task_status_history.entered_at + agent_runs.status", armed_value: "PendingReview with no fresh/running reviewer", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_watchdog@8c28974ee8ca859d"], writer_markers: &["re_review_task_from_escalated", "request_task_changes_from_reviewing"] },
+    StateSurfaceEntry { id: "automation-active", surface: "automations.status", armed_value: "Active", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_automation_scheduler@c034c5fc2b8fe7b8"], writer_markers: &["resume_automation_smart", "finalize_automation"] },
+    StateSurfaceEntry { id: "workspace-bridge", surface: "agent_conversation_workspaces.linked_ideation_session_id/status/mode", armed_value: "linked active plan/edit workspace", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"], writer_markers: &["activate_agent_plan_direct_implementation", "activate_agent_task_pipeline", "close_agent_workspace_pr", "commit_agent_conversation_workspace_locally", "copy_agent_conversation_plan", "import_agent_conversation_plan", "publish_agent_conversation_workspace", "reconcile_agent_conversation_workspace_publication", "resume_deferred_git_startup", "set_agent_conversation_workspace_pr_supervision", "start_agent_conversation", "start_ralphx_work_from_ticket", "switch_agent_conversation_mode", "update_agent_conversation_workspace_from_base"] },
+    StateSurfaceEntry { id: "external-event-cursor", surface: "external_events rows/cursor", armed_value: "unconsumed row", read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"], writer_markers: &["insert_event"] },
+    StateSurfaceEntry { id: "workspace-auto-publish", surface: "agent_conversation_workspaces.auto_publish_enabled/publication_push_status", armed_value: "enabled and publishable/needs_agent", read_by_loops: &["commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::start_agent_workspace_auto_publish_freshness_scan@3a8d62e625ea5914"], writer_markers: &["set_agent_conversation_workspace_auto_publish_for_state"] },
+    StateSurfaceEntry { id: "workspace-auto-review", surface: "review_settings.require_workspace_review", armed_value: "true", read_by_loops: &["commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_for_workspace@a952be79d060c28f"], writer_markers: &["update_review_settings"] },
+];
+
 impl CallGraph {
     pub fn build(files: &[(String, String)]) -> Self {
         let mut graph = CallGraph::default();
@@ -161,8 +203,9 @@ impl CallGraph {
             .iter()
             .find(|(path, _)| path == "commands/registry.rs")
             .map(|(_, source)| {
-                parse_registered_command_names(source)
+                parse_registered_commands(source)
                     .into_iter()
+                    .map(|(command, _)| command)
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
@@ -422,7 +465,7 @@ impl<'a> FileVisitor<'a> {
             .cloned()
             .unwrap_or_else(|| ":".to_string());
         let name = format!("{}::{}::{}", self.file, owner, bare_name);
-        self.graph.node_mut(&name);
+        self.graph.node_mut(&name).tokens.insert(bare_name.clone());
         self.graph
             .definitions
             .entry(bare_name)
@@ -599,7 +642,7 @@ fn is_background_spawn_path(path: &syn::Path) -> Option<&'static str> {
 
 /// `.spawn("worker", id)` / `.spawn_background("qa-prep", id)` — an `AgentSpawner` call
 /// recognised by shape (string-literal agent type first) rather than by receiver name.
-fn is_agent_spawn_method(
+pub(super) fn is_agent_spawn_method(
     method: &str,
     args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
 ) -> bool {
@@ -613,6 +656,27 @@ fn is_agent_spawn_method(
             ..
         }))
     )
+}
+
+/// Runtime-handle spawn methods whose first argument is executable code. Requiring a closure
+/// or async block makes this mutually exclusive with the string-literal-first AgentSpawner
+/// shape.
+pub(super) fn is_method_background_spawn(
+    method: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> bool {
+    matches!(method, "spawn" | "spawn_blocking")
+        && matches!(
+            args.first(),
+            Some(syn::Expr::Closure(_) | syn::Expr::Async(_))
+        )
+}
+
+fn is_method_listener(
+    method: &str,
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+) -> bool {
+    method == "listen" && args.iter().any(|arg| matches!(arg, syn::Expr::Closure(_)))
 }
 
 fn internal_status_targets(
@@ -792,6 +856,10 @@ impl<'ast, 'a> Visit<'ast> for FileVisitor<'a> {
         self.record_token(name.clone());
         if name == "listen_any" || name == "listen_global" {
             self.record_loop_root("listen_any", &node.args);
+        } else if is_method_background_spawn(&name, &node.args) {
+            self.record_loop_root(&format!("method::{name}"), &node.args);
+        } else if is_method_listener(&name, &node.args) {
+            self.record_loop_root("listen", &node.args);
         }
         if all_cut_sinks().contains(name.as_str()) {
             let targets = transition_targets(&name, &node.args);
@@ -912,32 +980,71 @@ fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
 pub fn registered_command_names() -> Vec<String> {
     let source = std::fs::read_to_string(crate_src_root().join("commands/registry.rs"))
         .expect("commands/registry.rs must be readable");
-    parse_registered_command_names(&source)
+    parse_registered_commands(&source)
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect()
 }
 
-pub fn parse_registered_command_names(source: &str) -> Vec<String> {
+pub fn parse_registered_commands(source: &str) -> Vec<(String, String)> {
+    const MARKER: &str = "tauri::generate_handler![";
     let start = source
-        .find("tauri::generate_handler![")
+        .find(MARKER)
         .expect("registry.rs must contain generate_handler!");
-    let body = &source[start..];
-    let mut names = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with("#[") {
-            continue;
-        }
-        if line.starts_with(']') {
-            break;
-        }
-        let line = line.trim_start_matches("tauri::generate_handler![").trim();
-        let candidate = line.trim_end_matches(',').trim();
-        if candidate.is_empty() {
-            continue;
-        }
-        let leaf = candidate.rsplit("::").next().unwrap_or(candidate);
-        if leaf.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !leaf.is_empty() {
-            names.push(leaf.to_string());
-        }
-    }
-    names
+    let body = &source[start + MARKER.len()..];
+    let uncommented = body
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut bracket_depth = 1usize;
+    let end = uncommented
+        .char_indices()
+        .find_map(|(index, ch)| match ch {
+            '[' => {
+                bracket_depth += 1;
+                None
+            }
+            ']' => {
+                bracket_depth -= 1;
+                (bracket_depth == 0).then_some(index)
+            }
+            _ => None,
+        })
+        .expect("generate_handler! body must have a closing bracket");
+
+    uncommented[..end]
+        .split(',')
+        .filter_map(|raw_segment| {
+            let mut segment = raw_segment.trim();
+            while segment.starts_with("#[") {
+                let attribute_end = segment.find(']').unwrap_or_else(|| {
+                    panic!("malformed command census segment `{segment}`: unterminated attribute")
+                });
+                segment = segment[attribute_end + 1..].trim();
+            }
+            if segment.is_empty() {
+                return None;
+            }
+            let parts = segment.split("::").collect::<Vec<_>>();
+            let valid_ident = |part: &&str| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+                    && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+            };
+            if parts.is_empty() || !parts.iter().all(valid_ident) {
+                panic!("malformed command census segment `{segment}`");
+            }
+            let (command, module) = match parts.as_slice() {
+                [command] => ((*command).to_string(), "root".to_string()),
+                ["commands", module, .., command] => {
+                    ((*command).to_string(), (*module).to_string())
+                }
+                _ => panic!("malformed command census segment `{segment}`"),
+            };
+            Some((command, module))
+        })
+        .collect()
 }

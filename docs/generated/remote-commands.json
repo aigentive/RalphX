@@ -1,5 +1,257 @@
 {
-  "agent_consumed_content_surface": [],
+  "agent_consumed_content_surface": {
+    "reads": [
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
+        "reads": "agent_tasks",
+        "tool": "get_agent_task"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "get_artifact"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "get_artifact_version"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "memory_entries",
+        "tool": "get_memories_for_paths"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "memory_entries",
+        "tool": "get_memory"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "project_analysis",
+        "tool": "get_project_analysis"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "get_related_artifacts"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "review_notes/task_issues",
+        "tool": "get_review_notes"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
+        "reads": "task_steps",
+        "tool": "get_step_context"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker"
+        ],
+        "reads": "task_steps",
+        "tool": "get_sub_steps"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "worker TaskContext/prompt projection",
+        "tool": "get_task_context"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "task/worktree diff",
+        "tool": "get_task_diff"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "task/worktree diff",
+        "tool": "get_task_diff_stat"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "review_notes/task_issues",
+        "tool": "get_task_issues"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "task_steps",
+        "tool": "get_task_steps"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "validation_runs",
+        "tool": "get_task_validation_summary"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder"
+        ],
+        "reads": "agent_tasks",
+        "tool": "list_agent_tasks"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer",
+          "ralphx-execution-merger"
+        ],
+        "reads": "memory_entries",
+        "tool": "search_memories"
+      },
+      {
+        "grantedTo": [
+          "ralphx-execution-worker",
+          "ralphx-execution-coder",
+          "ralphx-execution-reviewer"
+        ],
+        "reads": "artifacts/artifact_versions/artifact_relations",
+        "tool": "search_project_artifacts"
+      }
+    ],
+    "writers": [
+      {
+        "surface": "tauri-command",
+        "writer": "create_task_step",
+        "writes": "task_steps"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "update_task_step",
+        "writes": "task_steps"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "create_artifact",
+        "writes": "artifacts (any kind)"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "update_artifact",
+        "writes": "artifacts (any kind)"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "add_artifact_relation",
+        "writes": "artifact_relations"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "update_task_proposal",
+        "writes": "task proposals"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "approve_review",
+        "writes": "review feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "reject_review",
+        "writes": "review feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "request_changes",
+        "writes": "review feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "reject_fix_task",
+        "writes": "review notes/fix feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "approve_task_for_review",
+        "writes": "review notes"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "request_task_changes_for_review",
+        "writes": "review notes/feedback"
+      },
+      {
+        "surface": "tauri-command",
+        "writer": "request_task_changes_from_reviewing",
+        "writes": "review notes/feedback"
+      },
+      {
+        "conditional": "note",
+        "surface": "tauri-command",
+        "writer": "move_task",
+        "writes": "task restart note"
+      },
+      {
+        "conditional": "title,description — discharged by update_task_authz",
+        "surface": "tauri-command",
+        "writer": "update_task",
+        "writes": "task title/description"
+      },
+      {
+        "surface": "http-handler",
+        "writer": "add_task_note",
+        "writes": "task.description"
+      }
+    ]
+  },
   "agent_control_floor": [
     "remote_fetch",
     "complete_atlassian_oauth_local_callback",
@@ -11,6 +263,7 @@
     "refresh_agent_conversation_jira_issue",
     "assign_agent_conversation_jira_issue_to_me",
     "resume_automation",
+    "finalize_automation",
     "resume_automation_run",
     "create_persona_draft",
     "update_persona_draft",
@@ -18,6 +271,7 @@
     "assign_agent_conversation_linear_issue",
     "refresh_agent_conversation_linear_issue",
     "answer_user_question",
+    "inject_task",
     "move_task",
     "unblock_task",
     "resume_tasks_in_group",
@@ -26,6 +280,8 @@
     "stop_execution_plan",
     "resume_task",
     "retry_branch_update",
+    "create_project",
+    "reanalyze_project",
     "resume_deferred_git_startup",
     "update_github_pr_enabled",
     "copy_agent_conversation_plan",
@@ -39,6 +295,7 @@
     "request_task_changes_for_review",
     "request_task_changes_from_reviewing",
     "re_review_task_from_escalated",
+    "update_review_settings",
     "resume_execution",
     "restart_task",
     "recover_task_execution",
@@ -108,23 +365,52 @@
   "authority_reducing_exemptions": [
     {
       "command": "pause_task",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Paused",
       "scope": "ui:operate"
     },
     {
       "command": "block_task",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Blocked",
       "scope": "ui:operate"
     },
     {
       "command": "stop_task",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Stopped",
       "scope": "ui:operate"
     },
     {
       "command": "pause_tasks_in_group",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "transitions only to Paused",
       "scope": "ui:operate"
     },
     {
       "command": "deny_permission_request",
+      "direction": "authority-reducing",
+      "kind": "command",
+      "rationale": "denies a live tool call",
       "scope": "ui:operate"
+    },
+    {
+      "direction": "authority-reducing",
+      "kind": "transition-target",
+      "rationale": "domain/state_machine/transition_handler/mod.rs on_exit stops pollers for Cancelled; on_enter_states/mod.rs has no Cancelled entry action",
+      "scope": "transition-target",
+      "target": "Cancelled"
+    },
+    {
+      "direction": "authority-reducing",
+      "kind": "transition-target",
+      "rationale": "domain/state_machine/transition_handler/on_enter_states/mod.rs has no Archived entry action and application reconciliation does not scan Archived tasks",
+      "scope": "transition-target",
+      "target": "Archived"
     }
   ],
   "background_loop_inventory": [
@@ -284,6 +570,20 @@
     },
     {
       "authorityBearing": false,
+      "enclosingFunction": "application/desktop_notification.rs:::::send_actionable",
+      "file": "application/desktop_notification.rs",
+      "id": "application/desktop_notification.rs::application/desktop_notification.rs:::::send_actionable@460f4228198e486d",
+      "kind": "method::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "application/harness_runtime_registry.rs:::::probe_standard_harnesses_with",
+      "file": "application/harness_runtime_registry.rs",
+      "id": "application/harness_runtime_registry.rs::application/harness_runtime_registry.rs:::::probe_standard_harnesses_with@59d10e2433c6a7d0",
+      "kind": "method::spawn"
+    },
+    {
+      "authorityBearing": false,
       "enclosingFunction": "application/mcp_policy_service.rs::McpPolicyService::resolve_claude_cleanup_cli",
       "file": "application/mcp_policy_service.rs",
       "id": "application/mcp_policy_service.rs::application/mcp_policy_service.rs::McpPolicyService::resolve_claude_cleanup_cli@273379f9de704f96",
@@ -336,6 +636,13 @@
       "enclosingFunction": "application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed",
       "file": "application/ready_task_scheduler.rs",
       "id": "application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f",
+      "kind": "tokio::spawn"
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "application/remote_event_relay.rs::RemoteEventRelay::connect",
+      "file": "application/remote_event_relay.rs",
+      "id": "application/remote_event_relay.rs::application/remote_event_relay.rs::RemoteEventRelay::connect@ea05994e664c8c1f",
       "kind": "tokio::spawn"
     },
     {
@@ -767,6 +1074,13 @@
     },
     {
       "authorityBearing": false,
+      "enclosingFunction": "commands/workspace_open_commands/mod.rs:::::warm_workspace_open_target_cache",
+      "file": "commands/workspace_open_commands/mod.rs",
+      "id": "commands/workspace_open_commands/mod.rs::commands/workspace_open_commands/mod.rs:::::warm_workspace_open_target_cache@57e0acfe73eecbdc",
+      "kind": "method::spawn"
+    },
+    {
+      "authorityBearing": false,
       "enclosingFunction": "domain/state_machine/transition_handler/cleanup_helpers.rs:::::os_thread_timeout",
       "file": "domain/state_machine/transition_handler/cleanup_helpers.rs",
       "id": "domain/state_machine/transition_handler/cleanup_helpers.rs::domain/state_machine/transition_handler/cleanup_helpers.rs:::::os_thread_timeout@b10ae79e820d6863",
@@ -1075,9 +1389,9 @@
     }
   ],
   "coverage": {
-    "agentConsumedContent": "pending",
+    "agentConsumedContent": "complete",
     "detectorA": "complete",
-    "detectorB": "pending"
+    "detectorB": "complete"
   },
   "declared_memberships": [
     {
@@ -1323,6 +1637,16 @@
         "hostManagement"
       ],
       "class": "elevated",
+      "command": "remote_stream_send",
+      "module": "remote_environment_commands",
+      "reason": "remote environment authority",
+      "registered": false
+    },
+    {
+      "capabilities": [
+        "hostManagement"
+      ],
+      "class": "elevated",
       "command": "remote_invoke",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
@@ -1558,7 +1882,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_atlassian_integration_settings",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1568,7 +1892,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_atlassian_integration_settings",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1578,7 +1902,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "build_atlassian_oauth_authorization_url",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1588,7 +1912,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "start_atlassian_oauth_local_callback",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1598,7 +1922,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "complete_atlassian_oauth_local_callback",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1608,7 +1932,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "exchange_atlassian_oauth_code",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1618,7 +1942,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_atlassian_integration",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1628,7 +1952,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "disconnect_atlassian_integration",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1638,7 +1962,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "search_atlassian_resources",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1648,7 +1972,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "resolve_atlassian_resource_urls",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1658,7 +1982,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1668,7 +1992,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1678,7 +2002,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "refresh_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1688,7 +2012,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_jira_issue_to_me",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1698,7 +2022,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
@@ -1756,22 +2080,22 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "resume_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-b: restores Active automation consumed by the automation scheduler",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "finalize_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-b: completes automation arming state consumed by the automation scheduler",
       "registered": false
     },
     {
@@ -1848,7 +2172,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_automation_run",
       "module": "automation_commands",
       "reason": "deletes a durable entity",
@@ -1868,7 +2192,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_automation",
       "module": "automation_commands",
       "reason": "deletes a durable entity",
@@ -1998,7 +2322,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_persona_draft",
       "module": "persona_commands",
       "reason": "deletes a durable entity",
@@ -2008,7 +2332,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2018,7 +2342,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2028,7 +2352,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "refresh_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2038,7 +2362,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -2092,22 +2416,23 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "inject_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-b: seeds internal_status=Ready consumed by the ready-task scheduler",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "agentControl",
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "move_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-a plus content-surface: restart note is worker-consumed",
       "registered": false
     },
     {
@@ -2152,10 +2477,10 @@
       "capabilities": [
         "agentControl"
       ],
-      "class": "agentControl",
+      "class": "denied",
       "command": "cleanup_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "destructive task cleanup",
       "registered": false
     },
     {
@@ -2350,12 +2675,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "create_task_step",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: creates worker-consumed task step",
       "registered": false
     },
     {
@@ -2370,12 +2695,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_task_step",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: updates worker-consumed task step",
       "registered": false
     },
     {
@@ -2439,20 +2764,24 @@
       "registered": false
     },
     {
-      "capabilities": [],
-      "class": "read",
+      "capabilities": [
+        "spawnsProcess"
+      ],
+      "class": "elevated",
       "command": "list_projects",
       "module": "project_commands",
-      "reason": "project read",
-      "registered": true
+      "reason": "project git/gh and deferred shell authority",
+      "registered": false
     },
     {
-      "capabilities": [],
-      "class": "read",
+      "capabilities": [
+        "spawnsProcess"
+      ],
+      "class": "elevated",
       "command": "get_project",
       "module": "project_commands",
-      "reason": "project read",
-      "registered": true
+      "reason": "project git/gh and deferred shell authority",
+      "registered": false
     },
     {
       "capabilities": [
@@ -2508,10 +2837,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_git_branches",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "spawns git over project-controlled state",
       "registered": false
     },
     {
@@ -2546,22 +2875,22 @@
     },
     {
       "capabilities": [
-        "spawnsProcess"
+        "agentControl"
       ],
-      "class": "elevated",
+      "class": "agentControl",
       "command": "reanalyze_project",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "spawns the project-analyzer agent",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_custom_analysis",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "executes the canonical deferred shell-authority shape",
       "registered": false
     },
     {
@@ -2588,30 +2917,30 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "switch_git_origin_to_ssh",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "changes repository origin authentication",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "setup_gh_git_auth",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "configures git credential authority",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "login_gh_with_browser",
       "module": "project_commands",
-      "reason": "project git/gh and deferred shell authority",
+      "reason": "starts interactive GitHub authentication",
       "registered": false
     },
     {
@@ -2728,7 +3057,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_custom_agent_model",
       "module": "agent_model_commands",
       "reason": "deletes a durable entity",
@@ -2916,32 +3245,32 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "approve_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "request_changes",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "reject_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
@@ -2956,12 +3285,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "reject_fix_task",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed fix feedback",
       "registered": false
     },
     {
@@ -2976,32 +3305,32 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "approve_task_for_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review note",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "request_task_changes_for_review",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "request_task_changes_from_reviewing",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false
     },
     {
@@ -3348,10 +3677,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "build_agent_issue_report",
       "module": "agent_issue_report_commands",
-      "reason": "report construction may spawn diagnostics",
+      "reason": "spawns diagnostic report tooling",
       "registered": false
     },
     {
@@ -3646,19 +3975,19 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_task_proposal",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: updates worker-consumed task proposal",
       "registered": false
     },
     {
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_task_proposal",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
@@ -3848,7 +4177,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_chat_message",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
@@ -3858,7 +4187,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_session_messages",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
@@ -4048,7 +4377,7 @@
       "capabilities": [
         "configuresFutureProcessAuthority"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_provider_settings",
       "module": "harness_provider_commands",
       "reason": "configures future provider process authority",
@@ -4058,7 +4387,7 @@
       "capabilities": [
         "configuresFutureProcessAuthority"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_agent_provider_settings",
       "module": "harness_provider_commands",
       "reason": "configures future provider process authority",
@@ -4138,7 +4467,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_managed_provider_cli_status",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
@@ -4148,7 +4477,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "install_or_update_managed_provider_cli",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
@@ -4158,7 +4487,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "auto_update_managed_provider_clis",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
@@ -4308,7 +4637,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_linear_integration_settings",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4318,7 +4647,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_linear_webhook_config",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4328,7 +4657,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_linear_integration_settings",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4338,7 +4667,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_linear_webhook_signing_secret",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4348,7 +4677,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "search_linear_issues",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4358,7 +4687,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_linear_integration",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4368,7 +4697,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "disconnect_linear_integration",
       "module": "linear_commands",
       "reason": "integration credential surface",
@@ -4378,7 +4707,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_clickup_integration_settings",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4388,7 +4717,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_clickup_integration_settings",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4398,7 +4727,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_clickup_integration",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4408,7 +4737,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "disconnect_clickup_integration",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4418,7 +4747,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_clickup_workspaces",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4428,7 +4757,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "search_clickup_tasks",
       "module": "clickup_commands",
       "reason": "integration credential surface",
@@ -4438,7 +4767,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "assign_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4448,7 +4777,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4458,7 +4787,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4468,7 +4797,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4478,7 +4807,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_granola_note_detail",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4488,7 +4817,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_granola_notes",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4498,7 +4827,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "refresh_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4508,7 +4837,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "save_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4518,7 +4847,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "validate_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
@@ -4556,22 +4885,22 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "create_artifact",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: creates worker-consumed artifact of any kind",
       "registered": false
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_artifact",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: updates worker-consumed artifact of any kind",
       "registered": false
     },
     {
@@ -4656,12 +4985,12 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "add_artifact_relation",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "content-surface: changes worker-consumed artifact relations",
       "registered": false
     },
     {
@@ -4788,7 +5117,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "seed_test_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
@@ -4798,7 +5127,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "seed_visual_audit_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
@@ -4808,7 +5137,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_test_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
@@ -5018,7 +5347,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_queued_agent_message",
       "module": "unified_chat_commands",
       "reason": "deletes a durable entity",
@@ -5218,10 +5547,10 @@
       "capabilities": [
         "agentControl"
       ],
-      "class": "agentControl",
+      "class": "denied",
       "command": "publish_agent_conversation_workspace",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "publishes an agent conversation workspace",
       "registered": false
     },
     {
@@ -5378,7 +5707,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "open_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5388,7 +5717,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "write_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5398,7 +5727,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "resize_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5408,7 +5737,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "clear_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5418,7 +5747,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "restart_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5428,7 +5757,7 @@
       "capabilities": [
         "ptyControl"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "close_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
@@ -5438,7 +5767,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "upload_chat_attachment",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5448,7 +5777,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "link_attachments_to_message",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5458,7 +5787,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_conversation_attachments",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5468,7 +5797,7 @@
       "capabilities": [
         "writesArbitraryPath"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_message_attachments",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
@@ -5478,7 +5807,7 @@
       "capabilities": [
         "deletesEntity"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "delete_chat_attachment",
       "module": "chat_attachment_commands",
       "reason": "deletes a durable entity",
@@ -5568,20 +5897,20 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_task_file_changes",
       "module": "diff_commands",
-      "reason": "diff getters may spawn git",
+      "reason": "spawns git for task file changes",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_file_diff",
       "module": "diff_commands",
-      "reason": "diff getters may spawn git",
+      "reason": "spawns git for an arbitrary file diff",
       "registered": false
     },
     {
@@ -5878,10 +6207,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "resolve_merge_conflict",
       "module": "git_commands",
-      "reason": "git process and worktree authority",
+      "reason": "destructive merge-conflict resolution",
       "registered": false
     },
     {
@@ -5898,20 +6227,20 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "cleanup_task_branch",
       "module": "git_commands",
-      "reason": "git process and worktree authority",
+      "reason": "destructive task branch cleanup",
       "registered": false
     },
     {
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "change_project_git_mode",
       "module": "git_commands",
-      "reason": "git process and worktree authority",
+      "reason": "changes project git authority",
       "registered": false
     },
     {
@@ -6078,7 +6407,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_api_keys",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6088,7 +6417,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "create_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6098,7 +6427,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "revoke_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6108,7 +6437,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "rotate_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6118,7 +6447,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_api_key_projects",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6128,7 +6457,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_api_key_permissions",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6138,7 +6467,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_api_key_audit_log",
       "module": "api_key_commands",
       "reason": "credential surface",
@@ -6158,10 +6487,10 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_codex_cli_diagnostics",
       "module": "diagnostic_commands",
-      "reason": "diagnostics may spawn provider CLIs",
+      "reason": "spawns the Codex CLI for diagnostics",
       "registered": false
     },
     {
@@ -6388,7 +6717,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "list_workspace_open_targets",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
@@ -6398,7 +6727,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "open_agent_conversation_workspace",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
@@ -6408,7 +6737,7 @@
       "capabilities": [
         "spawnsProcess"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "open_agent_conversation_workspace_path",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
@@ -6418,7 +6747,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_external_mcp_config",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
@@ -6428,7 +6757,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "get_external_mcp_readiness",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
@@ -6438,7 +6767,7 @@
       "capabilities": [
         "touchesCredentials"
       ],
-      "class": "elevated",
+      "class": "denied",
       "command": "update_external_mcp_config",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
@@ -6446,7 +6775,109 @@
     }
   ],
   "schemaVersion": 1,
-  "spawn_triggering_state_surface": [],
+  "spawn_triggering_state_surface": [
+    {
+      "armedValue": "Ready",
+      "id": "ready-task",
+      "readByLoops": [
+        "application/ready_task_scheduler.rs::application/ready_task_scheduler.rs:::::spawn_ready_task_scheduler_if_needed@57e1eb6d86c1770f"
+      ],
+      "surface": "tasks.internal_status",
+      "writers": [
+        "inject_task",
+        "move_task",
+        "restart_task"
+      ]
+    },
+    {
+      "armedValue": "PendingReview with no fresh/running reviewer",
+      "id": "pending-review-freshness",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_watchdog@8c28974ee8ca859d"
+      ],
+      "surface": "tasks.internal_status + task_status_history.entered_at + agent_runs.status",
+      "writers": [
+        "re_review_task_from_escalated",
+        "request_task_changes_from_reviewing"
+      ]
+    },
+    {
+      "armedValue": "Active",
+      "id": "automation-active",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_automation_scheduler@c034c5fc2b8fe7b8"
+      ],
+      "surface": "automations.status",
+      "writers": [
+        "finalize_automation",
+        "resume_automation"
+      ]
+    },
+    {
+      "armedValue": "linked active plan/edit workspace",
+      "id": "workspace-bridge",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"
+      ],
+      "surface": "agent_conversation_workspaces.linked_ideation_session_id/status/mode",
+      "writers": [
+        "activate_agent_plan_direct_implementation",
+        "activate_agent_task_pipeline",
+        "close_agent_workspace_pr",
+        "commit_agent_conversation_workspace_locally",
+        "copy_agent_conversation_plan",
+        "import_agent_conversation_plan",
+        "publish_agent_conversation_workspace",
+        "reconcile_agent_conversation_workspace_publication",
+        "resume_deferred_git_startup",
+        "set_agent_conversation_workspace_pr_supervision",
+        "start_agent_conversation",
+        "start_ralphx_work_from_ticket",
+        "start_research",
+        "switch_agent_conversation_mode",
+        "update_agent_conversation_workspace_from_base"
+      ]
+    },
+    {
+      "armedValue": "unconsumed row",
+      "id": "external-event-cursor",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_agent_workspace_bridge_dispatcher@11ddd3248e57299b"
+      ],
+      "surface": "external_events rows/cursor",
+      "writers": [
+        "create_cross_project_session",
+        "create_ideation_session",
+        "import_ideation_session",
+        "move_task",
+        "restart_task",
+        "resume_deferred_git_startup",
+        "set_tasks_feature_enabled"
+      ]
+    },
+    {
+      "armedValue": "enabled and publishable/needs_agent",
+      "id": "workspace-auto-publish",
+      "readByLoops": [
+        "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::start_agent_workspace_auto_publish_freshness_scan@3a8d62e625ea5914"
+      ],
+      "surface": "agent_conversation_workspaces.auto_publish_enabled/publication_push_status",
+      "writers": [
+        "set_agent_conversation_workspace_auto_publish"
+      ]
+    },
+    {
+      "armedValue": "true",
+      "id": "workspace-auto-review",
+      "readByLoops": [
+        "commands/agent_workspace_auto_review.rs::commands/agent_workspace_auto_review.rs:::::spawn_auto_review_for_workspace@a952be79d060c28f"
+      ],
+      "surface": "review_settings.require_workspace_review",
+      "writers": [
+        "update_review_settings"
+      ]
+    }
+  ],
   "worker_task_view_allowlist": [
     "id",
     "project_id",
