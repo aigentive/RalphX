@@ -8,6 +8,10 @@
 import { FileText, Image, FileCode, File } from "lucide-react";
 import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+
+import { HostPathCopyButton } from "@/components/remote/HostPathCopyButton";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { HOST_ATTACHMENT_HINT } from "@/lib/remote/host-affordances";
 import {
   Dialog,
   DialogContent,
@@ -76,7 +80,26 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function getImagePreviewSrc(attachment: MessageAttachment): string | null {
+/**
+ * Preview source for an attachment, or `null` when there is nothing honest to show.
+ *
+ * `convertFileSrc` mints an `asset://` URL for a path on THIS device's filesystem.
+ * Under a remote environment `attachment.filePath` names a file on the HOST, so the
+ * URL would resolve to nothing and the user would get a broken image icon with no
+ * explanation. Returning `null` routes every remote attachment through the
+ * placeholder card instead (2.6-a, Fixed Decision 14).
+ *
+ * Real remote attachment rendering needs the 1.5-C `/remote/v1/attachments/{id}`
+ * endpoint, 2.7's response-header envelope, and a binary-safe body — none of which
+ * exist on this base. That work is DEFERRED TO 3.1; this is the honest interim.
+ *
+ * `previewUrl` is deliberately still honoured: when a caller already resolved a
+ * displayable URL by some other means, that is not a local-filesystem assumption.
+ */
+function getImagePreviewSrc(
+  attachment: MessageAttachment,
+  isRemoteEnvironment: boolean
+): string | null {
   if (!attachment.mimeType?.startsWith("image/")) {
     return null;
   }
@@ -85,7 +108,7 @@ function getImagePreviewSrc(attachment: MessageAttachment): string | null {
     return attachment.previewUrl;
   }
 
-  if (!attachment.filePath) {
+  if (!attachment.filePath || isRemoteEnvironment) {
     return null;
   }
 
@@ -108,6 +131,7 @@ export function MessageAttachments({
 }: MessageAttachmentsProps) {
   const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const isRemoteEnvironment = useIsRemoteEnvironment();
 
   if (attachments.length === 0) {
     return null;
@@ -115,7 +139,9 @@ export function MessageAttachments({
 
   const attachmentEntries: AttachmentPreviewEntry[] = attachments.map((attachment) => ({
     attachment,
-    previewSrc: failedPreviewIds.has(attachment.id) ? null : getImagePreviewSrc(attachment),
+    previewSrc: failedPreviewIds.has(attachment.id)
+      ? null
+      : getImagePreviewSrc(attachment, isRemoteEnvironment),
   }));
   const imageEntries = attachmentEntries.filter((entry) => entry.previewSrc !== null);
   const fileEntries = attachmentEntries.filter((entry) => entry.previewSrc === null);
@@ -204,6 +230,7 @@ export function MessageAttachments({
               key={attachment.id}
               attachment={attachment}
               onClick={onClick}
+              isRemoteEnvironment={isRemoteEnvironment}
             />
           ))}
         </div>
@@ -259,15 +286,30 @@ export function MessageAttachments({
 function AttachmentChip({
   attachment,
   onClick,
+  isRemoteEnvironment = false,
 }: {
   attachment: MessageAttachment;
   onClick: ((id: string, filePath: string | undefined) => void) | undefined;
+  isRemoteEnvironment?: boolean;
 }) {
+  // The chip's click opens the file on this device; on a remote host there is
+  // nothing to open, so the card states where the file is and offers the path.
+  const hostPath = isRemoteEnvironment ? attachment.filePath : undefined;
+
   return (
+    <span
+      data-testid={isRemoteEnvironment ? "attachment-host-card" : undefined}
+      className="inline-flex items-center gap-1.5"
+    >
     <button
       data-testid="attachment-chip"
       type="button"
-      onClick={() => onClick?.(attachment.id, attachment.filePath)}
+      disabled={isRemoteEnvironment}
+      onClick={
+        isRemoteEnvironment
+          ? undefined
+          : () => onClick?.(attachment.id, attachment.filePath)
+      }
       className="flex items-center gap-1.5 rounded px-2 py-1 transition-all"
       style={{
         background: "var(--bg-elevated)",
@@ -311,6 +353,20 @@ function AttachmentChip({
       >
         {formatFileSize(attachment.fileSize)}
       </span>
+
+      {isRemoteEnvironment ? (
+        <span
+          className="text-[0.625rem]"
+          style={{ color: "var(--text-muted)" }}
+          data-testid="attachment-host-hint"
+        >
+          {HOST_ATTACHMENT_HINT}
+        </span>
+      ) : null}
     </button>
+    {hostPath ? (
+      <HostPathCopyButton path={hostPath} testId="attachment-host-copy" />
+    ) : null}
+    </span>
   );
 }

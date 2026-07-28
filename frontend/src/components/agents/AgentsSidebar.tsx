@@ -52,6 +52,7 @@ import {
 } from "react-virtuoso";
 
 import { Button } from "@/components/ui/button";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import {
   Collapsible,
@@ -846,6 +847,7 @@ export function AgentsSidebar({
   isVisible = true,
   onCollapse,
 }: AgentsSidebarProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -1351,6 +1353,8 @@ export function AgentsSidebar({
 
       <StaticRecentRuns />
 
+      {/* Project creation is host-only (2.6-a) — hidden, not disabled. */}
+      {!isRemoteEnvironment && (
       <div
         className="shrink-0 border-t px-3 py-3"
         style={{
@@ -1369,6 +1373,7 @@ export function AgentsSidebar({
           Add project
         </button>
       </div>
+      )}
       <ConfirmationDialog {...confirmationDialogProps} />
     </aside>
     </BulkArchiveSelectionContext.Provider>

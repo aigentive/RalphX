@@ -18,6 +18,9 @@ import {
   Terminal as TerminalIcon,
 } from "lucide-react";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+
+import { HostPathCopyButton } from "@/components/remote/HostPathCopyButton";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { logger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -215,6 +218,39 @@ async function openLocalFilePath(path: string): Promise<void> {
   }
 }
 
+/**
+ * A file reference the user can see named but cannot open from here (2.6-a).
+ *
+ * Rendered INSTEAD of both the workspace open-menu link and the plain `file://`
+ * anchor whenever the active environment is remote, which is what keeps `openPath` /
+ * `revealItemInDir` / `open_agent_conversation_workspace_path` off the click path
+ * entirely — the disabled-control variant would still leave a menu whose every item
+ * is dead.
+ */
+function RemoteHostFileLink({
+  path,
+  children,
+}: {
+  path: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      className="inline-flex max-w-full items-baseline gap-0.5 align-baseline"
+      data-testid="chat-remote-host-file-link"
+    >
+      <span
+        className="min-w-0 break-words"
+        style={{ color: "var(--text-secondary)" }}
+        title={path}
+      >
+        {children}
+      </span>
+      <HostPathCopyButton path={path} testId="chat-remote-host-file-copy" />
+    </span>
+  );
+}
+
 function WorkspaceMarkdownFileLink({
   path,
   children,
@@ -320,6 +356,7 @@ export function MarkdownLink({
   ...props
 }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
   const localFilePath = parseLocalFileHref(href);
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const fileLinkContext = useMessageFileLinkContext();
   const useWorkspaceFileLink = Boolean(
     localFilePath &&
@@ -332,10 +369,18 @@ export function MarkdownLink({
     (event: React.MouseEvent<HTMLAnchorElement>) => {
       if (!localFilePath) return;
       event.preventDefault();
+      // Belt-and-braces: the remote branch below already returns before this handler
+      // can be bound to a rendered anchor, but `openLocalFilePath` opens a file on
+      // THIS device and must never fire for a host path.
+      if (isRemoteEnvironment) return;
       void openLocalFilePath(localFilePath);
     },
-    [localFilePath],
+    [isRemoteEnvironment, localFilePath],
   );
+
+  if (isRemoteEnvironment && localFilePath) {
+    return <RemoteHostFileLink path={localFilePath}>{children}</RemoteHostFileLink>;
+  }
 
   if (useWorkspaceFileLink && localFilePath) {
     return (
