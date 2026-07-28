@@ -127,3 +127,31 @@ pub async fn get_remote_listener_status(
     let settings = store.get_or_create().await.map_err(|e| e.to_string())?;
     Ok(listener_status(settings, &handle).await)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote_server::settings::DEFAULT_REMOTE_PORT;
+
+    #[tokio::test]
+    async fn listener_status_reports_not_running_for_a_fresh_handle() {
+        let handle = RemoteListenerHandle::new();
+        let settings = RemoteHostSettings {
+            enabled: false,
+            exposure_mode: RemoteExposureMode::Serve,
+            port: DEFAULT_REMOTE_PORT,
+            environment_id: "env-1".to_string(),
+        };
+
+        let status = listener_status(settings, &handle).await;
+
+        assert!(!status.enabled);
+        assert_eq!(status.exposure_mode, RemoteExposureMode::Serve);
+        assert_eq!(status.port, DEFAULT_REMOTE_PORT);
+        assert_eq!(status.environment_id, "env-1");
+        assert!(!status.running);
+        assert!(status.bind_address.is_none());
+        assert!(!status.serve_active);
+        assert!(status.serve_degraded_reason.is_none());
+    }
+}

@@ -120,6 +120,20 @@ fn full_durable_channel_drops_without_blocking_the_emit_thread() {
 }
 
 #[test]
+fn disconnected_capture_channels_drop_without_panicking() {
+    let registrar = RecordingRegistrar::default();
+    let (feed, receivers) = CaptureFeed::channels(1);
+    drop(receivers);
+    RemoteEventCapture::install_with_registrar(registrar.clone(), feed);
+
+    registrar.emit("notification:created", r#"{"id":"durable"}"#);
+    registrar.emit("agent:chunk", r#"{"id":"transient"}"#);
+
+    assert_eq!(registrar.count("notification:created"), 1);
+    assert_eq!(registrar.count("agent:chunk"), 1);
+}
+
+#[test]
 fn table_has_no_duplicate_names() {
     let mut names = std::collections::HashSet::new();
     for entry in EVENT_CLASSIFICATIONS {

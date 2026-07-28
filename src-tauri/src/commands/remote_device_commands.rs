@@ -384,3 +384,58 @@ pub async fn disconnect_remote_session(
         .await;
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(scopes: RemoteScopeSet) -> RemoteDevice {
+        RemoteDevice {
+            id: RemoteDeviceId::from_string("device-1"),
+            name: "MacBook".to_string(),
+            token_hash: "hash".to_string(),
+            token_prefix: "rxd_live_a3f2".to_string(),
+            scopes,
+            created_at: "2026-07-27T19:15:00+00:00".to_string(),
+            last_seen_at: Some("2026-07-27T20:15:00+00:00".to_string()),
+            revoked_at: None,
+        }
+    }
+
+    #[test]
+    fn device_view_maps_active_agent_control_device_fields() {
+        let device = device(RemoteScopeSet::from_scopes([Scope::UiRead, Scope::UiAgent]));
+
+        let view = device_view(&device, 2);
+
+        assert_eq!(view.id, "device-1");
+        assert_eq!(view.name, "MacBook");
+        assert_eq!(view.token_prefix, "rxd_live_a3f2");
+        assert_eq!(view.scopes, vec![Scope::UiRead, Scope::UiAgent]);
+        assert!(view.agent_control_granted);
+        assert_eq!(view.created_at, "2026-07-27T19:15:00+00:00");
+        assert_eq!(
+            view.last_seen_at.as_deref(),
+            Some("2026-07-27T20:15:00+00:00")
+        );
+        assert!(view.revoked_at.is_none());
+        assert_eq!(view.live_session_count, 2);
+    }
+
+    #[test]
+    fn device_view_maps_revoked_device_without_agent_control_or_last_seen() {
+        let mut device = device(RemoteScopeSet::from_scopes([Scope::UiOperate]));
+        device.last_seen_at = None;
+        device.revoked_at = Some("2026-07-27T21:15:00+00:00".to_string());
+
+        let view = device_view(&device, 0);
+
+        assert!(!view.agent_control_granted);
+        assert!(view.last_seen_at.is_none());
+        assert_eq!(
+            view.revoked_at.as_deref(),
+            Some("2026-07-27T21:15:00+00:00")
+        );
+        assert_eq!(view.live_session_count, 0);
+    }
+}

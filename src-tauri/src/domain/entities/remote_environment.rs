@@ -129,7 +129,25 @@ mod tests {
     #[test]
     fn token_secret_ref_is_anchored_on_the_client_local_id() {
         let id = RemoteEnvironmentId::from_string("row-1");
-        assert_eq!(remote_environment_token_secret_ref(&id), "remote-env:row-1:token");
+        assert_eq!(
+            remote_environment_token_secret_ref(&id),
+            "remote-env:row-1:token"
+        );
+    }
+
+    #[test]
+    fn default_id_is_a_non_empty_uuid() {
+        let id = RemoteEnvironmentId::default();
+
+        assert!(!id.as_str().is_empty());
+        assert!(uuid::Uuid::parse_str(id.as_str()).is_ok());
+    }
+
+    #[test]
+    fn id_display_matches_its_string_value() {
+        let id = RemoteEnvironmentId::from_string("remote-row-1");
+
+        assert_eq!(format!("{id}"), id.as_str());
     }
 
     #[test]

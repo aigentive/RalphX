@@ -15,7 +15,9 @@ use super::transport_spike::{
     DEBUG_CORS_PROBE_ORIGIN,
 };
 use crate::commands::remote_transport_spike_commands::{
-    debug_run_desktop_proxy_stub, DebugDesktopProxyStubInput,
+    debug_run_desktop_proxy_stub, debug_start_remote_transport_cors_probe,
+    debug_stop_remote_transport_cors_probe, DebugDesktopProxyStubInput,
+    DebugStartRemoteTransportCorsProbeInput,
 };
 
 static LISTENER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -158,6 +160,26 @@ async fn options_before_auth_rejects_an_unlisted_origin_without_cors_headers() {
 }
 
 #[tokio::test]
+async fn options_before_auth_rejects_preflight_without_an_origin() {
+    let request = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/remote/v1/invoke")
+        .body(Body::empty())
+        .expect("preflight request should be valid");
+
+    let response = cors_probe_router(DebugCorsProbeOrdering::OptionsBeforeAuth)
+        .oneshot(request)
+        .await
+        .expect("probe router should respond");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .is_none());
+}
+
+#[tokio::test]
 async fn loopback_probe_binds_an_ephemeral_ipv4_port_and_stops_once() {
     let _guard = listener_test_lock().lock().await;
     let endpoint = start_cors_probe_listener(DebugCorsProbeOrdering::OptionsBeforeAuth)
@@ -179,6 +201,20 @@ async fn loopback_probe_binds_an_ephemeral_ipv4_port_and_stops_once() {
 }
 
 #[tokio::test]
+async fn starting_a_second_probe_replaces_and_stops_the_first() {
+    let _guard = listener_test_lock().lock().await;
+    let first = start_cors_probe_listener(DebugCorsProbeOrdering::AuthBeforeOptions)
+        .await
+        .expect("first probe should bind");
+    let second = start_cors_probe_listener(DebugCorsProbeOrdering::OptionsBeforeAuth)
+        .await
+        .expect("second probe should replace the first");
+
+    assert_ne!(first.base_url, second.base_url);
+    assert!(stop_cors_probe_listener().expect("replacement probe should stop"));
+}
+
+#[tokio::test]
 async fn desktop_proxy_command_uses_the_loopback_fixture_and_reports_its_result() {
     let _guard = listener_test_lock().lock().await;
     let result = debug_run_desktop_proxy_stub(DebugDesktopProxyStubInput {
@@ -195,6 +231,32 @@ async fn desktop_proxy_command_uses_the_loopback_fixture_and_reports_its_result(
     assert_eq!(serialized["requestPath"], "/remote/v1/invoke");
     assert_eq!(serialized["statusCode"], StatusCode::UNAUTHORIZED.as_u16());
     assert_eq!(serialized["transport"], "rustLoopbackHttp");
+}
+
+#[tokio::test]
+async fn start_cors_probe_command_returns_a_bound_endpoint() {
+    let _guard = listener_test_lock().lock().await;
+    let endpoint =
+        debug_start_remote_transport_cors_probe(DebugStartRemoteTransportCorsProbeInput {
+            ordering: DebugCorsProbeOrdering::OptionsBeforeAuth,
+        })
+        .await
+        .expect("start command should bind the probe");
+
+    assert!(!endpoint.base_url.is_empty());
+    assert!(stop_cors_probe_listener().expect("probe listener should stop"));
+}
+
+#[tokio::test]
+async fn stop_cors_probe_command_reports_a_running_listener_was_stopped() {
+    let _guard = listener_test_lock().lock().await;
+    start_cors_probe_listener(DebugCorsProbeOrdering::OptionsBeforeAuth)
+        .await
+        .expect("probe should be running before the stop command");
+
+    assert!(
+        debug_stop_remote_transport_cors_probe().expect("stop command should release the probe")
+    );
 }
 
 #[tokio::test]

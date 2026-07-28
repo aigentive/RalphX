@@ -15,10 +15,10 @@ use tower::ServiceExt;
 
 use super::auth::{
     device_token_prefix, expiry_timestamp, generate_device_token, generate_pairing_code,
-    generate_ws_ticket, now_timestamp, strip_trust_headers, RemoteAuthContext, RemoteAuthRejection,
-    PAIRING_CODE_TTL_SECS, RALPHX_HEADER_NAMESPACE, REMOTE_DEVICE_TOKEN_PREFIX,
-    REMOTE_PAIRING_CODE_PREFIX, REMOTE_WS_TICKET_PREFIX, STRIPPED_TRUST_HEADERS,
-    WS_TICKET_TTL_SECS,
+    generate_ws_ticket, now_timestamp, scope_label, strip_trust_headers, RemoteAuthContext,
+    RemoteAuthRejection, PAIRING_CODE_TTL_SECS, RALPHX_HEADER_NAMESPACE,
+    REMOTE_DEVICE_TOKEN_PREFIX, REMOTE_PAIRING_CODE_PREFIX, REMOTE_WS_TICKET_PREFIX,
+    STRIPPED_TRUST_HEADERS, WS_TICKET_TTL_SECS,
 };
 use super::endpoints::RemoteRouterState;
 use super::session_registry::{RemoteSessionAdmission, RemoteSessionRegistry};
@@ -28,12 +28,13 @@ use super::{
     WS_TICKET_PATH,
 };
 use crate::domain::entities::{
-    RemoteAuditEntry, RemoteDevice, RemoteDeviceId, RemotePairingCode, RemotePairingCodeId,
-    RemoteScopeSet, RemoteSession, RemoteSessionId,
+    RemoteAuditAction, RemoteAuditEntry, RemoteDevice, RemoteDeviceId, RemotePairingCode,
+    RemotePairingCodeId, RemoteScopeSet, RemoteSession, RemoteSessionId,
 };
 use crate::domain::repositories::{
-    RemoteDeviceLookup, RemoteDeviceRepository, RemotePairingCodeRepository, RemotePairingOutcome,
-    RemotePairingRedemption, RemoteWsTicketOutcome,
+    RemoteAuditLogRepository, RemoteDeviceLookup, RemoteDeviceRepository,
+    RemotePairingCodeRepository, RemotePairingOutcome, RemotePairingRedemption,
+    RemoteWsTicketOutcome,
 };
 use crate::domain::services::key_crypto::hash_key;
 use crate::error::{AppError, AppResult};
@@ -200,6 +201,25 @@ impl RemotePairingCodeRepository for FailingPairingCodeRepository {
     }
 }
 
+struct FailingAuditRepository;
+
+#[async_trait]
+impl RemoteAuditLogRepository for FailingAuditRepository {
+    async fn record(
+        &self,
+        _device_id: Option<&RemoteDeviceId>,
+        _action: RemoteAuditAction,
+        _detail: Option<&str>,
+        _now: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Database("database is locked".to_string()))
+    }
+
+    async fn list_recent(&self, _limit: Option<i64>) -> AppResult<Vec<RemoteAuditEntry>> {
+        Err(AppError::Database("database is locked".to_string()))
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Credential shape
 // ---------------------------------------------------------------------------------------
@@ -313,6 +333,41 @@ fn absent_invalid_and_store_error_are_separate_typed_rejections() {
         "a flaky store must not lock the owner out"
     );
     assert!(!absent.counts_as_auth_failure());
+    assert_eq!(
+        RemoteAuthRejection::RateLimited {
+            retry_after_secs: 7
+        }
+        .audit_action(),
+        RemoteAuditAction::RateLimited
+    );
+    assert_eq!(
+        RemoteAuthRejection::TooManyConcurrentRequests.audit_action(),
+        RemoteAuditAction::RateLimited
+    );
+}
+
+#[test]
+fn every_remote_scope_has_the_protocol_label() {
+    assert_eq!(scope_label(Scope::UiRead), "ui:read");
+    assert_eq!(scope_label(Scope::UiOperate), "ui:operate");
+    assert_eq!(scope_label(Scope::UiAgent), "ui:agent");
+    assert_eq!(scope_label(Scope::UiElevated), "ui:elevated");
+}
+
+#[tokio::test]
+async fn audit_store_failures_are_reported_to_authorizing_callers() {
+    let mut context = in_memory_auth_context();
+    context.audit = Arc::new(FailingAuditRepository);
+
+    assert!(
+        !context
+            .record_audit(
+                None,
+                RemoteAuditAction::AuthAccepted,
+                Some("GET /remote/v1/session")
+            )
+            .await
+    );
 }
 
 /// A-2: a host with zero paired devices answers only the descriptor and `/pair`.
@@ -510,6 +565,37 @@ async fn a_pairing_request_may_narrow_its_own_grant() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["scopes"], json!(["ui:read"]));
+}
+
+#[tokio::test]
+async fn pairing_rejects_blank_and_oversized_device_names() {
+    let context = in_memory_auth_context();
+
+    for device_name in ["   ".to_string(), "x".repeat(121)] {
+        let code = mint_pairing_code(&context, RemoteScopeSet::default_pairing_grant()).await;
+        let response = router_for(&context)
+            .oneshot(post_json(
+                PAIR_PATH,
+                None,
+                json!({"pairingCode": code, "deviceName": device_name}),
+            ))
+            .await
+            .expect("pair request should complete");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert_eq!(body["code"], Value::from("REMOTE_FORBIDDEN"));
+    }
+
+    assert!(context
+        .devices
+        .list()
+        .await
+        .expect("devices should read")
+        .is_empty());
+    assert!(audit_actions(&context)
+        .await
+        .contains(&"pairing_rejected".to_string()));
 }
 
 /// Acceptance: the 6th failed pair attempt inside the window is rate limited.
