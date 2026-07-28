@@ -4,7 +4,11 @@ import {
   resetTransportEnvironmentId,
   setTransportEnvironmentId,
 } from "@/lib/remote/active-environment";
-import { getQueryClient, resetQueryClient } from "./queryClient";
+import {
+  getQueryClient,
+  removeQueryClient,
+  resetQueryClient,
+} from "./queryClient";
 
 afterEach(() => {
   resetQueryClient();
@@ -42,5 +46,18 @@ describe("getQueryClient", () => {
 
     expect(getQueryClient("env-a")).not.toBe(environmentA);
     expect(getQueryClient("env-b")).not.toBe(environmentB);
+  });
+
+  it("clears and forgets only the removed environment client", () => {
+    const environmentA = getQueryClient("env-a");
+    const environmentB = getQueryClient("env-b");
+    environmentA.setQueryData(["key"], "a");
+    environmentB.setQueryData(["key"], "b");
+
+    removeQueryClient("env-a");
+
+    expect(environmentA.getQueryData(["key"])).toBeUndefined();
+    expect(getQueryClient("env-a")).not.toBe(environmentA);
+    expect(getQueryClient("env-b")).toBe(environmentB);
   });
 });

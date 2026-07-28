@@ -55,6 +55,7 @@ import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
+import { initializeEnvironmentRuntime } from "@/lib/remote/environment-runtime";
 import {
   openTaskInAgents,
   navigateToIdeationSession,
@@ -1249,6 +1250,8 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
 
 function App({ startupStatus }: { startupStatus?: StartupStatus }) {
   const backgroundSettled = startupStatus?.backgroundComplete ?? true;
+
+  useEffect(() => initializeEnvironmentRuntime(), []);
 
   return (
     <EnvironmentScopedProviders>

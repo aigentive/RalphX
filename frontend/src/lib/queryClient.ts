@@ -77,6 +77,16 @@ export function getQueryClient(
   return queryClient;
 }
 
+/** Clears and forgets an environment cache after its registry row is removed. */
+export function removeQueryClient(environmentId: string): void {
+  const queryClient = queryClients.get(environmentId);
+  if (queryClient === undefined) {
+    return;
+  }
+  queryClient.clear();
+  queryClients.delete(environmentId);
+}
+
 /**
  * Reset the query client (for testing)
  */
