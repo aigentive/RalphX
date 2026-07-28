@@ -1701,6 +1701,7 @@ pub enum AgentWorkspacePostRepairAction {
 }
 
 impl AgentWorkspacePostRepairAction {
+    #[cfg(test)]
     fn as_str(self) -> &'static str {
         match self {
             Self::Publish => AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH,
@@ -1708,6 +1709,7 @@ impl AgentWorkspacePostRepairAction {
         }
     }
 
+    #[cfg(test)]
     fn classification(self) -> String {
         format!("{AGENT_WORKSPACE_REPAIR_ACTION_PREFIX}{}", self.as_str())
     }

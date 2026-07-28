@@ -75,8 +75,6 @@ use crate::application::agent_workspace_review_diff::{
     ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
 };
 use crate::application::agent_workspace_review_publish_handoff::workspace_review_authorization_kind;
-#[cfg(test)]
-use crate::application::agent_workspace_review_publish_handoff::resume_pr_fix_publish_after_passed_workspace_review;
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 #[cfg(test)]
 use crate::application::publish_resilience::push_publish_branch;
@@ -113,8 +111,10 @@ use crate::domain::entities::{
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, AgentRunId,
     AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
-    NotificationTarget, NotificationTargetKind, PlanBranch, ProjectId,
+    NotificationTarget, NotificationTargetKind, ProjectId,
 };
+#[cfg(test)]
+use crate::domain::entities::PlanBranch;
 use crate::domain::repositories::AgentWorkspacePrReviewActionMutation;
 #[cfg(test)]
 use crate::domain::repositories::AgentWorkspaceRepairStateGuard;
@@ -358,6 +358,7 @@ struct AgentWorkspacePrFixTarget {
     working_dir: PathBuf,
     branch_name: String,
     base_branch: String,
+    #[cfg(test)]
     plan_branch: Option<PlanBranch>,
 }
 
@@ -369,6 +370,7 @@ impl AgentWorkspacePrFixTarget {
         }
     }
 
+    #[cfg(test)]
     fn is_ideation_plan(&self) -> bool {
         self.kind == AgentWorkspacePrFixTargetKind::IdeationPlan
     }
@@ -3656,27 +3658,6 @@ fn pr_fix_workspace_review_block_classification(
 }
 
 #[cfg(test)]
-async fn complete_repair_workspace_review_response_if_required(
-    state: &HttpServerState,
-    conversation_id: &ChatConversationId,
-    workspace: &AgentConversationWorkspace,
-    base_commit: &str,
-    repair_commit_sha: &str,
-    summary: &str,
-) -> Result<Option<Json<CompleteAgentWorkspaceRepairResponse>>, JsonError> {
-    complete_repair_workspace_review_response_if_required_with_starter(
-        state,
-        conversation_id,
-        workspace,
-        base_commit,
-        repair_commit_sha,
-        summary,
-        &DefaultWorkspaceReviewStarter,
-    )
-    .await
-}
-
-#[cfg(test)]
 async fn complete_repair_workspace_review_response_if_required_with_starter<S>(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3929,45 +3910,6 @@ async fn finish_pr_fix_blocked_by_workspace_review(
         pr_number,
         pr_url,
     }))
-}
-
-#[cfg(test)]
-async fn resume_pr_fix_publish_after_workspace_review(
-    state: &HttpServerState,
-    conversation_id: &ChatConversationId,
-    workspace: &AgentConversationWorkspace,
-    _monitor: &AgentWorkspaceReviewMonitor,
-) -> Result<(), JsonError> {
-    let review_context = load_agent_workspace_review_context(state.app_state.as_ref(), workspace)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let app_state = Arc::clone(&state.app_state);
-    let execution_state = Arc::clone(&state.execution_state);
-    resume_pr_fix_publish_after_passed_workspace_review(
-        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
-        conversation_id,
-        workspace,
-        &review_context.monitor,
-        review_context.target.as_ref(),
-        move |conversation_id| {
-            let app_state = Arc::clone(&app_state);
-            let execution_state = Arc::clone(&execution_state);
-            async move {
-                publish_agent_conversation_workspace_for_app_state(
-                    app_state.as_ref(),
-                    &execution_state,
-                    conversation_id,
-                    false,
-                )
-                .await
-                .map(|result| result.workspace.pr_auto_merge_current)
-            }
-        },
-    )
-    .await
-    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-
-    Ok(())
 }
 
 /// R2: resume the INITIAL automation/armed publish once the workspace review passes.
@@ -4259,6 +4201,7 @@ async fn resolve_agent_workspace_pr_fix_target(
             working_dir,
             branch_name: plan_branch.branch_name.clone(),
             base_branch: plan_branch.source_branch.clone(),
+            #[cfg(test)]
             plan_branch: Some(plan_branch),
         }));
     }
@@ -4273,6 +4216,7 @@ async fn resolve_agent_workspace_pr_fix_target(
         working_dir: PathBuf::from(&workspace.worktree_path),
         branch_name: workspace.branch_name.clone(),
         base_branch: workspace.base_ref.clone(),
+        #[cfg(test)]
         plan_branch: None,
     }))
 }
@@ -4932,46 +4876,6 @@ fn parse_update_base_kind(
 
 fn is_publish_in_progress(push_status: Option<&str>) -> bool {
     is_publication_push_active(push_status)
-}
-
-fn update_only_repair_pr_supervision_state(
-    workspace: &AgentConversationWorkspace,
-) -> Option<(&'static str, &'static str)> {
-    if workspace.publication_pr_number.is_none()
-        || matches!(
-            workspace.publication_pr_status.as_deref(),
-            Some("merged" | "closed")
-        )
-    {
-        return None;
-    }
-
-    if !workspace.auto_publish_enabled {
-        return Some((
-            "paused",
-            "Agent workspace repair verified; Auto Publish is paused.",
-        ));
-    }
-
-    if workspace.pr_autofix_enabled
-        || workspace.pr_auto_merge_desired
-        || workspace.pr_auto_merge_current.is_some()
-    {
-        return Some((
-            "monitoring",
-            "Agent workspace repair verified; RalphX is monitoring the pull request.",
-        ));
-    }
-
-    None
-}
-
-fn should_auto_publish_after_update_only_repair(workspace: &AgentConversationWorkspace) -> bool {
-    if workspace.publication_pr_number.is_some() {
-        workspace.auto_publish_enabled
-    } else {
-        workspace.auto_publish_initial_pr_enabled
-    }
 }
 
 fn publish_in_progress_response(

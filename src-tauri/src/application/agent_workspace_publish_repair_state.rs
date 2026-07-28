@@ -29,31 +29,31 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
-    AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
-    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairCompatibilityProjection,
-    AgentWorkspaceRepairRepository, BindAgentWorkspaceRepairAttemptRun, BranchUpdateRepository,
-    GitAuthorityCasOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
-    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    AgentWorkspaceRepairCompatibilityProjection, AgentWorkspaceRepairRepository,
+    BindAgentWorkspaceRepairAttemptRun, BranchUpdateRepository, GitAuthorityCasOutcome,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 #[cfg(any(test, feature = "test-utils"))]
 use crate::domain::repositories::{
-    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
+    AgentRunRepository, AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
 };
 use crate::error::{AppError, AppResult};
 
 pub(crate) const REPAIR_REQUESTED_STEP: &str = "repair_requested";
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) const REPAIR_DEFERRED_STEP: &str = "repair_deferred";
 pub(crate) const REPAIR_SENT_STEP: &str = "repair_sent";
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) const PR_AUTOFIX_COMPLETED_STEP: &str = "pr_autofix_completed";
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) const PR_AUTOFIX_BLOCKED_STEP: &str = "pr_autofix_blocked";
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) const PR_AUTOFIX_WORKSPACE_REVIEW_STEP: &str = "pr_autofix_workspace_review";
 #[cfg(any(test, feature = "test-utils"))]
 pub(crate) const PR_AUTOFIX_WORKSPACE_REVIEW_ABORTED_STEP: &str =
     "pr_autofix_workspace_review_aborted";
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) const PR_AUTOFIX_WORKSPACE_REVIEW_PASSED_STEP: &str =
     "pr_autofix_workspace_review_passed";
 pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
@@ -1943,7 +1943,7 @@ pub(crate) async fn restore_refreshed_agent_workspace_pr_fix_claim(
     }))
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) async fn settle_agent_workspace_repair_failure(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     claim: &AgentWorkspaceRepairClaim,
@@ -2025,7 +2025,7 @@ fn repair_sent_event_authorizes_run(
     event.status == "succeeded" && event.created_at >= active_run.started_at
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 fn successful_send_authorizes_completion(
     events: &[AgentConversationWorkspacePublicationEvent],
     active_run: &AgentRun,
@@ -2132,7 +2132,7 @@ pub(crate) async fn reconcile_active_agent_workspace_repair(
         .await
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) async fn current_agent_workspace_repair_claim_for_completion(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -2164,7 +2164,7 @@ pub(crate) async fn current_agent_workspace_repair_claim_for_completion(
     }))
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) async fn complete_agent_workspace_repair_claim(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     claim: &AgentWorkspaceRepairClaim,
@@ -2219,7 +2219,7 @@ async fn transition_agent_workspace_repair_claim_with_events(
     }))
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) async fn complete_agent_workspace_pr_fix_claim(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     claim: &AgentWorkspaceRepairClaim,
@@ -2272,7 +2272,7 @@ pub(crate) async fn complete_agent_workspace_pr_fix_claim(
     .await
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) async fn block_agent_workspace_pr_fix_claim(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     claim: &AgentWorkspaceRepairClaim,
@@ -2318,7 +2318,7 @@ pub(crate) async fn abort_agent_workspace_pr_fix_review_handoff(
     .await
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) async fn continue_agent_workspace_pr_fix_after_review_handoff(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     claim: &AgentWorkspaceRepairClaim,

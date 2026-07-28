@@ -476,6 +476,7 @@ impl AppState {
 
     /// Returns the command-composed resumer only at the Workspace Review handoff boundary.
     /// Missing runtime composition fails closed before recovery can publish a PR fix.
+    #[cfg(test)]
     pub(crate) fn agent_workspace_pr_fix_review_publish_resumer(
         &self,
     ) -> AppResult<

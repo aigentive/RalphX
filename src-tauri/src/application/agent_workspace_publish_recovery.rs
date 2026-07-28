@@ -54,20 +54,24 @@ use durable_attempt_recovery::recover_stale_publish_repair_for_workspace_in_stat
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StalePublishRepairRecoveryOutcome {
     Noop,
+    #[cfg(any(test, feature = "test-utils"))]
     ActiveReplacement,
     ActiveRepairReconciled,
     RetryEligible,
     Manual,
+    #[cfg(any(test, feature = "test-utils"))]
     HandoffPreserved,
+    #[cfg(any(test, feature = "test-utils"))]
     TerminalRecovered,
 }
 
 impl StalePublishRepairRecoveryOutcome {
     fn was_recovered(self) -> bool {
-        matches!(
-            self,
-            Self::RetryEligible | Self::Manual | Self::TerminalRecovered
-        )
+        #[cfg(any(test, feature = "test-utils"))]
+        if matches!(self, Self::TerminalRecovered) {
+            return true;
+        }
+        matches!(self, Self::RetryEligible | Self::Manual)
     }
 }
 
@@ -163,7 +167,7 @@ pub async fn recover_stale_publish_repair_for_workspace_in_state(
         .map(|(workspace, _)| workspace)
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,

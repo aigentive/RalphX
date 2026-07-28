@@ -43,6 +43,7 @@ pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]
 mod agent_workspace_pr_autofix_attempt_tests;
 pub mod agent_workspace_pr_description;
+#[cfg(test)]
 pub(crate) mod agent_workspace_pr_metadata_reconciliation;
 pub(crate) mod agent_workspace_terminal_cleanup;
 #[cfg(test)]
@@ -456,6 +457,7 @@ mod integration_reference_expansion_tests;
 mod manual_role_default_service_tests;
 #[cfg(test)]
 mod manual_router_config_tests;
+#[cfg(test)]
 mod integration_reference_expansion_edge_tests;
 #[cfg(test)]
 mod orphan_worktree_cleanup_tests;

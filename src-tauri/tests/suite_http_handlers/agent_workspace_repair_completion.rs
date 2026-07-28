@@ -264,7 +264,7 @@ async fn bind_current_attempt(
     let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
         panic!("first repair attempt must start");
     };
-    let owner_run = AgentRun::new(conversation_id.clone());
+    let owner_run = AgentRun::new(conversation_id);
     let owner_run_id = owner_run.id;
     state
         .app_state
@@ -332,7 +332,7 @@ async fn seed_current_attempt_with_resolvable_target(
         .app_state
         .agent_conversation_workspace_repo
         .create_or_update(AgentConversationWorkspace::new(
-            conversation_id.clone(),
+            conversation_id,
             project.id,
             AgentConversationWorkspaceMode::Edit,
             IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -417,7 +417,7 @@ async fn seed_current_attempt_with_valid_target(
         .app_state
         .agent_conversation_workspace_repo
         .create_or_update(AgentConversationWorkspace::new(
-            conversation_id.clone(),
+            conversation_id,
             project.id,
             AgentConversationWorkspaceMode::Edit,
             IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -537,7 +537,7 @@ async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_
     let state = test_state();
     let conversation_id = ChatConversationId::new();
     let workspace = AgentConversationWorkspace::new(
-        conversation_id.clone(),
+        conversation_id,
         ProjectId::from_string("legacy-pr-fix-no-attempt".to_string()),
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -560,8 +560,8 @@ async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_
         .await
         .expect("read seeded workspace")
         .expect("workspace remains");
-    let owner_run = AgentRun::new(conversation_id.clone());
-    let owner_run_id = owner_run.id.clone();
+    let owner_run = AgentRun::new(conversation_id);
+    let owner_run_id = owner_run.id;
     state
         .app_state
         .agent_run_repo
@@ -619,8 +619,8 @@ async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_
 async fn legacy_pr_fix_transport_rejects_wrong_durable_run_without_effects() {
     let state = test_state();
     let (conversation_id, _owner_run_id, before) = seed_current_attempt(&state).await;
-    let wrong_run = AgentRun::new(conversation_id.clone());
-    let wrong_run_id = wrong_run.id.clone();
+    let wrong_run = AgentRun::new(conversation_id);
+    let wrong_run_id = wrong_run.id;
     state
         .app_state
         .agent_run_repo
@@ -837,7 +837,7 @@ async fn transport_authority_rejects_cross_conversation_runtime_run_without_muta
     let response = repair_completion_http_response(
         state.clone(),
         &conversation_id,
-        completion_headers(conversation_id.clone(), cross_conversation_run_id),
+        completion_headers(conversation_id, cross_conversation_run_id),
         CompleteAgentWorkspaceRepairRequest {
             summary: "A cross-conversation run must not settle this repair.".to_string(),
             blocker: None,
@@ -859,7 +859,7 @@ async fn transport_authority_rejects_cross_conversation_runtime_run_without_muta
 async fn transport_authority_rejects_nonowning_runtime_run_without_mutation() {
     let state = test_state();
     let (conversation_id, _owner_run_id, before) = seed_current_attempt(&state).await;
-    let nonowning_run = AgentRun::new(conversation_id.clone());
+    let nonowning_run = AgentRun::new(conversation_id);
     let nonowning_run_id = nonowning_run.id;
     state
         .app_state
@@ -871,7 +871,7 @@ async fn transport_authority_rejects_nonowning_runtime_run_without_mutation() {
     let response = repair_completion_http_response(
         state.clone(),
         &conversation_id,
-        completion_headers(conversation_id.clone(), nonowning_run_id),
+        completion_headers(conversation_id, nonowning_run_id),
         CompleteAgentWorkspaceRepairRequest {
             summary: "A nonowning run must not settle this repair.".to_string(),
             blocker: None,
@@ -903,7 +903,7 @@ async fn transport_authority_rejects_missing_current_run_row_without_mutation() 
     let response = repair_completion_http_response(
         state.clone(),
         &conversation_id,
-        completion_headers(conversation_id.clone(), owner_run_id),
+        completion_headers(conversation_id, owner_run_id),
         CompleteAgentWorkspaceRepairRequest {
             summary: "A missing current run row must not settle a repair.".to_string(),
             blocker: None,
@@ -935,7 +935,7 @@ async fn transport_authority_rejects_nonrunning_current_run_without_mutation() {
     let response = repair_completion_http_response(
         state.clone(),
         &conversation_id,
-        completion_headers(conversation_id.clone(), owner_run_id),
+        completion_headers(conversation_id, owner_run_id),
         CompleteAgentWorkspaceRepairRequest {
             summary: "A non-running current run must not settle a repair.".to_string(),
             blocker: None,
@@ -962,7 +962,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
         repair_completion_http_response(
             accepted_state.clone(),
             &accepted_conversation,
-            completion_headers(accepted_conversation.clone(), accepted_run),
+            completion_headers(accepted_conversation, accepted_run),
             CompleteAgentWorkspaceRepairRequest {
                 summary: "The repaired branch is clean and contains the current base.".to_string(),
                 blocker: None,
@@ -1001,10 +1001,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
         repair_completion_http_response(
             already_completed_state,
             &already_completed_conversation,
-            completion_headers(
-                already_completed_conversation.clone(),
-                already_completed_run,
-            ),
+            completion_headers(already_completed_conversation, already_completed_run),
             CompleteAgentWorkspaceRepairRequest {
                 summary: "This duplicate completion is safely idempotent.".to_string(),
                 blocker: None,
@@ -1022,7 +1019,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
         repair_completion_http_response(
             blocked_state.clone(),
             &blocked_conversation,
-            completion_headers(blocked_conversation.clone(), blocked_run),
+            completion_headers(blocked_conversation, blocked_run),
             CompleteAgentWorkspaceRepairRequest {
                 summary: "The repair needs a maintainer decision.".to_string(),
                 blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
@@ -1038,7 +1035,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
     let (superseded_conversation, superseded_run, attempt) =
         seed_current_attempt(&superseded_state).await;
     let successor = AgentWorkspaceRepairAttempt::new(
-        superseded_conversation.clone(),
+        superseded_conversation,
         AgentWorkspaceRepairSource::Publish,
         ralphx_lib::domain::entities::AgentWorkspaceRepairContinuation::Publish,
         "main",
@@ -1078,7 +1075,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
         repair_completion_http_response(
             superseded_state,
             &superseded_conversation,
-            completion_headers(superseded_conversation.clone(), superseded_run),
+            completion_headers(superseded_conversation, superseded_run),
             CompleteAgentWorkspaceRepairRequest {
                 summary: "A superseded repair must not affect the successor.".to_string(),
                 blocker: None,
@@ -1173,7 +1170,7 @@ async fn stale_validation_reservation_returns_before_every_git_probe() {
     let completion = tokio::spawn(complete_agent_workspace_repair(
         State(state.clone()),
         Path(conversation_id.to_string()),
-        completion_headers(conversation_id.clone(), owner_run_id),
+        completion_headers(conversation_id, owner_run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The completion snapshot must not validate after replacement.".to_string(),
             blocker: None,
@@ -1182,7 +1179,7 @@ async fn stale_validation_reservation_returns_before_every_git_probe() {
     reservation_gate.wait().await;
 
     let mut competing_attempt = AgentWorkspaceRepairAttempt::new(
-        conversation_id.clone(),
+        conversation_id,
         AgentWorkspaceRepairSource::Publish,
         ralphx_lib::domain::entities::AgentWorkspaceRepairContinuation::Publish,
         "main",
@@ -1251,7 +1248,7 @@ async fn racing_success_handoff_for_the_same_run_is_already_completed_without_du
     let completion = tokio::spawn(complete_agent_workspace_repair(
         State(state.clone()),
         Path(conversation_id.to_string()),
-        completion_headers(conversation_id.clone(), owner_run_id),
+        completion_headers(conversation_id, owner_run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repaired branch is clean and contains the current base.".to_string(),
             blocker: None,
@@ -1354,13 +1351,13 @@ async fn racing_success_duplicates_for_the_same_run_skip_extra_git_and_complete_
     let mut first = tokio::spawn(complete_agent_workspace_repair(
         State(state.clone()),
         Path(conversation_id.to_string()),
-        completion_headers(conversation_id.clone(), owner_run_id.clone()),
+        completion_headers(conversation_id, owner_run_id),
         request(),
     ));
     let mut second = tokio::spawn(complete_agent_workspace_repair(
         State(state.clone()),
         Path(conversation_id.to_string()),
-        completion_headers(conversation_id.clone(), owner_run_id),
+        completion_headers(conversation_id, owner_run_id),
         request(),
     ));
     reservation_gate.wait().await;
@@ -1445,7 +1442,7 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
     let first = tokio::spawn(complete_agent_workspace_repair(
         State(state.clone()),
         Path(conversation_id.to_string()),
-        completion_headers(conversation_id.clone(), owner_run_id.clone()),
+        completion_headers(conversation_id, owner_run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair needs an explicit schema choice.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
@@ -1454,7 +1451,7 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
     let second = tokio::spawn(complete_agent_workspace_repair(
         State(state.clone()),
         Path(conversation_id.to_string()),
-        completion_headers(conversation_id.clone(), owner_run_id),
+        completion_headers(conversation_id, owner_run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair needs an explicit schema choice.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
@@ -1495,7 +1492,7 @@ async fn completion_from_a_superseded_generation_stays_superseded_without_side_e
     let state = test_state();
     let (conversation_id, owner_run_id, attempt) = seed_current_attempt(&state).await;
     let successor = AgentWorkspaceRepairAttempt::new(
-        conversation_id.clone(),
+        conversation_id,
         AgentWorkspaceRepairSource::Publish,
         ralphx_lib::domain::entities::AgentWorkspaceRepairContinuation::Publish,
         "main",
@@ -1534,7 +1531,7 @@ async fn completion_from_a_superseded_generation_stays_superseded_without_side_e
     let Json(response) = complete_agent_workspace_repair(
         State(state.clone()),
         Path(conversation_id.to_string()),
-        completion_headers(conversation_id.clone(), owner_run_id),
+        completion_headers(conversation_id, owner_run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "A superseded repair must not affect the next generation.".to_string(),
             blocker: None,

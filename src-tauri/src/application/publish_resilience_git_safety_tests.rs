@@ -705,13 +705,14 @@ async fn stale_dispatch_lease_epoch_rejects_repair_push_before_any_github_or_git
     .expect_err("a stale repair lease epoch must reject push authority");
     assert!(error.to_string().contains("stale") || error.to_string().contains("owned"));
     assert_eq!(remote_branch_oid(&fixture), remote_before);
-    let github_state = github.state();
-    assert_eq!(github_state.push_branch_calls, 0);
-    assert_eq!(
-        github_state.push_branch_with_expected_remote_oid_lease_calls,
-        0
-    );
-    drop(github_state);
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(
+            github_state.push_branch_with_expected_remote_oid_lease_calls,
+            0
+        );
+    }
     assert!(
         fixture
             .state

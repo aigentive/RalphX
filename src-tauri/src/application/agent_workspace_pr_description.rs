@@ -72,6 +72,7 @@ impl ExistingPrMetadataSnapshot {
         &self.authority_fingerprint
     }
 
+    #[cfg(test)]
     pub(crate) fn receipt_evidence(&self) -> ExistingPrMetadataReceiptEvidence<'_> {
         let body = self.body_projection();
         ExistingPrMetadataReceiptEvidence {
@@ -113,6 +114,7 @@ struct ExistingPrBodyProjection<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 pub(crate) struct ExistingPrMetadataReceiptEvidence<'a> {
     pub(crate) target_pr_number: i64,
     pub(crate) authority_fingerprint: &'a str,

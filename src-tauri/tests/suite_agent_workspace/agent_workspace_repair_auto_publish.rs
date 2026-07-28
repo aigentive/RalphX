@@ -312,7 +312,7 @@ async fn seed_rewritten_repair_publish_workspace(
         .await
         .expect("seed project");
     let mut conversation = ChatConversation::new_project(fixture.project.id.clone());
-    conversation.id = fixture.conversation_id.clone();
+    conversation.id = fixture.conversation_id;
     conversation.context_type = ChatContextType::Project;
     conversation.context_id = fixture.project.id.as_str().to_string();
     app_state
@@ -321,7 +321,7 @@ async fn seed_rewritten_repair_publish_workspace(
         .await
         .expect("seed conversation");
     let mut workspace = AgentConversationWorkspace::new(
-        fixture.conversation_id.clone(),
+        fixture.conversation_id,
         fixture.project.id.clone(),
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -338,7 +338,7 @@ async fn seed_rewritten_repair_publish_workspace(
         .create_or_update(workspace)
         .await
         .expect("seed workspace");
-    let run_id = seed_current_repair_attempt(app_state, fixture.conversation_id.clone()).await;
+    let run_id = seed_current_repair_attempt(app_state, fixture.conversation_id).await;
     disable_workspace_review_gate(app_state).await;
     run_id
 }
@@ -647,7 +647,7 @@ async fn assert_recovery_blocked_without_effects(
 async fn terminal_then_startup_recovery_continues_a_clean_durable_repair_once() {
     let conversation_id = ChatConversationId::from_string("51515151-5151-5151-5151-515151515151");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-terminal-clean-repair-recovery",
     );
     let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
@@ -668,8 +668,8 @@ async fn terminal_then_startup_recovery_continues_a_clean_durable_repair_once() 
         .lock()
         .expect("exact push notification lock") = Some(Arc::clone(&push_started));
     let terminal_state = state.app_state.clone();
-    let terminal_conversation_id = conversation_id.clone();
-    let terminal_run_id = run_id.clone();
+    let terminal_conversation_id = conversation_id;
+    let terminal_run_id = run_id;
     let mut terminal_recovery = tokio::spawn(async move {
         recover_agent_workspace_repair_after_terminal_run(
             terminal_state.as_ref(),
@@ -839,7 +839,7 @@ async fn terminal_recovery_reports_a_failed_clean_repair_continuation_as_pending
 ) {
     let conversation_id = ChatConversationId::from_string("58585858-5858-5858-5858-585858585858");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-terminal-continuation-failure-recovery",
     );
     let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
@@ -1014,7 +1014,7 @@ async fn terminal_recovery_reports_a_failed_clean_repair_continuation_as_pending
 async fn terminal_recovery_continues_a_clean_repair_when_its_reserved_run_row_is_missing() {
     let conversation_id = ChatConversationId::from_string("57575757-5757-5757-5757-575757575757");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-missing-run-repair-recovery",
     );
     let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
@@ -1041,7 +1041,7 @@ async fn terminal_recovery_continues_a_clean_repair_when_its_reserved_run_row_is
         .expect("repair attempt is current");
     let missing_run_id = AgentRunId::from_string("57575757-5757-5757-5757-575757575758");
     let mut missing_run_attempt = current.clone();
-    missing_run_attempt.reserved_agent_run_id = Some(missing_run_id.clone());
+    missing_run_attempt.reserved_agent_run_id = Some(missing_run_id);
     missing_run_attempt.updated_at += chrono::Duration::microseconds(1);
     let missing_run_attempt = match state
         .app_state
@@ -1115,10 +1115,8 @@ async fn terminal_recovery_continues_a_clean_repair_when_its_reserved_run_row_is
 #[tokio::test]
 async fn startup_recovery_blocks_a_dirty_durable_repair_without_effects() {
     let conversation_id = ChatConversationId::from_string("52525252-5252-5252-5252-525252525252");
-    let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
-        "project-dirty-repair-recovery",
-    );
+    let fixture =
+        setup_rewritten_repair_publish_fixture(conversation_id, "project-dirty-repair-recovery");
     let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
     std::fs::write(
         fixture.workspace_path.join("dirty.txt"),
@@ -1145,7 +1143,7 @@ async fn startup_recovery_blocks_a_dirty_durable_repair_without_effects() {
 async fn terminal_recovery_blocks_a_conflicted_durable_repair_without_effects() {
     let conversation_id = ChatConversationId::from_string("53535353-5353-5353-5353-535353535353");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-conflicted-repair-recovery",
     );
     let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
@@ -1187,7 +1185,7 @@ async fn terminal_recovery_blocks_a_conflicted_durable_repair_without_effects() 
 async fn startup_recovery_blocks_a_base_mismatch_without_effects() {
     let conversation_id = ChatConversationId::from_string("54545454-5454-5454-5454-545454545454");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-base-mismatch-repair-recovery",
     );
     let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
@@ -1212,7 +1210,7 @@ async fn startup_recovery_blocks_a_base_mismatch_without_effects() {
 async fn terminal_recovery_blocks_stale_lease_authority_without_effects() {
     let conversation_id = ChatConversationId::from_string("56565656-5656-5656-5656-565656565656");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-stale-authority-repair-recovery",
     );
     let (state, mock_github, run_id) = setup_durable_recovery_fixture(&fixture).await;
@@ -1344,7 +1342,7 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
         .create_or_update(workspace)
         .await
         .expect("seed workspace");
-    let run_id = seed_current_repair_attempt(&app_state, conversation_id.clone()).await;
+    let run_id = seed_current_repair_attempt(&app_state, conversation_id).await;
     checkpoint_current_repair_target_lease(
         &app_state,
         &conversation_id,
@@ -1359,7 +1357,7 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
     let response = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id.clone()),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the stale base repair".to_string(),
             blocker: None,
@@ -1400,7 +1398,7 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
     let duplicate = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id.clone()),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate stale completion".to_string(),
             blocker: None,
@@ -1436,10 +1434,8 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
 #[tokio::test]
 async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
     let conversation_id = ChatConversationId::from_string("55555555-5555-5555-5555-555555555555");
-    let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
-        "project-ready-repair-publish",
-    );
+    let fixture =
+        setup_rewritten_repair_publish_fixture(conversation_id, "project-ready-repair-publish");
     let mock_github = Arc::new(MockGithubService::new());
     let github_trait: Arc<dyn GithubServiceTrait> = mock_github.clone();
     let mut app_state = AppState::new_test();
@@ -1465,7 +1461,7 @@ async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
     let completed = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the manual publish repair".to_string(),
             blocker: None,
@@ -1497,7 +1493,7 @@ async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
         .lock()
         .expect("exact push notification lock") = Some(Arc::clone(&push_started));
     let first_state = state.clone();
-    let first_conversation_id = conversation_id.clone();
+    let first_conversation_id = conversation_id;
     let first = tokio::spawn(async move {
         publish_agent_conversation_workspace_for_app_state_with_repair_intent(
             first_state.app_state.as_ref(),
@@ -1532,7 +1528,7 @@ async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
     let duplicate = publish_agent_conversation_workspace_for_app_state_with_repair_intent(
         state.app_state.as_ref(),
         &state.execution_state,
-        conversation_id.clone(),
+        conversation_id,
         true,
         true,
     )
@@ -1595,7 +1591,7 @@ async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
 async fn auto_publish_initial_opt_in_resumes_ready_publish_repair_once() {
     let conversation_id = ChatConversationId::from_string("56565656-5656-5656-5656-565656565656");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-auto-publish-initial-ready-repair",
     );
     let mock_github = Arc::new(MockGithubService::new());
@@ -1631,7 +1627,7 @@ async fn auto_publish_initial_opt_in_resumes_ready_publish_repair_once() {
         .lock()
         .expect("exact push notification lock") = Some(Arc::clone(&push_started));
     let first_state = state.clone();
-    let first_conversation_id = conversation_id.clone();
+    let first_conversation_id = conversation_id;
     let first = tokio::spawn(async move {
         set_agent_conversation_workspace_auto_publish_for_state(
             first_conversation_id.as_str().to_string(),
@@ -1749,7 +1745,7 @@ async fn auto_publish_initial_opt_in_resumes_ready_publish_repair_once() {
 async fn auto_publish_enable_fails_closed_when_ready_repair_target_lease_is_foreign() {
     let conversation_id = ChatConversationId::from_string("57575757-5757-5757-5757-575757575757");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-auto-publish-foreign-ready-repair",
     );
     let mock_github = Arc::new(MockGithubService::new());
@@ -1843,10 +1839,8 @@ async fn auto_publish_enable_fails_closed_when_ready_repair_target_lease_is_fore
 #[tokio::test]
 async fn passed_workspace_review_resumes_the_current_durable_repair_generation() {
     let conversation_id = ChatConversationId::from_string("66666666-6666-6666-6666-666666666666");
-    let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
-        "project-review-repair-publish",
-    );
+    let fixture =
+        setup_rewritten_repair_publish_fixture(conversation_id, "project-review-repair-publish");
     let mock_github = Arc::new(MockGithubService::new());
     let github_trait: Arc<dyn GithubServiceTrait> = mock_github.clone();
     let mut app_state = AppState::new_test();
@@ -1886,7 +1880,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
     let completed = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the repair awaiting Workspace Review".to_string(),
             blocker: None,
@@ -1960,7 +1954,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
     let duplicate = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id.clone()),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate repair completion must not start another reviewer".to_string(),
             blocker: None,
@@ -2018,14 +2012,14 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
     let stale_run_id = state
         .app_state
         .agent_run_repo
-        .create(AgentRun::new(conversation_id.clone()))
+        .create(AgentRun::new(conversation_id))
         .await
         .expect("seed stale repair run")
         .id;
     let stale = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), stale_run_id),
+        completion_headers(conversation_id, stale_run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Stale repair completion must not restart Workspace Review".to_string(),
             blocker: None,
@@ -2171,7 +2165,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
 async fn failed_workspace_review_blocks_durable_repair_without_starting_or_publishing() {
     let conversation_id = ChatConversationId::from_string("67676767-6767-6767-6767-676767676767");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-review-repair-failed-gate",
     );
     let mock_github = Arc::new(MockGithubService::new());
@@ -2223,7 +2217,7 @@ async fn failed_workspace_review_blocks_durable_repair_without_starting_or_publi
     let completed = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Repair is complete but its required review already failed".to_string(),
             blocker: None,
@@ -2287,7 +2281,7 @@ async fn failed_workspace_review_blocks_durable_repair_without_starting_or_publi
 async fn unavailable_workspace_reviewer_blocks_durable_repair_without_publishing() {
     let conversation_id = ChatConversationId::from_string("68686868-6868-6868-6868-686868686868");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-review-repair-unavailable-reviewer",
     );
     let mock_github = Arc::new(MockGithubService::new());
@@ -2308,7 +2302,7 @@ async fn unavailable_workspace_reviewer_blocks_durable_repair_without_publishing
     let completed = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Repair requires an unavailable Workspace Reviewer".to_string(),
             blocker: None,
@@ -2371,10 +2365,8 @@ async fn unavailable_workspace_reviewer_blocks_durable_repair_without_publishing
 #[tokio::test]
 async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push() {
     let conversation_id = ChatConversationId::from_string("44444444-4444-4444-4444-444444444444");
-    let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
-        "project-repaired-auto-publish",
-    );
+    let fixture =
+        setup_rewritten_repair_publish_fixture(conversation_id, "project-repaired-auto-publish");
     let mock_github = Arc::new(MockGithubService::new());
     let github_trait: Arc<dyn GithubServiceTrait> = mock_github.clone();
     let mut app_state = AppState::new_test();
@@ -2433,7 +2425,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
     let completion = tokio::spawn(complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id.clone()),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the rebased workspace repair".to_string(),
             blocker: None,
@@ -2444,7 +2436,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
     let duplicate = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate completion must not republish".to_string(),
             blocker: None,
@@ -2523,7 +2515,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
     let terminal_replay = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Terminal duplicate completion must not re-enter publish".to_string(),
             blocker: None,
@@ -2645,7 +2637,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
 async fn repaired_auto_publish_blocks_when_base_advances_before_pr_handoff() {
     let conversation_id = ChatConversationId::from_string("45454545-4545-4545-4545-454545454545");
     let fixture = setup_rewritten_repair_publish_fixture(
-        conversation_id.clone(),
+        conversation_id,
         "project-repaired-auto-publish-base-advance",
     );
     let mock_github = Arc::new(MockGithubService::new());
@@ -2697,7 +2689,7 @@ async fn repaired_auto_publish_blocks_when_base_advances_before_pr_handoff() {
     let response = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id.clone()),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the rebased workspace repair".to_string(),
             blocker: None,
@@ -2921,7 +2913,7 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
         ))
         .await
         .expect("seed update-only repair request");
-    let run_id = seed_current_repair_attempt(&app_state, conversation_id.clone()).await;
+    let run_id = seed_current_repair_attempt(&app_state, conversation_id).await;
     checkpoint_current_repair_target_lease(
         &app_state,
         &conversation_id,
@@ -2936,7 +2928,7 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
     let response = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the stale base repair".to_string(),
             blocker: None,
@@ -3086,7 +3078,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
         .create_or_update(workspace)
         .await
         .expect("seed workspace");
-    let run_id = seed_current_repair_attempt(&app_state, conversation_id.clone()).await;
+    let run_id = seed_current_repair_attempt(&app_state, conversation_id).await;
     checkpoint_current_repair_target_lease(
         &app_state,
         &conversation_id,
@@ -3117,7 +3109,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
     let mut completion = tokio::spawn(complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id.clone()),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the linked plan branch repair".to_string(),
             blocker: None,
@@ -3285,7 +3277,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
     let replay = complete_agent_workspace_repair(
         axum::extract::State(state.clone()),
         Path(conversation_id.as_str().to_string()),
-        completion_headers(conversation_id.clone(), run_id),
+        completion_headers(conversation_id, run_id),
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Replay must not publish the linked plan twice".to_string(),
             blocker: None,
