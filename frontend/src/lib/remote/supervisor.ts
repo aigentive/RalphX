@@ -386,7 +386,7 @@ export class ConnectionSupervisor {
       if (!live()) return;
 
       // 3. `hello` repeats the version, so a proxy-cached descriptor cannot lie (P-10).
-      this.gateHelloVersion(outcome);
+      this.gateHelloVersion(descriptor, outcome);
       if (outcome.hostEnvironmentId !== this.deps.expectedHostEnvironmentId) {
         throw new ConnectAttemptError(
           "malformed_descriptor",
@@ -458,11 +458,34 @@ export class ConnectionSupervisor {
     }
   }
 
-  private gateHelloVersion(outcome: RemoteConnectOutcome): void {
+  /**
+   * The whole point of `hello` repeating the version (§3.2, P-10).
+   *
+   * Two checks, and only these two. A host may legitimately run a NEWER protocol than
+   * this client as long as its `minClientProtocol` still admits us — the descriptor gate
+   * above already decided that — so "hello is newer than us" is not by itself skew, and
+   * blocking on it would park every paired client the moment a host upgrades.
+   *
+   * What IS skew: a host too old for us, and a host whose `hello` CONTRADICTS the
+   * descriptor we version-gated on. The second is the lying-cached-descriptor case: the
+   * descriptor claimed a version that admitted us, the live socket reports a different
+   * one, and the gate we passed was therefore evaluated against a value the host does
+   * not actually serve.
+   */
+  private gateHelloVersion(
+    descriptor: EnvironmentDescriptorView,
+    outcome: RemoteConnectOutcome
+  ): void {
     if (outcome.protocolVersion < this.deps.clientMinProtocol) {
       throw new ConnectAttemptError(
         "version",
         `hello reports protocol ${outcome.protocolVersion}, this client requires >= ${this.deps.clientMinProtocol}`
+      );
+    }
+    if (outcome.protocolVersion !== descriptor.protocolVersion) {
+      throw new ConnectAttemptError(
+        "version",
+        `hello reports protocol ${outcome.protocolVersion} but the descriptor advertised ${descriptor.protocolVersion}; the version gate was evaluated against a value this host does not serve`
       );
     }
   }

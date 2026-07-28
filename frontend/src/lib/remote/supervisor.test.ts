@@ -387,7 +387,7 @@ describe("P-10: version skew parks in blocked with zero retries", () => {
     expect(r.supervisor.currentState()).toBe("blocked");
   });
 
-  it("hello repeats the version, so a lying cached descriptor still blocks", async () => {
+  it("blocks when hello reports a protocol older than this client accepts", async () => {
     const r = rig({
       openStream: vi.fn(async () => ({ ...OUTCOME, protocolVersion: 0 })),
     });
@@ -395,6 +395,37 @@ describe("P-10: version skew parks in blocked with zero retries", () => {
 
     expect(r.supervisor.currentState()).toBe("blocked");
     expect(r.supervisor.blocked()?.failure).toBe("version");
+  });
+
+  it("blocks when hello CONTRADICTS the descriptor the version gate trusted", async () => {
+    // The lying-cached-descriptor case: the descriptor admitted us, the live socket
+    // reports a different version, so the gate we passed was evaluated against a value
+    // this host does not serve.
+    const r = rig({
+      openStream: vi.fn(async () => ({ ...OUTCOME, protocolVersion: 2 })),
+    });
+    await connect(r);
+
+    expect(r.supervisor.currentState()).toBe("blocked");
+    expect(r.supervisor.blocked()?.failure).toBe("version");
+    expect(r.supervisor.blocked()?.message).toContain("descriptor advertised");
+  });
+
+  it("accepts a host on a newer protocol that still admits this client", async () => {
+    // A host may legitimately upgrade. As long as its minClientProtocol admits us AND
+    // hello agrees with the descriptor, that is not skew — blocking here would park
+    // every paired client the moment a host upgrades.
+    const r = rig({
+      fetchDescriptor: vi.fn(async () => ({
+        environmentId: HOST_ENV,
+        protocolVersion: 2,
+        minClientProtocol: 1,
+      })),
+      openStream: vi.fn(async () => ({ ...OUTCOME, protocolVersion: 2 })),
+    });
+    await connect(r);
+
+    expect(r.supervisor.currentState()).toBe("connected");
   });
 
   it("presents blocked as `error`", async () => {
