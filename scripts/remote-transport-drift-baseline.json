@@ -275,6 +275,8 @@
     "list_ideation_sessions",
     "list_message_attachments",
     "list_notifications",
+    "list_pending_permission_gates",
+    "list_pending_question_gates",
     "list_persona_usage",
     "list_personas",
     "list_plan_selector_candidates",

@@ -170,10 +170,15 @@ pub enum RemoteInvokeOutcome {
 /// on the JS side — every migrated call site branches on `res.ok`/`res.status` and
 /// then calls `res.json()`, and collapsing a non-2xx into an IPC rejection would
 /// silently change all of them.
+/// `headers` carries the host's REAL response headers, filtered through
+/// [`ALLOWED_RESPONSE_HEADERS`]. Before it existed the JS side reconstructed a
+/// `Content-Type: application/json` for every proxied answer, so a text or
+/// `text/event-stream` route lied about its own shape to every caller.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteFetchOutcome {
     pub status: u16,
+    pub headers: Vec<(String, String)>,
     pub body: String,
 }
 
@@ -208,6 +213,33 @@ const ALLOWED_FETCH_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", 
 /// `Authorization` and `Cookie` are not merely absent from this list — the point of
 /// the list is that they can never be added to it by accident.
 const ALLOWED_FETCH_HEADERS: &[&str] = &["content-type", "accept"];
+
+/// RESPONSE headers the proxy will forward back into the webview.
+///
+/// Separate from [`ALLOWED_FETCH_HEADERS`], which stays request-only: the two
+/// directions carry different risks. Outbound, the danger is the webview forging
+/// authority on an authenticated request; inbound, it is handing JS host state it has
+/// no business reading (`set-cookie`, `www-authenticate`, anything naming the host's
+/// internals). Only headers a `Response` consumer legitimately branches on are listed.
+const ALLOWED_RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "content-length",
+    "etag",
+    "last-modified",
+    "cache-control",
+];
+
+/// Filters a host answer's headers down to [`ALLOWED_RESPONSE_HEADERS`].
+///
+/// Order-preserving and duplicate-preserving: `cache-control` legitimately repeats,
+/// and a `Headers` consumer that reads them as a list must see what the host sent.
+fn allowed_response_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(name, _)| ALLOWED_RESPONSE_HEADERS.contains(&name.as_str()))
+        .cloned()
+        .collect()
+}
 
 /// Read-only host identity shown before a pairing code is consumed (PR 2.5).
 ///
@@ -948,7 +980,13 @@ impl RemoteEnvironmentService {
                     "descriptor serialization failed: {error}"
                 ))
             })?;
-            return Ok(RemoteFetchOutcome { status: 200, body });
+            // Serialized right here, so the content type is asserted from knowledge
+            // rather than reconstructed by a downstream guess.
+            return Ok(RemoteFetchOutcome {
+                status: 200,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body,
+            });
         }
 
         let token = self.bearer_for(&env).await?;
@@ -982,6 +1020,7 @@ impl RemoteEnvironmentService {
             }),
             status => Ok(RemoteFetchOutcome {
                 status,
+                headers: allowed_response_headers(&response.headers),
                 body: response.body,
             }),
         }

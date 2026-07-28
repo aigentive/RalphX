@@ -48,6 +48,11 @@ import type { CapabilityIntent, TeamIntent } from "@/api/chat";
 import type { AgentStatus } from "@/stores/chatStore";
 import { useAgentGate } from "@/hooks/useAgentGate";
 import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
+import { RemoteErrorBanner } from "@/components/remote/RemoteErrorBanner";
+import { reconcileUnknownOutcome } from "@/lib/remote/unknown-outcome";
+import { chatKeys } from "@/hooks/useChat";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
@@ -397,6 +402,8 @@ export function AgentComposerSurface({
   className,
 }: AgentComposerSurfaceProps) {
   const { data: featureFlags } = useFeatureFlags();
+  // A-8: the environment-scoped client from the provider, never a key rewrite.
+  const queryClient = useQueryClient();
   const [folderReferencesEnabled, setFolderReferencesEnabled] = useState(false);
   const [folderError, setFolderError] = useState<string | null>(null);
   const addFolderReference = useAddConversationFolderReference();
@@ -472,6 +479,13 @@ export function AgentComposerSurface({
    */
   const agentGate = useAgentGate("agentComposerSend");
   const effectiveSendDisabledReason = agentGate.reason ?? sendDisabledReason;
+  /**
+   * The last send rejection, kept ONLY so the two remote codes the 2.6 mapper knows
+   * how to explain can be shown here. Every other rejection still surfaces through the
+   * parent exactly as before — `RemoteErrorBanner` renders nothing for them, so this
+   * state adds a surface without taking one over.
+   */
+  const [sendError, setSendError] = useState<unknown>(null);
   const canSubmit =
     hasSubmittableValue &&
     !isReadOnly &&
@@ -1593,6 +1607,31 @@ export function AgentComposerSurface({
     };
   }, [conversationId, folderReferencesSupported]);
 
+  /**
+   * P-20: the send reached the host and the answer did not reach us, so the message may
+   * already be in the transcript. Re-sending would be a second message racing the host's
+   * dedup reservation, so the only legal move is to invalidate the conversation the send
+   * would have changed and let the host's transcript be the answer. Returns whether the
+   * error was an unknown outcome, in which case the caller must NOT fall through to its
+   * ordinary error handling (the inline banner deliberately says nothing about these
+   * two codes).
+   */
+  const handleUnknownSendOutcome = useCallback(
+    (error: unknown): boolean => {
+      const outcome = reconcileUnknownOutcome(error, {
+        queryClient,
+        queryKeys: conversationId
+          ? [chatKeys.conversation(conversationId)]
+          : [],
+      });
+      if (outcome.kind !== "reconciled") return false;
+      setSendError(null);
+      toast.info(outcome.message);
+      return true;
+    },
+    [conversationId, queryClient],
+  );
+
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
     const messageValue = trimmedValue || emptySubmitValue;
@@ -1619,10 +1658,13 @@ export function AgentComposerSurface({
         ? onSend(outgoing.message, outgoing.options)
         : onSend(outgoing.message);
 
+    setSendError(null);
     if (questionMode || isControlled) {
       try {
         await sendOutgoing();
-      } catch {
+      } catch (error: unknown) {
+        if (handleUnknownSendOutcome(error)) return;
+        setSendError(error);
         return;
       }
       setSelectedInternalSkillNames(new Set());
@@ -1637,14 +1679,18 @@ export function AgentComposerSurface({
     try {
       await sendOutgoing();
       setSelectedExcerptReferences(new Map());
-    } catch {
-      // Errors surface through the parent; preserve the current interaction model.
+    } catch (error: unknown) {
+      // Errors still surface through the parent; this only adds the inline banner for
+      // the remote codes retrying cannot fix.
+      if (handleUnknownSendOutcome(error)) return;
+      setSendError(error);
     }
   }, [
     addHistoryEntry,
     canSendWhileAgentActive,
     clearValue,
     emptySubmitValue,
+    handleUnknownSendOutcome,
     isControlled,
     isReadOnly,
     isSubmitting,
@@ -2211,6 +2257,11 @@ export function AgentComposerSurface({
           </div>
         </div>
       </div>
+      <RemoteErrorBanner
+        error={sendError}
+        className="mt-2"
+        testId="agent-composer-remote-error"
+      />
       {isAttachmentDragging && (
         <ChatAttachmentDropOverlay roundedClassName="rounded-[22px]" />
       )}

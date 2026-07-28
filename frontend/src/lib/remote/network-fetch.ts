@@ -90,17 +90,53 @@ const REASON_PHRASES: Readonly<Record<number, string>> = {
   511: "Network Authentication Required",
 };
 
+/**
+ * Mirrors `RemoteFetchOutcome` (`remote_environment_service.rs`).
+ *
+ * `headers` is the host's REAL response headers, already filtered by the Rust
+ * response-side allowlist. It arrives as a TUPLE LIST rather than an object because
+ * HTTP permits repeats (`cache-control` in particular) and an object would silently
+ * keep only the last one.
+ */
 interface RemoteFetchEnvelope {
   readonly status: number;
+  readonly headers: readonly (readonly [string, string])[];
   readonly body: string;
+}
+
+function isHeaderPairList(
+  value: unknown
+): value is readonly (readonly [string, string])[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (pair) =>
+        Array.isArray(pair) &&
+        pair.length === 2 &&
+        typeof pair[0] === "string" &&
+        typeof pair[1] === "string"
+    )
+  );
 }
 
 function isRemoteFetchEnvelope(value: unknown): value is RemoteFetchEnvelope {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const candidate = value as { status?: unknown; body?: unknown };
-  return typeof candidate.status === "number" && typeof candidate.body === "string";
+  const candidate = value as {
+    status?: unknown;
+    headers?: unknown;
+    body?: unknown;
+  };
+  // `headers` is REQUIRED, not defaulted: the proxy that produces this envelope ships
+  // in the same binary as this file, so a missing field means the two halves have
+  // drifted — exactly what `REMOTE_VERSION_MISMATCH` exists to report. Defaulting it
+  // to `[]` would reinstate the silent content-type lie this envelope removed.
+  return (
+    typeof candidate.status === "number" &&
+    isHeaderPairList(candidate.headers) &&
+    typeof candidate.body === "string"
+  );
 }
 
 /** Normalises any `HeadersInit` into the pair list the proxy command takes. */
@@ -193,18 +229,31 @@ function toResponse(
       environmentId,
     });
   }
+  // A real forward, not a reconstruction. The previous hardcoded
+  // `Content-Type: application/json` made every proxied answer lie about its shape;
+  // a host route serving text or SSE was indistinguishable from JSON to its caller.
+  // When the host sent no `content-type`, none is synthesized — an absent header lets
+  // the caller's own parser decide, which is what it would see over local HTTP.
+  const headers = new Headers();
+  for (const [name, value] of envelope.headers) {
+    headers.append(name, value);
+  }
   const init: ResponseInit = {
     status: envelope.status,
     ...(REASON_PHRASES[envelope.status] === undefined
       ? {}
       : { statusText: REASON_PHRASES[envelope.status] as string }),
-    // The envelope carries no headers, so this is a reconstruction, not a forward: every
-    // remounted route this proxy serves answers JSON. A caller that needs a real response
-    // header needs the envelope to carry it first — do not infer one from the body here.
-    headers: { "Content-Type": "application/json" },
+    headers,
   };
+  // Bytes, not the string: `new Response("…")` SYNTHESIZES
+  // `Content-Type: text/plain;charset=UTF-8` when the init carries none, which would
+  // reintroduce exactly the lie this envelope removed — one flavour further from the
+  // truth, since the omitted case is usually JSON. A `BufferSource` body extracts with
+  // a null type, so the forwarded headers are the only source of content type.
   return new Response(
-    NULL_BODY_STATUSES.has(envelope.status) ? null : envelope.body,
+    NULL_BODY_STATUSES.has(envelope.status)
+      ? null
+      : new TextEncoder().encode(envelope.body),
     init
   );
 }

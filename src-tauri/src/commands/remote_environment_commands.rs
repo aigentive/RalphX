@@ -303,8 +303,9 @@ pub async fn remote_invoke(
 /// active-env-bound (P-26).
 ///
 /// A non-2xx host answer is DATA, not an `Err`: `backendFetch` rebuilds a real
-/// `Response` from `{status, body}` so migrated call sites keep reading `res.ok` and
-/// their own error bodies. Only 401/403 lift into the taxonomy.
+/// `Response` from `{status, headers, body}` so migrated call sites keep reading
+/// `res.ok`, `res.headers`, and their own error bodies. Only 401/403 lift into the
+/// taxonomy.
 #[tauri::command]
 pub async fn remote_fetch(
     input: RemoteFetchInput,

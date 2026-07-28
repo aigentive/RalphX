@@ -15,10 +15,12 @@
  */
 
 import { useEnvironmentStore } from "@/stores/environmentStore";
+import { useEnvironmentWritable } from "@/hooks/useEnvironmentWritable";
 import {
   resolveAffordanceGate,
   resolveAgentGate,
   resolveFieldGate,
+  withReadOnly,
   type AgentGateState,
   type AgentGatedAffordance,
 } from "@/lib/remote/agent-gate";
@@ -54,9 +56,16 @@ function useIsRemote(): boolean {
 export function useAgentGate(affordance?: AgentGatedAffordance): AgentGateState {
   const isRemote = useIsRemote();
   const scopes = useActiveEffectiveScopes();
-  return affordance === undefined
-    ? resolveAgentGate(isRemote, scopes)
-    : resolveAffordanceGate(affordance, isRemote, scopes);
+  // Decision 4: the 2.6 gate seam is ALSO the read-only enforcement seam. Folding it in
+  // here rather than sprinkling `useEnvironmentWritable()` across components means every
+  // surface 2.6 already gated inherits degraded-mode behaviour with no new call sites,
+  // and there is exactly one place where the two reasons are ordered.
+  const writable = useEnvironmentWritable();
+  const gate =
+    affordance === undefined
+      ? resolveAgentGate(isRemote, scopes)
+      : resolveAffordanceGate(affordance, isRemote, scopes);
+  return withReadOnly(gate, writable.writable, writable.reason);
 }
 
 /**
@@ -68,5 +77,10 @@ export function useAgentGate(affordance?: AgentGatedAffordance): AgentGateState 
 export function useFieldGate(command: string, field: string): AgentGateState {
   const isRemote = useIsRemote();
   const scopes = useActiveEffectiveScopes();
-  return resolveFieldGate(command, field, isRemote, scopes);
+  const writable = useEnvironmentWritable();
+  return withReadOnly(
+    resolveFieldGate(command, field, isRemote, scopes),
+    writable.writable,
+    writable.reason
+  );
 }

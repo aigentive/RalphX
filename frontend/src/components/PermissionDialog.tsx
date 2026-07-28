@@ -12,6 +12,14 @@ import {
 } from "@/components/ui/dialog";
 import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 import { useAgentGate } from "@/hooks/useAgentGate";
+import { RemoteErrorBanner } from "@/components/remote/RemoteErrorBanner";
+import {
+  isSilentGateReconcileFailure,
+  onPendingGateReconcile,
+} from "@/lib/remote/pending-gate-reconcile";
+import { useEnvironmentStore } from "@/stores/environmentStore";
+import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
+import { reconcileUnknownOutcome } from "@/lib/remote/unknown-outcome";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Shield, Terminal } from "lucide-react";
 import { useTaskStore } from "@/stores/taskStore";
@@ -52,6 +60,34 @@ const CONTEXT_LABEL_MAP: Record<string, string> = {
   project: "Project Chat",
 };
 
+/**
+ * Applies an authoritative host snapshot to the local queue.
+ *
+ * A request is dropped only when ALL of these hold: the host no longer lists it, it is
+ * not the one currently mid-resolution, and it already existed when the list call
+ * departed (`preCallIds`). That last clause is the in-flight guard — the same one
+ * `useAskUserQuestion` carries as `preCallRequestId`.
+ */
+export function applyAuthoritativePermissionSnapshot(
+  previous: readonly PermissionRequest[],
+  pending: readonly PermissionRequest[],
+  preCallIds: ReadonlySet<string>,
+  exemptId: string | null
+): PermissionRequest[] {
+  const authoritative = new Set(pending.map((request) => request.request_id));
+  const retained = previous.filter(
+    (request) =>
+      authoritative.has(request.request_id) ||
+      request.request_id === exemptId ||
+      !preCallIds.has(request.request_id)
+  );
+  const known = new Set(retained.map((request) => request.request_id));
+  return [
+    ...retained,
+    ...pending.filter((request) => !known.has(request.request_id)),
+  ];
+}
+
 type BufferedEvent =
   | { type: "permission:request"; payload: PermissionRequest }
   | { type: "permission:expired"; payload: PermissionExpiredEvent };
@@ -77,12 +113,39 @@ export function PermissionDialog() {
   const [requests, setRequests] = useState<PermissionRequest[]>([]);
   // D8: track WHICH request is being resolved, not just a boolean
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+  /**
+   * The last resolve rejection, shown inline for the two remote codes the 2.6 mapper
+   * explains. Those are precisely the failures the "please retry" toast gives WRONG
+   * advice about: a refused scope or an op the host does not expose remotely will
+   * refuse the same way forever.
+   */
+  const [resolveError, setResolveError] = useState<unknown>(null);
   const agentGate = useAgentGate("permissionApprove");
   const eventBus = useEventBus();
   const currentRequest = requests[0];
 
   // Code quality #3: reactive task selector at component top level
   const tasks = useTaskStore((state) => state.tasks);
+
+  /**
+   * Mirror of `resolvingId` readable from the reconcile callback without re-subscribing
+   * on every resolution.
+   */
+  const resolvingRef = useRef<string | null>(null);
+  useEffect(() => {
+    resolvingRef.current = resolvingId;
+  }, [resolvingId]);
+
+  /**
+   * Mirror of the queue, read to snapshot the request ids that existed BEFORE an
+   * authoritative list call departs. Only those ids are droppable by its response — a
+   * gate raised while the call was in flight cannot appear in a snapshot minted before
+   * it existed, and no further event re-raises it.
+   */
+  const requestsRef = useRef<PermissionRequest[]>([]);
+  useEffect(() => {
+    requestsRef.current = requests;
+  }, [requests]);
 
   // D7: hydration race guard refs
   const hydratingRef = useRef(false);
@@ -198,6 +261,73 @@ export function PermissionDialog() {
     return () => window.removeEventListener("ralphx:open-permission-dialog", reopen);
   }, []);
 
+  /**
+   * P-21 (2.7-c): AUTHORITATIVE reconciliation on every (re)connect.
+   *
+   * Unlike mount hydration, which merges, this REPLACES the queue: a gate the host no
+   * longer lists was resolved or expired while we were disconnected, and leaving it up
+   * invites the user to approve a tool call nobody is waiting on. In-flight resolutions
+   * are exempt — dropping the request currently being resolved would close the dialog
+   * out from under its own round-trip.
+   *
+   * FAIL CLOSED on failure: the strict command raises rather than answering `[]`, and a
+   * raise keeps the prior queue AND surfaces the problem. Silently clearing on an
+   * unreadable gate state is the one outcome that loses a live permission prompt.
+   */
+  useEffect(() => {
+    return onPendingGateReconcile(({ environmentId }) => {
+      if (environmentId !== useEnvironmentStore.getState().activeEnvironmentId) {
+        // A background environment's connect must not rewrite the active gate UI.
+        return;
+      }
+      const preCallIds = new Set(
+        requestsRef.current.map((request) => request.request_id)
+      );
+      void api.permission
+        .listPendingPermissionGates()
+        .then((pending) => {
+          setRequests((previous) =>
+            applyAuthoritativePermissionSnapshot(
+              previous,
+              pending,
+              preCallIds,
+              resolvingRef.current
+            )
+          );
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to reconcile pending permissions:", error);
+          if (!isSilentGateReconcileFailure(error)) {
+            toast.error("Couldn't refresh pending permission requests");
+          }
+        });
+    });
+  }, []);
+
+  /**
+   * P-20 refetch for the permission queue, which is component state fed by a Tauri
+   * command rather than a react-query entity. Exactly one read, no re-send, no timer:
+   * the host's own pending list decides whether the resolve landed. The exempt id is
+   * `null` on purpose — the request we just tried to resolve is precisely the one this
+   * read is allowed to drop.
+   */
+  const refetchPendingAfterUnknownOutcome = () => {
+    const preCallIds = new Set(
+      requestsRef.current.map((request) => request.request_id)
+    );
+    void api.permission
+      .getPendingPermissions()
+      .then((pending) => {
+        setRequests((previous) =>
+          applyAuthoritativePermissionSnapshot(previous, pending, preCallIds, null)
+        );
+      })
+      .catch((error: unknown) => {
+        // An unreadable list is not evidence the gate is gone; leave the queue alone.
+        console.error("Failed to refetch pending permissions:", error);
+      });
+  };
+
   const handleDecision = async (decision: "allow" | "deny") => {
     if (!currentRequest) return;
     // Approving authorizes a live tool call, so it needs `ui:agent`. Denying is
@@ -207,6 +337,7 @@ export function PermissionDialog() {
 
     // D8: set resolvingId to current request's ID
     setResolvingId(currentRequest.request_id);
+    setResolveError(null);
     try {
       await api.permission.resolveRequest({
         requestId: currentRequest.request_id,
@@ -217,12 +348,26 @@ export function PermissionDialog() {
       setRequests((prev) => prev.slice(1));
     } catch (error) {
       console.error("Failed to resolve permission:", error);
+      // P-20: the request reached the host and the answer did not reach us. Re-sending
+      // would be a second decision racing the host's dedup reservation, so the only
+      // legal move is to re-read the host's pending list and let it be the answer.
+      const unknownOutcome = reconcileUnknownOutcome(error, {
+        refetch: refetchPendingAfterUnknownOutcome,
+      });
+      if (unknownOutcome.kind === "reconciled") {
+        toast.info(unknownOutcome.message);
+        return;
+      }
       // D4: normalize error and split on "not found"
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("not found")) {
         // Request was already expired/removed — remove from queue, show info
         setRequests((prev) => prev.slice(1));
         toast.info("Permission request expired");
+      } else if (remoteErrorBannerProps(error) !== null) {
+        // A remote refusal the mapper can explain: keep the request in the queue and
+        // say WHY inline. No "please retry" toast — retrying cannot change the answer.
+        setResolveError(error);
       } else {
         // Transport or unexpected error — keep in queue for retry
         toast.error("Failed to resolve permission request, please retry");
@@ -286,6 +431,10 @@ export function PermissionDialog() {
         </DialogHeader>
 
         <div className="space-y-4 py-4 px-6 overflow-y-auto min-h-0">
+          <RemoteErrorBanner
+            error={resolveError}
+            testId="permission-remote-error"
+          />
           {/* Agent identity row */}
           {hasIdentity && (
             <div

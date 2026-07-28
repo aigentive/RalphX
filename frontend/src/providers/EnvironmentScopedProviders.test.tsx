@@ -82,7 +82,7 @@ describe("EnvironmentScopedProviders", () => {
     expect(observedClients).toEqual([getQueryClient(LOCAL_ENVIRONMENT_ID)]);
   });
 
-  it("remounts the subtree with the new environment client", () => {
+  it("remounts the subtree with the new environment client", async () => {
     const mount = vi.fn();
     const unmount = vi.fn();
     render(
@@ -94,13 +94,46 @@ describe("EnvironmentScopedProviders", () => {
 
     setActiveEnvironmentId("env-b");
 
-    expect(mount).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(mount).toHaveBeenCalledTimes(2);
+    });
     expect(unmount).toHaveBeenCalledTimes(1);
     expect(window.__queryClient).toBe(getQueryClient("env-b"));
     expect(window.__queryClient).not.toBe(localClient);
   });
 
-  it("retains the original cache when switching away and back", () => {
+  /**
+   * Rule 24: the click's own commit may only tear down and paint. Mounting the new
+   * environment's subtree — the expensive half — waits for a paint boundary.
+   */
+  it("paints a shell before remounting the new environment subtree", async () => {
+    const mount = vi.fn();
+    const unmount = vi.fn();
+    render(
+      <EnvironmentScopedProviders>
+        <ClientProbe onMount={mount} onUnmount={unmount} />
+      </EnvironmentScopedProviders>,
+    );
+
+    setActiveEnvironmentId("env-b");
+
+    // Synchronously after the switch: old tree gone, shell painted, nothing remounted.
+    expect(screen.getByTestId("environment-switch-shell")).toBeInTheDocument();
+    expect(screen.queryByTestId("client-probe")).toBeNull();
+    expect(unmount).toHaveBeenCalledTimes(1);
+    expect(mount).toHaveBeenCalledTimes(1);
+    // The old environment's client is still the mounted one, so nothing can read the
+    // new environment through it (P-13).
+    expect(window.__queryClient).toBe(getQueryClient(LOCAL_ENVIRONMENT_ID));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("client-probe")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("environment-switch-shell")).toBeNull();
+    expect(window.__queryClient).toBe(getQueryClient("env-b"));
+  });
+
+  it("retains the original cache when switching away and back", async () => {
     const localClient = getQueryClient(LOCAL_ENVIRONMENT_ID);
     localClient.setQueryData(["retained"], "local-value");
     render(
@@ -110,14 +143,20 @@ describe("EnvironmentScopedProviders", () => {
     );
 
     setActiveEnvironmentId("env-b");
+    await waitFor(() => {
+      expect(window.__queryClient).toBe(getQueryClient("env-b"));
+    });
     setActiveEnvironmentId(LOCAL_ENVIRONMENT_ID);
+    await waitFor(() => {
+      expect(screen.getByTestId("client-probe")).toBeInTheDocument();
+    });
 
     expect(window.__queryClient).toBe(localClient);
     expect(screen.getByTestId("client-probe")).toHaveTextContent("local-value");
     expect(localClient.getQueryData(["retained"])).toBe("local-value");
   });
 
-  it("performs no fetch or invoke when it mounts and remounts", () => {
+  it("performs no fetch or invoke when it mounts and remounts", async () => {
     const fetchSpy = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchSpy);
 
@@ -127,6 +166,9 @@ describe("EnvironmentScopedProviders", () => {
       </EnvironmentScopedProviders>,
     );
     setActiveEnvironmentId("env-b");
+    await waitFor(() => {
+      expect(window.__queryClient).toBe(getQueryClient("env-b"));
+    });
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(vi.mocked(invoke)).not.toHaveBeenCalled();

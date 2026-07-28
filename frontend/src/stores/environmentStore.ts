@@ -27,6 +27,8 @@ import {
   LOCAL_ENVIRONMENT_ID,
   setTransportEnvironmentId,
 } from "@/lib/remote/active-environment";
+import type { AttemptFailure } from "@/lib/remote/supervisor";
+import type { SupervisorPresentation } from "@/lib/remote/supervisor-transition-table";
 
 export { LOCAL_ENVIRONMENT_ID };
 
@@ -51,6 +53,25 @@ export type EnvironmentConnectionState =
   | "suspended"
   | "health_only";
 
+/**
+ * What the UI renders about a connection, as opposed to what the FSM is doing.
+ *
+ * Kept BESIDE `connectionStates` rather than replacing it. The raw state is the
+ * vocabulary the switcher dot and the mobile client consume (§6.5) and must not shift
+ * meaning; the presentation projection folds `idle`/`connecting`/`backoff` into a
+ * first-run vs. reconnect distinction the FSM deliberately does not make, and carries
+ * the blocked cause the actionable UI needs (P-10).
+ *
+ * `blockedFailure`/`blockedMessage` are populated ONLY while blocked; every other
+ * presentation clears them, so no surface can render a stale re-pair prompt over a
+ * healthy connection.
+ */
+export interface EnvironmentConnectionPresentation {
+  readonly presentation: SupervisorPresentation;
+  readonly blockedFailure: AttemptFailure | null;
+  readonly blockedMessage: string | null;
+}
+
 export interface EnvironmentEntry {
   id: string;
   name: string;
@@ -69,6 +90,15 @@ interface EnvironmentState {
   activeEnvironmentId: string;
   environments: EnvironmentEntry[];
   connectionStates: Record<string, EnvironmentConnectionState>;
+  /**
+   * SINGLE WRITER: the composition root's `onStateChange` wiring in
+   * `lib/remote/environment-runtime.ts`. Banner, switcher dot, and the read-only
+   * selector are READERS; no component subscribes to a supervisor directly.
+   *
+   * A missing entry means "no supervisor has reported yet", which every reader must
+   * treat as NOT connected (fail closed) rather than as an absence of trouble.
+   */
+  connectionPresentations: Record<string, EnvironmentConnectionPresentation>;
   /**
    * The last CONFIRMED effective scopes per environment (P-28 client consumption).
    *
@@ -98,10 +128,17 @@ interface EnvironmentState {
   /** Adopts the Rust-side authoritative active id (startup hydration). */
   hydrateActiveEnvironment: () => Promise<void>;
   setConnectionState: (id: string, state: EnvironmentConnectionState) => void;
+  /** Composition-root only: adopts the supervisor's presentation + blocked cause. */
+  setConnectionPresentation: (
+    id: string,
+    presentation: EnvironmentConnectionPresentation
+  ) => void;
   /** Composition-root only: adopts a scope set the supervisor has CONFIRMED. */
   setEffectiveScopes: (id: string, scopes: readonly string[]) => void;
   /** Composition-root only: forgets a scope set (quiesce / registry removal). */
   clearEffectiveScopes: (id: string) => void;
+  /** Composition-root only: forgets a presentation (quiesce / registry removal). */
+  clearConnectionPresentation: (id: string) => void;
 }
 
 function toEntry(summary: RemoteEnvironmentSummary): EnvironmentEntry {
@@ -117,6 +154,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
   environments: [LOCAL_ENTRY],
   connectionStates: { [LOCAL_ENVIRONMENT_ID]: "connected" },
+  connectionPresentations: {},
   effectiveScopes: {},
 
   setActiveEnvironment: async (id) => {
@@ -160,9 +198,24 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
           effectiveScopes[id] = scopes;
         }
       }
+      // Same reasoning as the scopes above: a re-added row can reuse an id, and
+      // inheriting the old presentation would paint a removed environment's last
+      // "connected" over a connection that has never been attempted.
+      const connectionPresentations: Record<
+        string,
+        EnvironmentConnectionPresentation
+      > = {};
+      for (const [id, presentation] of Object.entries(
+        state.connectionPresentations
+      )) {
+        if (knownIds.has(id) && id !== LOCAL_ENVIRONMENT_ID) {
+          connectionPresentations[id] = presentation;
+        }
+      }
       return {
         environments,
         connectionStates,
+        connectionPresentations,
         effectiveScopes,
         // A removed environment cannot stay active; Rust already fell back to
         // local when the row died, so the mirror follows.
@@ -207,6 +260,16 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
     }));
   },
 
+  setConnectionPresentation: (id, presentation) => {
+    if (id === LOCAL_ENVIRONMENT_ID) return; // local has no supervisor
+    set((state) => ({
+      connectionPresentations: {
+        ...state.connectionPresentations,
+        [id]: presentation,
+      },
+    }));
+  },
+
   setEffectiveScopes: (id, scopes) => {
     if (id === LOCAL_ENVIRONMENT_ID) return; // local is never scope-limited
     set((state) => ({
@@ -220,6 +283,15 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
       const effectiveScopes = { ...state.effectiveScopes };
       delete effectiveScopes[id];
       return { effectiveScopes };
+    });
+  },
+
+  clearConnectionPresentation: (id) => {
+    set((state) => {
+      if (state.connectionPresentations[id] === undefined) return state;
+      const connectionPresentations = { ...state.connectionPresentations };
+      delete connectionPresentations[id];
+      return { connectionPresentations };
     });
   },
 }));
