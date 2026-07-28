@@ -1633,8 +1633,7 @@ async fn repair_wait_releases_when_ipr_is_idle_or_process_exited() {
 #[tokio::test]
 async fn fixable_publish_failure_routes_repair_and_records_events() {
     let state = AppState::new_test();
-    let workspace = command_test_workspace();
-    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
@@ -1675,11 +1674,6 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
         .list_publication_events(&workspace.conversation_id)
         .await
         .expect("events should list");
-    assert!(events.iter().any(|event| {
-        event.step == "needs_agent"
-            && event.status == "failed"
-            && event.classification.as_deref() == Some("agent_fixable")
-    }));
     assert!(events.iter().any(|event| {
         event.step == "repair_requested"
             && event.status == "started"

@@ -780,6 +780,58 @@ async fn state_recovery_recovers_terminal_needs_agent_workspace_and_reloads_it()
 }
 
 #[tokio::test]
+async fn state_recovery_preserves_an_active_exact_legacy_pr_autofix() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(32);
+    let workspace = needs_agent_workspace(conversation_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.action_kind = Some(AgentRunActionKind::PrAutofix);
+    run.action_context_id = Some("684".to_string());
+    run.action_target_id = Some("github_pr_autofix:684:head:checks".to_string());
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("seed exact active PR autofix");
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(&state)
+            .await
+            .expect("active PR autofix recovery should defer"),
+        0
+    );
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load durable repair authority")
+        .is_none());
+    let preserved = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        preserved.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(preserved.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load publication events")
+        .iter()
+        .all(|event| event.step != "legacy_repair_import_blocked"));
+}
+
+#[tokio::test]
 async fn recovery_correlates_the_exact_pr_autofix_attempt_not_a_newer_unrelated_run() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());

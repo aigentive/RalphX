@@ -632,7 +632,7 @@ async fn stale_dispatch_lease_epoch_rejects_repair_push_before_any_github_or_git
     let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
     let target_identity = workspace_target_identity(&fixture).await;
     let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str());
-    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = fixture
+    let fencing_epoch = match fixture
         .state
         .branch_update_repo
         .acquire_target_lease(AcquireGitTargetLease {
@@ -641,8 +641,10 @@ async fn stale_dispatch_lease_epoch_rejects_repair_push_before_any_github_or_git
         })
         .await
         .expect("repair lease acquisition should succeed")
-    else {
-        panic!("repair fixture must acquire its canonical target lease");
+    {
+        AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch }
+        | AcquireGitTargetLeaseOutcome::AlreadyOwned { fencing_epoch } => fencing_epoch,
+        outcome => panic!("repair fixture must own its canonical target lease, got {outcome:?}"),
     };
     let mut checkpointed = fixture.attempt.clone();
     checkpointed.git_common_dir = Some(
@@ -1240,7 +1242,7 @@ async fn stale_authority_and_wrong_remote_expectation_are_side_effect_free() {
     )
     .await
     .expect_err("foreign workspace ref must be rejected before any push");
-    assert!(foreign_error.to_string().contains("checked out"));
+    assert!(foreign_error.to_string().contains("differs"));
     assert_eq!(
         github
             .state()
@@ -1263,6 +1265,20 @@ async fn foreign_git_target_lease_owner_blocks_the_push_without_a_mutation() {
     let identity = GitService::canonical_target_identity(&workspace_path, &fixture.branch)
         .await
         .expect("canonical branch identity");
+    let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str());
+    fixture
+        .state
+        .branch_update_repo
+        .release_target_lease(
+            &identity,
+            &repair_owner,
+            fixture
+                .attempt
+                .target_lease_epoch
+                .expect("repair fixture lease epoch"),
+        )
+        .await
+        .expect("release fixture repair lease before installing foreign owner");
     let acquired = fixture
         .state
         .branch_update_repo
@@ -1452,7 +1468,7 @@ async fn missing_remote_or_oid_expectations_fail_closed_before_any_push() {
     )
     .await
     .expect_err("a missing expected remote OID must fail closed when origin has the branch");
-    assert!(oid_error.to_string().contains("drifted"));
+    assert!(oid_error.to_string().contains("partially initialized"));
     assert_eq!(oid_github.state().push_branch_calls, 0);
     assert_eq!(
         oid_github

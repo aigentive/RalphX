@@ -1056,6 +1056,10 @@ fn mark_monitor_current_passed(
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("review-requested-changes-artifact"));
+    monitor.review_requested_changes_artifact_version = Some(1);
     monitor.reviewed_target_scope = Some(target.scope);
     monitor.reviewed_head_sha = target.head_sha.clone();
     monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint.clone());
@@ -1263,6 +1267,14 @@ async fn setup_pr_fix_workspace_with_review_gate(
     git(repo.path(), &["add", "README.md"]);
     git(repo.path(), &["commit", "-m", "base"]);
     let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    let remote_path = worktrees.path().join("origin.git");
+    let remote_path = remote_path.to_string_lossy().to_string();
+    git(repo.path(), &["init", "--bare", remote_path.as_str()]);
+    git(
+        repo.path(),
+        &["remote", "add", "origin", remote_path.as_str()],
+    );
+    git(repo.path(), &["push", "-u", "origin", "main"]);
 
     let github = Arc::new(MockGithubService::new());
     let mut state = AppState::new_test();
@@ -1433,6 +1445,7 @@ async fn current_pr_fixer_refreshes_base_then_completes_and_publishes_refreshed_
         fixture._repo.path(),
         &["commit", "-m", "advance base while fixer runs"],
     );
+    git(fixture._repo.path(), &["push", "origin", "main"]);
 
     let Json(update_response) = update_agent_workspace_from_base(
         State(test_http_state(Arc::clone(&fixture.app_state))),
@@ -2521,7 +2534,7 @@ async fn complete_pr_fix_already_completed_is_a_side_effect_free_noop() {
 }
 
 #[tokio::test]
-async fn complete_pr_fix_current_authority_with_stale_claim_schedules_recovery_without_effects() {
+async fn complete_pr_fix_current_authority_with_stale_claim_is_side_effect_free() {
     let fixture = setup_pr_fix_workspace_with_review_gate(
         "stale-current-claim",
         AgentWorkspaceReviewGateStatus::Blocking,
@@ -2567,13 +2580,7 @@ async fn complete_pr_fix_current_authority_with_stale_claim_schedules_recovery_w
     assert!(body["error"]
         .as_str()
         .is_some_and(|message| message.contains("claim is no longer current")));
-    for _ in 0..100 {
-        if fixture.github.state().check_pr_sync_state_calls >= 1 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(fixture.github.state().check_pr_sync_state_calls, 1);
+    assert_eq!(fixture.github.state().check_pr_sync_state_calls, 0);
     {
         let github_state = fixture.github.state();
         assert_eq!(github_state.check_pr_status_calls, 0);
@@ -3748,6 +3755,24 @@ async fn setup_workspace_for_review_completion(
     git(repo.path(), &["add", "README.md"]);
     git(repo.path(), &["commit", "-m", "base"]);
     let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    let remote_path = worktrees.path().join("origin.git");
+    let remote_path = remote_path.to_string_lossy().to_string();
+    git(repo.path(), &["init", "--bare", remote_path.as_str()]);
+    git(
+        repo.path(),
+        &["remote", "add", "origin", remote_path.as_str()],
+    );
+    git(repo.path(), &["push", "-u", "origin", "main"]);
+    git(
+        repo.path(),
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@github.com:owner/repo.git",
+        ],
+    );
 
     let github = Arc::new(MockGithubService::new());
     // When we expect the resume to publish, let the mock create a PR so publish completes
@@ -3768,6 +3793,7 @@ async fn setup_workspace_for_review_completion(
         repo.path().to_string_lossy().to_string(),
     );
     project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
     project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
     app_state
         .project_repo
@@ -3983,7 +4009,11 @@ async fn passed_review_resumes_initial_auto_publish_when_armed() {
         "armed initial auto-publish should resume on a passed gate"
     );
     // Publish was invoked exactly once and created the initial PR.
-    assert_eq!(fixture.github.state().create_draft_pr_calls, 1);
+    assert_eq!(
+        fixture.github.state().create_draft_pr_calls,
+        1,
+        "publication events: {events:#?}"
+    );
     let persisted = fixture
         .app_state
         .agent_conversation_workspace_repo
@@ -4049,13 +4079,17 @@ async fn human_bypass_resumes_armed_initial_publish_for_the_exact_blocking_snaps
     assert_eq!(response.monitor.review_outcome, "blocking");
     assert_eq!(response.monitor.review_gate_status, "passed");
     assert!(response.monitor.review_gate_bypassed_at.is_some());
-    assert_eq!(fixture.github.state().create_draft_pr_calls, 1);
     let events = fixture
         .app_state
         .agent_conversation_workspace_repo
         .list_publication_events(&fixture.conversation_id)
         .await
         .unwrap();
+    assert_eq!(
+        fixture.github.state().create_draft_pr_calls,
+        1,
+        "publication events: {events:#?}"
+    );
     assert!(events.iter().any(|event| {
         event.step == "workspace_review_approved_anyway"
             && event.classification.as_deref() == Some("workspace_review_approved_anyway")

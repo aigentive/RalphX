@@ -4,6 +4,7 @@ use chrono::Utc;
 
 use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_workspace_pr_autofix_attempt::load_latest_exact_pr_autofix_run_for_pr;
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, block_agent_workspace_repair_completion,
     classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
@@ -19,8 +20,9 @@ use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueu
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ChatContextType, GitTargetLeaseOwner,
+    AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    ChatContextType, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AgentRunRepository, AgentWorkspaceRepairCompatibilityProjection,
@@ -70,7 +72,11 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
                     .await;
                 }
                 if is_legacy_repair_projection(&workspace) {
-                    import_or_block_legacy_repair_attempt(state, &workspace).await?
+                    if active_exact_pr_autofix_owns_legacy_projection(state, &workspace).await? {
+                        DurableRepairRecoveryOutcome::Noop
+                    } else {
+                        import_or_block_legacy_repair_attempt(state, &workspace).await?
+                    }
                 } else {
                     DurableRepairRecoveryOutcome::Noop
                 }
@@ -83,6 +89,22 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
         .await?
         .unwrap_or(workspace);
     Ok((refreshed, outcome.into_stale_outcome()))
+}
+
+async fn active_exact_pr_autofix_owns_legacy_projection(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<bool> {
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(false);
+    };
+    Ok(load_latest_exact_pr_autofix_run_for_pr(
+        state.agent_run_repo.as_ref(),
+        &workspace.conversation_id,
+        pr_number,
+    )
+    .await?
+    .is_some_and(|run| run.status == AgentRunStatus::Running))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
