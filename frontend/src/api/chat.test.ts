@@ -30,6 +30,7 @@ import {
   spawnConversationSessionNamer,
   archiveConversation,
   restoreConversation,
+  setAgentConversationMuted,
   getAgentRunStatus,
   getAgentConversationWorkspaceFreshness,
   openAgentConversationWorkspace,
@@ -1764,6 +1765,9 @@ describe("chat api", () => {
               ref_label: "PR #123",
               publication_state: "merged",
               publication_label: "merged",
+              attention_lane: "done",
+              action_verb: "Merged",
+              is_muted: false,
             },
           ],
         },
@@ -1807,8 +1811,26 @@ describe("chat api", () => {
           refLabel: "PR #123",
           publicationState: "merged",
           publicationLabel: "merged",
+          attentionLane: "done",
+          actionVerb: "Merged",
+          isMuted: false,
         },
       ],
+    });
+  });
+
+  it("sets an agent conversation muted state", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await expect(
+      setAgentConversationMuted("conversation-1", true),
+    ).resolves.toBeUndefined();
+
+    expect(mockInvoke).toHaveBeenCalledWith("set_agent_conversation_muted", {
+      input: {
+        conversationId: "conversation-1",
+        muted: true,
+      },
     });
   });
 

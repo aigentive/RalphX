@@ -11,6 +11,7 @@ import {
 import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
+  AgentSidebarAttentionLane,
   CapabilityIntent,
   ComposerArtifactReference,
   ComposerIntegrationReference,
@@ -61,7 +62,11 @@ export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
 ];
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
-export type AgentSidebarGroupBy = "project" | "publication" | "automation";
+export type AgentSidebarGroupBy =
+  | "project"
+  | "publication"
+  | "automation"
+  | "inbox";
 export const AGENT_DEFAULT_START_MODES = [
   "plan",
   "edit",
@@ -200,6 +205,7 @@ interface AgentSessionState {
   sidebarGroupBy: AgentSidebarGroupBy;
   sidebarProjectFilterIds: string[];
   sidebarPublicationStateFilters: AgentSidebarPublicationState[];
+  sidebarInboxCollapsedLanes: AgentSidebarAttentionLane[];
   pinnedConversationIds: Record<string, true>;
   artifactByConversationId: Record<string, AgentArtifactState>;
   taskArtifactFocusRequestByConversationId: Record<
@@ -245,6 +251,7 @@ interface AgentSessionActions {
   toggleSidebarPublicationStateFilter: (
     state: AgentSidebarPublicationState
   ) => void;
+  toggleSidebarInboxLane: (lane: AgentSidebarAttentionLane) => void;
   togglePinnedConversation: (conversationId: string) => void;
   setArtifactOpen: (conversationId: string, isOpen: boolean) => void;
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
@@ -308,6 +315,9 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
 };
 const DEFAULT_SHOW_ALL_PROJECTS = true;
 const DEFAULT_SHOW_EMPTY_PROJECT_GROUPS = true;
+// The Agents sidebar opens on the triage inbox: attention lanes are the landing
+// view, and project grouping is one of the alternatives behind Group.
+const DEFAULT_SIDEBAR_GROUP_BY: AgentSidebarGroupBy = "inbox";
 export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationState[] = [
   "active",
   "draft",
@@ -316,7 +326,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 10;
+const AGENT_SESSION_STORE_VERSION = 11;
 
 type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
 
@@ -546,6 +556,13 @@ export function migrateAgentSessionStore(
     nextState.showEmptyProjectGroups = DEFAULT_SHOW_EMPTY_PROJECT_GROUPS;
   }
 
+  if (version < 11) {
+    nextState.sidebarInboxCollapsedLanes = [];
+    // The inbox did not exist below v11, so no persisted grouping here was ever
+    // a choice against it — every pre-inbox store lands on the new default.
+    nextState.sidebarGroupBy = DEFAULT_SIDEBAR_GROUP_BY;
+  }
+
   return nextState;
 }
 
@@ -638,9 +655,10 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
       showEmptyProjectGroups: DEFAULT_SHOW_EMPTY_PROJECT_GROUPS,
       projectSort: "latest",
-      sidebarGroupBy: "project",
+      sidebarGroupBy: DEFAULT_SIDEBAR_GROUP_BY,
       sidebarProjectFilterIds: [],
       sidebarPublicationStateFilters: [...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS],
+      sidebarInboxCollapsedLanes: [],
       pinnedConversationIds: {},
       artifactByConversationId: {},
       taskArtifactFocusRequestByConversationId: {},
@@ -780,6 +798,17 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
             current.add(publicationState);
           }
           state.sidebarPublicationStateFilters = Array.from(current);
+        }),
+
+      toggleSidebarInboxLane: (lane) =>
+        set((state) => {
+          const current = new Set(state.sidebarInboxCollapsedLanes);
+          if (current.has(lane)) {
+            current.delete(lane);
+          } else {
+            current.add(lane);
+          }
+          state.sidebarInboxCollapsedLanes = Array.from(current);
         }),
 
       togglePinnedConversation: (conversationId) =>
@@ -999,6 +1028,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         sidebarGroupBy: state.sidebarGroupBy,
         sidebarProjectFilterIds: state.sidebarProjectFilterIds,
         sidebarPublicationStateFilters: state.sidebarPublicationStateFilters,
+        sidebarInboxCollapsedLanes: state.sidebarInboxCollapsedLanes,
         pinnedConversationIds: state.pinnedConversationIds,
         artifactByConversationId: state.artifactByConversationId,
         runtimeByConversationId: state.runtimeByConversationId,
