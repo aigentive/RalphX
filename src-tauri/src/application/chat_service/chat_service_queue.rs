@@ -2223,6 +2223,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     queued_msg.service_tier_override.as_deref(),
                     false,
                     Some(attachment_context.as_str()),
+                    chat_service_context::ProjectSkillSelectionRepositories::from_app_handle(
+                        app_handle.as_ref(),
+                    ),
                 )
                 .await
                 {

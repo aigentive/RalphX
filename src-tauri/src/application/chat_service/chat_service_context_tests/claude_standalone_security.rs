@@ -115,6 +115,7 @@ fn standalone_claude_project_and_persona_builder_keep_configured_permission_beha
             None,
             None,
             None,
+            None,
             false,
             context_type,
             Some(effective_mode),
@@ -237,6 +238,7 @@ async fn build_standalone_claude_noninteractive_resume_command(
         None,
         None,
         false,
+        None,
         None,
     )
     .await

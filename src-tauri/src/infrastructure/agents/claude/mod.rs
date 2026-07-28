@@ -88,8 +88,7 @@ use crate::infrastructure::agents::harness_agent_catalog::{
 use crate::infrastructure::agents::internal_skills::{
     inject_internal_skills_into_system_prompt_for_profile,
     inject_pre_execution_learned_skills_into_existing_injection,
-    pre_execution_learned_skill_context_from_runtime, InternalSkillInjection,
-    PreExecutionLearnedSkillContext,
+    InternalSkillInjection, PreExecutionLearnedSkillContext,
 };
 use crate::infrastructure::agents::mcp_runtime_context::{
     append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
@@ -1548,7 +1547,8 @@ fn add_prompt_args(
     agent_profile: Option<&str>,
     resume_session: Option<&str>,
     interactive: bool,
-    mcp_runtime_context: Option<&McpRuntimeContext>,
+    _mcp_runtime_context: Option<&McpRuntimeContext>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
     permission_policy: ClaudePermissionPolicy,
 ) -> PromptArgsOutcome {
     // Add resume if continuing an existing session
@@ -1580,15 +1580,13 @@ fn add_prompt_args(
                 persona_injection_skipped_reason(use_native_agent_flag, persona_block.is_some());
         } else if let Some(prompt_path) = resolve_agent_system_prompt_path(plugin_dir, agent_name) {
             let runtime = claude_runtime_config();
-            let runtime_pre_execution_learned_skills =
-                pre_execution_learned_skill_context_from_runtime(agent_name, mcp_runtime_context);
             let prompt_with_internal_skills = load_agent_system_prompt_with_internal_skills(
                 plugin_dir,
                 agent_name,
                 agent_profile,
                 prompt,
                 persona_block,
-                runtime_pre_execution_learned_skills.as_ref(),
+                pre_execution_learned_skills,
             );
             if let Some((system_prompt, injected_skill_names)) =
                 prompt_with_internal_skills.as_ref()
@@ -1791,6 +1789,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         resume_session,
         false,
         mcp_runtime_context,
+        None,
         ClaudePermissionPolicy::InheritConfigured,
     );
     configure_spawn(
@@ -1837,6 +1836,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         effort_override,
         model_override,
         mcp_runtime_context,
+        None,
         ClaudePermissionPolicy::InheritConfigured,
         ClaudePromptDelivery::NonInteractive,
     )
@@ -1857,6 +1857,7 @@ pub(crate) fn build_spawnable_profile_command_with_permission_policy(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
     permission_policy: ClaudePermissionPolicy,
     prompt_delivery: ClaudePromptDelivery,
 ) -> Result<SpawnableCommand, String> {
@@ -1873,6 +1874,7 @@ pub(crate) fn build_spawnable_profile_command_with_permission_policy(
         effort_override,
         model_override,
         mcp_runtime_context,
+        pre_execution_learned_skills,
         permission_policy,
         prompt_delivery,
         true,
@@ -1894,6 +1896,7 @@ pub(crate) fn build_spawnable_profile_command_with_permission_policy_for_test(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
     permission_policy: ClaudePermissionPolicy,
     prompt_delivery: ClaudePromptDelivery,
 ) -> Result<SpawnableCommand, String> {
@@ -1910,6 +1913,7 @@ pub(crate) fn build_spawnable_profile_command_with_permission_policy_for_test(
         effort_override,
         model_override,
         mcp_runtime_context,
+        pre_execution_learned_skills,
         permission_policy,
         prompt_delivery,
         false,
@@ -1930,6 +1934,7 @@ fn build_spawnable_profile_command_with_permission_policy_inner(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
     permission_policy: ClaudePermissionPolicy,
     prompt_delivery: ClaudePromptDelivery,
     enforce_spawn_guard: bool,
@@ -1956,6 +1961,7 @@ fn build_spawnable_profile_command_with_permission_policy_inner(
         resume_session,
         prompt_delivery.is_interactive(),
         mcp_runtime_context,
+        pre_execution_learned_skills,
         permission_policy,
     );
     configure_spawn(
@@ -2031,6 +2037,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         resume_session,
         false,
         mcp_runtime_context,
+        None,
         ClaudePermissionPolicy::InheritConfigured,
     );
     configure_spawn(
@@ -2078,6 +2085,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
         effort_override,
         model_override,
         mcp_runtime_context,
+        None,
         ClaudePermissionPolicy::InheritConfigured,
         ClaudePromptDelivery::NonInteractive,
     )
@@ -2173,6 +2181,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
         effort_override,
         model_override,
         mcp_runtime_context,
+        None,
         ClaudePermissionPolicy::InheritConfigured,
         ClaudePromptDelivery::Interactive,
     )
@@ -2263,6 +2272,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
         effort_override,
         model_override,
         mcp_runtime_context,
+        None,
         ClaudePermissionPolicy::InheritConfigured,
         ClaudePromptDelivery::Interactive,
     )

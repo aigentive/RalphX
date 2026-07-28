@@ -2,7 +2,7 @@ use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
     compose_codex_prompt, compose_codex_prompt_for_profile,
-    compose_codex_prompt_for_profile_with_learned_skills,
+    compose_codex_prompt_for_profile_with_learned_skills_and_outcome,
     compose_codex_prompt_for_profile_with_outcome,
     compose_codex_prompt_for_profile_with_runtime_context, configure_spawn,
     parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models,
@@ -13,13 +13,11 @@ use super::{
 
 use crate::domain::agents::LogicalEffort;
 use crate::domain::services::learned_skill_adapters::{
-    LearnedSkillBucket, LearnedSkillRecord, LearnedSkillSelectionRequest, LearnedSkillStage,
+    LearnedSkillBucket, LearnedSkillMultiSelectionRequest, LearnedSkillRecord, LearnedSkillStage,
     LearnedSkillStatus,
 };
 use crate::infrastructure::agents::claude::{SpawnableCommand, SpawnableStdinTransport};
-use crate::infrastructure::agents::internal_skills::{
-    PreExecutionLearnedSkillContext, PRE_EXECUTION_LEARNED_SKILLS_ENV,
-};
+use crate::infrastructure::agents::internal_skills::PreExecutionLearnedSkillContext;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -259,6 +257,7 @@ fn learned_skill(id: &str, project_id: &str) -> LearnedSkillRecord {
         project_id: project_id.to_string(),
         title: format!("Skill {id}"),
         status: LearnedSkillStatus::Approved,
+        pinned: false,
         caller_surfaces: Vec::new(),
         stages: Vec::new(),
         buckets: Vec::new(),
@@ -952,11 +951,11 @@ role: project_chat
     )
     .expect("write shared prompt");
     let context = PreExecutionLearnedSkillContext {
-        request: LearnedSkillSelectionRequest {
+        request: LearnedSkillMultiSelectionRequest {
             project_id: "project-1".to_string(),
             caller_surface: "ralphx-chat-project".to_string(),
-            stage: LearnedSkillStage::Planning,
-            bucket: LearnedSkillBucket::Planning,
+            stages: vec![LearnedSkillStage::Planning],
+            buckets: vec![LearnedSkillBucket::Planning],
             touched_paths: vec!["src-tauri/src/domain/services/mod.rs".to_string()],
             max_skills: 4,
         },
@@ -972,27 +971,30 @@ role: project_chat
                 .with_buckets(vec![LearnedSkillBucket::Planning])
                 .with_path_scopes(vec!["src-tauri/src/domain"]),
         ],
+        max_total_chars: 6_000,
+        max_guidance_chars: 400,
     };
 
-    let composed = compose_codex_prompt_for_profile_with_learned_skills(
+    let composition = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
         "Plan the domain change.",
         Some(&plugin_dir),
         Some("ralphx-chat-project"),
         None,
+        Some("<ralphx_agent_persona>Methodical planner</ralphx_agent_persona>"),
         Some(&context),
     );
+    let composed = composition.prompt;
 
     assert!(composed.contains("Project chat prompt"));
+    assert!(composed.contains("Methodical planner"));
+    assert!(composition.persona_injected);
     assert!(composed.contains("<ralphx_learned_skill_citations>"));
     assert!(composed.contains("skill-planning"));
     assert!(!composed.contains("skill-review"));
 }
 
 #[test]
-fn compose_codex_prompt_injects_pre_execution_learned_skills_from_runtime_context() {
-    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
-        .lock()
-        .expect("env mutex");
+fn c1_direct_codex_runtime_context_composer_does_not_inject_project_skills() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let root = temp_dir.path();
     let plugin_dir = create_plugin_dir(root);
@@ -1012,40 +1014,6 @@ role: project_chat
     )
     .expect("write shared prompt");
 
-    let payload = serde_json::json!({
-        "skills": [
-            {
-                "id": "skill-planning",
-                "project_id": "project-1",
-                "title": "Skill planning",
-                "status": "approved",
-                "caller_surfaces": ["ralphx-chat-project"],
-                "stages": ["planning"],
-                "buckets": ["planning"],
-                "path_scopes": ["src-tauri/src/domain"],
-                "compact_guidance": "Follow planning.",
-                "predicted_effect": "Improve planning.",
-                "provenance_refs": ["outcome:skill-planning"]
-            },
-            {
-                "id": "skill-review",
-                "project_id": "project-1",
-                "title": "Skill review",
-                "status": "approved",
-                "caller_surfaces": ["ralphx-review-history"],
-                "stages": ["planning"],
-                "buckets": ["planning"],
-                "path_scopes": ["src-tauri/src/domain"],
-                "compact_guidance": "Follow review.",
-                "predicted_effect": "Improve review.",
-                "provenance_refs": ["outcome:skill-review"]
-            }
-        ],
-        "touched_paths": ["src-tauri/src/domain/services/mod.rs"],
-        "max_skills": 4
-    })
-    .to_string();
-    let _env = EnvGuard::set_os(PRE_EXECUTION_LEARNED_SKILLS_ENV, payload);
     let runtime_context = CodexMcpRuntimeContext {
         context_type: Some("project".to_string()),
         context_id: Some("project-1".to_string()),
@@ -1076,9 +1044,7 @@ role: project_chat
     );
 
     assert!(composed.contains("Project chat prompt"));
-    assert!(composed.contains("<ralphx_learned_skill_citations>"));
-    assert!(composed.contains("skill-planning"));
-    assert!(!composed.contains("skill-review"));
+    assert!(!composed.contains("<ralphx_learned_skill_citations>"));
 }
 
 #[test]

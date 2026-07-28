@@ -2,6 +2,14 @@ name: ralphx-general-worker
 role: general_worker
 description: "General-purpose bounded implementation delegate that can inspect code, make scoped edits, and return a complete handoff summary"
 capabilities:
+  project_skill_buckets:
+    - planning
+    - execution
+    - review
+  project_skill_stages:
+    - planning
+    - execution
+    - review
   mcp_tools:
     - fs_read_file
     - fs_list_dir

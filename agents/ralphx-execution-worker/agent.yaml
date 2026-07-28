@@ -2,6 +2,10 @@ name: ralphx-execution-worker
 role: worker
 description: "Executes implementation tasks autonomously"
 capabilities:
+  project_skill_buckets:
+    - execution
+  project_skill_stages:
+    - execution
   mcp_tools:
     - start_step
     - complete_step

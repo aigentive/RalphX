@@ -7,6 +7,7 @@ use super::{
     resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata, AgentPromptHarness,
 };
+use crate::domain::services::learned_skill_adapters::{LearnedSkillBucket, LearnedSkillStage};
 use crate::infrastructure::agents::claude::{
     get_agent_config, get_agent_config_for_profile, get_preapproved_tools_for_profile,
 };
@@ -496,6 +497,65 @@ fn project_root() -> PathBuf {
         .join("..")
         .canonicalize()
         .expect("canonical repo root")
+}
+
+#[test]
+fn c1_agents_publish_ordered_project_skill_capabilities_with_legacy_defaults() {
+    let root = project_root();
+    let cases = [
+        (
+            "ralphx-chat-project",
+            vec![LearnedSkillBucket::Planning],
+            vec![LearnedSkillStage::Planning],
+        ),
+        (
+            "ralphx-execution-coder",
+            vec![LearnedSkillBucket::Execution],
+            vec![LearnedSkillStage::Execution],
+        ),
+        (
+            "ralphx-execution-worker",
+            vec![LearnedSkillBucket::Execution],
+            vec![LearnedSkillStage::Execution],
+        ),
+        (
+            "ralphx-execution-reviewer",
+            vec![LearnedSkillBucket::Review],
+            vec![LearnedSkillStage::Review],
+        ),
+        (
+            "ralphx-execution-merger",
+            vec![LearnedSkillBucket::Merge],
+            vec![LearnedSkillStage::Merge],
+        ),
+        (
+            "ralphx-general-worker",
+            vec![
+                LearnedSkillBucket::Planning,
+                LearnedSkillBucket::Execution,
+                LearnedSkillBucket::Review,
+            ],
+            vec![
+                LearnedSkillStage::Planning,
+                LearnedSkillStage::Execution,
+                LearnedSkillStage::Review,
+            ],
+        ),
+    ];
+
+    for (agent_name, buckets, stages) in cases {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("missing canonical C1 definition for {agent_name}"));
+        assert_eq!(definition.capabilities.project_skill_buckets, buckets);
+        assert_eq!(definition.capabilities.project_skill_stages, stages);
+    }
+
+    let temp = tempdir().expect("temp root");
+    seed_minimal_canonical_claude_agent(&temp.path().join("agents/legacy-agent"), "legacy-agent");
+    let legacy = load_canonical_agent_definition(temp.path(), "legacy-agent")
+        .expect("legacy definitions without C1 fields remain valid");
+    assert!(legacy.capabilities.project_skill_buckets.is_empty());
+    assert!(legacy.capabilities.project_skill_stages.is_empty());
 }
 
 #[test]

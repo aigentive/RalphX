@@ -464,6 +464,7 @@ pub async fn attempt_session_recovery<R: Runtime>(
         None,
         false,
         None,
+        chat_service_context::ProjectSkillSelectionRepositories::from_app_handle(app_handle),
     )
     .await
     {
