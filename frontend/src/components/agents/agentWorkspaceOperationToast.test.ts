@@ -80,6 +80,10 @@ describe("agentWorkspaceOperationToast", () => {
     expect(maintenanceOperationToastLabel("ready")).toBe(
       "Base updated — ready to publish",
     );
+    expect(maintenanceOperationToastLabel("blocked")).toBe("Repair blocked");
+    expect(maintenanceOperationToastLabel("future-stage")).toBe(
+      "Continuing workspace operation",
+    );
   });
 
   it("strips raw agent output from operation error details", () => {

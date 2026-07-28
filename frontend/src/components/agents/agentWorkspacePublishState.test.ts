@@ -150,6 +150,22 @@ describe("maintenance operation presentation", () => {
     );
   });
 
+  it.each([
+    ["updating_base", "Updating base"],
+    ["validating", "Validating repair"],
+    ["publishing", "Publishing workspace"],
+  ] as const)("presents the active %s stage", (stage, title) => {
+    const current = workspace({
+      maintenanceOperation: { ...maintenanceOperation, stage },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)).toMatchObject({
+      title,
+      action: "none",
+      busy: true,
+    });
+  });
+
   it("provides one explicit ready or blocked recovery action", () => {
     const ready = workspace({
       maintenanceOperation: {

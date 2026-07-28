@@ -46,6 +46,24 @@ fn repair_enums_are_closed_snake_case_wire_contracts() {
 }
 
 #[test]
+fn repair_ids_and_continuation_priorities_are_stable_domain_contracts() {
+    let attempt_id = AgentWorkspaceRepairAttemptId::default();
+    let effect_id = AgentWorkspaceRepairEffectId::default();
+
+    assert!(!attempt_id.as_str().is_empty());
+    assert!(!effect_id.as_str().is_empty());
+    assert_ne!(attempt_id.as_str(), effect_id.as_str());
+    assert_eq!(AgentWorkspaceRepairContinuation::Manual.priority(), 0);
+    assert_eq!(AgentWorkspaceRepairContinuation::UpdateOnly.priority(), 1);
+    assert_eq!(AgentWorkspaceRepairContinuation::Publish.priority(), 2);
+    assert_eq!(
+        AgentWorkspaceRepairContinuation::ResumePrSupervision.priority(),
+        3
+    );
+    assert!(!AgentWorkspaceRepairContinuation::Manual.is_automatic());
+}
+
+#[test]
 fn new_repair_attempt_is_unsettled_and_projects_only_response_safe_fields() {
     let now = Utc::now();
     let attempt = AgentWorkspaceRepairAttempt::new(
@@ -78,6 +96,76 @@ fn new_repair_attempt_is_unsettled_and_projects_only_response_safe_fields() {
 }
 
 #[test]
+fn repair_operation_snapshots_project_every_terminal_and_active_stage() {
+    let now = Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "origin/main",
+        false,
+        true,
+        false,
+        None,
+        now,
+    );
+
+    for (phase, stage, status, automatic_continuation) in [
+        (
+            AgentWorkspaceRepairPhase::Repairing,
+            AgentWorkspaceRepairOperationStage::Repairing,
+            AgentWorkspaceRepairOperationStatus::Active,
+            true,
+        ),
+        (
+            AgentWorkspaceRepairPhase::Validating,
+            AgentWorkspaceRepairOperationStage::Validating,
+            AgentWorkspaceRepairOperationStatus::Active,
+            true,
+        ),
+        (
+            AgentWorkspaceRepairPhase::AwaitingReview,
+            AgentWorkspaceRepairOperationStage::Reviewing,
+            AgentWorkspaceRepairOperationStatus::Active,
+            true,
+        ),
+        (
+            AgentWorkspaceRepairPhase::ContinuationPending,
+            AgentWorkspaceRepairOperationStage::Publishing,
+            AgentWorkspaceRepairOperationStatus::Active,
+            true,
+        ),
+        (
+            AgentWorkspaceRepairPhase::Continuing,
+            AgentWorkspaceRepairOperationStage::Publishing,
+            AgentWorkspaceRepairOperationStatus::Active,
+            true,
+        ),
+        (
+            AgentWorkspaceRepairPhase::Ready,
+            AgentWorkspaceRepairOperationStage::Ready,
+            AgentWorkspaceRepairOperationStatus::Ready,
+            false,
+        ),
+        (
+            AgentWorkspaceRepairPhase::Blocked,
+            AgentWorkspaceRepairOperationStage::Blocked,
+            AgentWorkspaceRepairOperationStatus::Blocked,
+            false,
+        ),
+    ] {
+        attempt.phase = phase;
+        let snapshot = attempt.operation_snapshot();
+        assert_eq!(snapshot.stage, stage, "{phase}");
+        assert_eq!(snapshot.status, status, "{phase}");
+        assert_eq!(
+            snapshot.automatic_continuation, automatic_continuation,
+            "{phase}"
+        );
+    }
+}
+
+#[test]
 fn repair_effect_completion_requires_an_observed_receipt() {
     let now = Utc::now();
     let effect = AgentWorkspaceRepairEffect::new(
@@ -93,4 +181,10 @@ fn repair_effect_completion_requires_an_observed_receipt() {
     assert!(effect
         .can_complete_observed(Some("{\"remote_oid\":\"abc\"}"), now)
         .is_ok());
+    assert!(effect
+        .can_complete_observed(
+            Some("{\"remote_oid\":\"abc\"}"),
+            now - chrono::Duration::microseconds(1),
+        )
+        .is_err());
 }

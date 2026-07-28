@@ -406,7 +406,7 @@ pub(crate) async fn continue_agent_workspace_repair_publish(
     Ok(Some(push_outcome))
 }
 
-fn repair_pr_handoff_from_observed_push(
+pub(crate) fn repair_pr_handoff_from_observed_push(
     attempt: &AgentWorkspaceRepairAttempt,
     push_outcome: &AgentWorkspaceRepairPushOutcome,
 ) -> Result<AgentWorkspaceRepairPrHandoff, String> {
@@ -470,7 +470,7 @@ async fn has_observed_agent_workspace_repair_pr_handoff(
     Ok(false)
 }
 
-async fn prepare_agent_workspace_repair_pr_handoff_effect(
+pub(crate) async fn prepare_agent_workspace_repair_pr_handoff_effect(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
@@ -548,7 +548,7 @@ async fn prepare_agent_workspace_repair_pr_handoff_effect(
 /// The linked-plan publisher owns the plan PR projection and monitor startup. On replay, that
 /// projection is the target-aware postcondition for an already-in-flight durable handoff, so the
 /// repair coordinator can record its receipt without repeating the publisher's Git or PR work.
-async fn reconcile_linked_plan_agent_workspace_repair_pr_handoff(
+pub(crate) async fn reconcile_linked_plan_agent_workspace_repair_pr_handoff(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     effect: &AgentWorkspaceRepairEffect,
@@ -597,7 +597,7 @@ async fn reconcile_linked_plan_agent_workspace_repair_pr_handoff(
     Ok(Some((expected_pr_number, plan_branch.pr_url)))
 }
 
-async fn observe_agent_workspace_repair_pr_handoff_effect(
+pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,

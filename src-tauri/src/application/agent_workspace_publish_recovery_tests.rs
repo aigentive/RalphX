@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
     recover_agent_workspace_repair_after_terminal_run,
+    recover_agent_workspace_repair_attempts_for_state,
     recover_stale_agent_workspace_publish_repairs,
     recover_stale_agent_workspace_publish_repairs_for_state,
     recover_stale_agent_workspace_publish_repairs_on_startup,
@@ -189,6 +190,111 @@ async fn startup_recovery_wrappers_finish_on_empty_repositories() {
     )
     .await;
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&AppState::new_test()).await;
+}
+
+#[tokio::test]
+async fn terminal_run_hints_without_an_exact_repair_reservation_are_ignored() {
+    let state = AppState::new_test();
+
+    assert!(!recover_agent_workspace_repair_after_terminal_run(
+        &state,
+        &conversation_id(97),
+        &AgentRunId::from_string("unreserved-terminal-run"),
+    )
+    .await
+    .expect("an unreserved terminal hint is a harmless no-op"));
+}
+
+#[tokio::test]
+async fn startup_recovery_blocks_unprovable_validation_and_manual_continuation() {
+    let state = AppState::new_test();
+
+    for (suffix, phase, continuation, expected_blocker) in [
+        (
+            97,
+            AgentWorkspaceRepairPhase::Validating,
+            AgentWorkspaceRepairContinuation::Publish,
+            "cannot prove the interrupted dispatch or validation result",
+        ),
+        (
+            98,
+            AgentWorkspaceRepairPhase::ContinuationPending,
+            AgentWorkspaceRepairContinuation::Manual,
+            "could not prove a publish runtime",
+        ),
+    ] {
+        let conversation_id = conversation_id(suffix);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(needs_agent_workspace(conversation_id.clone()))
+            .await
+            .expect("seed canonical recovery workspace");
+        let started = state
+            .agent_workspace_repair_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    AgentWorkspaceRepairSource::Publish,
+                    continuation,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "recover an interrupted durable phase".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("start durable recovery attempt");
+        let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+            panic!("first durable repair attempt must start");
+        };
+        let expected_updated_at = attempt.updated_at;
+        attempt.phase = phase;
+        attempt.updated_at += chrono::Duration::microseconds(1);
+        let transitioned = state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: phase,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("persist interrupted recovery phase");
+        assert!(matches!(
+            transitioned,
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+        ));
+
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("reconcile interrupted durable phase"),
+            1
+        );
+        let blocked = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load reconciled repair")
+            .expect("blocked repair remains actionable");
+        assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+        assert!(
+            blocked
+                .blocker
+                .as_deref()
+                .is_some_and(|blocker| blocker.contains(expected_blocker)),
+            "unexpected blocker: {:?}",
+            blocked.blocker
+        );
+    }
 }
 
 #[tokio::test]

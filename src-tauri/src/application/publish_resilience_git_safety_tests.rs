@@ -6,8 +6,11 @@ use super::git_mutation_recovery::{
     GitMutationRecoveryOutcome,
 };
 use super::publish_resilience::{
-    push_agent_workspace_repair_branch, AgentWorkspaceRepairPushOutcome,
-    AgentWorkspaceRepairPushRequest,
+    continue_agent_workspace_repair_publish, observe_agent_workspace_repair_pr_handoff_effect,
+    prepare_agent_workspace_repair_pr_handoff_effect, push_agent_workspace_repair_branch,
+    reconcile_linked_plan_agent_workspace_repair_pr_handoff, repair_pr_handoff_from_observed_push,
+    verify_agent_workspace_repair_pr_handoff, AgentWorkspaceRepairPrHandoff,
+    AgentWorkspaceRepairPushOutcome, AgentWorkspaceRepairPushRequest,
 };
 use super::{AppState, GitService};
 use chrono::{Duration, Utc};
@@ -15,11 +18,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
     AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    ChatConversationId, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project,
+    ArtifactId, ChatConversationId, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchId, Project,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -263,6 +268,422 @@ async fn setup_workspace_push(remote_history: RepairPushRemoteHistory) -> Repair
 
 async fn setup_rewritten_workspace_push() -> RepairPushFixture {
     setup_workspace_push(RepairPushRemoteHistory::Rewritten).await
+}
+
+#[test]
+fn observed_push_handoff_requires_one_exact_base_and_head_receipt() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-handoff-receipt"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    let remote_oid = "a".repeat(40);
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "repair-handoff-receipt",
+        Utc::now(),
+    );
+    effect.intended_head_oid = Some(remote_oid.clone());
+    let observed = AgentWorkspaceRepairPushOutcome::Observed {
+        effect: Box::new(effect.clone()),
+        remote_oid: remote_oid.clone(),
+        reconciled_after_push_error: false,
+    };
+
+    assert!(
+        repair_pr_handoff_from_observed_push(&attempt, &AgentWorkspaceRepairPushOutcome::Busy)
+            .unwrap_err()
+            .contains("observed")
+    );
+    assert!(repair_pr_handoff_from_observed_push(&attempt, &observed)
+        .unwrap_err()
+        .contains("base commit"));
+
+    attempt.target_base_commit = Some("b".repeat(40));
+    attempt.repair_head_commit = Some("c".repeat(40));
+    assert!(repair_pr_handoff_from_observed_push(&attempt, &observed)
+        .unwrap_err()
+        .contains("durable head"));
+
+    attempt.repair_head_commit = Some(remote_oid.clone());
+    let handoff =
+        repair_pr_handoff_from_observed_push(&attempt, &observed).expect("exact receipt handoff");
+    assert_eq!(handoff.target_base_ref, "main");
+    assert_eq!(handoff.target_base_commit, "b".repeat(40));
+    assert_eq!(handoff.expected_head_oid, remote_oid);
+}
+
+#[tokio::test]
+async fn pr_handoff_verification_rejects_ref_remote_and_head_drift() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let workspace_path = Path::new(&fixture.workspace.worktree_path);
+    let base_commit = git(workspace_path, &["rev-parse", "main"]);
+    let handoff = AgentWorkspaceRepairPrHandoff {
+        target_base_ref: "main".to_string(),
+        target_base_commit: base_commit,
+        expected_head_oid: fixture.local_head.clone(),
+    };
+
+    let ref_error = verify_agent_workspace_repair_pr_handoff(
+        workspace_path,
+        &fixture.branch,
+        "release",
+        &handoff,
+    )
+    .await
+    .expect_err("a changed base ref must invalidate the repair receipt");
+    assert!(ref_error.to_string().contains("base ref changed"));
+
+    git(
+        &fixture.remote_path,
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/heads/{}", fixture.branch),
+        ],
+    );
+    let missing_remote =
+        verify_agent_workspace_repair_pr_handoff(workspace_path, &fixture.branch, "main", &handoff)
+            .await
+            .expect_err("a deleted remote branch must invalidate the repair receipt");
+    assert!(missing_remote.to_string().contains("remote ref"));
+
+    git(workspace_path, &["push", "-u", "origin", &fixture.branch]);
+    let mismatched = AgentWorkspaceRepairPrHandoff {
+        expected_head_oid: "f".repeat(40),
+        ..handoff
+    };
+    let head_error = verify_agent_workspace_repair_pr_handoff(
+        workspace_path,
+        &fixture.branch,
+        "main",
+        &mismatched,
+    )
+    .await
+    .expect_err("a changed exact head receipt must fail closed");
+    assert!(head_error.to_string().contains("head no longer matches"));
+}
+
+#[tokio::test]
+async fn repair_publish_continuation_fails_closed_before_git_for_missing_runtime_owners() {
+    let mut invalid_phase = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("invalid-repair-publish-phase"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    let empty_state = AppState::new_test();
+    assert!(
+        continue_agent_workspace_repair_publish(&empty_state, invalid_phase.clone())
+            .await
+            .expect("non-continuation phases are ignored")
+            .is_none()
+    );
+
+    invalid_phase.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    let missing_workspace = continue_agent_workspace_repair_publish(&empty_state, invalid_phase)
+        .await
+        .expect_err("a durable continuation requires its workspace");
+    assert!(missing_workspace.to_string().contains("workspace"));
+
+    let missing_project_fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut missing_project_state = AppState::new_test();
+    missing_project_state.agent_conversation_workspace_repo =
+        missing_project_fixture.memory_repair_repo.clone();
+    missing_project_state.agent_workspace_repair_repo =
+        missing_project_fixture.memory_repair_repo.clone();
+    missing_project_state.branch_update_repo =
+        missing_project_fixture.state.branch_update_repo.clone();
+    let missing_project = continue_agent_workspace_repair_publish(
+        &missing_project_state,
+        missing_project_fixture.attempt.clone(),
+    )
+    .await
+    .expect_err("a durable continuation requires its owning project");
+    assert!(missing_project.to_string().contains("project"));
+
+    let unavailable_fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut unavailable_state = AppState::new_test();
+    unavailable_state
+        .project_repo
+        .create(unavailable_fixture.project.clone())
+        .await
+        .expect("persist repair project");
+    unavailable_state.agent_conversation_workspace_repo =
+        unavailable_fixture.memory_repair_repo.clone();
+    unavailable_state.agent_workspace_repair_repo = unavailable_fixture.memory_repair_repo.clone();
+    unavailable_state.branch_update_repo = unavailable_fixture.state.branch_update_repo.clone();
+    let unavailable = continue_agent_workspace_repair_publish(
+        &unavailable_state,
+        unavailable_fixture.attempt.clone(),
+    )
+    .await
+    .expect_err("a durable continuation requires GitHub");
+    assert!(unavailable.to_string().contains("GitHub integration"));
+    let blocked = unavailable_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&unavailable_fixture.workspace.conversation_id)
+        .await
+        .expect("read blocked repair")
+        .expect("repair remains current");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(
+        blocked
+            .blocker
+            .as_deref()
+            .is_some_and(|blocker| blocker.contains("GitHub integration")),
+        "the runtime-owner failure must become an actionable durable blocker"
+    );
+}
+
+#[tokio::test]
+async fn linked_plan_handoff_reconciliation_requires_the_exact_persisted_pr_projection() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("linked-plan-handoff-reconciliation");
+    let project = Project::new(
+        "Linked plan handoff".to_string(),
+        "/tmp/linked-plan-handoff".to_string(),
+    );
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base".to_string()),
+        "ralphx/linked-plan-handoff".to_string(),
+        "/tmp/linked-plan-handoff".to_string(),
+    );
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id,
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+        "linked-plan-handoff-effect",
+        Utc::now(),
+    );
+
+    assert!(
+        reconcile_linked_plan_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect("ordinary workspaces do not reconcile a plan PR")
+            .is_none()
+    );
+
+    let plan_branch_id = PlanBranchId::from_string("linked-plan-handoff-branch");
+    workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+    let missing_number =
+        reconcile_linked_plan_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect_err("a linked plan effect needs its exact PR number");
+    assert!(missing_number
+        .to_string()
+        .contains("expected pull-request number"));
+
+    effect.expected_pr_number = Some(77);
+    let missing_branch =
+        reconcile_linked_plan_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect_err("a linked plan effect needs its persisted branch");
+    assert!(missing_branch.to_string().contains("linked plan branch"));
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("linked-plan-handoff-artifact"),
+        IdeationSessionId::from_string("linked-plan-handoff-session"),
+        project.id,
+        "ralphx/linked-plan-handoff".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = plan_branch_id;
+    plan_branch.pr_number = Some(78);
+    plan_branch.pr_url = Some("https://github.com/example/repo/pull/78".to_string());
+    state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .expect("persist linked plan branch");
+    let wrong_target =
+        reconcile_linked_plan_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect_err("a different PR cannot satisfy the durable effect");
+    assert!(wrong_target.to_string().contains("no longer matches"));
+
+    plan_branch.pr_number = Some(77);
+    plan_branch.pr_url = Some("https://github.com/example/repo/pull/77".to_string());
+    plan_branch.pr_push_status = PrPushStatus::Failed;
+    state
+        .plan_branch_repo
+        .create_or_update(plan_branch.clone())
+        .await
+        .expect("persist unobserved linked plan projection");
+    assert!(
+        reconcile_linked_plan_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect("an unpushed plan PR remains in flight")
+            .is_none()
+    );
+
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    state
+        .plan_branch_repo
+        .create_or_update(plan_branch.clone())
+        .await
+        .expect("persist pushed linked plan projection");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("persist incomplete workspace projection");
+    assert!(
+        reconcile_linked_plan_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect("the plan and workspace projections must agree")
+            .is_none()
+    );
+
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("persist observed workspace projection");
+    assert_eq!(
+        reconcile_linked_plan_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect("the exact durable PR projection is observable"),
+        Some((
+            77,
+            Some("https://github.com/example/repo/pull/77".to_string())
+        ))
+    );
+}
+
+#[tokio::test]
+async fn pr_handoff_effect_is_created_and_observed_once_for_the_current_generation() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut continuing = fixture.attempt.clone();
+    continuing.phase = AgentWorkspaceRepairPhase::Continuing;
+    continuing.updated_at += Duration::microseconds(1);
+    let continuing = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: continuing,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at: fixture.attempt.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("enter the PR handoff phase")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected current PR handoff attempt, got {outcome:?}"),
+    };
+
+    let effect = prepare_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        &fixture.workspace,
+        None,
+    )
+    .await
+    .expect("create the durable PR handoff effect");
+    assert_eq!(effect.kind, AgentWorkspaceRepairEffectKind::CreatePr);
+    assert_eq!(effect.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    assert_eq!(effect.intended_head_oid, continuing.repair_head_commit);
+
+    let replayed = prepare_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        &fixture.workspace,
+        None,
+    )
+    .await
+    .expect("reuse the exact open PR handoff effect");
+    assert_eq!(replayed.id, effect.id);
+
+    let observed = observe_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        effect,
+        91,
+        Some("https://github.com/example/repo/pull/91"),
+    )
+    .await
+    .expect("record the exact PR monitoring receipt");
+    assert_eq!(observed.status, AgentWorkspaceRepairEffectStatus::Observed);
+    assert_eq!(observed.expected_pr_number, Some(91));
+    assert!(observed
+        .receipt_json
+        .as_deref()
+        .is_some_and(|receipt| receipt.contains("\"monitoring_handoff\":true")));
+
+    let duplicate = observe_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        observed.clone(),
+        92,
+        None,
+    )
+    .await
+    .expect("an observed receipt is idempotent");
+    assert_eq!(duplicate, observed);
+
+    let mut state = AppState::new_test();
+    state.agent_conversation_workspace_repo = fixture.memory_repair_repo.clone();
+    state.agent_workspace_repair_repo = fixture.memory_repair_repo.clone();
+    state.branch_update_repo = fixture.state.branch_update_repo.clone();
+    assert_eq!(
+        continue_agent_workspace_repair_publish(&state, continuing.clone())
+            .await
+            .expect("the durable PR receipt settles without replaying Git or GitHub"),
+        Some(AgentWorkspaceRepairPushOutcome::PrHandoffObserved)
+    );
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&continuing.conversation_id)
+        .await
+        .expect("read settled repair")
+        .is_none());
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(
+            &GitService::canonical_target_identity(
+                Path::new(&fixture.workspace.worktree_path),
+                &fixture.branch,
+            )
+            .await
+            .expect("resolve the settled repair target"),
+        )
+        .await
+        .expect("load the settled repair lease")
+        .expect("repair lease remains auditable");
+    assert!(lease.is_released());
 }
 
 async fn state_with_in_flight_repair_push(
