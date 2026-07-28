@@ -245,6 +245,21 @@ export class ConnectionSupervisor {
   }
 
   /**
+   * The host WITHDREW this device's session rather than losing our place in it —
+   * `reset(revoked)` / `reset(host_disabled)` (§3.2, stream-frames' authority reasons).
+   *
+   * This is deliberately NOT `streamLost`: redialling a host that has already refused
+   * this device spins the retry ladder forever and burns a ws-ticket per cycle, while
+   * the user never sees the actionable re-pair state (P-10). It parks in `blocked` with
+   * a populated reason, exactly like a 401 from the attempt itself.
+   */
+  authorityWithdrawn(message: string): void {
+    this.blockedReason = { failure: "unauthorized", message };
+    this.deps.onBlocked?.("unauthorized", message);
+    this.dispatch("connect_failed_unauthorized");
+  }
+
+  /**
    * Called for every frame the relay delivers. Resets the frame-silence watchdog:
    * >50 s of total silence means the host is gone (P-9), which the host's own 20 s
    * heartbeat makes a 2.5-beat budget.

@@ -30,6 +30,8 @@ const { supervisors } = vi.hoisted(() => ({
     stops: number;
     visibility: boolean[];
     networks: boolean[];
+    streamLosses: number;
+    authorityWithdrawals: string[];
   }>,
 }));
 
@@ -45,6 +47,8 @@ vi.mock("./supervisor", async (importOriginal) => {
         stops: 0,
         visibility: [],
         networks: [],
+        streamLosses: 0,
+        authorityWithdrawals: [],
       };
       supervisors.push(this.record);
     }
@@ -55,7 +59,12 @@ vi.mock("./supervisor", async (importOriginal) => {
     stop(): void {
       this.record.stops += 1;
     }
-    streamLost(): void {}
+    streamLost(): void {
+      this.record.streamLosses += 1;
+    }
+    authorityWithdrawn(message: string): void {
+      this.record.authorityWithdrawals.push(message);
+    }
     noteFrameActivity(): void {}
     visibilityChanged(hidden: boolean): void {
       this.record.visibility.push(hidden);
@@ -188,6 +197,44 @@ describe("environment runtime composition", () => {
 
     expect((bus as EventBus & RemoteStreamTarget).environmentId()).toBe("env-b");
     expect(supervisors[0]?.starts).toBeGreaterThan(1);
+  });
+
+  it.each(["revoked", "host_disabled"] as const)(
+    "routes reset(%s) to the block path, never to the retry ladder",
+    async (reason) => {
+      const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+      useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+      setFlag(true);
+      teardown = initializeEnvironmentRuntime();
+      useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+      const runtime = supervisors[supervisors.length - 1];
+      const bus = createEventBus("env-b") as EventBus & {
+        handleFrame: (frame: { type: "reset"; reason: string }) => void;
+      };
+
+      bus.handleFrame({ type: "reset", reason });
+
+      expect(runtime?.authorityWithdrawals).toHaveLength(1);
+      expect(runtime?.authorityWithdrawals[0]).toContain(reason);
+      expect(runtime?.streamLosses).toBe(0);
+    }
+  );
+
+  it("routes a non-authority reset to the ordinary retry ladder", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const runtime = supervisors[supervisors.length - 1];
+    const bus = createEventBus("env-b") as EventBus & {
+      handleFrame: (frame: { type: "reset"; reason: string }) => void;
+    };
+
+    bus.handleFrame({ type: "reset", reason: "cursor_pruned" });
+
+    expect(runtime?.streamLosses).toBe(1);
+    expect(runtime?.authorityWithdrawals).toEqual([]);
   });
 
   it("fails the hydration barrier when the snapshot refetch rejects", async () => {

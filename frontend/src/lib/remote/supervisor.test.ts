@@ -452,6 +452,26 @@ describe("P-10: version skew parks in blocked with zero retries", () => {
   });
 });
 
+describe("authority withdrawal parks instead of redialling", () => {
+  it("blocks with a populated reason and burns no ws-tickets", async () => {
+    const r = rig();
+    await connect(r);
+    r.spies.openStream.mockClear();
+
+    r.supervisor.authorityWithdrawn("The host ended this device's session (revoked).");
+
+    expect(r.supervisor.currentState()).toBe("blocked");
+    expect(r.supervisor.blocked()?.failure).toBe("unauthorized");
+    expect(r.supervisor.blocked()?.message).toContain("revoked");
+    expect(r.spies.onBlocked).toHaveBeenCalledWith("unauthorized", expect.any(String));
+    expect(r.supervisor.armedTimers()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(r.spies.openStream).not.toHaveBeenCalled();
+    expect(r.supervisor.presentation()).toBe("error");
+  });
+});
+
 // ===========================================================================
 // P-9 — dead-host detection
 // ===========================================================================

@@ -26,6 +26,7 @@ import { NetworkEventBus } from "./network-event-bus";
 import { networkFetch } from "./network-fetch";
 import { attachRemoteStreamRelay, type RemoteStreamTarget } from "./stream-relay";
 import {
+  isAuthorityResetReason,
   type RemoteClientFrame,
   type RemoteConnectOutcome,
   type RemoteServerFrame,
@@ -206,7 +207,18 @@ export function initializeEnvironmentRuntime(): () => void {
       sweep: () => {
         void getQueryClient(environmentId).invalidateQueries();
       },
-      onRestartRequired: () => runtime.supervisor.streamLost(),
+      onRestartRequired: (cause) => {
+        // `revoked` / `host_disabled` are the host WITHDRAWING the session. Routing
+        // them to `streamLost` would redial the 16 s ladder forever against a host
+        // that already refused this device, instead of showing the re-pair state.
+        if (cause.kind === "reset" && isAuthorityResetReason(cause.reason)) {
+          runtime.supervisor.authorityWithdrawn(
+            `The host ended this device's session (${cause.reason}). Re-pair this environment to reconnect.`
+          );
+          return;
+        }
+        runtime.supervisor.streamLost();
+      },
     });
     runtime.bus = bus;
     runtime.detachRelay = attachRemoteStreamRelay({
