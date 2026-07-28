@@ -3,6 +3,9 @@
 
 pub mod activity_commands;
 pub mod agent_composer_commands;
+pub mod agent_conversation_mute_commands;
+#[cfg(test)]
+mod agent_conversation_mute_commands_tests;
 pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
@@ -123,6 +126,9 @@ pub use agent_composer_commands::{
     ListAgentComposerSkillsResponse, SearchAgentComposerEntriesInput,
     SearchAgentComposerEntriesResponse, SearchAgentComposerPlanReferencesInput,
     SearchAgentComposerPlanReferencesResponse,
+};
+pub use agent_conversation_mute_commands::{
+    set_agent_conversation_muted, SetAgentConversationMutedInput,
 };
 pub use agent_issue_report_commands::{build_agent_issue_report, submit_agent_issue_report};
 pub use agent_model_commands::{

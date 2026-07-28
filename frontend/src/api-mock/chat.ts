@@ -21,6 +21,7 @@ import type {
   ArchiveConversationResult,
   AgentSidebarConversationGroupsResponse,
   AgentSidebarConversationsInput,
+  AgentSidebarAttentionLane,
   AgentSidebarPublicationState,
   AgentSidebarSort,
   AgentConversationRuntimeStatus,
@@ -50,6 +51,7 @@ import {
 // ============================================================================
 
 const mockConversations: Map<string, ChatConversation> = new Map();
+const mockMutedConversations: Set<string> = new Set();
 const mockMessages: Map<string, ChatMessageResponse[]> = new Map();
 const mockQueuedMessages: Map<string, QueuedMessageResponse[]> = new Map();
 const mockWorkspaces: Map<string, AgentConversationWorkspace> = new Map();
@@ -121,6 +123,7 @@ export interface MockChatController {
 
 export function resetMockChatState(): void {
   mockConversations.clear();
+  mockMutedConversations.clear();
   mockMessages.clear();
   mockQueuedMessages.clear();
   mockWorkspaces.clear();
@@ -300,6 +303,28 @@ const MOCK_PUBLICATION_STATES: AgentSidebarPublicationState[] = [
   "uncommitted",
   "unpushed",
 ];
+const MOCK_INBOX_LANES: AgentSidebarAttentionLane[] = [
+  "needs",
+  "working",
+  "stale",
+  "done",
+];
+const MOCK_INBOX_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const MOCK_INBOX_WORKING_SUPERVISION_STATUSES = new Set([
+  "fixing",
+  "publishing",
+  "waiting",
+  "waiting_for_checks",
+  "monitoring",
+]);
+const MOCK_INBOX_FIXING_SUPERVISION_STATUSES = new Set([
+  "fixing",
+  "publishing",
+]);
+const MOCK_INBOX_WAITING_SUPERVISION_STATUSES = new Set([
+  "waiting",
+  "waiting_for_checks",
+]);
 
 export async function mockListAgentSidebarConversations(
   input: AgentSidebarConversationsInput
@@ -334,6 +359,12 @@ export async function mockListAgentSidebarConversations(
         .map((conversation) => {
           const workspace = mockWorkspaces.get(conversation.id) ?? null;
           const publicationState = getMockPublicationState(workspace);
+          const attentionLane = getMockInboxAttentionLane(
+            conversation,
+            workspace,
+            publicationState
+          );
+          const isMuted = mockMutedConversations.has(conversation.id);
           return {
             conversation,
             workspace,
@@ -347,6 +378,10 @@ export async function mockListAgentSidebarConversations(
                 : workspace?.baseRef || "master",
             publicationState,
             publicationLabel: getMockPublicationLabel(workspace, publicationState),
+            attentionLane:
+              isMuted && attentionLane === "needs" ? "stale" : attentionLane,
+            actionVerb: getMockInboxActionVerb(workspace, publicationState),
+            isMuted,
           };
         })
         .filter((row) => publicationStates.includes(row.publicationState))
@@ -373,6 +408,20 @@ export async function mockListAgentSidebarConversations(
           getMockPublicationGroupLabel(state),
           rows.filter((row) => row.publicationState === state),
           offsets[state] ?? 0,
+          limit
+        )
+      ),
+    };
+  }
+
+  if (groupBy === "inbox") {
+    return {
+      groups: MOCK_INBOX_LANES.map((lane) =>
+        buildMockSidebarGroup(
+          lane,
+          getMockInboxGroupLabel(lane),
+          rows.filter((row) => row.attentionLane === lane),
+          offsets[lane] ?? 0,
           limit
         )
       ),
@@ -473,6 +522,81 @@ function getMockPublicationLabel(
     }
   }
   return state === "active" ? null : getMockPublicationGroupLabel(state).toLowerCase();
+}
+
+function getMockInboxAttentionLane(
+  conversation: ChatConversation,
+  workspace: AgentConversationWorkspace | null,
+  publicationState: AgentSidebarPublicationState
+): AgentSidebarAttentionLane {
+  if (
+    conversation.archivedAt ||
+    publicationState === "merged" ||
+    publicationState === "closed"
+  ) {
+    return "done";
+  }
+
+  const supervisionStatus = workspace?.prSupervisionStatus?.trim().toLowerCase();
+  if (
+    supervisionStatus &&
+    MOCK_INBOX_WORKING_SUPERVISION_STATUSES.has(supervisionStatus)
+  ) {
+    return "working";
+  }
+
+  const lastActivityAt = conversation.lastMessageAt ?? conversation.updatedAt;
+  if (Date.now() - new Date(lastActivityAt).getTime() > MOCK_INBOX_STALE_AFTER_MS) {
+    return "stale";
+  }
+
+  return "needs";
+}
+
+function getMockInboxGroupLabel(lane: AgentSidebarAttentionLane): string {
+  switch (lane) {
+    case "needs":
+      return "Needs you";
+    case "working":
+      return "Working";
+    case "stale":
+      return "Stale";
+    case "done":
+      return "Done";
+  }
+}
+
+function getMockInboxActionVerb(
+  workspace: AgentConversationWorkspace | null,
+  publicationState: AgentSidebarPublicationState
+): string {
+  const supervisionStatus = workspace?.prSupervisionStatus?.trim().toLowerCase();
+
+  if (publicationState === "merged") return "Merged";
+  if (publicationState === "closed") return "Closed";
+  if (
+    supervisionStatus &&
+    MOCK_INBOX_FIXING_SUPERVISION_STATUSES.has(supervisionStatus)
+  ) {
+    return "Fixing";
+  }
+  if (
+    supervisionStatus &&
+    MOCK_INBOX_WAITING_SUPERVISION_STATUSES.has(supervisionStatus)
+  ) {
+    return "Waiting for checks";
+  }
+  if (supervisionStatus === "monitoring" && workspace?.prAutoMergeCurrent === true) {
+    return "Auto-merging";
+  }
+  if (supervisionStatus === "blocked") return "Unblock";
+  if (publicationState === "uncommitted") return "Commit changes";
+  if (publicationState === "unpushed") return "Push changes";
+  if (publicationState === "draft") return "Publish";
+  if (publicationState === "active" && workspace?.publicationPrNumber != null) {
+    return "Review";
+  }
+  return "Continue";
 }
 
 function getMockPublicationGroupLabel(state: AgentSidebarPublicationState): string {
@@ -780,6 +904,21 @@ export async function mockRestoreConversation(
   };
   mockConversations.set(conversationId, updated);
   return cloneConversation(updated);
+}
+
+export async function mockSetAgentConversationMuted(
+  conversationId: string,
+  muted: boolean,
+): Promise<void> {
+  if (!mockConversations.has(conversationId)) {
+    throw new Error(`Conversation ${conversationId} not found`);
+  }
+
+  if (muted) {
+    mockMutedConversations.add(conversationId);
+  } else {
+    mockMutedConversations.delete(conversationId);
+  }
 }
 
 function cloneChildSessionStatus(
@@ -1244,6 +1383,7 @@ export const mockChatApi = {
   updateConversationTitle: mockUpdateConversationTitle,
   archiveConversation: mockArchiveConversation,
   restoreConversation: mockRestoreConversation,
+  setAgentConversationMuted: mockSetAgentConversationMuted,
   getChildSessionStatus: mockGetChildSessionStatus,
   getAgentRunStatus: mockGetAgentRunStatus,
   getAgentConversationWorkspace: mockGetAgentConversationWorkspace,

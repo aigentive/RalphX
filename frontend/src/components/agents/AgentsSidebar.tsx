@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Archive,
+  Bell,
+  BellOff,
   ArrowDownUp,
   Check,
   CircleOff,
@@ -33,8 +35,10 @@ import {
   X,
 } from "lucide-react";
 import {
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -88,6 +92,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chatStore";
 import type {
+  AgentSidebarAttentionLane,
   AgentConversationWorkspace,
   AgentSidebarConversationRow,
 } from "@/api/chat";
@@ -112,8 +117,16 @@ import {
   PUBLICATION_STATE_OPTIONS,
 } from "./agentSidebarMetadata";
 import {
+  AGENT_SIDEBAR_INBOX_LANES,
+  getAgeEscalation,
+  shouldEscalateAge,
+  summarizeInboxLaneCounts,
+  type AgeEscalation,
+} from "./agentSidebarInboxLanes";
+import {
   useAgentSidebarAutomationGroup,
   useAgentSidebarAutomationGroupIndex,
+  useAgentSidebarInboxGroup,
   useAgentSidebarProjectGroup,
   useAgentSidebarPublicationGroup,
   useProjectGroupLatestOrder,
@@ -165,6 +178,10 @@ type ArchiveConversationHandler = (
   conversation: AgentConversation,
   options: AgentConversationArchiveOptions
 ) => void;
+
+const AgentConversationMuteContext = createContext<
+  (conversation: AgentConversation, muted: boolean) => void | Promise<void>
+>(() => undefined);
 
 interface AgentSidebarSessionScrollMemory {
   rowCount?: number;
@@ -259,6 +276,20 @@ const PROJECT_SORT_LABELS: Record<AgentProjectSort, string> = {
   latest: "Latest",
   az: "A-Z",
   za: "Z-A",
+};
+
+const SIDEBAR_GROUP_LABELS: Record<AgentSidebarGroupBy, string> = {
+  inbox: "Inbox",
+  project: "Project",
+  publication: "Publication state",
+  automation: "Automations",
+};
+
+const SIDEBAR_GROUP_SORT_TARGETS: Record<AgentSidebarGroupBy, string> = {
+  inbox: "threads",
+  project: "projects",
+  publication: "conversations",
+  automation: "automations",
 };
 
 function afterSidebarControlPaint(callback: () => void) {
@@ -817,6 +848,8 @@ interface AgentsSidebarProps {
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: ArchiveConversationHandler;
   onBulkArchiveConversations: BulkArchiveConversationHandler;
+  onBulkMuteConversations: (conversationIds: string[]) => void | Promise<void>;
+  onSetConversationMuted: (conversation: AgentConversation, muted: boolean) => void | Promise<void>;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   showArchived: boolean;
@@ -839,6 +872,8 @@ export function AgentsSidebar({
   onRenameConversation,
   onArchiveConversation,
   onBulkArchiveConversations,
+  onBulkMuteConversations,
+  onSetConversationMuted,
   onRestoreConversation,
   onForkConversation,
   showArchived,
@@ -849,6 +884,19 @@ export function AgentsSidebar({
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [inboxLaneCounts, setInboxLaneCounts] = useState<
+    Record<AgentSidebarAttentionLane, number>
+  >({ needs: 0, working: 0, stale: 0, done: 0 });
+  // Stable identity: every lane keeps this in an effect dependency list, so an
+  // inline callback would re-run all four lane effects on each parent render.
+  const handleInboxLaneCountChange = useCallback(
+    (lane: AgentSidebarAttentionLane, total: number) => {
+      setInboxLaneCounts((current) =>
+        current[lane] === total ? current : { ...current, [lane]: total }
+      );
+    },
+    []
+  );
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const bulkArchive = useBulkConversationArchiveController(
     onBulkArchiveConversations
@@ -1071,6 +1119,9 @@ export function AgentsSidebar({
   }, [cancelBulkArchive, showArchived]);
 
   return (
+    <AgentConversationMuteContext.Provider value={(conversation, muted) =>
+      onSetConversationMuted(conversation, muted)
+    }>
     <BulkArchiveSelectionContext.Provider value={bulkArchive.contextValue}>
     <aside
       className="w-full h-full flex flex-col border-r overflow-hidden"
@@ -1226,6 +1277,7 @@ export function AgentsSidebar({
           onCloseConfirmation={bulkArchive.closeConfirmation}
           onConfirm={bulkArchive.confirm}
           onOpenConfirmation={bulkArchive.openConfirmation}
+          onMute={() => void onBulkMuteConversations(Array.from(bulkArchive.contextValue.selectedIds))}
           pending={bulkArchive.pending}
           selectedCount={bulkArchive.selectedCount}
         />
@@ -1265,6 +1317,28 @@ export function AgentsSidebar({
             selectedConversationId={selectedConversationId}
             searchQuery={normalizedSearch}
             selectedPublicationStates={selectedPublicationStates}
+            onArchiveConversation={onArchiveConversation}
+            onAutoRenameConversation={onAutoRenameConversation}
+            onRenameConversation={onRenameConversation}
+            onRestoreConversation={onRestoreConversation}
+            onForkConversation={handleForkConversation}
+            onSelectConversation={handleSelectVisibleConversation}
+            onTogglePinnedConversation={togglePinnedConversation}
+            showArchived={showArchived}
+          />
+        ) : sidebarGroupBy === "inbox" ? (
+          <InboxLaneGroups
+            projects={orderedProjects}
+            isSidebarVisible={isVisible}
+            pinnedConversationIdList={pinnedConversationIdList}
+            priorityConversationIds={selectedPriorityConversationIds}
+            pinnedConversationIds={pinnedConversationIds}
+            rowSort={projectSort}
+            selectedConversationId={selectedConversationId}
+            searchQuery={normalizedSearch}
+            selectedPublicationStates={selectedPublicationStates}
+            showEmptyProjectGroups={showEmptyProjectGroups}
+            onLaneCountChange={handleInboxLaneCountChange}
             onArchiveConversation={onArchiveConversation}
             onAutoRenameConversation={onAutoRenameConversation}
             onRenameConversation={onRenameConversation}
@@ -1359,6 +1433,15 @@ export function AgentsSidebar({
           borderTopWidth: "1px",
         }}
       >
+        {sidebarGroupBy === "inbox" && (
+          <div
+            className="mb-2 text-center text-[0.7188rem]"
+            data-testid="agents-inbox-footer"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {summarizeInboxLaneCounts(inboxLaneCounts).footerLabel}
+          </div>
+        )}
         <button
           type="button"
           onClick={onCreateProject}
@@ -1372,6 +1455,7 @@ export function AgentsSidebar({
       <ConfirmationDialog {...confirmationDialogProps} />
     </aside>
     </BulkArchiveSelectionContext.Provider>
+    </AgentConversationMuteContext.Provider>
   );
 }
 
@@ -1422,12 +1506,7 @@ function AgentsSidebarToolbar({
   onShowArchivedChange,
   onEnterBulkArchive,
 }: AgentsSidebarToolbarProps) {
-  const sortTarget =
-    sidebarGroupBy === "project"
-      ? "projects"
-      : sidebarGroupBy === "automation"
-        ? "automations"
-        : "conversations";
+  const sortTarget = SIDEBAR_GROUP_SORT_TARGETS[sidebarGroupBy];
   const ensureScopedProjectSelection = () => {
     if (selectedProjectFilterSet.size > 0) {
       return;
@@ -1490,13 +1569,7 @@ function AgentsSidebarToolbar({
           <button
             type="button"
             data-testid="agents-group-trigger"
-            aria-label={`Group conversations: ${
-              sidebarGroupBy === "project"
-                ? "Project"
-                : sidebarGroupBy === "automation"
-                  ? "Automations"
-                  : "Publication state"
-            }`}
+            aria-label={`Group conversations: ${SIDEBAR_GROUP_LABELS[sidebarGroupBy]}`}
             className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent bg-transparent px-2 text-[0.7188rem] font-medium text-[var(--text-muted)] transition-colors duration-[120ms] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
           >
             <span>Group</span>
@@ -1520,6 +1593,7 @@ function AgentsSidebarToolbar({
             <div className="grid gap-1" role="radiogroup" aria-label="Group by">
               {(
                 [
+                  ["inbox", "Inbox"],
                   ["project", "Project"],
                   ["publication", "Publication state"],
                   ["automation", "Automations"],
@@ -1838,6 +1912,7 @@ interface AgentSidebarConversationRowsPanelProps {
   selectedConversationId: string | null;
   showProjectNameInMeta: boolean;
   testId: string;
+  inboxLane?: AgentSidebarAttentionLane;
   onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
@@ -1861,6 +1936,7 @@ function AgentSidebarConversationRowsPanel({
   selectedConversationId,
   showProjectNameInMeta,
   testId,
+  inboxLane,
   onArchiveConversation,
   onAutoRenameConversation,
   onRenameConversation,
@@ -1977,6 +2053,20 @@ function AgentSidebarConversationRowsPanel({
         publicationLabel
       );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
+      const calculatedAgeEscalation = inboxLane
+        ? getAgeEscalation(
+            conversation.lastMessageAt ?? conversation.updatedAt,
+            new Date()
+          )
+        : undefined;
+      const ageEscalation = calculatedAgeEscalation
+        ? {
+            ...calculatedAgeEscalation,
+            tone: shouldEscalateAge(row.attentionLane)
+              ? calculatedAgeEscalation.tone
+              : "normal" as const,
+          }
+        : undefined;
 
       return (
         <MemoizedAgentSessionRow
@@ -1988,8 +2078,11 @@ function AgentSidebarConversationRowsPanel({
           refLabel={row.refLabel}
           publicationState={row.publicationState}
           publicationLabel={publicationLabel}
+          {...(inboxLane && row.actionVerb ? { actionVerb: row.actionVerb } : {})}
+          {...(inboxLane && ageEscalation ? { ageEscalation } : {})}
           isSelected={isSelected}
           isPinned={isPinned}
+          isMuted={row.isMuted}
           runtimeState={runtimeState}
           runtimeLabel={runtimeLabel}
           showRuntimeState={showRuntimeState}
@@ -2020,6 +2113,7 @@ function AgentSidebarConversationRowsPanel({
       activeConversationIds,
       agentActivityLabels,
       agentStatuses,
+      inboxLane,
       onForkConversation,
       onRestoreConversation,
       onSelectConversation,
@@ -2391,6 +2485,186 @@ function PublicationStateGroup({
   );
 }
 
+interface InboxLaneGroupsProps extends PublicationStateGroupsProps {
+  showEmptyProjectGroups: boolean;
+  onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
+}
+
+function InboxLaneGroups({
+  showEmptyProjectGroups,
+  onLaneCountChange,
+  ...props
+}: InboxLaneGroupsProps) {
+  return (
+    <>
+      {AGENT_SIDEBAR_INBOX_LANES.map(({ lane, label, emptyLabel }) => (
+        <InboxLaneGroup
+          key={lane}
+          lane={lane}
+          label={label}
+          emptyLabel={emptyLabel}
+          showEmptyProjectGroups={showEmptyProjectGroups}
+          onLaneCountChange={onLaneCountChange}
+          {...props}
+        />
+      ))}
+    </>
+  );
+}
+
+interface InboxLaneGroupProps extends PublicationStateGroupsProps {
+  lane: AgentSidebarAttentionLane;
+  label: string;
+  emptyLabel: string;
+  showEmptyProjectGroups: boolean;
+  onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
+}
+
+function InboxLaneGroup({
+  lane,
+  label,
+  emptyLabel,
+  showEmptyProjectGroups,
+  onLaneCountChange,
+  projects,
+  isSidebarVisible,
+  pinnedConversationIdList,
+  priorityConversationIds,
+  pinnedConversationIds,
+  rowSort,
+  selectedConversationId,
+  searchQuery,
+  selectedPublicationStates,
+  onArchiveConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onSelectConversation,
+  onTogglePinnedConversation,
+  showArchived,
+}: InboxLaneGroupProps) {
+  const collapsedLanes = useAgentSessionStore((s) => s.sidebarInboxCollapsedLanes);
+  const toggleSidebarInboxLane = useAgentSessionStore((s) => s.toggleSidebarInboxLane);
+  const [collapsed, setCollapsed] = useState(() => collapsedLanes.includes(lane));
+  const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects]
+  );
+  const inboxScrollKey = useMemo(
+    () =>
+      [
+        "inbox",
+        lane,
+        showArchived ? "archived" : "active",
+        searchQuery,
+        rowSort,
+        selectedPublicationStates.join(","),
+        projectIds.join(","),
+        pinnedConversationIdList.join(","),
+      ].join("::"),
+    [
+      lane,
+      pinnedConversationIdList,
+      projectIds,
+      rowSort,
+      searchQuery,
+      selectedPublicationStates,
+      showArchived,
+    ]
+  );
+  const rememberedInboxRowCount = useRememberedAgentSidebarSessionRowCount(inboxScrollKey);
+  const groupQuery = useAgentSidebarInboxGroup({
+    lane,
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+    minimumRowCount: rememberedInboxRowCount,
+  });
+  const totalConversationCount = groupQuery.group.total;
+  const expanded = searchQuery.length > 0 || !collapsed;
+
+  useEffect(() => {
+    setCollapsed(collapsedLanes.includes(lane));
+  }, [collapsedLanes, lane]);
+
+  useEffect(() => {
+    onLaneCountChange(lane, totalConversationCount);
+  }, [lane, onLaneCountChange, totalConversationCount]);
+
+  if (totalConversationCount === 0 && !showEmptyProjectGroups) {
+    return null;
+  }
+
+  return (
+    <div
+      className="my-1 flex flex-col gap-0.5"
+      data-testid={`agents-inbox-lane-${lane}`}
+    >
+      <div className="group/publication-row relative">
+        <button
+          type="button"
+          className="agents-project-row grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          data-testid={`agents-inbox-lane-row-${lane}`}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} inbox lane ${label}`}
+          onClick={() => {
+            setCollapsed((current) => !current);
+            afterSidebarControlPaint(() => toggleSidebarInboxLane(lane));
+          }}
+        >
+          <span className="agents-project-chevron grid h-3 w-3 place-items-center rounded" aria-hidden="true">
+            <ChevronRight
+              className={`h-2.5 w-2.5 transition-transform duration-[120ms] ${expanded ? "rotate-90" : ""}`}
+              strokeWidth={2}
+            />
+          </span>
+          <span className="h-3.5 w-3.5" aria-hidden="true" />
+          <span className="min-w-0 truncate">{label}</span>
+          <span className="agents-project-count agents-publication-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6]">
+            {totalConversationCount}
+          </span>
+        </button>
+      </div>
+
+      {expanded && totalConversationCount === 0 ? (
+        <div className="px-2 py-1 text-xs" style={{ color: "var(--text-muted)" }}>
+          {lane === "needs" && searchQuery.length === 0 ? "Nothing waiting on you" : emptyLabel}
+        </div>
+      ) : expanded ? (
+        <AgentSidebarConversationRowsPanel
+          rows={groupQuery.group.rows}
+          fetchNextPage={groupQuery.fetchNextPage}
+          hasNextPage={Boolean(groupQuery.hasNextPage)}
+          isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
+          isLoading={Boolean(groupQuery.isLoading)}
+          expanded={expanded}
+          isSidebarVisible={isSidebarVisible}
+          projectById={projectById}
+          pinnedConversationIds={pinnedConversationIds}
+          scrollKey={inboxScrollKey}
+          selectedConversationId={selectedConversationId}
+          showProjectNameInMeta
+          testId={`agents-sidebar-session-list-inbox-${lane}`}
+          inboxLane={lane}
+          onArchiveConversation={onArchiveConversation}
+          onAutoRenameConversation={onAutoRenameConversation}
+          onRenameConversation={onRenameConversation}
+          onRestoreConversation={onRestoreConversation}
+          onForkConversation={onForkConversation}
+          onSelectConversation={onSelectConversation}
+          onTogglePinnedConversation={onTogglePinnedConversation}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 interface AutomationGroupsProps {
   projects: Project[];
   isSidebarVisible: boolean;
@@ -2728,8 +3002,11 @@ interface AgentSessionRowProps {
   refLabel: string;
   publicationState: AgentSidebarPublicationState;
   publicationLabel: string | null;
+  actionVerb?: string;
+  ageEscalation?: AgeEscalation;
   isSelected: boolean;
   isPinned: boolean;
+  isMuted: boolean;
   runtimeState: SessionRuntimeState;
   runtimeLabel: string | null;
   showRuntimeState: boolean;
@@ -2753,8 +3030,11 @@ function AgentSessionRow({
   refLabel,
   publicationState,
   publicationLabel,
+  actionVerb,
+  ageEscalation,
   isSelected,
   isPinned,
+  isMuted,
   runtimeState,
   runtimeLabel,
   showRuntimeState,
@@ -2769,6 +3049,7 @@ function AgentSessionRow({
   onActionsOpenChange,
 }: AgentSessionRowProps) {
   const bulkArchiveSelection = useBulkArchiveSelection();
+  const setConversationMuted = useContext(AgentConversationMuteContext);
   const title = conversation.title || "Untitled agent";
   const modeMeta =
     conversation.agentMode === "persona_builder"
@@ -2808,6 +3089,14 @@ function AgentSessionRow({
               fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
             }}
           >
+            {actionVerb && (
+              <>
+                <span className="shrink-0 font-medium">{actionVerb}</span>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
+              </>
+            )}
             {showProjectNameInMeta && projectName && (
               <>
                 <span className="max-w-24 shrink-0 truncate">{projectName}</span>
@@ -2883,19 +3172,40 @@ function AgentSessionRow({
             )}
           </span>
         </span>
-        <span
-          className={`agents-session-status-slot grid h-4 w-4 place-items-center justify-self-end transition-opacity duration-150 ${
+        <span className="flex items-center gap-1.5 justify-self-end">
+          {ageEscalation?.label && (
+            <span
+              className="shrink-0 text-[0.6875rem] leading-none"
+              data-testid={`agents-session-age-${conversation.id}`}
+              style={{
+                // --accent-primary is reserved for live/running state, so age
+                // escalation uses the status scale instead of the brand accent.
+                color:
+                  ageEscalation.tone === "alert"
+                    ? "var(--status-error)"
+                    : ageEscalation.tone === "warn"
+                      ? "var(--status-warning)"
+                      : "var(--text-muted)",
+              }}
+            >
+              {ageEscalation.label}
+            </span>
+          )}
+          <span
+            className={`agents-session-status-slot grid h-4 w-4 place-items-center transition-opacity duration-150 ${
             sessionActionsOpen
               ? "opacity-0"
               : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
-          }`}
-        >
-          <SessionStatusIcon
-            isPinned={isPinned}
-            state={runtimeState}
-            conversationId={conversation.id}
-            selected={isSelected}
-          />
+            }`}
+          >
+            <SessionStatusIcon
+              isPinned={isPinned}
+              isMuted={isMuted}
+              state={runtimeState}
+              conversationId={conversation.id}
+              selected={isSelected}
+            />
+          </span>
         </span>
       </button>
       <DropdownMenu modal={false} onOpenChange={onActionsOpenChange}>
@@ -2935,15 +3245,45 @@ function AgentSessionRow({
             Fork session
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          {/* Mute and Archive answer the same question — "clear this off my
+              list" — so they share the trailing section as two intensities of
+              one intent, each stating what it costs. Only Archive is toned, and
+              only on its icon: mute reads as the neutral default because it is
+              the one of the two that is not marked. */}
+          {!conversation.archivedAt && (
+            <DropdownMenuItem
+              className="items-start gap-2 text-xs"
+              onClick={() => void setConversationMuted(conversation, !isMuted)}
+            >
+              {isMuted ? (
+                <Bell className="mt-0.5 h-3.5 w-3.5" />
+              ) : (
+                <BellOff className="mt-0.5 h-3.5 w-3.5" />
+              )}
+              <span className="flex flex-col">
+                <span>{isMuted ? "Unmute session" : "Mute until it changes"}</span>
+                <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
+                  {isMuted
+                    ? "Returns it to its normal lane."
+                    : "Drops to Stale. Comes back on its next change."}
+                </span>
+              </span>
+            </DropdownMenuItem>
+          )}
           {conversation.archivedAt ? (
             <DropdownMenuItem className="gap-2 text-xs" onClick={onRestore}>
               <RotateCcw className="w-3.5 h-3.5" />
               Restore session
             </DropdownMenuItem>
           ) : (
-            <DropdownMenuItem className="gap-2 text-xs" onClick={onArchiveRequest}>
-              <Archive className="w-3.5 h-3.5" />
-              Archive session
+            <DropdownMenuItem className="items-start gap-2 text-xs" onClick={onArchiveRequest}>
+              <Archive className="mt-0.5 h-3.5 w-3.5" style={{ color: "var(--destructive)" }} />
+              <span className="flex flex-col">
+                <span>Archive session</span>
+                <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
+                  Deletes the local workspace and branch.
+                </span>
+              </span>
             </DropdownMenuItem>
           )}
         </DropdownMenuContent>
@@ -3320,6 +3660,7 @@ function ProjectSessionGroup({
           publicationLabel={publicationLabel}
           isSelected={isSelected}
           isPinned={isPinned}
+          isMuted={row.isMuted}
           runtimeState={runtimeState}
           runtimeLabel={runtimeLabel}
           showRuntimeState={showRuntimeState}
@@ -3817,11 +4158,13 @@ function SessionRuntimeLabel({
 function SessionStatusIcon({
   conversationId,
   isPinned,
+  isMuted,
   state,
   selected,
 }: {
   conversationId: string;
   isPinned: boolean;
+  isMuted: boolean;
   state: SessionRuntimeState;
   selected: boolean;
 }) {
@@ -3834,6 +4177,17 @@ function SessionStatusIcon({
         style={{
           color: state === "running" ? "var(--accent-primary)" : "var(--text-subtle)",
         }}
+      />
+    );
+  }
+
+  if (isMuted) {
+    return (
+      <BellOff
+        aria-label="Muted until it changes"
+        className="h-3.5 w-3.5"
+        data-testid={`agents-mute-icon-${conversationId}`}
+        style={{ color: "var(--text-subtle)" }}
       />
     );
   }

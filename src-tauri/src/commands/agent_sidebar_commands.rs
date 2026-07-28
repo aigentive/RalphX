@@ -15,6 +15,7 @@ use crate::domain::entities::{
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
 const MAX_LIMIT_PER_GROUP: u32 = 100;
+const STALE_AFTER_DAYS: i64 = 7;
 const STANDALONE_AUTOMATION_GROUP_KEY: &str = "__standalone__";
 const STANDALONE_AUTOMATION_GROUP_LABEL: &str = "Standalone";
 /// Pseudo project-group key/label for projectless (Standalone context)
@@ -68,6 +69,9 @@ pub struct AgentSidebarConversationRowResponse {
     pub ref_label: String,
     pub publication_state: String,
     pub publication_label: Option<String>,
+    pub attention_lane: String,
+    pub is_muted: bool,
+    pub action_verb: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +79,7 @@ enum SidebarGroupBy {
     Project,
     Publication,
     Automation,
+    Inbox,
 }
 
 impl SidebarGroupBy {
@@ -83,7 +88,38 @@ impl SidebarGroupBy {
             None | Some("project") => Ok(Self::Project),
             Some("publication") | Some("publication_state") => Ok(Self::Publication),
             Some("automation") => Ok(Self::Automation),
+            Some("inbox") => Ok(Self::Inbox),
             Some(value) => Err(format!("invalid sidebar group_by: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SidebarAttentionLane {
+    Needs,
+    Working,
+    Stale,
+    Done,
+}
+
+impl SidebarAttentionLane {
+    const ALL: [Self; 4] = [Self::Needs, Self::Working, Self::Stale, Self::Done];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Needs => "needs",
+            Self::Working => "working",
+            Self::Stale => "stale",
+            Self::Done => "done",
+        }
+    }
+
+    fn group_label(self) -> &'static str {
+        match self {
+            Self::Needs => "Needs you",
+            Self::Working => "Working",
+            Self::Stale => "Stale",
+            Self::Done => "Done",
         }
     }
 }
@@ -107,7 +143,7 @@ impl SidebarRowSort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum SidebarPublicationState {
+pub(crate) enum SidebarPublicationState {
     Active,
     Draft,
     Merged,
@@ -173,6 +209,7 @@ impl SidebarPublicationState {
 }
 
 struct SidebarConversationRow {
+    conversation_id: ChatConversationId,
     project_id: String,
     automation_id: Option<String>,
     sort_at: DateTime<Utc>,
@@ -183,6 +220,10 @@ struct SidebarConversationRow {
     ref_kind: &'static str,
     ref_label: String,
     publication_state: SidebarPublicationState,
+    attention_lane: SidebarAttentionLane,
+    attention_state_fingerprint: String,
+    is_muted: bool,
+    action_verb: String,
 }
 
 #[tauri::command]
@@ -290,12 +331,12 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 continue;
             }
 
-            let latest_run_status = state
+            let latest_run = state
                 .agent_run_repo
                 .get_latest_for_conversation(&conversation.id)
                 .await
-                .map_err(|e| e.to_string())?
-                .map(|run| run.status);
+                .map_err(|e| e.to_string())?;
+            let latest_run_status = latest_run.as_ref().map(|run| run.status);
             let publication_state =
                 publication_state_for_workspace(workspace.as_ref(), latest_run_status);
             if !selected_state_set.contains(&publication_state) {
@@ -304,15 +345,43 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
 
             let (ref_kind, ref_label) =
                 conversation_ref_display(workspace.as_ref(), default_ref_label.as_str());
+            let attention_lane = attention_lane_for_row(
+                conversation.is_archived(),
+                publication_state,
+                latest_run_status,
+                workspace.as_ref(),
+                conversation
+                    .last_message_at
+                    .unwrap_or(conversation.updated_at),
+            );
+            let attention_state_fingerprint = attention_state_fingerprint(
+                conversation.is_archived(),
+                publication_state,
+                latest_run.as_ref().map(|run| run.id.to_string()).as_deref(),
+                latest_run_status,
+                normalized_supervision_status(workspace.as_ref()).as_deref(),
+                conversation.last_message_at,
+            );
+            let action_verb = action_verb_for_row(
+                publication_state,
+                latest_run_status,
+                workspace.as_ref(),
+                ref_kind,
+            );
             let sort_at = conversation.created_at;
             let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
             let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
+            // Captured before the response shadows `conversation`: the response
+            // carries a plain `String` id, and mute lookups are keyed by the
+            // typed conversation id.
+            let conversation_id = conversation.id;
             let automation_id = conversation
                 .automation_id
                 .as_ref()
                 .map(|automation_id| automation_id.as_str().to_string());
             let conversation = agent_conversation_response_for_state(state, conversation).await?;
             rows.push(SidebarConversationRow {
+                conversation_id,
                 project_id: project_id_string.clone(),
                 automation_id,
                 sort_at,
@@ -323,6 +392,10 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 ref_kind,
                 ref_label,
                 publication_state,
+                attention_lane,
+                attention_state_fingerprint,
+                is_muted: false,
+                action_verb,
             });
         }
     }
@@ -356,12 +429,12 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             continue;
         }
 
-        let latest_run_status = state
+        let latest_run = state
             .agent_run_repo
             .get_latest_for_conversation(&conversation.id)
             .await
-            .map_err(|e| e.to_string())?
-            .map(|run| run.status);
+            .map_err(|e| e.to_string())?;
+        let latest_run_status = latest_run.as_ref().map(|run| run.status);
         // Standalone (chat-only in this phase) never creates an
         // AgentConversationWorkspace, so there is no per-conversation
         // workspace lookup here (unlike the per-project loop above).
@@ -372,12 +445,32 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
 
         let (ref_kind, ref_label) =
             conversation_ref_display(None, standalone_default_ref_label.as_str());
+        let attention_lane = attention_lane_for_row(
+            conversation.is_archived(),
+            publication_state,
+            latest_run_status,
+            None,
+            conversation
+                .last_message_at
+                .unwrap_or(conversation.updated_at),
+        );
+        let attention_state_fingerprint = attention_state_fingerprint(
+            conversation.is_archived(),
+            publication_state,
+            latest_run.as_ref().map(|run| run.id.to_string()).as_deref(),
+            latest_run_status,
+            None,
+            conversation.last_message_at,
+        );
+        let action_verb = action_verb_for_row(publication_state, latest_run_status, None, ref_kind);
         let sort_at = conversation.created_at;
         let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
         let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
+        let conversation_id = conversation.id;
         let conversation = agent_conversation_response_for_state(state, conversation).await?;
         has_no_project_rows = true;
         rows.push(SidebarConversationRow {
+            conversation_id,
             project_id: NO_PROJECT_GROUP_KEY.to_string(),
             automation_id: None,
             sort_at,
@@ -388,11 +481,20 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             ref_kind,
             ref_label,
             publication_state,
+            attention_lane,
+            attention_state_fingerprint,
+            is_muted: false,
+            action_verb,
         });
     }
     if has_no_project_rows {
-        project_labels.push((NO_PROJECT_GROUP_KEY.to_string(), NO_PROJECT_GROUP_LABEL.to_string()));
+        project_labels.push((
+            NO_PROJECT_GROUP_KEY.to_string(),
+            NO_PROJECT_GROUP_LABEL.to_string(),
+        ));
     }
+
+    apply_current_mutes(&mut rows, state).await?;
 
     rows.sort_by(|left, right| {
         right
@@ -409,6 +511,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
         SidebarGroupBy::Automation => {
             automation_groups(rows, automation_labels, row_sort, limit, &offsets)
         }
+        SidebarGroupBy::Inbox => inbox_groups(rows, limit, &offsets),
     };
 
     Ok(AgentSidebarConversationGroupsResponse { groups })
@@ -520,7 +623,7 @@ fn conversation_ref_display(
     ("branch", label.to_string())
 }
 
-fn publication_state_for_workspace(
+pub(crate) fn publication_state_for_workspace(
     workspace: Option<&AgentConversationWorkspaceResponse>,
     latest_run_status: Option<AgentRunStatus>,
 ) -> SidebarPublicationState {
@@ -568,6 +671,146 @@ fn publication_state_for_missing_workspace(
     SidebarPublicationState::Active
 }
 
+fn is_in_flight_run_status(latest_run_status: Option<AgentRunStatus>) -> bool {
+    matches!(latest_run_status, Some(AgentRunStatus::Running))
+}
+
+pub(crate) fn normalized_supervision_status(
+    workspace: Option<&AgentConversationWorkspaceResponse>,
+) -> Option<String> {
+    normalized_supervision_status_value(
+        workspace.and_then(|workspace| workspace.pr_supervision_status.as_deref()),
+    )
+}
+
+fn normalized_supervision_status_value(status: Option<&str>) -> Option<String> {
+    status.map(normalize_status)
+}
+
+/// Stable snapshot of the fields that determine whether a muted conversation still needs attention.
+pub(crate) fn attention_state_fingerprint(
+    is_archived: bool,
+    publication_state: SidebarPublicationState,
+    latest_run_id: Option<&str>,
+    latest_run_status: Option<AgentRunStatus>,
+    supervision_status: Option<&str>,
+    last_message_at: Option<DateTime<Utc>>,
+) -> String {
+    [
+        format!("archived={is_archived}"),
+        format!("publication={}", publication_state.key()),
+        format!("run_id={}", latest_run_id.unwrap_or("<none>")),
+        format!(
+            "run_status={}",
+            latest_run_status.map_or("<none>".to_string(), |status| format!("{status:?}"))
+        ),
+        format!("supervision={}", supervision_status.unwrap_or("<none>")),
+        format!(
+            "last_message_at={}",
+            last_message_at.map_or("<none>".to_string(), |at| at.to_rfc3339())
+        ),
+    ]
+    .join("\u{1f}")
+}
+
+async fn apply_current_mutes(
+    rows: &mut [SidebarConversationRow],
+    state: &AppState,
+) -> Result<(), String> {
+    let conversation_ids: Vec<ChatConversationId> =
+        rows.iter().map(|row| row.conversation_id).collect();
+    let mute_fingerprints: HashMap<ChatConversationId, String> = state
+        .agent_conversation_mute_repo
+        .list_by_conversation_ids(&conversation_ids)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|mute| (mute.conversation_id, mute.state_fingerprint))
+        .collect();
+
+    for row in rows {
+        row.is_muted = mute_fingerprints
+            .get(&row.conversation_id)
+            .is_some_and(|fingerprint| fingerprint == &row.attention_state_fingerprint);
+        if row.is_muted && row.attention_lane == SidebarAttentionLane::Needs {
+            row.attention_lane = SidebarAttentionLane::Stale;
+        }
+    }
+    Ok(())
+}
+
+fn attention_lane_for_row(
+    is_archived: bool,
+    publication_state: SidebarPublicationState,
+    latest_run_status: Option<AgentRunStatus>,
+    workspace: Option<&AgentConversationWorkspaceResponse>,
+    last_activity_at: DateTime<Utc>,
+) -> SidebarAttentionLane {
+    if is_archived
+        || matches!(
+            publication_state,
+            SidebarPublicationState::Merged | SidebarPublicationState::Closed
+        )
+    {
+        return SidebarAttentionLane::Done;
+    }
+
+    let supervision_status = normalized_supervision_status(workspace);
+    if is_in_flight_run_status(latest_run_status)
+        || matches!(
+            supervision_status.as_deref(),
+            Some("fixing" | "publishing" | "waiting" | "waiting_for_checks" | "monitoring")
+        )
+    {
+        return SidebarAttentionLane::Working;
+    }
+
+    if last_activity_at < Utc::now() - chrono::Duration::days(STALE_AFTER_DAYS) {
+        return SidebarAttentionLane::Stale;
+    }
+
+    SidebarAttentionLane::Needs
+}
+
+fn action_verb_for_row(
+    publication_state: SidebarPublicationState,
+    latest_run_status: Option<AgentRunStatus>,
+    workspace: Option<&AgentConversationWorkspaceResponse>,
+    ref_kind: &str,
+) -> String {
+    match publication_state {
+        SidebarPublicationState::Merged => return "Merged".to_string(),
+        SidebarPublicationState::Closed => return "Closed".to_string(),
+        _ => {}
+    }
+
+    if is_in_flight_run_status(latest_run_status) {
+        return "Running".to_string();
+    }
+
+    let supervision_status = normalized_supervision_status(workspace);
+    match supervision_status.as_deref() {
+        Some("fixing" | "publishing") => return "Fixing".to_string(),
+        Some("waiting" | "waiting_for_checks") => return "Waiting for checks".to_string(),
+        Some("monitoring")
+            if workspace.and_then(|workspace| workspace.pr_auto_merge_current) == Some(true) =>
+        {
+            return "Auto-merging".to_string();
+        }
+        Some("blocked") => return "Unblock".to_string(),
+        _ => {}
+    }
+
+    match publication_state {
+        SidebarPublicationState::Uncommitted => "Commit changes",
+        SidebarPublicationState::Unpushed => "Push changes",
+        SidebarPublicationState::Draft => "Publish",
+        SidebarPublicationState::Active if ref_kind == "pull_request" => "Review",
+        _ => "Continue",
+    }
+    .to_string()
+}
+
 fn publication_groups(
     rows: Vec<SidebarConversationRow>,
     selected_states: Vec<SidebarPublicationState>,
@@ -597,6 +840,40 @@ fn publication_groups(
                 state.group_label().to_string(),
                 rows,
                 offsets.get(state.key()).copied().unwrap_or(0),
+                limit,
+            )
+        })
+        .collect()
+}
+
+fn inbox_groups(
+    rows: Vec<SidebarConversationRow>,
+    limit: u32,
+    offsets: &HashMap<String, u32>,
+) -> Vec<AgentSidebarConversationGroupResponse> {
+    let mut rows_by_lane: HashMap<SidebarAttentionLane, Vec<SidebarConversationRow>> =
+        SidebarAttentionLane::ALL
+            .iter()
+            .copied()
+            .map(|lane| (lane, Vec::new()))
+            .collect();
+
+    for row in rows {
+        rows_by_lane
+            .entry(row.attention_lane)
+            .or_default()
+            .push(row);
+    }
+
+    SidebarAttentionLane::ALL
+        .into_iter()
+        .map(|lane| {
+            let key = lane.key().to_string();
+            build_group(
+                key,
+                lane.group_label().to_string(),
+                rows_by_lane.remove(&lane).unwrap_or_default(),
+                offsets.get(lane.key()).copied().unwrap_or(0),
                 limit,
             )
         })
@@ -778,6 +1055,9 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
             ref_label: row.ref_label,
             publication_state: row.publication_state.key().to_string(),
             publication_label,
+            attention_lane: row.attention_lane.key().to_string(),
+            is_muted: row.is_muted,
+            action_verb: row.action_verb,
         }
     }
 }
@@ -899,9 +1179,9 @@ fn supervision_publication_label(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Automation,
-        AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId,
-        AutomationStatus, ChatConversation, IdeationAnalysisBaseRefKind, Project,
+        AgentConversationMute, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentRun, Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode,
+        AutomationRunId, AutomationStatus, ChatConversation, IdeationAnalysisBaseRefKind, Project,
     };
 
     fn sidebar_input(project_id: &ProjectId) -> AgentSidebarConversationsInput {
@@ -1083,10 +1363,327 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_group_by_parse_accepts_automation_and_rejects_unknown_modes() {
+    fn attention_state_fingerprint_changes_for_every_attention_component() {
+        let now = Utc::now();
+        let baseline = attention_state_fingerprint(
+            false,
+            SidebarPublicationState::Active,
+            Some("run-a"),
+            Some(AgentRunStatus::Completed),
+            Some("blocked"),
+            Some(now),
+        );
+        assert_eq!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Active,
+                Some("run-a"),
+                Some(AgentRunStatus::Completed),
+                Some("blocked"),
+                Some(now)
+            )
+        );
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                true,
+                SidebarPublicationState::Active,
+                Some("run-a"),
+                Some(AgentRunStatus::Completed),
+                Some("blocked"),
+                Some(now)
+            )
+        );
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Draft,
+                Some("run-a"),
+                Some(AgentRunStatus::Completed),
+                Some("blocked"),
+                Some(now)
+            )
+        );
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Active,
+                Some("run-b"),
+                Some(AgentRunStatus::Completed),
+                Some("blocked"),
+                Some(now)
+            )
+        );
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Active,
+                Some("run-a"),
+                Some(AgentRunStatus::Running),
+                Some("blocked"),
+                Some(now)
+            )
+        );
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Active,
+                Some("run-a"),
+                Some(AgentRunStatus::Completed),
+                Some("fixing"),
+                Some(now)
+            )
+        );
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Active,
+                Some("run-a"),
+                Some(AgentRunStatus::Completed),
+                Some("blocked"),
+                Some(now + chrono::Duration::seconds(1))
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn muted_needs_row_moves_to_stale_without_affecting_other_rows() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "muted-needs").await;
+        let muted = create_conversation(&state, &project.id, "Muted", Utc::now()).await;
+        let other = create_conversation(&state, &project.id, "Other", Utc::now()).await;
+        let fingerprint = attention_state_fingerprint(
+            false,
+            SidebarPublicationState::Active,
+            None,
+            None,
+            None,
+            None,
+        );
+        state
+            .agent_conversation_mute_repo
+            .set_muted(AgentConversationMute {
+                conversation_id: muted.id,
+                muted_at: Utc::now(),
+                state_fingerprint: fingerprint,
+            })
+            .await
+            .unwrap();
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("inbox".to_string());
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+        let needs = response
+            .groups
+            .iter()
+            .find(|group| group.key == "needs")
+            .unwrap();
+        let stale = response
+            .groups
+            .iter()
+            .find(|group| group.key == "stale")
+            .unwrap();
+        assert_eq!(needs.total, 1);
+        assert_eq!(needs.rows[0].conversation.id, other.id.as_str());
+        assert!(!needs.rows[0].is_muted);
+        assert_eq!(stale.total, 1);
+        assert_eq!(stale.rows[0].conversation.id, muted.id.as_str());
+        assert!(stale.rows[0].is_muted);
+    }
+
+    async fn inbox_row_for(
+        state: &AppState,
+        project_id: &ProjectId,
+        conversation_id: &ChatConversationId,
+    ) -> (String, bool) {
+        let mut input = sidebar_input(project_id);
+        input.group_by = Some("inbox".to_string());
+        let response = list_agent_sidebar_conversations_for_app_state(input, state)
+            .await
+            .unwrap();
+        response
+            .groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .rows
+                    .iter()
+                    .map(move |row| (group.key.clone(), row.conversation.id.clone(), row.is_muted))
+            })
+            .find(|(_, id, _)| *id == conversation_id.as_str())
+            .map(|(lane, _, is_muted)| (lane, is_muted))
+            .expect("conversation should appear in some lane")
+    }
+
+    async fn mute_via_command(state: &AppState, conversation_id: &ChatConversationId) {
+        crate::commands::agent_conversation_mute_commands::set_agent_conversation_muted_for_app_state(
+            crate::commands::agent_conversation_mute_commands::SetAgentConversationMutedInput {
+                conversation_id: conversation_id.as_str().to_string(),
+                muted: true,
+            },
+            state,
+        )
+        .await
+        .expect("mute should persist");
+    }
+
+    /// The write path and the read path must fingerprint identically. If they
+    /// ever diverge, a freshly muted row still reads as unmuted and the whole
+    /// feature silently does nothing.
+    #[tokio::test]
+    async fn muting_through_the_command_is_visible_to_the_sidebar_immediately() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "mute-roundtrip").await;
+        let conversation = create_conversation(&state, &project.id, "Needs", Utc::now()).await;
+        create_workspace(
+            &state,
+            &conversation,
+            &project.id,
+            Some(7),
+            Some("open"),
+            None,
+        )
+        .await;
+        create_run_with_status(&state, &conversation, AgentRunStatus::Completed).await;
+
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("needs".to_string(), false)
+        );
+
+        mute_via_command(&state, &conversation.id).await;
+
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("stale".to_string(), true)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_run_ends_the_mute_and_returns_the_row_to_needs() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "mute-new-run").await;
+        let conversation = create_conversation(&state, &project.id, "Needs", Utc::now()).await;
+        create_workspace(&state, &conversation, &project.id, None, Some("open"), None).await;
+        create_run_with_status(&state, &conversation, AgentRunStatus::Completed).await;
+        mute_via_command(&state, &conversation.id).await;
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("stale".to_string(), true)
+        );
+
+        // Same terminal status, brand-new run: the run id alone must end the
+        // mute, otherwise a rerun of the same shape stays silenced forever.
+        create_run_with_status(&state, &conversation, AgentRunStatus::Completed).await;
+
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("needs".to_string(), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_publication_change_ends_the_mute() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "mute-publication").await;
+        let conversation = create_conversation(&state, &project.id, "Needs", Utc::now()).await;
+        create_workspace(
+            &state,
+            &conversation,
+            &project.id,
+            Some(3),
+            Some("open"),
+            None,
+        )
+        .await;
+        mute_via_command(&state, &conversation.id).await;
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("stale".to_string(), true)
+        );
+
+        create_workspace(
+            &state,
+            &conversation,
+            &project.id,
+            Some(3),
+            Some("open"),
+            Some("pending"),
+        )
+        .await;
+
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("needs".to_string(), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_newer_message_ends_the_mute() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "mute-message").await;
+        let conversation = create_conversation(&state, &project.id, "Needs", Utc::now()).await;
+        create_workspace(&state, &conversation, &project.id, None, Some("open"), None).await;
+        mute_via_command(&state, &conversation.id).await;
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("stale".to_string(), true)
+        );
+
+        state
+            .chat_conversation_repo
+            .update_message_stats(&conversation.id, 1, Utc::now())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &conversation.id).await,
+            ("needs".to_string(), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn muting_never_moves_a_working_or_done_row_out_of_its_lane() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "mute-other-lanes").await;
+
+        let working = create_conversation(&state, &project.id, "Working", Utc::now()).await;
+        create_workspace(&state, &working, &project.id, None, Some("open"), None).await;
+        create_run_with_status(&state, &working, AgentRunStatus::Running).await;
+
+        let done = create_conversation(&state, &project.id, "Done", Utc::now()).await;
+        create_workspace(&state, &done, &project.id, Some(9), Some("merged"), None).await;
+
+        mute_via_command(&state, &working.id).await;
+        mute_via_command(&state, &done.id).await;
+
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &working.id).await,
+            ("working".to_string(), true)
+        );
+        assert_eq!(
+            inbox_row_for(&state, &project.id, &done.id).await,
+            ("done".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn sidebar_group_by_parse_accepts_known_modes_and_rejects_unknown_modes() {
         assert_eq!(
             SidebarGroupBy::parse(Some("automation")).unwrap(),
             SidebarGroupBy::Automation
+        );
+        assert_eq!(
+            SidebarGroupBy::parse(Some("inbox")).unwrap(),
+            SidebarGroupBy::Inbox
         );
         assert_eq!(
             SidebarGroupBy::parse(Some("definitely-not-valid")).unwrap_err(),
@@ -1607,6 +2204,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inbox_grouping_emits_all_lanes_in_fixed_order_including_empty_ones() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("inbox".to_string());
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(response.groups.len(), 4);
+        assert_eq!(
+            response
+                .groups
+                .iter()
+                .map(|group| (group.key.as_str(), group.label.as_str(), group.total))
+                .collect::<Vec<_>>(),
+            vec![
+                ("needs", "Needs you", 0),
+                ("working", "Working", 0),
+                ("stale", "Stale", 0),
+                ("done", "Done", 0),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_grouping_derives_attention_lanes_and_action_verbs() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+
+        let merged = create_conversation(&state, &project.id, "Merged", now).await;
+        create_workspace(&state, &merged, &project.id, Some(1), Some("merged"), None).await;
+
+        let running = create_conversation(&state, &project.id, "Running", now).await;
+        create_workspace(&state, &running, &project.id, None, Some("open"), None).await;
+        create_run_with_status(&state, &running, AgentRunStatus::Running).await;
+
+        let fixing = create_conversation(&state, &project.id, "Fixing", now).await;
+        create_workspace(&state, &fixing, &project.id, Some(2), Some("open"), None).await;
+        set_workspace_supervision(&state, &fixing, "fixing", Some(false)).await;
+
+        let blocked = create_conversation(&state, &project.id, "Blocked", now).await;
+        create_workspace(&state, &blocked, &project.id, Some(3), Some("open"), None).await;
+        set_workspace_supervision(&state, &blocked, "blocked", Some(false)).await;
+
+        let stale = create_conversation(
+            &state,
+            &project.id,
+            "Stale",
+            now - chrono::Duration::days(STALE_AFTER_DAYS + 1),
+        )
+        .await;
+        create_workspace(&state, &stale, &project.id, None, Some("open"), None).await;
+
+        let fresh = create_conversation(&state, &project.id, "Fresh", now).await;
+        create_workspace(&state, &fresh, &project.id, None, Some("open"), None).await;
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("inbox".to_string());
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+        let rows = response
+            .groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .map(|row| (row.conversation.id.clone(), row))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(rows[&merged.id.as_str()].attention_lane, "done");
+        assert_eq!(rows[&merged.id.as_str()].action_verb, "Merged");
+        assert_eq!(rows[&running.id.as_str()].attention_lane, "working");
+        assert_eq!(rows[&running.id.as_str()].action_verb, "Running");
+        assert_eq!(rows[&fixing.id.as_str()].attention_lane, "working");
+        assert_eq!(rows[&fixing.id.as_str()].action_verb, "Fixing");
+        assert_ne!(rows[&blocked.id.as_str()].attention_lane, "working");
+        assert_eq!(rows[&blocked.id.as_str()].action_verb, "Unblock");
+        assert_eq!(rows[&stale.id.as_str()].attention_lane, "stale");
+        assert_eq!(rows[&fresh.id.as_str()].attention_lane, "needs");
+        assert_eq!(rows[&fresh.id.as_str()].action_verb, "Continue");
+    }
+
+    #[tokio::test]
+    async fn inbox_grouping_paginates_each_lane_independently_and_pins_first() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+
+        let newest_needs = create_conversation(&state, &project.id, "Newest needs", now).await;
+        create_workspace(&state, &newest_needs, &project.id, None, Some("open"), None).await;
+        let pinned_needs = create_conversation(
+            &state,
+            &project.id,
+            "Pinned needs",
+            now - chrono::Duration::minutes(1),
+        )
+        .await;
+        create_workspace(&state, &pinned_needs, &project.id, None, Some("open"), None).await;
+        let newest_done = create_conversation(&state, &project.id, "Newest done", now).await;
+        create_workspace(
+            &state,
+            &newest_done,
+            &project.id,
+            Some(1),
+            Some("merged"),
+            None,
+        )
+        .await;
+        let older_done = create_conversation(
+            &state,
+            &project.id,
+            "Older done",
+            now - chrono::Duration::minutes(1),
+        )
+        .await;
+        create_workspace(
+            &state,
+            &older_done,
+            &project.id,
+            Some(2),
+            Some("merged"),
+            None,
+        )
+        .await;
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("inbox".to_string());
+        input.limit_per_group = Some(1);
+        input.pinned_conversation_ids = Some(vec![pinned_needs.id.as_str().to_string()]);
+        input.offsets = Some(HashMap::from([
+            ("needs".to_string(), 0),
+            ("done".to_string(), 1),
+        ]));
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+        let needs = response
+            .groups
+            .iter()
+            .find(|group| group.key == "needs")
+            .unwrap();
+        let done = response
+            .groups
+            .iter()
+            .find(|group| group.key == "done")
+            .unwrap();
+
+        assert_eq!(needs.total, 2);
+        assert_eq!(needs.rows[0].conversation.id, pinned_needs.id.as_str());
+        assert_eq!(done.total, 2);
+        assert_eq!(done.offset, 1);
+        assert_eq!(done.rows[0].conversation.id, older_done.id.as_str());
+    }
+
+    #[tokio::test]
     async fn publication_grouping_sorts_rows_by_requested_title_order() {
         let state = AppState::new_test();
         let project = create_project(&state, "alpha").await;
@@ -1861,9 +2618,12 @@ mod tests {
         let now = Utc::now();
 
         let project_conversation = create_conversation(&state, &alpha.id, "Alpha work", now).await;
-        let standalone_conversation =
-            create_standalone_conversation(&state, "Standalone chat", now - chrono::Duration::minutes(1))
-                .await;
+        let standalone_conversation = create_standalone_conversation(
+            &state,
+            "Standalone chat",
+            now - chrono::Duration::minutes(1),
+        )
+        .await;
 
         let mut input = sidebar_input(&alpha.id);
         input.group_by = Some("project".to_string());
@@ -1878,7 +2638,10 @@ mod tests {
             "the requested project group plus a data-driven 'No project' group"
         );
         assert_eq!(response.groups[0].key, alpha.id.as_str());
-        assert_eq!(response.groups[0].rows[0].conversation.id, project_conversation.id.as_str());
+        assert_eq!(
+            response.groups[0].rows[0].conversation.id,
+            project_conversation.id.as_str()
+        );
 
         let no_project_group = &response.groups[1];
         assert_eq!(no_project_group.key, "__no_project__");
@@ -1888,7 +2651,10 @@ mod tests {
             no_project_group.rows[0].conversation.id,
             standalone_conversation.id.as_str()
         );
-        assert_eq!(no_project_group.rows[0].conversation.context_type, "standalone");
+        assert_eq!(
+            no_project_group.rows[0].conversation.context_type,
+            "standalone"
+        );
         assert!(no_project_group.rows[0].workspace.is_none());
     }
 
@@ -1914,7 +2680,10 @@ mod tests {
 
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].key, alpha.id.as_str());
-        assert!(!response.groups.iter().any(|group| group.key == "__no_project__"));
+        assert!(!response
+            .groups
+            .iter()
+            .any(|group| group.key == "__no_project__"));
     }
 
     #[tokio::test]
