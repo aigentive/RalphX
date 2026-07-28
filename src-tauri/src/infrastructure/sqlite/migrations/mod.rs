@@ -566,6 +566,9 @@ mod v20260727191500_remote_environments_tests;
 mod v20260727213000_remote_event_log;
 #[cfg(test)]
 mod v20260727213000_remote_event_log_tests;
+mod v20260728120000_remote_request_dedup;
+#[cfg(test)]
+mod v20260728120000_remote_request_dedup_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -1815,6 +1818,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260727213000,
         name: "remote_event_log",
         migrate: v20260727213000_remote_event_log::migrate,
+    },
+    Migration {
+        version: 20260728120000,
+        name: "remote_request_dedup",
+        migrate: v20260728120000_remote_request_dedup::migrate,
     },
 ];
 

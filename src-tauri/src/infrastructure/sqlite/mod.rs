@@ -108,6 +108,7 @@ pub mod sqlite_plan_selection_stats_repo;
 pub mod sqlite_process_repo;
 pub mod sqlite_project_repo;
 pub mod sqlite_remote_access_repo;
+pub mod sqlite_remote_request_dedup_repo;
 pub mod sqlite_proposal_dependency_repo;
 pub mod sqlite_question_repo;
 pub mod sqlite_queued_message_repo;
@@ -163,6 +164,7 @@ pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
 pub use sqlite_agent_workflow_repo::SqliteAgentWorkflowRepository;
 pub use sqlite_api_key_repo::SqliteApiKeyRepository;
 pub use sqlite_remote_access_repo::SqliteRemoteAccessRepository;
+pub use sqlite_remote_request_dedup_repo::SqliteRemoteRequestDedupRepository;
 pub use sqlite_remote_event_log_repo::{
     RemoteEventLogStore, RemoteEventRow, RemotePruneOutcome, RemotePruneRequest,
     SqliteRemoteEventLogRepository,

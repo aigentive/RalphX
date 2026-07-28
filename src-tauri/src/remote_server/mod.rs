@@ -53,6 +53,15 @@ mod registry_tests;
 mod scope_suite_tests;
 // --- end PR 1.5 block ---
 
+// --- PR 1.5-C: request idempotency + attachment ingress (one contiguous block) ---
+pub mod attachments;
+#[cfg(test)]
+mod attachments_tests;
+pub mod dedup;
+#[cfg(test)]
+mod dedup_tests;
+// --- end PR 1.5-C block ---
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -74,10 +83,18 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::domain::repositories::RemoteSessionRepository;
 use crate::error::AppError;
-use crate::infrastructure::sqlite::{SqliteRemoteAccessRepository, SqliteRemoteEventLogRepository};
+use crate::infrastructure::sqlite::{
+    SqliteRemoteAccessRepository, SqliteRemoteEventLogRepository,
+    SqliteRemoteRequestDedupRepository,
+};
 use crate::infrastructure::tailscale::{
     RealTailscaleCommandRunner, TailscaleCommandRunner, TailscaleSelfAddressProvider,
     TailscaleServeError,
+};
+use crate::remote_server::attachments::{
+    fetch_handler as attachment_fetch_handler, upload_handler as attachment_upload_handler,
+    RemoteAttachmentContext, ATTACHMENT_FETCH_PATH, ATTACHMENT_UPLOAD_PATH,
+    REMOTE_ATTACHMENT_MAX_BYTES,
 };
 use crate::remote_server::auth::{
     authenticate_remote_request, enforce_auth_endpoint_rate_limit, strip_trust_headers,
@@ -87,6 +104,7 @@ use crate::remote_server::auth_endpoints::{
     pair_handler, self_revoke_handler, session_introspection_handler, session_teardown_handler,
     ws_ticket_handler, REMOTE_AUTH_BODY_LIMIT_BYTES,
 };
+use crate::remote_server::dedup::{RemoteDedupState, REMOTE_INVOKE_BODY_LIMIT_BYTES};
 use crate::remote_server::endpoints::{
     environment_descriptor_handler, health_handler, RemoteRouterState,
 };
@@ -346,7 +364,21 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
         )
         .route(
             INVOKE_PATH,
-            post(invoke::invoke_handler).options(remote_preflight_handler),
+            post(invoke::invoke_handler)
+                .options(remote_preflight_handler)
+                // C-16: `/invoke` carries command arguments, never payload bytes. Attachments
+                // have their own endpoint with its own, larger cap.
+                .layer(DefaultBodyLimit::max(REMOTE_INVOKE_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            ATTACHMENT_UPLOAD_PATH,
+            post(attachment_upload_handler)
+                .options(remote_preflight_handler)
+                .layer(DefaultBodyLimit::max(REMOTE_ATTACHMENT_MAX_BYTES)),
+        )
+        .route(
+            ATTACHMENT_FETCH_PATH,
+            get(attachment_fetch_handler).options(remote_preflight_handler),
         )
         .route(
             ws::WS_EVENTS_PATH,
@@ -506,11 +538,29 @@ pub(crate) async fn start_listener(
     let (stopped_tx, stopped) = oneshot::channel();
     let auth =
         RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
+    // One SQLite store backs both remote request idempotency and attachment metadata; it is
+    // built from the SAME `DbConnection` as the auth context so a replay and the device row it
+    // is scoped to can never come from different connections.
+    let idempotency_store = Arc::new(SqliteRemoteRequestDedupRepository::from_db(store.db()));
     let mut state =
         RemoteRouterState::new(settings.environment_id.as_str(), auth, app_handle.clone())
+            .with_dedup(Arc::new(RemoteDedupState::new(idempotency_store.clone())))
             // Installed at app setup, not here: the listener toggle governs network exposure only, so
             // a restart of the listener must not restart the stream (P-15, P-23).
             .with_stream(handle.stream());
+    // The attachment root is app-owned. If it cannot be resolved the routes stay unwired and
+    // fail closed with `REMOTE_INTERNAL_ERROR` — never a fallback to a guessed directory.
+    match crate::application::app_paths::AppPaths::from_app_handle(app_handle) {
+        Ok(paths) => {
+            state = state.with_attachments(Arc::new(RemoteAttachmentContext::new(
+                idempotency_store,
+                &paths.app_data_dir,
+            )));
+        }
+        Err(error) => {
+            tracing::error!(%error, "app data dir unavailable; remote attachments stay disabled");
+        }
+    }
     if let Some(sink) = handle.lifecycle_sink() {
         state = state.with_lifecycle_sink(sink);
     }
