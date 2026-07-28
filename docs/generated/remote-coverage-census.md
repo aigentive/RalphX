@@ -6,18 +6,18 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 503 invoke command name(s), 0 dynamic, 0 seam bypasses; 447 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 498 invoke command name(s), 0 dynamic, 0 seam bypasses; 442 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names in `frontend/src` | 503 | drift scan (AST) |
+| Invoke command names in `frontend/src` | 498 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
 | Remote-registered (`remote_commands!`) | 27 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 540 | `docs/generated/remote-commands.json` |
-| **Unclassified — the 3.1 gap** | **447** | `scripts/remote-transport-drift-baseline.json` |
+| **Unclassified — the 3.1 gap** | **442** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
 
@@ -29,9 +29,9 @@ The gap is not 447 registrations. Routing each name mechanically through the led
 | host-denied (class: denied) | 84 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 49 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 26 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
-| orphan invoke (no local handler) | 5 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
+| orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**159 of the 447 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
+**159 of the 442 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
 
 **283 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
 
@@ -52,7 +52,7 @@ The gap is not 447 registrations. Routing each name mechanically through the led
 | 11 | `R1` | `get_project` / `list_projects` — spawn-free read path | 2 | 0 | 2 | 1 |
 | 12 | `D3` | Host chrome, terminal, repository settings, test data (disposition only) | 14 | 0 | 14 | 4 |
 | 13 | `A1` | Chat attachments — disposition + remote rendering (deferred from 2.6/review-4) | 3 | 0 | 3 | 1 |
-| 14 | `X1` | Orphan invokes — no local handler exists | 5 | 0 | 5 | 1 |
+| 14 | `X1` | Orphan invokes — no local handler exists | 0 | 0 | 0 | 0 |
 
 Ordering logic: **B0 first** (nothing is measurable without the third disposition) → **B1** (smallest parity risk, reuses 1.5-A's proven injection shapes) → **B2** (unblocks PR 3.2, which cannot start until chat send answers `REMOTE_FORBIDDEN` instead of `REMOTE_COMMAND_UNAVAILABLE`) → **B3–B7** registration batches by falling audit risk → **D1/D2/D3** disposition-only batches, which retire large blocks with zero registration risk and can run in parallel with any registration batch once B0 lands → **R1** (a code change, not a registration, and gated on an owner call) → **A1** (blocked on 1.5-C) → **X1** (live defects, independent of remote work).
 
@@ -354,24 +354,19 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 14. `X1` — Orphan invokes — no local handler exists
 
-**Commands:** 5 · **Register-candidates:** 0 · **Risk classes:** orphan invoke (no local handler) 5
+**Commands:** 0 · **Register-candidates:** 0 · **Risk classes:** —
 
-**Why here:** Five gap names are absent from `src-tauri/src/commands/registry.rs` `generate_handler!` AND from the ledger (which is exhaustive over it). They cannot be registered remotely because they do not exist as Tauri commands locally: these invokes fail at runtime TODAY, on this Mac, with no remote environment involved. P-11 cannot reach zero while they are invoked, and no remote decision resolves them — each needs a delete-the-call-site or add-the-handler call. This is a live-defect finding, not a remote-coverage item.
+**Why here:** RESOLVED in PR 3.1-b. Five gap names were absent from `src-tauri/src/commands/registry.rs` `generate_handler!` AND from the ledger (which is exhaustive over it), so every call rejected at runtime with no remote environment involved. The reachability audit found none of the five was wired to any component or event handler — the wrappers were dead code kept alive only by their own unit tests — so all five were resolved by DELETING the call site rather than by minting host authority the product does not use. This batch is now empty and stays here as the record of that call.
 
 **Work:**
 
-- `add_proposal_dependency` — no backend fn at all (`ideation_commands_dependencies.rs` defines only `remove_proposal_dependency`, `get_proposal_dependencies`, `get_proposal_dependents`, `analyze_dependencies*`). The sibling `remove_proposal_dependency` IS registered. Callers: `api/ideation.ts:512`, `api/proposal.ts`.
-- `create_child_session` / `get_parent_session_context` — exist only as HTTP handlers (`http_server/handlers/session_linking/`), never as `#[tauri::command]`. Callers: `api/ideation.ts:305,327`. Either add the command wrappers or move the callers to the HTTP seam.
-- `delete_project` (`project_commands.rs:394`) / `delete_task` (`task_commands/mutation.rs:298`) — the fns exist but are not in `generate_handler!`. Callers: `api/projects.ts:193`, `api/tasks.ts:266`. Note P-17c denies `delete_*` remotely regardless, so registering them locally does NOT make them remote-eligible; they would become manifest dispositions.
-- Whatever the call, land it as its own fix with a regression test; do not resolve an orphan by adding a local-only row (that would hide a broken call site behind a remote reason).
+- `add_proposal_dependency` — deleted at both call sites (`api/ideation.ts` `dependencies.add`, `api/proposal.ts` `addProposalDependency`) plus the `addDependency` mutation in `hooks/useDependencyGraph.ts`. Its owning hook `useDependencyMutations` had no consumer at all: the UI reads the dependency graph and never writes edges, so there was no product asymmetry to fix by adding the missing command.
+- `create_child_session` / `get_parent_session_context` — deleted from `api/ideation.ts` (zero callers, zero tests). The capability is not lost: both are live HTTP routes (`POST /api/create_child_session`, `GET /api/parent_session_context/:session_id`), which is how the backend actually reaches them.
+- `delete_project` — deleted from `api/projects.ts`; `projectsApi.archive` is the live removal path.
+- `delete_task` — deleted from `api/tasks.ts` and `hooks/useTaskMutation.ts`; it was already `@deprecated Use cleanupTask instead`, and every component destructures `cleanupTaskMutation`.
+- Regression guard: `frontend/src/api/orphan-invokes.test.ts` asserts each wrapper stays absent while its surviving sibling (`remove`, `getChildren`, `archive`, `cleanupTask`) stays present, so the test cannot pass by the namespace disappearing.
 
-**Gate:** Each of the five is either deleted at the call site or backed by a registered handler with a test; the P-11 scan sees zero orphans.
-
-<details><summary>Members by module</summary>
-
-- **`<no ledger entry>`** (5) — `add_proposal_dependency`, `create_child_session`, `delete_project`, `delete_task`, `get_parent_session_context`
-
-</details>
+**Gate:** Each of the five is deleted at the call site with a regression test; the P-11 scan sees zero orphans.
 
 ## 5. Resolved items
 
@@ -439,9 +434,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Check | Result |
 |---|---|
 | Drift scan passes | yes (this file is not emitted otherwise) |
-| Scan unclassified count == baseline size | 447 == 447 |
-| Every gap command in exactly one batch | 447 / 447 |
-| Disposition totals sum to the gap | 447 == 447 |
+| Scan unclassified count == baseline size | 442 == 442 |
+| Every gap command in exactly one batch | 442 / 442 |
+| Disposition totals sum to the gap | 442 == 442 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.
