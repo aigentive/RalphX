@@ -798,6 +798,8 @@ export function AgentsPublishInlineDiffs({
         const isWalkthroughTarget = file.path === reviewWalkthroughPath;
         return (
           (liveFetchEligiblePathSet.has(file.path) || isWalkthroughTarget) &&
+          // The walkthrough needs real hunk lines, so it opts out of paged
+          // rendering — but the generated-file gate still requires explicit intent.
           (isWalkthroughTarget ||
             !canUsePagedInlineDiff({
               file,
@@ -806,9 +808,7 @@ export function AgentsPublishInlineDiffs({
               diffPageRefKind,
               isShowAnywayOverridden,
             })) &&
-          (!requiresExplicitDiffHydration(file) ||
-            isShowAnywayOverridden ||
-            isWalkthroughTarget)
+          (!requiresExplicitDiffHydration(file) || isShowAnywayOverridden)
         );
       }),
     [
@@ -995,19 +995,34 @@ export function AgentsPublishInlineDiffs({
   });
 
   // ── Map path → DiffState for card props ───────────────────────────────
+  const activeDiffQueries = useMemo(
+    () =>
+      isCommitMode
+        ? commitDiffQueries
+        : isStagedMode
+          ? stagedDiffQueries
+          : isUnstagedMode
+            ? unstagedDiffQueries
+            : isCumulativeMode
+              ? cumulativeDiffQueries
+              : uncommittedDiffQueries,
+    [
+      isCommitMode,
+      isStagedMode,
+      isUnstagedMode,
+      isCumulativeMode,
+      uncommittedDiffQueries,
+      commitDiffQueries,
+      stagedDiffQueries,
+      unstagedDiffQueries,
+      cumulativeDiffQueries,
+    ],
+  );
+
   const diffByPath = useMemo(() => {
     const map = new Map<string, DiffState>();
-    const activeQueries = isCommitMode
-      ? commitDiffQueries
-      : isStagedMode
-        ? stagedDiffQueries
-        : isUnstagedMode
-          ? unstagedDiffQueries
-          : isCumulativeMode
-            ? cumulativeDiffQueries
-            : uncommittedDiffQueries;
     fetchableFiles.forEach((file, idx) => {
-      const q = activeQueries[idx];
+      const q = activeDiffQueries[idx];
       if (!q) return;
       if (q.isPending) {
         map.set(file.path, "loading");
@@ -1018,18 +1033,18 @@ export function AgentsPublishInlineDiffs({
       }
     });
     return map;
-  }, [
-    isCommitMode,
-    isStagedMode,
-    isUnstagedMode,
-    isCumulativeMode,
-    uncommittedDiffQueries,
-    commitDiffQueries,
-    stagedDiffQueries,
-    unstagedDiffQueries,
-    cumulativeDiffQueries,
-    fetchableFiles,
-  ]);
+  }, [activeDiffQueries, fetchableFiles]);
+
+  // Retries the failed diff fetch behind the walkthrough's current finding so a
+  // transient error is recoverable without leaving and re-entering the view.
+  const handleRetryWalkthroughHunk = useCallback(
+    (path: string) => {
+      const idx = fetchableFiles.findIndex((file) => file.path === path);
+      if (idx === -1) return;
+      void activeDiffQueries[idx]?.refetch();
+    },
+    [activeDiffQueries, fetchableFiles],
+  );
 
   const conflictDiffByPath = useMemo(() => {
     const map = new Map<string, ConflictDiffState>();
@@ -1057,8 +1072,15 @@ export function AgentsPublishInlineDiffs({
         annotationsByPath,
         hunkAnnotationsByPath,
         diffByPath,
+        showAnywayPaths: userShowAnywayPaths,
       }),
-    [annotationsByPath, currentFiles, diffByPath, hunkAnnotationsByPath],
+    [
+      annotationsByPath,
+      currentFiles,
+      diffByPath,
+      hunkAnnotationsByPath,
+      userShowAnywayPaths,
+    ],
   );
 
   // ── Jump-to-file filtered list ────────────────────────────────────────
@@ -1480,6 +1502,8 @@ export function AgentsPublishInlineDiffs({
           }}
           onOpenFile={handleOpenFullscreen}
           onCurrentFindingChange={setReviewWalkthroughFindingId}
+          onRetryHunk={handleRetryWalkthroughHunk}
+          onLoadHunkAnyway={handleShowAnyway}
         />
       </div>
     );

@@ -1,4 +1,8 @@
-import { annotationSourceLabel } from "@/components/diff/diffRenderHelpers";
+import {
+  annotationSourceLabel,
+  annotationsForLine,
+  buildAnnotationIndex,
+} from "@/components/diff/diffRenderHelpers";
 import type {
   DiffHunk,
   FileChange,
@@ -6,19 +10,42 @@ import type {
   PrDiffAnnotation,
   WorkspaceReviewHunkAnnotation,
 } from "@/api/diff";
-import type { ReviewWalkthroughFinding } from "./ReviewWalkthrough";
+import { requiresExplicitDiffHydration } from "./inlineDiffGuards";
+import type {
+  ReviewWalkthroughFinding,
+  ReviewWalkthroughHunkStatus,
+} from "./ReviewWalkthrough";
+
+type DiffState = FileDiff | "loading" | "error" | undefined;
 
 interface BuildReviewWalkthroughFindingsOptions {
   files: FileChange[];
   annotationsByPath: Map<string, PrDiffAnnotation[]>;
   hunkAnnotationsByPath: Map<string, WorkspaceReviewHunkAnnotation[]>;
-  diffByPath: Map<string, FileDiff | "loading" | "error" | undefined>;
+  diffByPath: Map<string, DiffState>;
+  /** Paths the user explicitly opted into loading despite the generated-file gate. */
+  showAnywayPaths?: Set<string>;
 }
 
-function loadedDiff(
-  diff: FileDiff | "loading" | "error" | undefined,
-): FileDiff | undefined {
+function loadedDiff(diff: DiffState): FileDiff | undefined {
   return diff !== "loading" && diff !== "error" ? diff : undefined;
+}
+
+/**
+ * Distinguishes a failed diff fetch from a pending one, and a successfully
+ * loaded diff whose hunks no longer contain the annotated range from either.
+ * Collapsing these into "no hunk" strands the walkthrough on loading copy.
+ */
+function hunkStatusFor(
+  diff: DiffState,
+  hunk: DiffHunk | undefined,
+  isHydrationBlocked: boolean,
+): ReviewWalkthroughHunkStatus {
+  if (diff === "error") return "error";
+  if (hunk !== undefined) return "ready";
+  if (isHydrationBlocked) return "blocked";
+  if (diff === "loading" || diff === undefined) return "loading";
+  return "unavailable";
 }
 
 function hunkForWorkspaceAnnotation(
@@ -35,19 +62,19 @@ function hunkForWorkspaceAnnotation(
   );
 }
 
+/**
+ * Reuses the same side-keyed index the inline diff views use, so the walkthrough
+ * attaches exactly the hunk that would carry this annotation inline. Matching on
+ * either line numbering would attach the wrong hunk when old/new numbering diverges.
+ */
 function hunkForPrAnnotation(
   diff: FileDiff | undefined,
   annotation: PrDiffAnnotation,
 ): DiffHunk | undefined {
-  const startLine = annotation.startLine;
-  if (startLine === null) return undefined;
-  const endLine = annotation.endLine ?? startLine;
+  if (annotation.startLine === null) return undefined;
+  const index = buildAnnotationIndex([annotation]);
   return diff?.hunks.find((hunk) =>
-    hunk.lines.some(
-      (line) =>
-        (line.newLineNum !== null && line.newLineNum >= startLine && line.newLineNum <= endLine) ||
-        (line.oldLineNum !== null && line.oldLineNum >= startLine && line.oldLineNum <= endLine),
-    ),
+    hunk.lines.some((line) => annotationsForLine(index, line).length > 0),
   );
 }
 
@@ -56,10 +83,15 @@ export function buildReviewWalkthroughFindings({
   annotationsByPath,
   hunkAnnotationsByPath,
   diffByPath,
+  showAnywayPaths,
 }: BuildReviewWalkthroughFindingsOptions): ReviewWalkthroughFinding[] {
   const findings: ReviewWalkthroughFinding[] = [];
   for (const file of files) {
-    const diff = loadedDiff(diffByPath.get(file.path));
+    const diffState = diffByPath.get(file.path);
+    const diff = loadedDiff(diffState);
+    const isHydrationBlocked =
+      requiresExplicitDiffHydration(file) &&
+      !(showAnywayPaths?.has(file.path) ?? false);
     for (const annotation of hunkAnnotationsByPath.get(file.path) ?? []) {
       const hunk = hunkForWorkspaceAnnotation(diff, annotation);
       findings.push({
@@ -70,6 +102,7 @@ export function buildReviewWalkthroughFindings({
         message: annotation.message,
         level: annotation.level,
         sourceLabel: "Workspace review",
+        hunkStatus: hunkStatusFor(diffState, hunk, isHydrationBlocked),
         ...(hunk !== undefined && { hunk }),
       });
     }
@@ -83,6 +116,7 @@ export function buildReviewWalkthroughFindings({
         message: annotation.message,
         level: annotation.level,
         sourceLabel: annotation.checkName ?? annotationSourceLabel(annotation.source),
+        hunkStatus: hunkStatusFor(diffState, hunk, isHydrationBlocked),
         ...(hunk !== undefined && { hunk }),
       });
     }

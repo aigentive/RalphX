@@ -1,14 +1,29 @@
 import { useEffect, useMemo } from "react";
 import { ExternalLink } from "lucide-react";
-import { SimpleDiffView } from "@/components/diff/SimpleDiffView";
 import {
   DIFF_ANNOTATION_LEVEL_LEGEND,
   annotationLevelColor,
 } from "@/components/diff/diffRenderHelpers";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { DiffHunk } from "@/api/diff";
-import { ReviewWalkthroughNavigationButton } from "./ReviewWalkthroughControls";
+import {
+  ReviewWalkthroughHunk,
+  ReviewWalkthroughNavigationButton,
+} from "./ReviewWalkthroughControls";
 import { useReviewWalkthrough } from "./useReviewWalkthrough";
+
+/**
+ * `unavailable` means the file diff loaded but no hunk matched the annotation,
+ * `blocked` means the file is generated and still behind its explicit hydration
+ * gate — both are distinct from a fetch that is pending (`loading`) or failed
+ * (`error`), and none of them should render as indefinite loading.
+ */
+export type ReviewWalkthroughHunkStatus =
+  | "ready"
+  | "loading"
+  | "error"
+  | "unavailable"
+  | "blocked";
 
 export interface ReviewWalkthroughFinding {
   id: string;
@@ -18,6 +33,7 @@ export interface ReviewWalkthroughFinding {
   message: string;
   level: string;
   sourceLabel: string;
+  hunkStatus: ReviewWalkthroughHunkStatus;
   hunk?: DiffHunk | undefined;
 }
 
@@ -26,6 +42,8 @@ interface ReviewWalkthroughProps {
   onExit: () => void;
   onOpenFile?: ((path: string) => void) | undefined;
   onCurrentFindingChange?: ((findingId: string | null) => void) | undefined;
+  onRetryHunk?: ((path: string) => void) | undefined;
+  onLoadHunkAnyway?: ((path: string) => void) | undefined;
 }
 
 function severityLabel(level: string): string {
@@ -42,6 +60,8 @@ export function ReviewWalkthrough({
   onExit,
   onOpenFile,
   onCurrentFindingChange,
+  onRetryHunk,
+  onLoadHunkAnyway,
 }: ReviewWalkthroughProps) {
   const findingIds = useMemo(
     () => findings.map((finding) => finding.id),
@@ -61,6 +81,10 @@ export function ReviewWalkthrough({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      // Bare J/K only — never swallow Cmd+J, Ctrl+K and friends.
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
       const target = event.target;
       if (
         target instanceof HTMLElement &&
@@ -333,25 +357,11 @@ export function ReviewWalkthrough({
             borderTopWidth: "1px",
           }}
         >
-          {currentFinding.hunk === undefined ? (
-            <div className="px-4 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
-              Loading attached hunk…
-            </div>
-          ) : (
-            <SimpleDiffView
-              hunks={[currentFinding.hunk]}
-              oldTotalLines={
-                currentFinding.hunk.oldStart + currentFinding.hunk.oldLines - 1
-              }
-              newTotalLines={
-                currentFinding.hunk.newStart + currentFinding.hunk.newLines - 1
-              }
-              scrollContainer={false}
-              stickyGutter={false}
-              showContextGaps={false}
-              showWrapToggle={false}
-            />
-          )}
+          <ReviewWalkthroughHunk
+            finding={currentFinding}
+            onRetryHunk={onRetryHunk}
+            onLoadHunkAnyway={onLoadHunkAnyway}
+          />
         </div>
       </article>
       <div className="mt-3 flex items-center justify-between gap-3">

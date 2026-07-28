@@ -1480,6 +1480,85 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
     });
 
+    it("fetches only the current finding's file while walking through findings", async () => {
+      const user = userEvent.setup();
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Bar.tsx"),
+        makeFileChange("src/Unannotated.tsx"),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Foo.tsx"),
+              makeHunkAnnotation("src/Bar.tsx", { id: "workspace-review-hunk-bar" }),
+            ]}
+          />,
+        ),
+      );
+
+      // Nothing is visible/hydrated, so the normal list fetches nothing.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
+
+      await user.click(screen.getByTestId("publish-review-walkthrough-enter"));
+
+      // Entering hydrates ONLY the first finding's file.
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Foo.tsx"),
+      );
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-1", "src/Bar.tsx");
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith(
+        "conv-1",
+        "src/Unannotated.tsx",
+      );
+
+      // Stepping to the next finding hydrates its file and nothing else.
+      await user.click(screen.getByTestId("publish-review-walkthrough-next"));
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Bar.tsx"),
+      );
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith(
+        "conv-1",
+        "src/Unannotated.tsx",
+      );
+    });
+
+    it("does not auto-fetch a generated file's diff until the walkthrough asks for it", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("pnpm-lock.yaml", { isGenerated: true })];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[makeHunkAnnotation("pnpm-lock.yaml")]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("publish-review-walkthrough-enter"));
+
+      // The generated-file gate still applies inside the walkthrough.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
+      expect(
+        screen.getByTestId("publish-review-walkthrough-hunk-blocked"),
+      ).toHaveTextContent("generated file");
+
+      await user.click(screen.getByTestId("publish-review-walkthrough-hunk-load"));
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "pnpm-lock.yaml"),
+      );
+    });
+
     it("passes staged and unstaged workspace review hunk annotations to default workspace file cards", () => {
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(

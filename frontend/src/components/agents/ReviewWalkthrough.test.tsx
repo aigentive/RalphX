@@ -13,6 +13,7 @@ const findings: ReviewWalkthroughFinding[] = [
     message: "The first review note.",
     level: "warning",
     sourceLabel: "Workspace review",
+    hunkStatus: "ready",
     hunk: {
       oldStart: 1,
       oldLines: 1,
@@ -30,6 +31,7 @@ const findings: ReviewWalkthroughFinding[] = [
     message: "The second review note.",
     level: "failure",
     sourceLabel: "CI check",
+    hunkStatus: "ready",
     hunk: {
       oldStart: 2,
       oldLines: 1,
@@ -150,5 +152,83 @@ describe("ReviewWalkthrough", () => {
 
     await user.click(screen.getByTestId("publish-review-walkthrough-exit"));
     expect(onExit).toHaveBeenCalledOnce();
+  });
+
+  it("does not swallow modified J/K shortcuts such as Cmd+J and Ctrl+K", async () => {
+    const user = userEvent.setup();
+    renderWalkthrough();
+
+    await user.keyboard("{Meta>}j{/Meta}");
+    expect(screen.getByTestId("publish-review-walkthrough-position")).toHaveTextContent(
+      "Finding 1 of 2",
+    );
+
+    await user.click(screen.getByTestId("publish-review-walkthrough-dot-1"));
+    await user.keyboard("{Control>}k{/Control}");
+    expect(screen.getByTestId("publish-review-walkthrough-position")).toHaveTextContent(
+      "Finding 2 of 2",
+    );
+
+    await user.keyboard("{Alt>}j{/Alt}");
+    expect(screen.getByTestId("publish-review-walkthrough-position")).toHaveTextContent(
+      "Finding 2 of 2",
+    );
+  });
+
+  describe("attached hunk states", () => {
+    function renderWithHunkState(
+      finding: Partial<ReviewWalkthroughFinding>,
+      onRetryHunk = vi.fn(),
+    ) {
+      render(
+        <TooltipProvider>
+          <ReviewWalkthrough
+            findings={[{ ...findings[0]!, hunk: undefined, ...finding }]}
+            onExit={vi.fn()}
+            onRetryHunk={onRetryHunk}
+          />
+        </TooltipProvider>,
+      );
+      return onRetryHunk;
+    }
+
+    it("shows loading copy only while the diff is still being fetched", () => {
+      renderWithHunkState({ hunkStatus: "loading" });
+
+      expect(
+        screen.getByTestId("publish-review-walkthrough-hunk-loading"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("publish-review-walkthrough-hunk-error"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows an error state with a retry action when the diff fetch fails", async () => {
+      const user = userEvent.setup();
+      const onRetryHunk = renderWithHunkState({ hunkStatus: "error" });
+
+      expect(
+        screen.queryByTestId("publish-review-walkthrough-hunk-loading"),
+      ).not.toBeInTheDocument();
+      const error = screen.getByTestId("publish-review-walkthrough-hunk-error");
+      expect(error).toHaveTextContent("Could not load the attached hunk");
+
+      await user.click(screen.getByTestId("publish-review-walkthrough-hunk-retry"));
+      expect(onRetryHunk).toHaveBeenCalledWith("src/one.ts");
+    });
+
+    it("reports an unavailable hunk instead of loading when the diff loaded without a match", () => {
+      renderWithHunkState({ hunkStatus: "unavailable" });
+
+      expect(
+        screen.getByTestId("publish-review-walkthrough-hunk-unavailable"),
+      ).toHaveTextContent("no longer present");
+      expect(
+        screen.queryByTestId("publish-review-walkthrough-hunk-loading"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("publish-review-walkthrough-hunk-retry"),
+      ).not.toBeInTheDocument();
+    });
   });
 });
