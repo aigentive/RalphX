@@ -444,8 +444,13 @@ export interface ConversationListPageResponse {
 export type AgentSidebarPublicationState =
   "active" | "draft" | "merged" | "closed" | "uncommitted" | "unpushed";
 
-export type AgentSidebarGroupBy = "project" | "publication" | "automation";
+export type AgentSidebarGroupBy =
+  | "project"
+  | "publication"
+  | "automation"
+  | "inbox";
 export type AgentSidebarSort = "latest" | "az" | "za";
+export type AgentSidebarAttentionLane = "needs" | "working" | "stale" | "done";
 
 export interface AgentSidebarConversationsInput {
   projectIds: string[];
@@ -468,6 +473,9 @@ export interface AgentSidebarConversationRow {
   refLabel: string;
   publicationState: AgentSidebarPublicationState;
   publicationLabel: string | null;
+  attentionLane: AgentSidebarAttentionLane;
+  actionVerb: string;
+  isMuted: boolean;
 }
 
 export interface AgentSidebarConversationGroup {
@@ -1733,6 +1741,17 @@ export async function restoreConversation(
   return transformConversation(raw);
 }
 
+export async function setAgentConversationMuted(
+  conversationId: string,
+  muted: boolean,
+): Promise<void> {
+  await typedInvoke(
+    "set_agent_conversation_muted",
+    { input: { conversationId, muted } },
+    z.null(),
+  );
+}
+
 /**
  * Get the current agent run status for a conversation
  * @param conversationId The conversation ID
@@ -1835,6 +1854,7 @@ export const chatApi = {
   spawnConversationSessionNamer,
   archiveConversation,
   restoreConversation,
+  setAgentConversationMuted,
   getAgentConversationWorkspace,
   listWorkspaceOpenTargets,
   openAgentConversationWorkspace,
@@ -2665,6 +2685,9 @@ const AgentSidebarConversationRowResponseSchema = z.object({
     "unpushed",
   ]),
   publication_label: z.string().nullable(),
+  attention_lane: z.enum(["needs", "working", "stale", "done"]),
+  action_verb: z.string(),
+  is_muted: z.boolean(),
 });
 const AgentSidebarConversationGroupResponseSchema = z.object({
   key: z.string(),
@@ -3265,6 +3288,9 @@ function transformAgentSidebarConversationGroups(
         refLabel: row.ref_label,
         publicationState: row.publication_state,
         publicationLabel: row.publication_label,
+        attentionLane: row.attention_lane,
+        actionVerb: row.action_verb,
+        isMuted: row.is_muted,
       })),
     })),
   };

@@ -1,4 +1,5 @@
 import type {
+  AgentSidebarAttentionLane,
   AgentSidebarPublicationState,
   AgentSidebarSort,
 } from "@/api/chat";
@@ -28,6 +29,35 @@ export const agentSidebarConversationKeys = {
       priorityConversationIds,
     ] as const,
   automationScope: () => [...agentSidebarConversationKeys.all, "automation"] as const,
+  inboxGroup: (
+    projectIds: string[],
+    lane: AgentSidebarAttentionLane,
+    archivedOnly: boolean,
+    search = "",
+    publicationStates: AgentSidebarPublicationState[] = [],
+    pinnedConversationIds: string[] = [],
+    priorityConversationIds: string[] = [],
+    sort: AgentSidebarSort = "latest"
+  ) =>
+    [
+      ...agentSidebarConversationKeys.all,
+      "inbox",
+      lane,
+      "projects",
+      projectIds,
+      "archived",
+      archivedOnly,
+      "search",
+      search.trim().toLowerCase(),
+      "states",
+      publicationStates,
+      "pinned",
+      pinnedConversationIds,
+      "priority",
+      priorityConversationIds,
+      "sort",
+      sort,
+    ] as const,
   publicationGroup: (
     projectIds: string[],
     publicationState: AgentSidebarPublicationState,

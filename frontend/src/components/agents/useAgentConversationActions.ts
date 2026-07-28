@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import {
   chatApi,
+  setAgentConversationMuted,
   type AgentConversationWorkspace,
   type ChatMessageResponse,
 } from "@/api/chat";
@@ -479,6 +480,82 @@ export function useAgentConversationActions({
     [invalidateConversationLists]
   );
 
+  // Undo re-enters the same write, so the write lives in its own callback
+  // rather than the toast reaching back into the handler that opened it.
+  const writeConversationMuted = useCallback(
+    async (conversationId: string, muted: boolean) => {
+      await setAgentConversationMuted(conversationId, muted);
+      await queryClient.invalidateQueries({
+        queryKey: agentSidebarConversationKeys.all,
+      });
+    },
+    [queryClient],
+  );
+
+  const handleSetConversationMuted = useCallback(
+    async (conversation: AgentConversation, muted: boolean) => {
+      const title = conversation.title || "Untitled agent";
+      try {
+        await writeConversationMuted(conversation.id, muted);
+        if (muted) {
+          toast.success(`Muted "${title}" — comes back on its next change`, {
+            action: {
+              label: "Undo",
+              onClick: () => {
+                void writeConversationMuted(conversation.id, false).catch((err: unknown) => {
+                  toast.error(
+                    err instanceof Error ? err.message : "Failed to update session mute"
+                  );
+                });
+              },
+            },
+          });
+        }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to update session mute");
+      }
+    },
+    [writeConversationMuted],
+  );
+
+  const handleBulkMuteConversations = useCallback(
+    async (conversationIds: string[]) => {
+      try {
+        await Promise.all(
+          conversationIds.map((conversationId) => setAgentConversationMuted(conversationId, true))
+        );
+        await queryClient.invalidateQueries({
+          queryKey: agentSidebarConversationKeys.all,
+        });
+        const mutedLabel =
+          conversationIds.length === 1
+            ? "Muted 1 session — it returns on its next change"
+            : `Muted ${conversationIds.length} sessions — each returns on its next change`;
+        toast.success(mutedLabel, {
+          action: {
+            label: "Undo",
+            onClick: () => {
+              void Promise.all(
+                conversationIds.map((conversationId) => setAgentConversationMuted(conversationId, false))
+              )
+                .then(() =>
+                  queryClient.invalidateQueries({ queryKey: agentSidebarConversationKeys.all })
+                )
+                .catch((err: unknown) => {
+                  toast.error(
+                    err instanceof Error ? err.message : "Failed to update session mute"
+                  );
+                });
+            },
+          },
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to mute sessions");
+      }
+    },
+    [queryClient],
+  );
+
   const handleRenameConversation = useCallback(
     async (conversationId: string, title: string) => {
       const trimmed = title.trim();
@@ -542,6 +619,8 @@ export function useAgentConversationActions({
     handleArchiveProject,
     handleRenameConversation,
     handleRestoreConversation,
+    handleSetConversationMuted,
+    handleBulkMuteConversations,
     handleForkConversation,
     handleSidebarCreateAgent,
     handleStartPersonaBuilder,
