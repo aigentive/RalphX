@@ -1425,9 +1425,16 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      SET linked_ideation_session_id = ?2,
                          linked_plan_branch_id = ?3,
                          status = 'active',
-                         publication_pushed_sha = NULL,
                          local_cleanup_status = NULL,
                          local_cleanup_checked_at = NULL,
+                         publication_pr_number = NULL,
+                         publication_pr_url = NULL,
+                         publication_pr_status = NULL,
+                         publication_push_status = NULL,
+                         publication_pushed_sha = NULL,
+                         pr_supervision_status = NULL,
+                         pr_supervision_summary = NULL,
+                         pr_supervision_updated_at = ?4,
                          updated_at = ?4
                      WHERE conversation_id = ?1",
                     rusqlite::params![

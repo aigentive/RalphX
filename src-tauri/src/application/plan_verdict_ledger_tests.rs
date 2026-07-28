@@ -80,11 +80,11 @@ async fn verdict_history_is_actor_version_verdict_scoped_and_exact_retry_is_idem
         .await
         .unwrap();
     assert_eq!(outcomes.len(), 5);
-    assert!(outcomes
-        .iter()
-        .any(|outcome| outcome.outcome_class.as_ref().unwrap().as_str() == "accepted"));
     assert!(outcomes.iter().any(|outcome| {
-        outcome.outcome_class.as_ref().unwrap().as_str() == "revision_requested"
+        outcome.outcome_class.as_ref().unwrap().as_str() == "plan_mode_accepted"
+    }));
+    assert!(outcomes.iter().any(|outcome| {
+        outcome.outcome_class.as_ref().unwrap().as_str() == "plan_mode_revision_requested"
     }));
     assert!(outcomes.iter().all(|outcome| {
         outcome.source_ref_kind == "plan_verdict"

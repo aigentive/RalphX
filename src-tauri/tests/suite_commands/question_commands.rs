@@ -14,10 +14,12 @@ use ralphx_lib::commands::question_commands::{
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation, IdeationAnalysisBaseRefKind,
-    IdeationSessionFlow, NewNotification, NotificationCategory, NotificationSeverity,
-    NotificationTarget, Project,
+    IdeationSession, IdeationSessionFlow, NewNotification, NotificationCategory,
+    NotificationSeverity, NotificationTarget, Project, ProjectId, TaskOutcomeSource,
 };
-use ralphx_lib::domain::repositories::{QuestionRepository, QueuedMessageRepository};
+use ralphx_lib::domain::repositories::{
+    QuestionRepository, QueuedMessageRepository, TaskOutcomeListOptions,
+};
 use ralphx_lib::domain::services::{
     AttachProcessResult, MemoryRunningAgentRegistry, QueueKey, QueuedMessage, RunningAgentInfo,
     RunningAgentKey, RunningAgentRegistry, TryRegisterError,
@@ -419,7 +421,7 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
         outcome
             .get("outcome_class")
             .and_then(|value| value.as_str()),
-        Some("accepted")
+        Some("plan_mode_accepted")
     );
     assert_eq!(
         outcome
@@ -1071,48 +1073,45 @@ async fn accepted_plan_mode_proposal_is_unhandled_when_no_owner_reservation_rele
     );
 }
 
-#[tokio::test]
-async fn accepted_plan_mode_proposal_commit_failure_compensates_staged_handoff() {
-    struct FailingResolveRepo(MemoryQuestionRepository);
+struct FailingResolveRepo(MemoryQuestionRepository);
 
-    #[async_trait::async_trait]
-    impl QuestionRepository for FailingResolveRepo {
-        async fn create_pending(&self, info: &PendingQuestionInfo) -> AppResult<()> {
-            self.0.create_pending(info).await
-        }
-
-        async fn resolve(&self, _request_id: &str, _answer: &QuestionAnswer) -> AppResult<bool> {
-            Err(AppError::Database("durable write failed".to_string()))
-        }
-
-        async fn get_pending(&self) -> AppResult<Vec<PendingQuestionInfo>> {
-            self.0.get_pending().await
-        }
-
-        async fn get_by_request_id(
-            &self,
-            request_id: &str,
-        ) -> AppResult<Option<PendingQuestionInfo>> {
-            self.0.get_by_request_id(request_id).await
-        }
-
-        async fn expire_all_pending(&self) -> AppResult<u64> {
-            self.0.expire_all_pending().await
-        }
-
-        async fn expire_by_request_id(&self, request_id: &str) -> AppResult<()> {
-            self.0.expire_by_request_id(request_id).await
-        }
-
-        async fn remove(&self, request_id: &str) -> AppResult<bool> {
-            self.0.remove(request_id).await
-        }
-
-        async fn get_resolved_answer(&self, request_id: &str) -> AppResult<Option<QuestionAnswer>> {
-            self.0.get_resolved_answer(request_id).await
-        }
+#[async_trait::async_trait]
+impl QuestionRepository for FailingResolveRepo {
+    async fn create_pending(&self, info: &PendingQuestionInfo) -> AppResult<()> {
+        self.0.create_pending(info).await
     }
 
+    async fn resolve(&self, _request_id: &str, _answer: &QuestionAnswer) -> AppResult<bool> {
+        Err(AppError::Database("durable write failed".to_string()))
+    }
+
+    async fn get_pending(&self) -> AppResult<Vec<PendingQuestionInfo>> {
+        self.0.get_pending().await
+    }
+
+    async fn get_by_request_id(&self, request_id: &str) -> AppResult<Option<PendingQuestionInfo>> {
+        self.0.get_by_request_id(request_id).await
+    }
+
+    async fn expire_all_pending(&self) -> AppResult<u64> {
+        self.0.expire_all_pending().await
+    }
+
+    async fn expire_by_request_id(&self, request_id: &str) -> AppResult<()> {
+        self.0.expire_by_request_id(request_id).await
+    }
+
+    async fn remove(&self, request_id: &str) -> AppResult<bool> {
+        self.0.remove(request_id).await
+    }
+
+    async fn get_resolved_answer(&self, request_id: &str) -> AppResult<Option<QuestionAnswer>> {
+        self.0.get_resolved_answer(request_id).await
+    }
+}
+
+#[tokio::test]
+async fn accepted_plan_mode_proposal_commit_failure_compensates_staged_handoff() {
     let mut state = AppState::new_test();
     state.question_state = Arc::new(QuestionState::with_repo(Arc::new(FailingResolveRepo(
         MemoryQuestionRepository::new(),
@@ -1618,4 +1617,256 @@ async fn accepted_plan_mode_proposal_rejects_when_competing_launch_claims_before
         .expect("competing launch should leave the question reclaimable")
         .expect("question should remain pending after failed revalidation");
     assert!(state.question_state.release_claim(retry_claim).await);
+}
+
+async fn register_plan_mode_proposal_question(
+    state: &AppState,
+    conversation_id: &ralphx_lib::domain::entities::ChatConversationId,
+    request_id: &str,
+) {
+    state
+        .question_state
+        .register_with_metadata(
+            request_id.to_string(),
+            conversation_id.as_str(),
+            "Switch to Plan mode?".to_string(),
+            None,
+            vec![
+                QuestionOption {
+                    value: "switch_to_plan".to_string(),
+                    label: "Switch to Plan".to_string(),
+                    description: None,
+                },
+                QuestionOption {
+                    value: "keep_edit".to_string(),
+                    label: "Stay in Edit".to_string(),
+                    description: None,
+                },
+            ],
+            false,
+            true,
+            None,
+            None,
+            Some(json!({
+                "kind": "plan_mode_proposal",
+                "conversation_id": conversation_id.as_str(),
+                "reason": "Draft the implementation plan first"
+            })),
+        )
+        .await;
+}
+
+async fn plan_mode_outcome_classes(state: &AppState, project_id: &ProjectId) -> Vec<String> {
+    let mut classes = state
+        .task_outcome_repo
+        .list_by_project(
+            project_id,
+            TaskOutcomeListOptions {
+                source: Some(TaskOutcomeSource::PlanMode),
+                status: None,
+            },
+        )
+        .await
+        .expect("plan-mode outcomes should load")
+        .into_iter()
+        .filter(|outcome| outcome.source_ref_kind == "planning_session")
+        .map(|outcome| {
+            outcome
+                .outcome_class
+                .map(|class| class.as_str().to_string())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    classes.sort();
+    classes
+}
+
+#[tokio::test]
+async fn declined_plan_mode_proposal_records_a_verdict_row_beside_an_accept() {
+    let state = AppState::new_test();
+    let (_temp, conversation_id, _receiver) =
+        setup_accepted_plan_mode_proposal_question(&state, "req-plan-accept").await;
+    let app = build_question_command_app(state);
+
+    // Accept first: this is what links the planning session both verdicts key against.
+    resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-accept".to_string(),
+            selected_options: vec!["switch_to_plan".to_string()],
+            custom_response: None,
+            skipped: false,
+        },
+    )
+    .await
+    .expect("accepted proposal should resolve");
+
+    let state = app.state::<AppState>();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let planning_session_id = workspace
+        .linked_ideation_session_id
+        .clone()
+        .expect("accept should link a planning session");
+    let project_id = workspace.project_id.clone();
+    assert_eq!(
+        plan_mode_outcome_classes(&state, &project_id).await,
+        vec!["plan_mode_accepted".to_string()]
+    );
+
+    register_plan_mode_proposal_question(&state, &conversation_id, "req-plan-decline").await;
+    let response = resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-decline".to_string(),
+            selected_options: vec!["keep_edit".to_string()],
+            custom_response: Some("Stay in edit mode".to_string()),
+            skipped: false,
+        },
+    )
+    .await
+    .expect("declined proposal should resolve");
+    assert!(response.success);
+    assert!(!response.plan_mode_proposal_handled);
+
+    let state = app.state::<AppState>();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(
+        workspace.linked_ideation_session_id,
+        Some(planning_session_id),
+        "both verdicts must belong to the same planning session"
+    );
+
+    // The regression: a session-only dedupe key would have overwritten the accept row.
+    assert_eq!(
+        plan_mode_outcome_classes(&state, &project_id).await,
+        vec![
+            "plan_mode_accepted".to_string(),
+            "plan_mode_declined".to_string()
+        ],
+        "accept and decline in one planning session must both survive"
+    );
+}
+
+#[tokio::test]
+async fn skipped_plan_mode_proposal_records_no_verdict_row() {
+    let state = AppState::new_test();
+    let (_temp, conversation_id, _receiver) =
+        setup_accepted_plan_mode_proposal_question(&state, "req-plan-accept-first").await;
+    let app = build_question_command_app(state);
+
+    resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-accept-first".to_string(),
+            selected_options: vec!["switch_to_plan".to_string()],
+            custom_response: None,
+            skipped: false,
+        },
+    )
+    .await
+    .expect("accepted proposal should resolve");
+
+    let state = app.state::<AppState>();
+    let project_id = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist")
+        .project_id;
+
+    register_plan_mode_proposal_question(&state, &conversation_id, "req-plan-skip").await;
+    resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-skip".to_string(),
+            selected_options: vec![],
+            custom_response: None,
+            skipped: true,
+        },
+    )
+    .await
+    .expect("skipped proposal should resolve");
+
+    assert_eq!(
+        plan_mode_outcome_classes(app.state::<AppState>().inner(), &project_id).await,
+        vec!["plan_mode_accepted".to_string()],
+        "a skipped answer is not a verdict"
+    );
+}
+
+#[tokio::test]
+async fn unresolved_plan_mode_decline_records_no_verdict_row() {
+    let mut state = AppState::new_test();
+    state.question_state = Arc::new(QuestionState::with_repo(Arc::new(FailingResolveRepo(
+        MemoryQuestionRepository::new(),
+    ))));
+    let (_temp, conversation_id, _receiver) =
+        setup_accepted_plan_mode_proposal_question(&state, "req-plan-unresolved-decline").await;
+
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let project_id = workspace.project_id.clone();
+    let session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project_id.clone())
+                .session_flow(IdeationSessionFlow::Planning)
+                .source_context_type("agent_conversation")
+                .source_context_id(conversation_id.as_str())
+                .build(),
+        )
+        .await
+        .expect("planning session should persist");
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace link should persist");
+
+    let app = build_question_command_app(state);
+    resolve_user_question(
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.handle().clone(),
+        ResolveQuestionArgs {
+            request_id: "req-plan-unresolved-decline".to_string(),
+            selected_options: vec!["keep_edit".to_string()],
+            custom_response: Some("Stay in edit mode".to_string()),
+            skipped: false,
+        },
+    )
+    .await
+    .expect_err("a failed durable commit must not report the question resolved");
+
+    assert!(
+        plan_mode_outcome_classes(app.state::<AppState>().inner(), &project_id)
+            .await
+            .is_empty(),
+        "an unresolved answer must not record a verdict"
+    );
 }

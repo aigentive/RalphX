@@ -273,6 +273,19 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         plan_branch_id: Option<&PlanBranchId>,
     ) -> AppResult<()>;
 
+    /// Resets a workspace for a restarted implementation.
+    ///
+    /// Implementations must relink the session/plan branch, reactivate the
+    /// workspace, and clear local cleanup markers, publication state
+    /// (`publication_pr_number/url/status`, `publication_push_status`,
+    /// `publication_pushed_sha`), and PR supervision state, so stale publication
+    /// evidence cannot be reused by the next attempt. `ideation_commands_restart::
+    /// restore_restart_workspace_state` is the transactional counterpart and must
+    /// clear the same columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace does not exist or the write fails.
     async fn restore_after_restart(
         &self,
         conversation_id: &ChatConversationId,

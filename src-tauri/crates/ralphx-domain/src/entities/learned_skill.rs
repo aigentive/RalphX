@@ -213,9 +213,7 @@ pub enum TaskOutcomeClass {
     WorkspacePrStaleRepair,
     PlanModeAccepted,
     PlanModeDeclined,
-    PlanAccepted,
-    PlanDeclined,
-    PlanRevisionRequested,
+    PlanModeRevisionRequested,
     ReviewApproved,
     ReviewApprovedNoChanges,
     ReviewChangesRequested,
@@ -253,9 +251,7 @@ impl TaskOutcomeClass {
             Self::WorkspacePrStaleRepair => "workspace_pr_stale_repair",
             Self::PlanModeAccepted => "plan_mode_accepted",
             Self::PlanModeDeclined => "plan_mode_declined",
-            Self::PlanAccepted => "accepted",
-            Self::PlanDeclined => "declined",
-            Self::PlanRevisionRequested => "revision_requested",
+            Self::PlanModeRevisionRequested => "plan_mode_revision_requested",
             Self::ReviewApproved => "review_approved",
             Self::ReviewApprovedNoChanges => "review_approved_no_changes",
             Self::ReviewChangesRequested => "review_changes_requested",
@@ -281,6 +277,10 @@ impl fmt::Display for TaskOutcomeClass {
     }
 }
 
+/// The short Plan-mode verdict strings `"accepted"`, `"declined"`, and
+/// `"revision_requested"` are retired in favour of the canonical `plan_mode_*`
+/// classes. Rows persisted under the retired strings intentionally fall through
+/// to `Other(...)`, which round-trips losslessly; they are not backfilled.
 impl From<&str> for TaskOutcomeClass {
     fn from(value: &str) -> Self {
         match value {
@@ -301,9 +301,7 @@ impl From<&str> for TaskOutcomeClass {
             "workspace_pr_stale_repair" => Self::WorkspacePrStaleRepair,
             "plan_mode_accepted" => Self::PlanModeAccepted,
             "plan_mode_declined" => Self::PlanModeDeclined,
-            "accepted" => Self::PlanAccepted,
-            "declined" => Self::PlanDeclined,
-            "revision_requested" => Self::PlanRevisionRequested,
+            "plan_mode_revision_requested" => Self::PlanModeRevisionRequested,
             "review_approved" => Self::ReviewApproved,
             "review_approved_no_changes" => Self::ReviewApprovedNoChanges,
             "review_changes_requested" => Self::ReviewChangesRequested,

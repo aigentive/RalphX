@@ -908,6 +908,13 @@ async fn restart_restore_reactivates_workspace_and_clears_cleanup_marker() {
     let conversation_id = ChatConversationId::from_string("conversation-restart");
     let mut workspace = make_workspace(conversation_id.clone());
     workspace.status = AgentConversationWorkspaceStatus::Missing;
+    workspace.publication_pushed_sha = Some("a".repeat(40));
+    workspace.publication_pr_number = Some(895);
+    workspace.publication_pr_url = Some("https://github.com/example/repo/pull/895".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_supervision_status = Some("supervising".to_string());
+    workspace.pr_supervision_summary = Some("watching PR #895".to_string());
     repo.create_or_update(workspace)
         .await
         .expect("insert missing workspace");
@@ -941,6 +948,16 @@ async fn restart_restore_reactivates_workspace_and_clears_cleanup_marker() {
             .expect("read cleanup marker"),
         None
     );
+    assert_eq!(
+        restored.publication_pushed_sha, None,
+        "restart must clear stale publication evidence"
+    );
+    assert_eq!(restored.publication_pr_number, None);
+    assert_eq!(restored.publication_pr_url, None);
+    assert_eq!(restored.publication_pr_status, None);
+    assert_eq!(restored.publication_push_status, None);
+    assert_eq!(restored.pr_supervision_status, None);
+    assert_eq!(restored.pr_supervision_summary, None);
 }
 
 #[tokio::test]

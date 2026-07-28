@@ -34,7 +34,7 @@ fn plan_mode_verdict_capture_records_compact_accepted_outcome_without_session_mu
     let outcome = capture_plan_mode_verdict(input).expect("accepted verdict is eligible");
 
     assert_eq!(outcome.project_id, "project-1");
-    assert_eq!(outcome.outcome_class, "accepted");
+    assert_eq!(outcome.outcome_class, "plan_mode_accepted");
     assert_eq!(outcome.status, "eligible");
     assert_eq!(
         outcome.refs.get("accepted_session_id").map(String::as_str),
