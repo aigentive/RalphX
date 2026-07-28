@@ -66,9 +66,27 @@ describe("PublishPipelineSteps", () => {
       />,
     );
 
-    expect(screen.getByText(/metadata step for PR #888/)).toBeInTheDocument();
-    expect(screen.getByText(/unsafe replacement body/)).toBeInTheDocument();
+    expect(screen.getByText(/metadata outcome for PR #888/)).toBeInTheDocument();
+    expect(screen.getByText(/could not confirm/i)).toBeInTheDocument();
     expect(screen.queryByText(/no pull request was opened/)).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-step-describing")).toBeInTheDocument();
+  });
+
+  it("keeps the target-aware final step active while GitHub reconciliation is in progress", () => {
+    const { container } = render(
+      <PublishPipelineSteps
+        status="pushing"
+        isPublishing
+        targetPullRequestLabel="PR #888"
+        receiptPhase="reconciling"
+        receiptState="unknown"
+      />,
+    );
+
+    expect(screen.getByTestId("agents-publish-step-pushed")).toHaveTextContent(
+      "Update PR",
+    );
+    expect(screen.getByText(/may have applied the description/i)).toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 });

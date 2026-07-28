@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use crate::application::agent_workspace_bridge::AgentWorkspaceBridgeDeps;
-use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup_for_state;
+use crate::application::agent_workspace_publish_recovery::{
+    recover_pending_agent_workspace_pr_metadata_receipts_on_startup_for_state,
+    recover_stale_agent_workspace_publish_repairs_on_startup_for_state,
+};
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::runtime_factory::{ChatRuntimeFactoryDeps, RuntimeFactoryDeps};
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
@@ -867,6 +870,10 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         "workspace_review_auto_merge_guard_reconciliation",
         phase_started_at,
     );
+
+    let phase_started_at = startup_phase_started("workspace_pr_metadata_receipt_recovery");
+    recover_pending_agent_workspace_pr_metadata_receipts_on_startup_for_state(&app_state).await;
+    startup_phase_completed("workspace_pr_metadata_receipt_recovery", phase_started_at);
 
     let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&app_state).await;

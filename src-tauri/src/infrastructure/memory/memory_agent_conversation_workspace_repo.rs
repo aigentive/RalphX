@@ -13,17 +13,21 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewApprovalSnapshot,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewFixerSnapshot,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspacePublicationMetadataPhase,
+    AgentWorkspacePublicationMetadataReceipt, AgentWorkspacePublicationMetadataState,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
-    AgentWorkspacePrTerminalSettlement,
+    AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
+    AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
+    AgentWorkspacePublicationUpdate,
 };
 use crate::error::{AppError, AppResult};
 
@@ -31,11 +35,112 @@ use crate::error::{AppError, AppResult};
 #[path = "memory_agent_conversation_workspace_repo_tests.rs"]
 mod memory_agent_conversation_workspace_repo_tests;
 
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_publication_metadata_receipt(
+    receipt: &AgentWorkspacePublicationMetadataReceipt,
+) -> AppResult<()> {
+    if receipt.attempt_id.trim().is_empty() {
+        return Err(AppError::Validation(
+            "publication metadata receipt attempt id must not be empty".to_string(),
+        ));
+    }
+    if receipt.target_pr_number <= 0 {
+        return Err(AppError::Validation(
+            "publication metadata receipt target PR number must be positive".to_string(),
+        ));
+    }
+    for (label, value) in [
+        ("before authority", receipt.before_authority_sha256.as_str()),
+        ("before title", receipt.before_title_sha256.as_str()),
+        (
+            "before editable body",
+            receipt.before_editable_body_sha256.as_str(),
+        ),
+    ] {
+        if !is_lowercase_sha256(value) {
+            return Err(AppError::Validation(format!(
+                "publication metadata receipt {label} fingerprint must be lowercase SHA-256"
+            )));
+        }
+    }
+    for (label, value) in [
+        (
+            "before managed suffix",
+            receipt.before_managed_suffix_sha256.as_deref(),
+        ),
+        ("intended title", receipt.intended_title_sha256.as_deref()),
+        (
+            "intended editable body",
+            receipt.intended_editable_body_sha256.as_deref(),
+        ),
+    ] {
+        if value.is_some_and(|value| !is_lowercase_sha256(value)) {
+            return Err(AppError::Validation(format!(
+                "publication metadata receipt {label} fingerprint must be lowercase SHA-256"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_publication_metadata_refresh(
+    refresh: &AgentWorkspacePublicationMetadataReceiptRefresh,
+) -> AppResult<()> {
+    validate_publication_metadata_receipt(&AgentWorkspacePublicationMetadataReceipt {
+        attempt_id: "refresh".to_string(),
+        phase: AgentWorkspacePublicationMetadataPhase::Prepared,
+        state: AgentWorkspacePublicationMetadataState::NotAttempted,
+        target_pr_number: refresh.target_pr_number,
+        before_authority_sha256: refresh.before_authority_sha256.clone(),
+        before_title_sha256: refresh.before_title_sha256.clone(),
+        before_editable_body_sha256: refresh.before_editable_body_sha256.clone(),
+        before_managed_suffix_sha256: refresh.before_managed_suffix_sha256.clone(),
+        intended_title_sha256: refresh.intended_title_sha256.clone(),
+        intended_editable_body_sha256: refresh.intended_editable_body_sha256.clone(),
+        updated_at: refresh.updated_at,
+    })
+}
+
+fn validate_publication_metadata_decision(
+    receipt: &AgentWorkspacePublicationMetadataReceipt,
+    decision: &AgentWorkspacePrMetadataDecision,
+) -> AppResult<()> {
+    let valid = match decision {
+        AgentWorkspacePrMetadataDecision::Preserve => {
+            receipt.intended_title_sha256.is_none()
+                && receipt.intended_editable_body_sha256.is_none()
+        }
+        AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown,
+        } => {
+            (title.is_some() || body_markdown.is_some())
+                && title.is_some() == receipt.intended_title_sha256.is_some()
+                && body_markdown.is_some() == receipt.intended_editable_body_sha256.is_some()
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "publication metadata decision does not match intended receipt fields".to_string(),
+        ))
+    }
+}
+
 pub struct MemoryAgentConversationWorkspaceRepository {
     workspaces: RwLock<HashMap<ChatConversationId, AgentConversationWorkspace>>,
     followup_provenance: RwLock<HashMap<ChatConversationId, AgentWorkspaceFollowupProvenance>>,
     pr_descriptions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrDescription>>,
     pr_metadata_decisions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrMetadataDecision>>,
+    publication_metadata_receipts:
+        RwLock<HashMap<ChatConversationId, AgentWorkspacePublicationMetadataReceipt>>,
     publication_events:
         RwLock<HashMap<ChatConversationId, Vec<AgentConversationWorkspacePublicationEvent>>>,
     pr_comment_evidence: RwLock<HashMap<(String, i64, String), AgentWorkspacePrCommentEvidence>>,
@@ -66,6 +171,7 @@ impl MemoryAgentConversationWorkspaceRepository {
             followup_provenance: RwLock::new(HashMap::new()),
             pr_descriptions: RwLock::new(HashMap::new()),
             pr_metadata_decisions: RwLock::new(HashMap::new()),
+            publication_metadata_receipts: RwLock::new(HashMap::new()),
             publication_events: RwLock::new(HashMap::new()),
             pr_comment_evidence: RwLock::new(HashMap::new()),
             pr_review_monitors: RwLock::new(HashMap::new()),
@@ -154,6 +260,14 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let mut workspaces = self.workspaces.write().await;
         if let Some(existing) = workspaces.get(&workspace.conversation_id) {
             workspace.created_at = existing.created_at;
+            // Receipt authority is changed only by its attempt-scoped CAS methods.
+            // Normal workspace upserts must not erase an in-flight receipt.
+            if workspace.publication_metadata_attempt_id.is_none() {
+                workspace.publication_metadata_phase = existing.publication_metadata_phase;
+                workspace.publication_metadata_state = existing.publication_metadata_state;
+                workspace.publication_metadata_attempt_id =
+                    existing.publication_metadata_attempt_id.clone();
+            }
         }
         workspace.updated_at = Utc::now();
         workspaces.insert(workspace.conversation_id, workspace.clone());
@@ -449,6 +563,25 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_pending_publication_metadata_receipt_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64);
+        let workspaces = self.workspaces.read().await;
+        let receipts = self.publication_metadata_receipts.read().await;
+        Ok(workspaces
+            .values()
+            .filter(|workspace| {
+                is_active_pending_publication_metadata_receipt_workspace(workspace)
+                    && receipts
+                        .get(&workspace.conversation_id)
+                        .is_some_and(|receipt| receipt.updated_at <= cutoff)
+            })
+            .cloned()
+            .collect())
+    }
+
     async fn list_active_direct_external_pr_reconciliation_candidates(
         &self,
         limit: usize,
@@ -564,6 +697,371 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.updated_at = now;
         }
         Ok(())
+    }
+
+    async fn claim_publication_metadata_receipt(
+        &self,
+        conversation_id: &ChatConversationId,
+        claim: AgentWorkspacePublicationMetadataReceiptClaim,
+    ) -> AppResult<bool> {
+        validate_publication_metadata_receipt(&claim.receipt)?;
+        validate_publication_metadata_decision(&claim.receipt, &claim.decision)?;
+        if claim.event.conversation_id != *conversation_id
+            || claim.event.attempt_id.as_deref() != Some(claim.receipt.attempt_id.as_str())
+        {
+            return Err(AppError::Validation(
+                "publication metadata receipt claim event must belong to the claimed attempt"
+                    .to_string(),
+            ));
+        }
+        if claim.receipt.phase != AgentWorkspacePublicationMetadataPhase::Prepared
+            || claim.receipt.state != AgentWorkspacePublicationMetadataState::NotAttempted
+        {
+            return Err(AppError::Validation(
+                "publication metadata receipt claim must start prepared and not_attempted"
+                    .to_string(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+
+        let mut workspaces = self.workspaces.write().await;
+        let mut receipts = self.publication_metadata_receipts.write().await;
+        let mut decisions = self.pr_metadata_decisions.write().await;
+        let mut publication_events = self.publication_events.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publication_pr_number != Some(claim.receipt.target_pr_number) {
+            return Err(AppError::Validation(
+                "publication metadata receipt target does not match the workspace PR".to_string(),
+            ));
+        }
+        match (
+            workspace.publication_metadata_attempt_id.as_deref(),
+            workspace.publication_metadata_phase,
+            workspace.publication_metadata_state,
+        ) {
+            (None, None, None) => {
+                if receipts.contains_key(conversation_id) {
+                    return Err(AppError::Validation(
+                        "publication metadata receipt authority is inconsistent".to_string(),
+                    ));
+                }
+            }
+            (
+                Some(attempt_id),
+                Some(AgentWorkspacePublicationMetadataPhase::Settled),
+                Some(state),
+            ) if state != AgentWorkspacePublicationMetadataState::Unknown => {
+                let receipt = receipts.get(conversation_id).ok_or_else(|| {
+                    AppError::Validation(
+                        "publication metadata receipt authority is incomplete".to_string(),
+                    )
+                })?;
+                if receipt.attempt_id != attempt_id
+                    || receipt.phase != AgentWorkspacePublicationMetadataPhase::Settled
+                    || receipt.state != state
+                {
+                    return Err(AppError::Validation(
+                        "publication metadata receipt authority is inconsistent".to_string(),
+                    ));
+                }
+                validate_publication_metadata_receipt(receipt)?;
+            }
+            (Some(_), Some(phase), Some(_))
+                if phase != AgentWorkspacePublicationMetadataPhase::Settled =>
+            {
+                return Ok(false);
+            }
+            _ => {
+                return Err(AppError::Validation(
+                    "publication metadata receipt authority is incomplete".to_string(),
+                ));
+            }
+        }
+
+        workspace.publication_metadata_phase = Some(claim.receipt.phase);
+        workspace.publication_metadata_state = Some(claim.receipt.state);
+        workspace.publication_metadata_attempt_id = Some(claim.receipt.attempt_id.clone());
+        workspace.publication_push_status = Some("pushing".to_string());
+        workspace.updated_at = claim.receipt.updated_at;
+        receipts.insert(conversation_id.clone(), claim.receipt);
+        decisions.insert(conversation_id.clone(), claim.decision);
+        publication_events
+            .entry(conversation_id.clone())
+            .or_default()
+            .push(claim.event);
+        Ok(true)
+    }
+
+    async fn compare_and_set_publication_metadata_receipt_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_attempt_id: &str,
+        expected_phase: AgentWorkspacePublicationMetadataPhase,
+        expected_state: AgentWorkspacePublicationMetadataState,
+        next_phase: AgentWorkspacePublicationMetadataPhase,
+        next_state: AgentWorkspacePublicationMetadataState,
+        refresh: Option<AgentWorkspacePublicationMetadataReceiptRefresh>,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        if let Some(refresh) = refresh.as_ref() {
+            validate_publication_metadata_refresh(refresh)?;
+            validate_publication_metadata_decision(
+                &AgentWorkspacePublicationMetadataReceipt {
+                    attempt_id: expected_attempt_id.to_string(),
+                    phase: next_phase,
+                    state: next_state,
+                    target_pr_number: refresh.target_pr_number,
+                    before_authority_sha256: refresh.before_authority_sha256.clone(),
+                    before_title_sha256: refresh.before_title_sha256.clone(),
+                    before_editable_body_sha256: refresh.before_editable_body_sha256.clone(),
+                    before_managed_suffix_sha256: refresh.before_managed_suffix_sha256.clone(),
+                    intended_title_sha256: refresh.intended_title_sha256.clone(),
+                    intended_editable_body_sha256: refresh.intended_editable_body_sha256.clone(),
+                    updated_at: refresh.updated_at,
+                },
+                &refresh.decision,
+            )?;
+        }
+        if events.iter().any(|event| {
+            event.conversation_id != *conversation_id
+                || event.attempt_id.as_deref() != Some(expected_attempt_id)
+        }) {
+            return Err(AppError::Validation(
+                "publication metadata receipt events must belong to the guarded attempt"
+                    .to_string(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+        #[cfg(test)]
+        {
+            let mut matching_error = self.matching_publication_event_error.lock().unwrap();
+            if let Some((_, _, message)) = matching_error.as_ref().filter(|(step, status, _)| {
+                events
+                    .iter()
+                    .any(|event| event.step == *step && event.status == *status)
+            }) {
+                let message = message.clone();
+                matching_error.take();
+                return Err(AppError::Infrastructure(message));
+            }
+        }
+
+        let mut workspaces = self.workspaces.write().await;
+        let mut receipts = self.publication_metadata_receipts.write().await;
+        let mut decisions = self.pr_metadata_decisions.write().await;
+        let mut publication_events = self.publication_events.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publication_metadata_attempt_id.as_deref() != Some(expected_attempt_id)
+            || workspace.publication_metadata_phase != Some(expected_phase)
+            || workspace.publication_metadata_state != Some(expected_state)
+        {
+            return Ok(false);
+        }
+
+        let updated_at = refresh
+            .as_ref()
+            .map(|refresh| refresh.updated_at)
+            .unwrap_or_else(Utc::now);
+        let receipt = receipts.get_mut(conversation_id).ok_or_else(|| {
+            AppError::Validation("publication metadata receipt authority is missing".to_string())
+        })?;
+        receipt.phase = next_phase;
+        receipt.state = next_state;
+        receipt.updated_at = updated_at;
+        if let Some(refresh) = refresh {
+            receipt.target_pr_number = refresh.target_pr_number;
+            receipt.before_authority_sha256 = refresh.before_authority_sha256;
+            receipt.before_title_sha256 = refresh.before_title_sha256;
+            receipt.before_editable_body_sha256 = refresh.before_editable_body_sha256;
+            receipt.before_managed_suffix_sha256 = refresh.before_managed_suffix_sha256;
+            receipt.intended_title_sha256 = refresh.intended_title_sha256;
+            receipt.intended_editable_body_sha256 = refresh.intended_editable_body_sha256;
+            decisions.insert(conversation_id.clone(), refresh.decision);
+        }
+        workspace.publication_metadata_phase = Some(next_phase);
+        workspace.publication_metadata_state = Some(next_state);
+        workspace.updated_at = updated_at;
+        publication_events
+            .entry(conversation_id.clone())
+            .or_default()
+            .extend(events);
+        Ok(true)
+    }
+
+    async fn settle_publication_metadata_receipt_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_attempt_id: &str,
+        expected_phase: AgentWorkspacePublicationMetadataPhase,
+        expected_state: AgentWorkspacePublicationMetadataState,
+        next_phase: AgentWorkspacePublicationMetadataPhase,
+        next_state: AgentWorkspacePublicationMetadataState,
+        publication: AgentWorkspacePublicationUpdate,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        if events.iter().any(|event| {
+            event.conversation_id != *conversation_id
+                || event.attempt_id.as_deref() != Some(expected_attempt_id)
+        }) {
+            return Err(AppError::Validation(
+                "publication metadata receipt events must belong to the guarded attempt"
+                    .to_string(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+        #[cfg(test)]
+        {
+            let mut matching_error = self.matching_publication_event_error.lock().unwrap();
+            if let Some((_, _, message)) = matching_error.as_ref().filter(|(step, status, _)| {
+                events
+                    .iter()
+                    .any(|event| event.step == *step && event.status == *status)
+            }) {
+                let message = message.clone();
+                matching_error.take();
+                return Err(AppError::Infrastructure(message));
+            }
+        }
+
+        let mut workspaces = self.workspaces.write().await;
+        let mut receipts = self.publication_metadata_receipts.write().await;
+        let mut publication_events = self.publication_events.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publication_metadata_attempt_id.as_deref() != Some(expected_attempt_id)
+            || workspace.publication_metadata_phase != Some(expected_phase)
+            || workspace.publication_metadata_state != Some(expected_state)
+        {
+            return Ok(false);
+        }
+
+        let now = Utc::now();
+        workspace.publication_pr_number = publication.pr_number;
+        workspace.publication_pr_url = publication.pr_url;
+        workspace.publication_pr_status = publication.pr_status;
+        workspace.publication_push_status = publication.push_status;
+        workspace.publication_metadata_phase = Some(next_phase);
+        workspace.publication_metadata_state = Some(next_state);
+        let receipt = receipts.get_mut(conversation_id).ok_or_else(|| {
+            AppError::Validation("publication metadata receipt authority is missing".to_string())
+        })?;
+        receipt.phase = next_phase;
+        receipt.state = next_state;
+        receipt.updated_at = now;
+        if matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("merged" | "closed")
+        ) {
+            workspace.pr_supervision_status = None;
+            workspace.pr_supervision_summary = None;
+            workspace.pr_supervision_updated_at = Some(now);
+        }
+        workspace.updated_at = now;
+        publication_events
+            .entry(conversation_id.clone())
+            .or_default()
+            .extend(events);
+        Ok(true)
+    }
+
+    async fn update_publication_with_events(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: &AgentWorkspacePublicationGuard,
+        publication: AgentWorkspacePublicationUpdate,
+        events: Vec<AgentConversationWorkspacePublicationEvent>,
+    ) -> AppResult<bool> {
+        if events
+            .iter()
+            .any(|event| event.conversation_id != *conversation_id)
+        {
+            return Err(AppError::Validation(
+                "publication events must belong to the workspace".to_string(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
+        let mut workspaces = self.workspaces.write().await;
+        let mut publication_events = self.publication_events.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if AgentWorkspacePublicationGuard::from_workspace(workspace) != *expected {
+            return Ok(false);
+        }
+        let now = Utc::now();
+        workspace.publication_pr_number = publication.pr_number;
+        workspace.publication_pr_url = publication.pr_url;
+        workspace.publication_pr_status = publication.pr_status;
+        workspace.publication_push_status = publication.push_status;
+        if matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("merged" | "closed")
+        ) {
+            workspace.pr_supervision_status = None;
+            workspace.pr_supervision_summary = None;
+            workspace.pr_supervision_updated_at = Some(now);
+        }
+        workspace.updated_at = now;
+        publication_events
+            .entry(conversation_id.clone())
+            .or_default()
+            .extend(events);
+        Ok(true)
+    }
+
+    async fn get_publication_metadata_receipt(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePublicationMetadataReceipt>> {
+        let workspace = self.workspaces.read().await.get(conversation_id).cloned();
+        let receipt = self
+            .publication_metadata_receipts
+            .read()
+            .await
+            .get(conversation_id)
+            .cloned();
+        match (workspace, receipt) {
+            (None, _) => Ok(None),
+            (Some(workspace), None)
+                if workspace.publication_metadata_phase.is_none()
+                    && workspace.publication_metadata_state.is_none()
+                    && workspace.publication_metadata_attempt_id.is_none() =>
+            {
+                Ok(None)
+            }
+            (Some(_), None) => Err(AppError::Validation(
+                "publication metadata receipt authority is incomplete".to_string(),
+            )),
+            (Some(workspace), Some(receipt))
+                if workspace.publication_metadata_attempt_id.as_deref()
+                    == Some(&receipt.attempt_id)
+                    && workspace.publication_metadata_phase == Some(receipt.phase)
+                    && workspace.publication_metadata_state == Some(receipt.state) =>
+            {
+                validate_publication_metadata_receipt(&receipt)?;
+                Ok(Some(receipt))
+            }
+            (Some(_), Some(_)) => Err(AppError::Validation(
+                "publication metadata receipt authority is inconsistent".to_string(),
+            )),
+        }
     }
 
     async fn compare_and_set_repair_state(
@@ -2298,11 +2796,33 @@ fn is_stale_transient_publish_status_workspace(
     workspace.status == AgentConversationWorkspaceStatus::Active
         && matches!(
             workspace.publication_push_status.as_deref(),
-            Some("refreshing") | Some("checking") | Some("committing") | Some("describing")
+            Some("refreshing")
+                | Some("checking")
+                | Some("committing")
+                | Some("describing")
+                | Some("pushing")
         )
         && !matches!(
             workspace.publication_pr_status.as_deref(),
             Some("closed") | Some("merged")
         )
         && workspace.updated_at <= cutoff
+}
+
+fn is_active_pending_publication_metadata_receipt_workspace(
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && matches!(
+            workspace.publication_metadata_phase,
+            Some(
+                AgentWorkspacePublicationMetadataPhase::Prepared
+                    | AgentWorkspacePublicationMetadataPhase::Mutating
+                    | AgentWorkspacePublicationMetadataPhase::Reconciling
+            )
+        )
+        && !matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
 }
