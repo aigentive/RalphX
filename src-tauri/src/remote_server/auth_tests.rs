@@ -227,6 +227,10 @@ impl RemoteAuditLogRepository for FailingAuditRepository {
     async fn list_recent(&self, _limit: Option<i64>) -> AppResult<Vec<RemoteAuditEntry>> {
         Err(AppError::Database("database is locked".to_string()))
     }
+
+    async fn prune_before(&self, _cutoff: &str) -> AppResult<usize> {
+        Err(AppError::Database("database is locked".to_string()))
+    }
 }
 
 // ---------------------------------------------------------------------------------------

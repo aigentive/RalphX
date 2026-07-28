@@ -286,6 +286,9 @@ async fn remote_fetch_rejects_an_unknown_id() {
         RemoteFetchInput {
             id: "missing".to_string(),
             path: "/remote/v1/health".to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
         },
         app.state::<AppState>(),
     )
