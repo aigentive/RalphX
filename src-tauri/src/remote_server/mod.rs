@@ -48,6 +48,11 @@ pub mod registry;
 mod registry_tests;
 // --- end PR 1.3 block ---
 
+// --- PR 1.5: mutating surface — generated scope suite (one contiguous block) ---
+#[cfg(test)]
+mod scope_suite_tests;
+// --- end PR 1.5 block ---
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 

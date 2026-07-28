@@ -242,6 +242,7 @@ fn spec_with(class: RiskClass, authz: Option<registry::AuthzPredicate>) -> Remot
         capabilities: &[],
         authz,
         validate: None,
+        pins: &[],
     }
 }
 
