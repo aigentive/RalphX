@@ -21,6 +21,7 @@ import {
 import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { useEventBus } from "@/providers/EventProvider";
 import { useTaskBoard } from "./hooks";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { TaskBoardSkeleton } from "./TaskBoardSkeleton";
 import { Column } from "./Column";
 import { TaskCard, type TaskCardDisplayMode } from "./TaskCard";
@@ -303,6 +304,15 @@ export function TaskBoard({
     };
   }, [projectId, ideationSessionId, queryClient, eventBus]);
 
+  /**
+   * Dragging a card is `move_task` — agent steering (2.6-b). Gated by removing the
+   * SENSORS rather than rejecting the drop: a drag that animates and then snaps back
+   * reads as a bug, while a card that will not pick up reads as "not allowed here",
+   * which the column hint then names.
+   */
+  const agentGate = useAgentGate("taskMove");
+  const dragDisabled = readOnly || agentGate.gated;
+
   // Distance-based activation - drag starts after moving 8px
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -367,7 +377,7 @@ export function TaskBoard({
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
-    if (readOnly) return;
+    if (dragDisabled) return;
     const taskId = String(event.active.id);
 
     // Find the source column for this task
@@ -416,7 +426,7 @@ export function TaskBoard({
 
   return (
     <DndContext
-      sensors={readOnly ? [] : sensors}
+      sensors={dragDisabled ? [] : sensors}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}

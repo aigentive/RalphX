@@ -10,6 +10,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Shield, Terminal } from "lucide-react";
 import { useTaskStore } from "@/stores/taskStore";
@@ -75,6 +77,7 @@ export function PermissionDialog() {
   const [requests, setRequests] = useState<PermissionRequest[]>([]);
   // D8: track WHICH request is being resolved, not just a boolean
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const agentGate = useAgentGate("permissionApprove");
   const eventBus = useEventBus();
   const currentRequest = requests[0];
 
@@ -197,6 +200,10 @@ export function PermissionDialog() {
 
   const handleDecision = async (decision: "allow" | "deny") => {
     if (!currentRequest) return;
+    // Approving authorizes a live tool call, so it needs `ui:agent`. Denying is
+    // authority-REDUCING and stays available to every paired device — including the
+    // dismiss-as-deny path below, which is a user's fastest way to stop something.
+    if (decision === "allow" && agentGate.gated) return;
 
     // D8: set resolvingId to current request's ID
     setResolvingId(currentRequest.request_id);
@@ -400,10 +407,19 @@ export function PermissionDialog() {
             >
               Deny
             </Button>
-            <Button onClick={() => void handleDecision("allow")} disabled={resolvingId !== null}>
-              <Shield className="h-4 w-4 mr-2" />
-              Allow
-            </Button>
+            <AgentGateTooltip
+              gated={agentGate.gated}
+              reason={agentGate.reason}
+              testId="permission-allow-gate"
+            >
+              <Button
+                onClick={() => void handleDecision("allow")}
+                disabled={resolvingId !== null || agentGate.gated}
+              >
+                <Shield className="h-4 w-4 mr-2" />
+                Allow
+              </Button>
+            </AgentGateTooltip>
           </div>
         </DialogFooter>
       </DialogContent>

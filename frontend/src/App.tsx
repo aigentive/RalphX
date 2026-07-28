@@ -51,6 +51,7 @@ import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useProjects, projectKeys } from "@/hooks/useProjects";
 import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
@@ -233,6 +234,15 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
   const { data: featureFlags } = useFeatureFlags();
+  /**
+   * Project creation is host-impossible from a remote client (2.6-a): the wizard's
+   * folder picker (`openDialog`) reads THIS device's filesystem, so a path it returns
+   * means nothing to the host. The affordances are hidden at their render sites
+   * rather than guarded inside the handlers — a button that opens a wizard whose only
+   * input cannot be supplied is not an honest control.
+   */
+  const isRemoteEnvironment = useIsRemoteEnvironment();
+  const canCreateProjects = !isRemoteEnvironment;
 
   // Redirect to the default project view in production when the current view is disabled.
   // Ticketing remains directly reachable when a provider enables the dashboard
@@ -1034,7 +1044,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
             attentionCountStale={attentionItems.isError}
             notificationsPanelOpen={notificationsPanelOpen}
             onToggleNotificationsPanel={toggleNotificationsPanel}
-            onNewProject={handleOpenProjectWizard}
+            {...(canCreateProjects ? { onNewProject: handleOpenProjectWizard } : {})}
             onProjectSwitchIntent={preserveCurrentViewOnNextProjectSwitch}
             showProjectSelector={
               !hasNoProjects && !showWelcomeOverlay && !providerSetupRequired
@@ -1207,7 +1217,8 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
       )}
         </div>
 
-      {/* Project Creation Wizard */}
+      {/* Project Creation Wizard — host-only (2.6-a) */}
+      {canCreateProjects && (
       <ProjectCreationWizard
         isOpen={isProjectWizardOpen}
         onClose={handleCloseProjectWizard}
@@ -1219,6 +1230,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
         error={projectCreationError}
         isFirstRun={hasNoProjects}
       />
+      )}
 
       {/* Settings Dialog - Modal overlay replacing routed settings view */}
       <SettingsDialog

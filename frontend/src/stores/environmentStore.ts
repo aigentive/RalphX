@@ -70,6 +70,23 @@ interface EnvironmentState {
   environments: EnvironmentEntry[];
   connectionStates: Record<string, EnvironmentConnectionState>;
   /**
+   * The last CONFIRMED effective scopes per environment (P-28 client consumption).
+   *
+   * `null` — including a missing key — means "never confirmed", NOT "no scopes":
+   * capability gates read the absence as lacking every scope and stay closed. That
+   * is the whole point of holding it here rather than defaulting to the pairing-time
+   * `remote.scopes` snapshot, which records what was granted when the environment was
+   * added and can be arbitrarily stale relative to what the host will actually serve.
+   *
+   * SINGLE WRITER: the composition root's supervisor wiring in
+   * `lib/remote/environment-runtime.ts` (`applyScopes`, plus disposal on quiesce /
+   * registry removal). Components are readers. The supervisor only ever calls
+   * `applyScopes` with a set it confirmed via `GET /remote/v1/session`, and a failed
+   * refresh leaves the previous value untouched — gating never widens past the
+   * last-confirmed set (Fixed Decision 2).
+   */
+  effectiveScopes: Record<string, readonly string[] | null>;
+  /**
    * Switches the active environment. Synchronous state update first (first
    * paint), then mirrors to the Rust authority; reverts on rejection.
    */
@@ -81,6 +98,10 @@ interface EnvironmentState {
   /** Adopts the Rust-side authoritative active id (startup hydration). */
   hydrateActiveEnvironment: () => Promise<void>;
   setConnectionState: (id: string, state: EnvironmentConnectionState) => void;
+  /** Composition-root only: adopts a scope set the supervisor has CONFIRMED. */
+  setEffectiveScopes: (id: string, scopes: readonly string[]) => void;
+  /** Composition-root only: forgets a scope set (quiesce / registry removal). */
+  clearEffectiveScopes: (id: string) => void;
 }
 
 function toEntry(summary: RemoteEnvironmentSummary): EnvironmentEntry {
@@ -96,6 +117,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
   environments: [LOCAL_ENTRY],
   connectionStates: { [LOCAL_ENVIRONMENT_ID]: "connected" },
+  effectiveScopes: {},
 
   setActiveEnvironment: async (id) => {
     const previous = get().activeEnvironmentId;
@@ -129,9 +151,19 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
           connectionStates[id] = connection;
         }
       }
+      // A removed environment's confirmed scopes must not survive it: a re-added row
+      // can reuse an id, and inheriting the old grant would authorize agent control
+      // that was never re-confirmed.
+      const effectiveScopes: Record<string, readonly string[] | null> = {};
+      for (const [id, scopes] of Object.entries(state.effectiveScopes)) {
+        if (knownIds.has(id) && id !== LOCAL_ENVIRONMENT_ID) {
+          effectiveScopes[id] = scopes;
+        }
+      }
       return {
         environments,
         connectionStates,
+        effectiveScopes,
         // A removed environment cannot stay active; Rust already fell back to
         // local when the row died, so the mirror follows.
         activeEnvironmentId: knownIds.has(state.activeEnvironmentId)
@@ -173,6 +205,22 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
     set((state) => ({
       connectionStates: { ...state.connectionStates, [id]: connection },
     }));
+  },
+
+  setEffectiveScopes: (id, scopes) => {
+    if (id === LOCAL_ENVIRONMENT_ID) return; // local is never scope-limited
+    set((state) => ({
+      effectiveScopes: { ...state.effectiveScopes, [id]: [...scopes] },
+    }));
+  },
+
+  clearEffectiveScopes: (id) => {
+    set((state) => {
+      if (!(id in state.effectiveScopes)) return state;
+      const effectiveScopes = { ...state.effectiveScopes };
+      delete effectiveScopes[id];
+      return { effectiveScopes };
+    });
   },
 }));
 

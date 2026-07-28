@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { AskUserQuestionPayload, AskUserQuestionResponse } from "@/types/ask-user-question";
 import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
+import { useAgentGate } from "@/hooks/useAgentGate";
 
 type QuestionSubmitResult = boolean | SubmitQuestionAnswerResult;
 
@@ -50,6 +51,7 @@ export function useQuestionInput({
   submitAnswer,
   handleSend,
 }: UseQuestionInputParams) {
+  const agentGate = useAgentGate("questionAnswer");
   const [selectedOptions, setSelectedOptions] = useState<Set<number>>(new Set());
   const [questionInputValue, setQuestionInputValue] = useState("");
 
@@ -91,6 +93,11 @@ export function useQuestionInput({
   // Question-aware send: if question active, build response and submitAnswer
   const handleQuestionSend = useCallback(
     async (text: string) => {
+      // Answering a pending question is steering: the answer is what unblocks the
+      // agent's next turn. Gated for a device without `ui:agent` (2.6-b). The plain
+      // `handleSend` fall-through is gated by ChatInput's own check.
+      if (agentGate.gated) return;
+
       if (!activeQuestion) {
         await handleSend(text);
         return;
@@ -122,12 +129,13 @@ export function useQuestionInput({
         }
       }
     },
-    [activeQuestion, selectedOptions, submitAnswer, handleSend]
+    [activeQuestion, agentGate.gated, selectedOptions, submitAnswer, handleSend]
   );
 
   const handleQuestionSkip = useCallback(
     async () => {
-      if (!activeQuestion) return;
+      // Skipping still submits an answer that releases the agent's next turn.
+      if (agentGate.gated || !activeQuestion) return;
 
       const response: AskUserQuestionResponse = {
         requestId: activeQuestion.requestId,
@@ -145,12 +153,12 @@ export function useQuestionInput({
         }
       }
     },
-    [activeQuestion, submitAnswer, handleSend]
+    [activeQuestion, agentGate.gated, submitAnswer, handleSend]
   );
 
   const handleQuestionOptionSubmit = useCallback(
     async (index: number) => {
-      if (!activeQuestion) return;
+      if (agentGate.gated || !activeQuestion) return;
 
       const option = activeQuestion.options[index];
       if (!option) return;
@@ -170,10 +178,11 @@ export function useQuestionInput({
         }
       }
     },
-    [activeQuestion, submitAnswer, handleSend]
+    [activeQuestion, agentGate.gated, submitAnswer, handleSend]
   );
 
   return {
+    agentGate,
     selectedOptions,
     questionInputValue,
     setQuestionInputValue,

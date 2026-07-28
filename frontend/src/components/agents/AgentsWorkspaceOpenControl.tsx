@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 
 import type { WorkspaceOpenTarget, WorkspaceOpenTargetKind } from "@/api/chat";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { HOST_ONLY_AFFORDANCE_HINT } from "@/lib/remote/host-affordances";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -58,6 +60,21 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
   onOpenTarget,
   builtInTerminal,
 }: AgentsWorkspaceOpenControlProps) {
+  /**
+   * Editors, file managers, and the built-in terminal all act on THIS device's shell
+   * and filesystem using a workspace path that only means something on the host
+   * (2.6-a). The transport already rejects the three backing commands with
+   * `REMOTE_COMMAND_UNAVAILABLE`; gating here is what keeps the user from ever
+   * reaching that rejection through a control that looked live.
+   *
+   * Open targets DISABLE with an explanation (the editor and the file are real — they
+   * are just on the other Mac). The terminal entry HIDES: the terminal module is
+   * excluded from v1 remoting outright, so there is nothing to promise.
+   *
+   * Declared before the `preferredTarget` early return: hooks must run in the same
+   * order on every render.
+   */
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const [preferredTargetId, setPreferredTargetId] = useState(
     readPreferredWorkspaceOpenTargetId,
   );
@@ -100,6 +117,7 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
   };
   const PreferredIcon = iconForTargetKind(displayedTarget.kind);
   const isOpening = openingTargetId !== null;
+  const openTargetsDisabled = isOpening || isRemoteEnvironment;
   const builtInTerminalDisabled =
     !builtInTerminal?.onToggle || Boolean(builtInTerminal.unavailableReason);
   const builtInTerminalPreload = builtInTerminalDisabled
@@ -108,15 +126,22 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
 
   return (
     <div className="inline-flex shrink-0 items-center">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex">
       <Button
         type="button"
         variant="ghost"
         size="sm"
         className="h-8 min-w-[5.75rem] gap-2 rounded-r-none px-2.5 py-0 text-xs"
         onClick={() => openTarget(preferredTarget)}
-        disabled={isOpening}
+        disabled={openTargetsDisabled}
         aria-busy={isOpening ? "true" : undefined}
-        aria-label={`Open workspace in ${displayedTarget.label}`}
+        aria-label={
+          isRemoteEnvironment
+            ? `Open workspace in ${displayedTarget.label} — ${HOST_ONLY_AFFORDANCE_HINT}`
+            : `Open workspace in ${displayedTarget.label}`
+        }
         data-testid="agents-open-workspace"
       >
         {isOpening ? (
@@ -137,6 +162,14 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
           </span>
         </span>
       </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">
+          {isRemoteEnvironment
+            ? HOST_ONLY_AFFORDANCE_HINT
+            : `Open workspace in ${displayedTarget.label}`}
+        </TooltipContent>
+      </Tooltip>
       <DropdownMenu>
         <Tooltip>
           <DropdownMenuTrigger asChild>
@@ -160,7 +193,7 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
           </TooltipContent>
         </Tooltip>
         <DropdownMenuContent align="end" className="min-w-[180px]">
-          {builtInTerminal ? (
+          {builtInTerminal && !isRemoteEnvironment ? (
             <>
               <DropdownMenuItem
                 disabled={builtInTerminalDisabled}
@@ -194,11 +227,27 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
             return (
               <DropdownMenuItem
                 key={target.id}
-                onClick={() => openTarget(target)}
+                disabled={isRemoteEnvironment}
+                onClick={isRemoteEnvironment ? undefined : () => openTarget(target)}
+                aria-label={
+                  isRemoteEnvironment
+                    ? `${target.label} — ${HOST_ONLY_AFFORDANCE_HINT}`
+                    : target.label
+                }
               >
                 <Icon className="h-4 w-4" />
                 <span>{target.label}</span>
-                {selected ? <Check className="ml-auto h-3.5 w-3.5" /> : null}
+                {isRemoteEnvironment ? (
+                  <span
+                    className="ml-auto text-[0.625rem]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {HOST_ONLY_AFFORDANCE_HINT}
+                  </span>
+                ) : null}
+                {selected && !isRemoteEnvironment ? (
+                  <Check className="ml-auto h-3.5 w-3.5" />
+                ) : null}
               </DropdownMenuItem>
             );
           })}
