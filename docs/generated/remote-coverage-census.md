@@ -6,15 +6,15 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 501 invoke command name(s), 0 dynamic, 0 seam bypasses; 447 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 503 invoke command name(s), 0 dynamic, 0 seam bypasses; 447 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names in `frontend/src` | 501 | drift scan (AST) |
+| Invoke command names in `frontend/src` | 503 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 25 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 27 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 540 | `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **447** | `scripts/remote-transport-drift-baseline.json` |

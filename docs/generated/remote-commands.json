@@ -1493,6 +1493,22 @@
       "target": "crate::commands::task_commands::query::get_valid_transitions"
     },
     {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_pending_permission_gates",
+      "pins": [],
+      "target": "crate::commands::permission_commands::list_pending_permission_gates"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_pending_question_gates",
+      "pins": [],
+      "target": "crate::commands::question_commands::list_pending_question_gates"
+    },
+    {
       "argumentSensitive": true,
       "capabilities": [],
       "class": "operate",
@@ -5481,14 +5497,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_pending_permission_gates",
       "module": "permission_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "pending permission-gate enumeration: fail-closed read of the pending repository plus the in-memory gate map; resolves no gate and arms no scheduling",
+      "registered": true
     },
     {
       "capabilities": [
@@ -5511,14 +5525,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_pending_question_gates",
       "module": "question_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "pending question-gate enumeration: fail-closed read of the pending repository plus the in-memory gate map; answers no question and arms no scheduling",
+      "registered": true
     },
     {
       "capabilities": [
