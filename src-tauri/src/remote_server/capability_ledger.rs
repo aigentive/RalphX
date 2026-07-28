@@ -39,6 +39,10 @@ const NONE: &[Capability] = &[];
 const AGENT: &[Capability] = &[Capability::AgentControl];
 const SEEDS_STATE: &[Capability] = &[Capability::SeedsSpawnTriggeringState];
 const MUTATES_CONTENT: &[Capability] = &[Capability::MutatesAgentConsumedContent];
+const AGENT_AND_SEEDS: &[Capability] = &[
+    Capability::AgentControl,
+    Capability::SeedsSpawnTriggeringState,
+];
 const AGENT_AND_CONTENT: &[Capability] = &[
     Capability::AgentControl,
     Capability::MutatesAgentConsumedContent,
@@ -277,6 +281,91 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "detector-b: completes automation arming state consumed by the automation scheduler",
         ),
     },
+    // R5-H1 names these two detector-(b) writers explicitly. Without the tag the manifest
+    // records the class but not WHY the class is required, and the evidence could be dropped
+    // from either row without CI noticing.
+    CommandOverride {
+        command: "set_agent_conversation_workspace_auto_publish",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_SEEDS,
+            "detector-b: arms auto_publish_enabled consumed by the auto-publish freshness scan",
+        ),
+    },
+    CommandOverride {
+        command: "update_review_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_SEEDS,
+            "detector-b: arms require_workspace_review consumed by the auto-review spawner",
+        ),
+    },
+    // Detector-(d) writers: each names a content repository handle and a write verb in its own
+    // body, so the §3.3 backstop-#2 gate requires the capability on the row.
+    CommandOverride {
+        command: "start_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed task step status",
+        ),
+    },
+    CommandOverride {
+        command: "complete_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed task step status",
+        ),
+    },
+    CommandOverride {
+        command: "skip_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed task step status",
+        ),
+    },
+    CommandOverride {
+        command: "fail_step",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed task step status",
+        ),
+    },
+    CommandOverride {
+        command: "verify_issue",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed review issue state",
+        ),
+    },
+    CommandOverride {
+        command: "reopen_issue",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed review issue state",
+        ),
+    },
+    CommandOverride {
+        command: "mark_issue_in_progress",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed review issue state",
+        ),
+    },
+    CommandOverride {
+        command: "mark_issue_addressed",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT_AND_CONTENT,
+            "detector-d: writes worker-consumed review issue state",
+        ),
+    },
     CommandOverride {
         command: "create_task_step",
         policy: policy(
@@ -454,11 +543,35 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(RiskClass::Denied, AGENT, "destructive task cleanup"),
     },
     CommandOverride {
+        command: "cleanup_tasks_in_group",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "destructive task cleanup across a whole group",
+        ),
+    },
+    CommandOverride {
         command: "publish_agent_conversation_workspace",
         policy: policy(
             RiskClass::Denied,
             AGENT,
             "publishes an agent conversation workspace",
+        ),
+    },
+    CommandOverride {
+        command: "close_agent_workspace_pr",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "closes the remote pull request an agent workspace published",
+        ),
+    },
+    CommandOverride {
+        command: "update_agent_conversation_workspace_from_base",
+        policy: policy(
+            RiskClass::Denied,
+            AGENT,
+            "rewrites an agent workspace checkout from its base branch",
         ),
     },
     CommandOverride {
