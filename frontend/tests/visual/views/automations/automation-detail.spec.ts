@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { seedAutomationDetailVisualState } from "../../../fixtures/automation-detail.fixtures";
 import { setupApp } from "../../../fixtures/setup.fixtures";
@@ -6,37 +6,52 @@ import { AutomationDetailPage } from "../../../pages/views/automation-detail.pag
 
 const automationId = "automation-detail-visual-1";
 const projectId = "project-mock-1";
+const themes = ["dark", "light", "high-contrast"] as const;
 
-async function openSeededDetail(detailPage: AutomationDetailPage) {
+async function setTheme(page: Page, theme: (typeof themes)[number]) {
+  await page.evaluate(async (nextTheme) => {
+    const { useThemeStore } = await import("/src/stores/themeStore");
+    useThemeStore.getState().setTheme(nextTheme);
+  }, theme);
+}
+
+async function openSeededDetail(
+  detailPage: AutomationDetailPage,
+  theme: (typeof themes)[number] = "dark",
+) {
   await setupApp(detailPage.page);
   await detailPage.openAutomationsView();
   await seedAutomationDetailVisualState(detailPage.page, { automationId, projectId });
+  await setTheme(detailPage.page, theme);
   await detailPage.openDetail(automationId);
 }
 
 test.describe("automation detail page tabs", () => {
-  test("overview tab shows goal, phases with plan icons, and grouped config", async ({
-    page,
-  }) => {
-    const detailPage = new AutomationDetailPage(page);
-    await openSeededDetail(detailPage);
+  for (const theme of themes) {
+    test(`overview matches the redesigned detail hierarchy in ${theme}`, async ({ page }) => {
+      const detailPage = new AutomationDetailPage(page);
+      await openSeededDetail(detailPage, theme);
 
-    // Overview is the default tab; the Runs trigger carries the live dot while
-    // a run is open and no timeline content is mounted yet.
-    await expect(detailPage.runsTab).toHaveText(/Runs \(3\)/);
-    await expect(detailPage.runsTabLiveDot).toBeVisible();
-    await expect(detailPage.runsTimeline).toHaveCount(0);
-    await expect(detailPage.detailsCard).toBeVisible();
-    await expect(
-      page.getByTestId("automation-config-pr-link"),
-    ).toHaveText(/PR #841/);
-    await expect(page.getByTestId("automation-goal-card-plan-icon")).toHaveCount(0);
+      await expect(page.getByTestId("automation-runs-count")).toHaveText("3");
+      await expect(detailPage.runsTabLiveDot).toBeVisible();
+      await expect(detailPage.runsTimeline).toHaveCount(0);
+      await expect(detailPage.statCards).toBeVisible();
+      await expect(detailPage.phasesCard).toBeVisible();
+      await expect(detailPage.executionCard).toBeVisible();
+      await expect(detailPage.specInputsCard).toBeVisible();
+      await expect(page.getByTestId("automation-config-pr-link")).toHaveText(/PR #841/);
 
-    await expect(page).toHaveScreenshot("automation-detail-overview-tab.png", {
-      fullPage: false,
-      maxDiffPixelRatio: 0.01,
+      await expect(page).toHaveScreenshot(`automation-detail-overview-${theme}.png`, {
+        fullPage: false,
+        maxDiffPixelRatio: 0.01,
+      });
+      await detailPage.specInputsCard.scrollIntoViewIfNeeded();
+      await expect(page).toHaveScreenshot(`automation-detail-overview-lower-${theme}.png`, {
+        fullPage: false,
+        maxDiffPixelRatio: 0.01,
+      });
     });
-  });
+  }
 
   test("runs tab shows the deduped timeline with open, merged, and failed cards", async ({
     page,

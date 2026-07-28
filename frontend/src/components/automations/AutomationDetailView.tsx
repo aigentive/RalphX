@@ -18,6 +18,7 @@ import { findInProgressAutomationGoalItem } from "@/components/automations/autom
 import { AutomationDetailHeader } from "@/components/automations/AutomationDetailHeader";
 import { AutomationOverviewTab } from "@/components/automations/AutomationOverviewTab";
 import { AutomationRunsTab } from "@/components/automations/AutomationRunsTab";
+import { AutomationStatCards } from "@/components/automations/AutomationStatCards";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -417,39 +418,66 @@ export function AutomationDetailView({
           value={selectedTab}
           onValueChange={(value) => setSelectedTab(value as AutomationDetailTab)}
         >
-          <TabsList
-            className="mb-4 h-9 justify-start rounded-md p-1"
-            style={{
-              backgroundColor: "var(--bg-surface, #1e1e23)",
-              borderColor: "var(--border-subtle, #2e2e36)",
-              borderStyle: "solid",
-              borderWidth: "1px",
-            }}
-            aria-label="Automation detail sections"
-          >
-            <TabsTrigger
-              className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
-              value="overview"
-              data-testid="automation-tab-overview"
+          <AutomationStatCards automation={automation} runs={runs} />
+          <div className="my-4 flex flex-wrap items-center justify-between gap-3">
+            <TabsList
+              className="h-9 justify-start rounded-md p-1"
+              style={{
+                backgroundColor: "var(--bg-surface, #1e1e23)",
+                borderColor: "var(--border-subtle, #2e2e36)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+              }}
+              aria-label="Automation detail sections"
             >
-              Overview
-            </TabsTrigger>
-            <TabsTrigger
-              className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
-              value="runs"
-              data-testid="automation-tab-runs"
+              <TabsTrigger
+                className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
+                value="overview"
+                data-testid="automation-tab-overview"
+              >
+                Overview
+              </TabsTrigger>
+              <TabsTrigger
+                className="rounded-sm px-3 py-1 text-xs text-[var(--text-secondary)] data-[state=active]:bg-[var(--bg-elevated)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-sm"
+                value="runs"
+                data-testid="automation-tab-runs"
+              >
+                Runs
+                {runs.length > 0 ? (
+                  <span
+                    className="ml-1.5 rounded-full px-1.5 py-0.5 text-[0.625rem] tabular-nums"
+                    style={{
+                      backgroundColor: "var(--bg-hover, #2a2a31)",
+                      color: "var(--text-secondary, #c7c7cc)",
+                    }}
+                    data-testid="automation-runs-count"
+                  >
+                    {runs.length}
+                  </span>
+                ) : null}
+                {openRun ? (
+                  <span
+                    className="ml-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                    style={{ backgroundColor: "var(--accent-primary)" }}
+                    aria-hidden="true"
+                    data-testid="automation-tab-runs-live-dot"
+                  />
+                ) : null}
+              </TabsTrigger>
+            </TabsList>
+            <div
+              className="min-w-0 truncate text-xs"
+              style={{ color: "var(--text-muted, #8e8e96)" }}
+              data-testid="automation-detail-branch-meta"
             >
-              Runs{runs.length > 0 ? ` (${runs.length})` : ""}
-              {openRun ? (
-                <span
-                  className="ml-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
-                  style={{ backgroundColor: "var(--accent-primary)" }}
-                  aria-hidden="true"
-                  data-testid="automation-tab-runs-live-dot"
-                />
-              ) : null}
-            </TabsTrigger>
-          </TabsList>
+              base{" "}
+              {automation.baseTargetDisplayName
+                ?? automation.baseTargetRef
+                ?? automation.baseDisplayName
+                ?? automation.baseRef}
+              {" · "}chain {automation.chainMode.replace(/_/g, " ")}
+            </div>
+          </div>
           <TabsContent value="overview" data-testid="automation-overview-tab">
             <AutomationOverviewTab
               automation={automation}
