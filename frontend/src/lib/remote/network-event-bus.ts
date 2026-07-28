@@ -24,7 +24,9 @@
  *    retention lease at `H`, so the host cannot prune the hydration delta underneath
  *    us), durable frames `> H` buffer unapplied while the snapshot loads, and they are
  *    applied in seq order afterwards. Only then does the first `cursorAck` go out,
- *    releasing the hydration span of the lease.
+ *    releasing the hydration span of the lease. The cursor is published as VALID only
+ *    once the snapshot has committed — an interrupted cold hydrate must never leave a
+ *    resumable cursor at `H` for a projection that never loaded.
  *
  * ## `ready`, on a reconnecting transport
  *
@@ -271,7 +273,10 @@ export class NetworkEventBus implements EventBus {
     this.hydrationBarrier = outcome.maxSeq;
     this.lastSeq = outcome.maxSeq;
     this.lastAckedSeq = outcome.maxSeq;
-    this.cursorValid = true;
+    // The cursor is NOT valid yet. `H` only describes a real projection once the
+    // snapshot has committed, so publishing validity here would let a socket drop
+    // mid-hydration warm-resume at `H` over a snapshot that never loaded (P-24a).
+    this.cursorValid = false;
 
     // Subscribe FIRST, at H. This registers the retention lease at H before any
     // hydration I/O, which is what makes prune-during-hydration structurally impossible
@@ -288,11 +293,18 @@ export class NetworkEventBus implements EventBus {
       return;
     }
 
+    // The snapshot committed: everything through `H` is now genuinely projected, so
+    // the cursor becomes resumable — and the buffered apply may advance it.
+    this.cursorValid = true;
     this.applyBufferedFrames();
     if (generation !== this.generation) {
       return;
     }
     await this.sendCursorAck();
+    if (generation !== this.generation) {
+      // A reset landed while the ack was in flight; this connection is already gone.
+      return;
+    }
     this.goLive();
   }
 
@@ -326,6 +338,11 @@ export class NetworkEventBus implements EventBus {
 
   /** The socket ended. The supervisor owns the redial; the bus only invalidates state. */
   handleStreamClosed(): void {
+    if (this.phase === "hydrating") {
+      // An interrupted cold hydrate committed no snapshot, so there is nothing at or
+      // below `H` to resume from: the next attempt MUST cold-hydrate again.
+      this.discardCursor();
+    }
     this.phase = "idle";
     this.buffer = [];
     this.generation += 1;

@@ -320,6 +320,94 @@ describe("cold hydration observes the H barrier", () => {
     expect(bus.cursor().valid).toBe(false);
   });
 
+  it("keeps the cursor invalid until the snapshot commits", async () => {
+    const h = harness({ deferHydration: true });
+    const started = h.bus.beginStream(hello({ maxSeq: 100 }));
+    await Promise.resolve();
+
+    // Subscribed at H, snapshot still loading: nothing is projected yet.
+    expect(h.bus.cursor().valid).toBe(false);
+
+    h.releaseHydration();
+    await started;
+    expect(h.bus.cursor().valid).toBe(true);
+  });
+
+  it("cold-hydrates again after a socket drop interrupted the hydration (P-24a)", async () => {
+    const h = harness({ deferHydration: true });
+    const started = h.bus.beginStream(hello({ maxSeq: 100 }));
+    await Promise.resolve();
+
+    // The socket dies while the snapshot is still loading.
+    h.bus.handleStreamClosed();
+    h.releaseHydration();
+    await started;
+
+    expect(h.bus.cursor().valid).toBe(false);
+    h.hydrate.mockClear();
+    h.sent.length = 0;
+
+    const resumed = h.bus.beginStream(hello({ maxSeq: 140 }));
+    for (let tick = 0; tick < 6; tick += 1) {
+      await Promise.resolve();
+    }
+    h.releaseHydration();
+    await resumed;
+
+    // A warm resume here would splice over a snapshot that was never loaded.
+    expect(h.hydrate).toHaveBeenCalledTimes(1);
+    expect(h.sent[0]).toEqual({
+      type: "subscribe",
+      afterSeq: 140,
+      streamEpoch: "epoch-1",
+    });
+  });
+
+  it("does not go live when a reset lands while the first cursorAck is in flight", async () => {
+    const localBus = new MockEventBus();
+    const restarts: StreamRestartCause[] = [];
+    const sweep = vi.fn();
+    let releaseAck: () => void = () => {};
+    let releaseHydration: () => void = () => {};
+    const bus = new NetworkEventBus({
+      environmentId: ENV,
+      localBus,
+      sendFrame: async (frame) => {
+        if (frame.type === "cursorAck") {
+          await new Promise<void>((resolve) => {
+            releaseAck = resolve;
+          });
+        }
+      },
+      hydrate: async () => {
+        await new Promise<void>((resolve) => {
+          releaseHydration = resolve;
+        });
+      },
+      sweep,
+      onRestartRequired: (cause) => restarts.push(cause),
+    });
+    bus.subscribe("task:created", () => {});
+
+    const started = bus.beginStream(hello({ maxSeq: 100 }));
+    await Promise.resolve();
+    bus.handleFrame({ type: "event", seq: 101, name: "task:created", payload: {} });
+    releaseHydration();
+    for (let tick = 0; tick < 6; tick += 1) {
+      await Promise.resolve();
+    }
+
+    // The ack write is in flight when the host withdraws the stream.
+    bus.handleFrame({ type: "reset", reason: "cursor_pruned" });
+    releaseAck();
+    await started;
+
+    expect(restarts).toEqual([{ kind: "reset", reason: "cursor_pruned" }]);
+    // Resurrecting `live` here would sweep for — and dispatch frames from — a dead stream.
+    expect(bus.cursor().phase).toBe("idle");
+    expect(sweep).not.toHaveBeenCalled();
+  });
+
   it("discards a hydration that a mid-hydration reset already superseded", async () => {
     const h = harness({ deferHydration: true });
     const seen: number[] = [];

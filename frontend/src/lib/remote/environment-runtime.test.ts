@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RemoteEnvironmentSummary } from "@/api/remote-environments";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
-import { resetQueryClient } from "@/lib/queryClient";
+import { getQueryClient, resetQueryClient } from "@/lib/queryClient";
 import {
   LOCAL_ENVIRONMENT_ID,
   useEnvironmentStore,
@@ -70,6 +70,19 @@ vi.mock("./supervisor", async (importOriginal) => {
 vi.mock("./network-fetch", () => ({
   networkFetch: vi.fn(),
 }));
+
+vi.mock("#tauri-core-primitive", () => ({
+  invoke: vi.fn(async () => undefined),
+}));
+
+const OUTCOME = {
+  environmentId: "env-b",
+  hostEnvironmentId: "host-env-b",
+  streamEpoch: "epoch-1",
+  maxSeq: 100,
+  heartbeatSecs: 20,
+  protocolVersion: 1,
+};
 
 function summary(id: string): RemoteEnvironmentSummary {
   return {
@@ -175,6 +188,28 @@ describe("environment runtime composition", () => {
 
     expect((bus as EventBus & RemoteStreamTarget).environmentId()).toBe("env-b");
     expect(supervisors[0]?.starts).toBeGreaterThan(1);
+  });
+
+  it("fails the hydration barrier when the snapshot refetch rejects", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const client = getQueryClient("env-b");
+    const invalidate = vi
+      .spyOn(client, "invalidateQueries")
+      .mockRejectedValue(new Error("host answered 500"));
+
+    // A swallowed refetch failure would resolve the §3.4 barrier over an empty board.
+    await expect(
+      supervisors[supervisors.length - 1]?.deps.beginStream(OUTCOME)
+    ).rejects.toThrow(/500/);
+    expect(invalidate).toHaveBeenCalledWith(
+      { refetchType: "all" },
+      { throwOnError: true }
+    );
   });
 
   it("uses pairing scopes in background without a session fetch and records them", async () => {

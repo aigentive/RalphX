@@ -193,7 +193,15 @@ export function initializeEnvironmentRuntime(): () => void {
       localBus,
       sendFrame: (frame) => sendFrame(environmentId, frame),
       hydrate: async () => {
-        await getQueryClient(environmentId).invalidateQueries();
+        // The §3.4 hydration barrier must FAIL CLOSED: TanStack swallows every refetch
+        // rejection unless `throwOnError`, so a 500ing host would resolve the barrier,
+        // validate the cursor, and let the badge read Connected over an empty board.
+        // `refetchType: "all"` because a snapshot is not "taken" if the inactive
+        // queries the next render will read were left stale.
+        await getQueryClient(environmentId).invalidateQueries(
+          { refetchType: "all" },
+          { throwOnError: true }
+        );
       },
       sweep: () => {
         void getQueryClient(environmentId).invalidateQueries();
