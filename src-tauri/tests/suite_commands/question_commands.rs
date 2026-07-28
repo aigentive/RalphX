@@ -419,7 +419,7 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
         outcome
             .get("outcome_class")
             .and_then(|value| value.as_str()),
-        Some("plan_mode_accepted")
+        Some("accepted")
     );
     assert_eq!(
         outcome

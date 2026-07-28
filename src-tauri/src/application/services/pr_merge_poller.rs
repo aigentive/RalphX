@@ -1010,6 +1010,7 @@ async fn agent_workspace_poll_loop(
                     &task_outcome_repo,
                     &plan_branch_repo,
                     &chat_service,
+                    Some(&github),
                     &stopping,
                     &conversation_id,
                     &project,
@@ -1032,6 +1033,7 @@ async fn agent_workspace_poll_loop(
                     &task_outcome_repo,
                     &plan_branch_repo,
                     &chat_service,
+                    Some(&github),
                     &stopping,
                     &conversation_id,
                     &project,
@@ -1267,6 +1269,7 @@ async fn terminalize_polled_agent_workspace(
         task_outcome_repo,
         plan_branch_repo,
         chat_service,
+        None,
         stopping,
         conversation_id,
         project,
@@ -1286,6 +1289,7 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     task_outcome_repo: &Arc<dyn TaskOutcomeRepository>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
     chat_service: &Arc<dyn ChatService>,
+    github: Option<&Arc<dyn GithubServiceTrait>>,
     stopping: &Arc<DashMap<ChatConversationId, ()>>,
     conversation_id: &ChatConversationId,
     project: &Project,
@@ -1386,12 +1390,25 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     }
 
     loop {
-        let observation = workspace_repo
+        let workspace = workspace_repo
             .get_by_conversation_id(conversation_id)
             .await
             .ok()
-            .flatten()
-            .and_then(|workspace| TerminalPrObservation::from_persisted_workspace(&workspace));
+            .flatten();
+        let observation = match workspace.as_ref().and_then(|workspace| {
+            TerminalPrObservation::from_persisted_workspace(workspace)
+        }) {
+            Some(observation) => Some(
+                crate::application::agent_workspace_terminal_observation::resolve_merge_cleanliness_best_effort(
+                    github,
+                    std::path::Path::new(&project.working_directory),
+                    workspace.as_ref().expect("observation requires workspace"),
+                    observation,
+                )
+                .await,
+            ),
+            None => None,
+        };
         let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(workspace_repo),
             Arc::clone(agent_run_repo),
@@ -3607,7 +3624,7 @@ async fn route_agent_workspace_review_feedback_if_present(
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
-    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
+    _task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo

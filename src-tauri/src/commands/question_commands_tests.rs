@@ -167,7 +167,7 @@ fn continuation_metadata_can_carry_compact_plan_mode_verdict_outcome() {
     let outcome = PlanModeVerdictOutcome {
         project_id: "project-1".to_string(),
         source: "plan_mode".to_string(),
-        outcome_class: "plan_mode_accepted".to_string(),
+        outcome_class: "accepted".to_string(),
         status: "eligible".to_string(),
         refs: BTreeMap::from([
             (
@@ -195,7 +195,7 @@ fn continuation_metadata_can_carry_compact_plan_mode_verdict_outcome() {
         captured
             .get("outcome_class")
             .and_then(|value| value.as_str()),
-        Some("plan_mode_accepted")
+        Some("accepted")
     );
     assert_eq!(
         captured
@@ -217,7 +217,7 @@ fn plan_mode_verdict_outcome_converts_to_task_outcome_ledger_row() {
     let outcome = PlanModeVerdictOutcome {
         project_id: "project-1".to_string(),
         source: "plan_mode".to_string(),
-        outcome_class: "plan_mode_accepted".to_string(),
+        outcome_class: "accepted".to_string(),
         status: "eligible".to_string(),
         refs: BTreeMap::from([
             (
@@ -245,7 +245,7 @@ fn plan_mode_verdict_outcome_converts_to_task_outcome_ledger_row() {
             .outcome_class
             .as_ref()
             .map(|class| class.as_str()),
-        Some("plan_mode_accepted")
+        Some("accepted")
     );
     assert_eq!(task_outcome.status.to_string(), "eligible");
     assert_eq!(

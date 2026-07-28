@@ -345,11 +345,14 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                     Some(Arc::clone(&deps.plan_branch_repo)),
                     deps.chat_service.as_ref().map(Arc::clone),
                     Some(Arc::clone(&deps.task_outcome_repo)),
-                    Some(TerminalPrObservation::new(
-                        target.pr_number,
-                        pr_status,
-                        terminal_pr_recovery_summary(pr_status),
-                    )),
+                    Some(
+                        TerminalPrObservation::new(
+                            target.pr_number,
+                            pr_status,
+                            terminal_pr_recovery_summary(pr_status),
+                        )
+                        .with_merge_cleanliness(&workspace, &sync_state),
+                    ),
                     &conversation_id,
                     &project,
                     TerminalAgentWorkspaceCause::from_pr_status(pr_status),
@@ -413,11 +416,14 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),
             Some(Arc::clone(&deps.task_outcome_repo)),
-            Some(TerminalPrObservation::new(
-                target.pr_number,
-                pr_status,
-                terminal_pr_recovery_summary(pr_status),
-            )),
+            Some(
+                TerminalPrObservation::new(
+                    target.pr_number,
+                    pr_status,
+                    terminal_pr_recovery_summary(pr_status),
+                )
+                .with_merge_cleanliness(&workspace, &sync_state),
+            ),
             &conversation_id,
             &project,
             TerminalAgentWorkspaceCause::from_pr_status(pr_status),

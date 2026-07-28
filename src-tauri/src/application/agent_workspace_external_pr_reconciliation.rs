@@ -12,6 +12,7 @@ use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr_with_observation, TerminalAgentWorkspaceCause,
     TerminalPrObservation,
 };
+use crate::application::agent_workspace_terminal_observation::resolve_merge_cleanliness_best_effort;
 use crate::application::chat_service::ChatService;
 use crate::application::clickup_git_association::{
     reconcile_clickup_pr_to_conversation, ClickUpGitEvidence, ClickUpPrAssociationInput,
@@ -253,20 +254,21 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             );
         }
     } else {
+        let observation = resolve_merge_cleanliness_best_effort(
+            Some(&deps.github),
+            Path::new(&project.working_directory),
+            &workspace,
+            TerminalPrObservation::new(pr.number, pr_status, terminal_linked_pr_summary(pr_status))
+                .with_publication_event(event),
+        )
+        .await;
         let terminalized = terminalize_agent_workspace_after_pr_with_observation(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
             Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),
             Some(Arc::clone(&deps.task_outcome_repo)),
-            Some(
-                TerminalPrObservation::new(
-                    pr.number,
-                    pr_status,
-                    terminal_linked_pr_summary(pr_status),
-                )
-                .with_publication_event(event),
-            ),
+            Some(observation),
             &conversation_id,
             &project,
             TerminalAgentWorkspaceCause::from_pr_status(pr_status),
@@ -348,16 +350,21 @@ async fn reconcile_linked_agent_workspace_pr(
         .append_publication_event(event.clone())
         .await?;
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+    let observation = resolve_merge_cleanliness_best_effort(
+        Some(&deps.github),
+        Path::new(&project.working_directory),
+        workspace,
+        TerminalPrObservation::new(pr_number, pr_status, terminal_linked_pr_summary(pr_status))
+            .with_publication_event(event),
+    )
+    .await;
     let terminalized = terminalize_agent_workspace_after_pr_with_observation(
         Arc::clone(&deps.workspace_repo),
         Arc::clone(&deps.agent_run_repo),
         Some(Arc::clone(&deps.plan_branch_repo)),
         deps.chat_service.as_ref().map(Arc::clone),
         Some(Arc::clone(&deps.task_outcome_repo)),
-        Some(
-            TerminalPrObservation::new(pr_number, pr_status, terminal_linked_pr_summary(pr_status))
-                .with_publication_event(event),
-        ),
+        Some(observation),
         &workspace.conversation_id,
         project,
         TerminalAgentWorkspaceCause::from_pr_status(pr_status),

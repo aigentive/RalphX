@@ -2103,7 +2103,7 @@ pub(crate) async fn create_draft_pr_if_needed(
         if needs_push {
             tracing::info!(branch = %branch_name, "create_draft_pr_if_needed: pushing branch");
             match push_publish_branch(github, repo_path, &branch_name).await {
-                Ok(()) => {
+                Ok(_) => {
                     if let Err(e) = plan_branch_repo
                         .update_pr_push_status(&plan_branch_id, PrPushStatus::Pushed)
                         .await

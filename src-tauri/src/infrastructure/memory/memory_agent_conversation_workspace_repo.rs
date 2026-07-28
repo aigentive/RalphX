@@ -154,6 +154,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let mut workspaces = self.workspaces.write().await;
         if let Some(existing) = workspaces.get(&workspace.conversation_id) {
             workspace.created_at = existing.created_at;
+            if workspace.publication_pushed_sha.is_none() {
+                workspace.publication_pushed_sha = existing.publication_pushed_sha.clone();
+            }
         }
         workspace.updated_at = Utc::now();
         workspaces.insert(workspace.conversation_id, workspace.clone());
@@ -527,6 +530,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             })?;
             workspace.linked_ideation_session_id = Some(ideation_session_id.clone());
             workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+            workspace.publication_pushed_sha = None;
             workspace.status = AgentConversationWorkspaceStatus::Active;
             workspace.updated_at = Utc::now();
         }
@@ -562,6 +566,37 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 workspace.pr_supervision_updated_at = Some(now);
             }
             workspace.updated_at = now;
+        }
+        Ok(())
+    }
+
+    async fn set_publication_pushed_sha(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected_branch_name: &str,
+        pushed_sha: &str,
+    ) -> AppResult<bool> {
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.status != AgentConversationWorkspaceStatus::Active
+            || workspace.branch_name != expected_branch_name
+        {
+            return Ok(false);
+        }
+        workspace.publication_pushed_sha = Some(pushed_sha.to_string());
+        workspace.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn clear_publication_pushed_sha(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.publication_pushed_sha = None;
+            workspace.updated_at = Utc::now();
         }
         Ok(())
     }

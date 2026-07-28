@@ -193,12 +193,16 @@ pub(crate) async fn clear_plan_phase_publication_metadata(
         && workspace.publication_pr_url.is_none()
         && workspace.publication_pr_status.is_none()
         && workspace.publication_push_status.is_none()
+        && workspace.publication_pushed_sha.is_none()
     {
         return Ok(());
     }
 
     workspace_repo
         .update_publication(&workspace.conversation_id, None, None, None, None)
+        .await?;
+    workspace_repo
+        .clear_publication_pushed_sha(&workspace.conversation_id)
         .await?;
     Ok(())
 }
