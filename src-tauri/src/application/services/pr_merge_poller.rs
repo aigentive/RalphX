@@ -2553,6 +2553,7 @@ impl AgentWorkspacePrAutofixTarget {
         }
     }
 
+    #[cfg(test)]
     fn authorizes_claimed_repair(&self, workspace: &AgentConversationWorkspace) -> bool {
         if !self.authorizes_identity_and_preferences(workspace) {
             return false;
