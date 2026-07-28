@@ -574,5 +574,17 @@
     "delivery": "localOnly",
     "origin": "backend",
     "excludedFromV1": false
+  },
+  {
+    "name": "remote:stream_frame",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
+    "name": "remote:stream_closed",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
   }
 ]

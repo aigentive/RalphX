@@ -417,6 +417,14 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     // rows structurally, so they can never reach the sequencer or `remote_event_log`.
     local_backend("remote:session_connected"),
     local_backend("remote:session_closed"),
+    // PR 2.3: the CLIENT proxy's inbound relay channel — the outbound-WS relay re-emits every
+    // host frame (`remote:stream_frame`) and its own teardown (`remote:stream_closed`) onto the
+    // local bus for the TS NetworkEventBus. Local-only so a client's own relay can never be
+    // captured and fanned back out to a host it is itself paired with. The environment id
+    // travels in the PAYLOAD, not the name: a dynamic emit name is unresolvable to the P-6
+    // emit scanner.
+    local_backend("remote:stream_frame"),
+    local_backend("remote:stream_closed"),
 ];
 
 #[cfg(test)]

@@ -28,6 +28,11 @@
 
 import { listen, emit, type UnlistenFn, type Event } from "@tauri-apps/api/event";
 import { isTauriMode } from "./tauri-detection";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  isRemoteEnvironmentId,
+} from "./remote/active-environment";
+import { NetworkEventBus } from "./remote/network-event-bus";
 
 /**
  * Unsubscribe function returned by subscribe(). The function must never throw.
@@ -250,13 +255,90 @@ export class MockEventBus implements EventBus {
 }
 
 /**
- * Create the appropriate event bus based on environment
- *
- * @returns TauriEventBus in Tauri mode, MockEventBus in browser mode
+ * Builds the CLIENT-LOCAL bus: real Tauri listeners in the app, an in-memory emitter in
+ * browser/Playwright mode. A remote environment still needs one of these underneath —
+ * Local-only chrome (updater menu items, `gh-auth:login_prompt`, the remote relay
+ * channel itself) is emitted by this Mac's own backend regardless of which environment
+ * is active.
  */
-export function createEventBus(): EventBus {
-  if (isTauriMode()) {
-    return new TauriEventBus();
+function createLocalEventBus(): EventBus {
+  return isTauriMode() ? new TauriEventBus() : new MockEventBus();
+}
+
+/**
+ * Builds the network bus for a remote environment. Registered by the composition root
+ * (PR 2.4's keyed remount), which is the only place that can supply a supervisor, a
+ * per-environment `QueryClient`, and the proxy send path.
+ *
+ * It is a registration seam rather than a direct import so `event-bus.ts` — which ~116
+ * modules pull in transitively — never grows a static dependency on the query client or
+ * the supervisor.
+ */
+export type RemoteEventBusFactory = (
+  environmentId: string,
+  localBus: EventBus
+) => EventBus;
+
+let remoteEventBusFactory: RemoteEventBusFactory | null = null;
+
+export function registerRemoteEventBusFactory(factory: RemoteEventBusFactory): void {
+  remoteEventBusFactory = factory;
+}
+
+/** Test-only reset so a suite cannot leak a factory into the next file. */
+export function resetRemoteEventBusFactory(): void {
+  remoteEventBusFactory = null;
+}
+
+/**
+ * A `NetworkEventBus` with no stream attached.
+ *
+ * This is the FAIL-CLOSED fallback for a remote environment whose composition root has
+ * not registered a factory yet. Falling back to `TauriEventBus` would be far worse than
+ * delivering nothing: this Mac's own backend keeps emitting `task:*`, `agent:*`, and
+ * every other durable name, and a remote environment that subscribed to the local bus
+ * would project THIS machine's events as though they were the paired host's — a
+ * cross-environment bleed the user cannot see. Delivering no remote events is visible
+ * and recoverable; projecting the wrong environment's events is neither.
+ *
+ * Local-only chrome still reaches its subscribers, because the network bus routes those
+ * names to the wrapped local bus.
+ */
+function createDetachedNetworkEventBus(
+  environmentId: string,
+  localBus: EventBus
+): EventBus {
+  return new NetworkEventBus({
+    environmentId,
+    localBus,
+    sendFrame: async () => {
+      // No socket is attached; there is nothing to write to and nothing to fake.
+    },
+    hydrate: async () => {},
+    sweep: () => {},
+    onRestartRequired: () => {},
+  });
+}
+
+/**
+ * Creates the event bus for one environment (§6.4).
+ *
+ * `"local"` (the default) gets the client-local bus. A remote environment gets a
+ * `NetworkEventBus`, which projects that host's relayed frames and keeps this Mac's
+ * chrome working underneath.
+ *
+ * The default is deliberately `"local"`: `EventProvider` still memoizes a single bus for
+ * the app's lifetime (`EventProvider.tsx:135`), so until PR 2.4's keyed remount passes
+ * an explicit id, every caller must keep getting the local bus it gets today.
+ */
+export function createEventBus(
+  environmentId: string = LOCAL_ENVIRONMENT_ID
+): EventBus {
+  const localBus = createLocalEventBus();
+  if (!isRemoteEnvironmentId(environmentId)) {
+    return localBus;
   }
-  return new MockEventBus();
+  return remoteEventBusFactory !== null
+    ? remoteEventBusFactory(environmentId, localBus)
+    : createDetachedNetworkEventBus(environmentId, localBus);
 }
